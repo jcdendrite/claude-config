@@ -1,6 +1,7 @@
 """Tests for claude/.claude/scripts/marker.sh."""
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -16,16 +17,32 @@ from helpers import (
     TRAVERSAL_SESSION_ID,
     agent_input,
     bash_input,
+    git_toplevel,
+    head_sha,
+    plan_review_marker_path,
     plant_traversal_canary,
     read_input,
     run_hook,
+    skill_review_marker_path,
+    staged_diff_hash,
+    write_marker,
+    write_plan_review_marker,
+    write_skill_review_marker,
 )
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
-# Every write/activate/deactivate subcommand marker.sh dispatches. Shared by
-# TestMarkerScriptSessionMissing and TestMarkerScriptSessionIdValidation so
-# a subcommand added to the dispatch but only one of the two parametrize
+
+def _ready_for_review_marker_path(home, repo, session_id: str):
+    """No shared helper exists for this marker kind (helpers.py covers
+    code-review, skill-review, and plan-review) -- same repo-hash recipe as
+    marker_path/plan_review_marker_path above, just the ready-for-review dir."""
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    return home / ".claude" / "ready-for-review-markers" / f"{repo_hash}.{session_id}"
+
+# Every write/activate/deactivate/status subcommand marker.sh dispatches.
+# Shared by TestMarkerScriptSessionMissing and TestMarkerScriptSessionIdValidation
+# so a subcommand added to the dispatch but only one of the two parametrize
 # lists can't silently narrow coverage on the other guard.
 ALL_MARKER_SUBCOMMAND_ARGS = [
     ["write", "code-review"],
@@ -40,6 +57,7 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
     ["deactivate", "ready-for-review"],
     ["deactivate", "respond-pr"],
     ["deactivate", "memory-skill"],
+    ["status"],
 ]
 
 
@@ -736,6 +754,41 @@ class TestMarkerScriptHonorsConfigDir:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a resolver failure must not write a marker: {stray}"
 
+    def test_status_reads_completion_marker_from_config_dir_not_home(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Same cross-account bypass this class guards against, for the read
+        side: status must resolve markers via CLAUDE_CONFIG_DIR, not fall
+        back to $HOME/.claude. The stale marker seeded under the default
+        home dir would report "historical" if status read it instead of the
+        custom dir's live one -- proving CLAUDE_CONFIG_DIR was honored."""
+        config_dir = tmp_path / "custom-config-dir"
+        sessions_dir = config_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        sid = "test-session-status-config-dir"
+        start_time = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
+            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.rstrip("\n")
+        (sessions_dir / str(os.getpid())).write_text(f"{sid}\n{start_time}\n")
+
+        write_marker(
+            isolated_home, git_repo, staged_diff_hash(git_repo), session_id=sid, config_dir=config_dir
+        )
+        write_marker(isolated_home, git_repo, "0" * 64, session_id=sid)
+
+        result = _run(
+            ["status"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" in result.stdout
+
 
 class TestSessionStartTimeResolution:
     """_walk_session's PID-reuse guard: a sessions/<pid> entry is trusted
@@ -1319,3 +1372,413 @@ class TestWalkSessionDelegatesToLib:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == "spy-session-id"
+
+
+class TestMarkerScriptStatusCompletionMarkers:
+    """`marker.sh status` reports each completion marker (code-review,
+    skill-review, plan-review, ready-for-review) as live, historical, or
+    absent, recomputing the current expected value with the same recipe
+    `write` uses."""
+
+    SID = "test-session-status"
+
+    def _make_skill_md(self, repo):
+        skill_dir = repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# test skill\n")
+        subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
+        return skill_md
+
+    # ── code-review ────────────────────────────────────────────────────
+
+    def test_code_review_live_when_hash_matches_staged_diff(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" in result.stdout
+
+    def test_code_review_historical_when_marker_hash_is_stale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_marker(isolated_home, git_repo, "0" * 64, session_id=self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: historical" in result.stdout
+
+    def test_code_review_absent_when_no_marker_exists(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: absent" in result.stdout
+
+    @pytest.mark.timing
+    def test_code_review_value_computation_times_out_gracefully(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The code-review diff+hash is capped via _lib_capped -- a stalled
+        `git diff --cached` must not hang the whole status report, and the
+        empty value a killed process yields must fall through cleanly to
+        _status_report_completion_marker's absent path, not crash. The stub
+        only sleeps for the exact bare `-C <repo> diff --cached` invocation
+        (no pathspec) so the skill-review, plan-review, and ready-for-review
+        git calls later in the same run are unaffected."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        start = time.monotonic()
+        result = _run(
+            ["status"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
+            f"it does not), took {elapsed:.1f}s"
+        )
+        assert "code-review: absent" in result.stdout
+
+    # ── skill-review ───────────────────────────────────────────────────
+
+    def test_skill_review_live_when_hash_matches_staged_skill_md_diff(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        self._make_skill_md(git_repo)
+        write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: live" in result.stdout
+
+    def test_skill_review_historical_when_marker_hash_is_stale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        marker = skill_review_marker_path(isolated_home, git_repo, session_id=self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("0" * 64 + "\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: historical" in result.stdout
+
+    def test_skill_review_absent_when_no_marker_exists(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: absent" in result.stdout
+
+    # ── plan-review ────────────────────────────────────────────────────
+
+    def test_plan_review_live_when_hash_matches_active_plan_set(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        write_plan_review_marker(isolated_home, git_repo, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: live" in result.stdout
+
+    def test_plan_review_historical_when_marker_hash_is_stale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        marker = plan_review_marker_path(isolated_home, git_repo, self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("0" * 64 + "\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: historical" in result.stdout
+
+    def test_plan_review_absent_when_no_marker_exists(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: absent" in result.stdout
+
+    # ── plan-review: plan-mode sibling priority ──────────────────────────
+
+    def _sibling_path(self, home, sid):
+        return home / ".claude" / ".plan-review-active.d" / f"{sid}.planmode-path"
+
+    def _declare_sibling(self, home, target_path, sid):
+        sibling = self._sibling_path(home, sid)
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_text(str(target_path))
+        return sibling
+
+    def test_plan_review_live_when_marker_matches_sibling_target_not_repo_relative_hash(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A `.planmode-path` sibling takes priority over the repo-relative
+        active plan set -- status must hash the sibling's target, matching
+        `write plan-review`'s own priority (TestMarkerScriptPlanModeSibling).
+        The repo-relative plan set below has a different hash than the
+        sibling target, so a live result here proves the sibling was used."""
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# repo-relative plan\n")
+
+        plan_mode_file = tmp_path / "planmode.md"
+        plan_mode_file.write_text("# plan-mode content\n")
+        self._declare_sibling(isolated_home, plan_mode_file, self.SID)
+
+        expected_digest = subprocess.run(
+            ["sha256sum", str(plan_mode_file)], capture_output=True, text=True, check=True
+        ).stdout.split()[0]
+        marker = plan_review_marker_path(isolated_home, git_repo, self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(expected_digest + "\n")
+
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: live" in result.stdout
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_plan_review_reports_absent_when_sibling_target_unreadable(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Diverges from `write plan-review`'s abort-on-unreadable-sibling
+        behavior (test_sibling_present_but_target_unreadable_aborts_without_writing):
+        status is a report, not a write, so an unreadable sibling target must
+        not crash the whole command -- it degrades to the empty-hash path,
+        which _status_report_completion_marker already reports as absent."""
+        _seed_session(isolated_home, self.SID)
+        plan_mode_file = tmp_path / "unreadable-planmode.md"
+        plan_mode_file.write_text("# secret\n")
+        plan_mode_file.chmod(0o000)
+        self._declare_sibling(isolated_home, plan_mode_file, self.SID)
+
+        try:
+            result = _run(["status"], cwd=git_repo, home=isolated_home)
+        finally:
+            plan_mode_file.chmod(0o644)
+
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: absent" in result.stdout
+
+    # ── ready-for-review ───────────────────────────────────────────────
+
+    def test_ready_for_review_live_when_hash_matches_head(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        marker = _ready_for_review_marker_path(isolated_home, git_repo, self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(git_repo) + "\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "ready-for-review: live" in result.stdout
+
+    def test_ready_for_review_historical_when_marker_hash_is_stale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        marker = _ready_for_review_marker_path(isolated_home, git_repo, self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("0" * 40 + "\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "ready-for-review: historical" in result.stdout
+
+    def test_ready_for_review_absent_when_no_marker_exists(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "ready-for-review: absent" in result.stdout
+
+    def test_ready_for_review_absent_cleanly_on_zero_commit_repo(self, isolated_home, tmp_path):
+        """git_repo always seeds a commit, so build a genuinely commit-less
+        repo here -- `git rev-parse HEAD` has nothing to resolve, and status
+        must report 'absent' cleanly rather than erroring."""
+        repo = tmp_path / "zero-commit-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "ready-for-review: absent" in result.stdout
+
+    # ── unreadable marker ──────────────────────────────────────────────
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_marker_reported_as_not_matching_not_a_crash(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        marker.chmod(0o000)
+        try:
+            result = _run(["status"], cwd=git_repo, home=isolated_home)
+        finally:
+            marker.chmod(0o644)
+        assert result.returncode == 0, result.stderr
+        # _lib_marker_value_present's grep swallows an unreadable marker's
+        # content and reports no match -- the file's mere presence still
+        # reads as historical, not live, and the script must not crash.
+        assert "code-review: historical" in result.stdout
+
+    # ── cross-repo isolation ───────────────────────────────────────────
+
+    def test_status_never_leaks_another_repos_marker(self, isolated_home, git_repo, tmp_path):
+        other_repo = tmp_path / "other-repo"
+        other_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=other_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=other_repo, check=True)
+        (other_repo / "f.txt").write_text("x\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=other_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=other_repo, check=True)
+
+        _seed_session(isolated_home, self.SID)
+        other_session = "other-repo-session"
+        other_marker = write_marker(
+            isolated_home, other_repo, staged_diff_hash(other_repo), session_id=other_session
+        )
+        other_repo_hash = other_marker.name.split(".")[0]
+
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert other_marker.name not in result.stdout
+        assert other_session not in result.stdout
+        assert other_repo_hash not in result.stdout
+
+
+class TestMarkerScriptStatusActiveBypass:
+    """`marker.sh status` reports each active-bypass marker (plan-review,
+    ready-for-review, respond-pr, memory-skill) for this session as live,
+    stale, or absent."""
+
+    SID = "test-session-status-bypass"
+
+    ACTIVE_BYPASS_KINDS = [
+        ("plan-review", ".plan-review-active.d"),
+        ("ready-for-review", ".ready-for-review-active.d"),
+        ("respond-pr", ".respond-pr-active.d"),
+        ("memory-skill", ".memory-skill-active.d"),
+    ]
+
+    @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
+    def test_live_when_pid_is_alive(self, isolated_home, git_repo, label, dir_name):
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / dir_name
+        active_dir.mkdir(parents=True)
+        (active_dir / self.SID).write_text(str(os.getpid()))
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert f"{label}: live" in result.stdout
+
+    @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
+    def test_stale_when_pid_is_dead_and_the_marker_is_evicted(
+        self, isolated_home, git_repo, label, dir_name
+    ):
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / dir_name
+        active_dir.mkdir(parents=True)
+        marker = active_dir / self.SID
+        marker.write_text("99999999")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert f"{label}: stale" in result.stdout
+        assert not marker.exists(), (
+            "a stale active-bypass marker must be evicted, not just labeled"
+        )
+
+    @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
+    def test_absent_when_no_marker_exists(self, isolated_home, git_repo, label, dir_name):
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert f"{label}: absent" in result.stdout
+
+
+class TestMarkerScriptStatusReconciliationFlag:
+    """The reconciliation flag applies only to code-review and skill-review
+    (hash-of-a-real-pathspec markers) -- never to ready-for-review
+    (HEAD-keyed, no pathspec) or plan-review (its own live/historical
+    distinction already covers this)."""
+
+    SID = "test-session-status-reconcile"
+
+    def test_code_review_flag_fires_on_unstaged_change_overlapping_the_whole_repo(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        # Additional unstaged change on top of the fixture's staged one.
+        (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" in result.stdout
+        assert "code-review reconciliation flag" in result.stdout
+
+    def test_code_review_flag_absent_when_working_tree_is_clean(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" in result.stdout
+        assert "code-review reconciliation flag" not in result.stdout
+
+    def test_skill_review_flag_fires_on_unstaged_skill_md_change(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        skill_dir = git_repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# test skill\n")
+        subprocess.run(["git", "add", str(skill_md)], cwd=git_repo, check=True)
+        write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
+        # Unstaged, overlapping the SKILL.md pathspec.
+        skill_md.write_text("# test skill\nmodified\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: live" in result.stdout
+        assert "skill-review reconciliation flag" in result.stdout
+
+    def test_skill_review_flag_does_not_fire_for_out_of_scope_unstaged_change(
+        self, isolated_home, git_repo
+    ):
+        """An unstaged change outside the SKILL.md pathspec must not fire the
+        skill-review flag -- mirrors TestMarkerScriptEmptyStagedGuard's
+        pathspec discipline for the write-side guard."""
+        _seed_session(isolated_home, self.SID)
+        skill_dir = git_repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# test skill\n")
+        subprocess.run(["git", "add", str(skill_md)], cwd=git_repo, check=True)
+        write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
+        # Unstaged change to file.txt, outside the SKILL.md pathspec.
+        (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: live" in result.stdout
+        assert "skill-review reconciliation flag" not in result.stdout
+
+    def test_ready_for_review_never_carries_a_reconciliation_flag(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        marker = _ready_for_review_marker_path(isolated_home, git_repo, self.SID)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(git_repo) + "\n")
+        (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "ready-for-review: live" in result.stdout
+        assert "reconciliation flag" not in result.stdout
+
+    def test_plan_review_never_carries_a_reconciliation_flag(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        write_plan_review_marker(isolated_home, git_repo, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "plan-review: live" in result.stdout
+        assert "reconciliation flag" not in result.stdout

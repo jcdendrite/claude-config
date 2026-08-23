@@ -21,7 +21,7 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
-# The 15 single-command tilde-form shapes the hook accepts — single source of
+# The 16 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -41,12 +41,13 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh clear-stale",
     "~/.claude/scripts/marker.sh clear-stale --dry-run",
     "~/.claude/scripts/marker.sh resolve-session-id",
+    "~/.claude/scripts/marker.sh status",
 ]
 
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 15 single-command shapes, each must be allowed       #
+    # Valid shapes — 16 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -147,7 +148,7 @@ class TestEnforceMarkerScriptShape:
     # permitted for any op/target combination: the chain's end state is   #
     # identical to running each op separately, and every op is already    #
     # individually allowlisted or harmless (clear-stale). These are NOT   #
-    # single shapes and must NOT appear in the 14-shape parametrize list  #
+    # single shapes and must NOT appear in the 16-shape parametrize list  #
     # above.                                                              #
     # ------------------------------------------------------------------ #
 
@@ -306,6 +307,14 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh write plan-review && rm -rf /"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_chain_status_to_rm_denied(self):
+        """status cannot ride a chain to a non-`git commit`, non-marker-shape
+        tail, the same coverage every other op already has — status is not a
+        `write` shape, so it doesn't even qualify for the chained-commit
+        allowance either."""
+        cmd = "~/.claude/scripts/marker.sh status && rm -rf /"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_chain_extra_arg_mid_chain_denied(self):
         """An extra arg on a mid-chain segment must still deny; the shape
         pattern's anchors apply per-segment, not just at the start/end of
@@ -334,6 +343,13 @@ class TestEnforceMarkerScriptShape:
 
     def test_extra_arg_denied(self):
         cmd = "~/.claude/scripts/marker.sh write code-review extra"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_status_extra_arg_denied(self):
+        """status takes no skill argument -- a trailing arg must be denied,
+        mirroring the extra-arg guard every other no-argument subcommand
+        (resolve-session-id) already gets."""
+        cmd = "~/.claude/scripts/marker.sh status extra"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     # ------------------------------------------------------------------ #
@@ -714,6 +730,30 @@ class TestGateReleaseAuthority:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(f"{MARKER} resolve-session-id", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    def test_status_allowed_for_main_session(self):
+        """status is a pure read that releases no gate, same as
+        resolve-session-id — confirmed explicitly rather than assumed from
+        the regex accepting the shape."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} status"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_status_allowed_for_restricted_subagent(self, agent_type):
+        """Same as the main-session case, for a restricted subagent — status
+        is allowed for every agent type, not just ones with review authority."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} status", agent_type=agent_type),
             )
             == "allow"
         )
