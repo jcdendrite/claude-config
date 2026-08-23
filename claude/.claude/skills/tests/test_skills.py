@@ -665,15 +665,19 @@ class TestPrDescriptionExternalStateCheck:
 
 
 class TestPrDescriptionCostSectionWiring:
-    """Wiring tripwire, not a behavioral test: pr-description has no
-    behavioral test suite in this repo (its tests/ doesn't exist), so the
-    `## Cost` section's actual runtime behavior -- sentinel absent or mode
-    not "dollars" -> block deleted if present; mode "dollars" -> sync
-    regenerates; detached HEAD -> section omitted -- is validated by manual
-    runtime observation only.
-
-    This only proves the delimiters and the account-scoped mode-grammar
-    gate are present in the source text, not that they execute correctly.
+    """Wiring tripwire, not a behavioral test: the `## Cost` section's actual
+    runtime behavior -- sentinel absent or mode not "dollars" -> block
+    deleted if present; mode "dollars" -> sync regenerates; detached HEAD ->
+    section omitted -- is validated behaviorally by
+    claude/.claude/scripts/tests/test_pr_cost_section.py (real subprocess
+    execution against pr-cost-section.sh), not here. The account-scoped
+    mode-grammar gate and the config-dir resolution this skill body used to
+    inline directly now live in that script instead (docs/worktree-bash-guard.md),
+    so pinning their exact source shape a second time here would be
+    redundant with that behavioral suite -- same reasoning this class
+    already applies to install.sh's own _report_account_sentinel. This class
+    only proves the delimiters and the script-call wiring are present in the
+    skill body's source text.
     """
 
     def _body(self):
@@ -687,36 +691,7 @@ class TestPrDescriptionCostSectionWiring:
     def test_declares_account_scoped_mode_gate(self):
         body = self._body()
         assert "pr-cost-disclosure" in body
-        assert "CLAUDE_CONFIG_DIR" in body
-
-    def test_declares_anchored_dollars_compare(self):
-        """Pins the exact comparison shape this skill body prescribes. Only
-        this side is checked: install.sh's own _report_account_sentinel gets
-        full behavioral coverage in test_install_sh_sentinel_inventory.py
-        (real subprocess execution), so a second literal-text match against
-        install.sh's source would be redundant with that behavioral suite
-        and brittle to a cosmetic install.sh syntax change that doesn't
-        alter behavior. This skill body has no such behavioral harness --
-        it's prose an agent follows, not code a test can execute -- so a
-        source tripwire is the only available check that the spec still
-        names the anchored form, one of the three fail-open shapes this
-        grammar exists to exclude."""
-        assert '[ "$mode" = "dollars" ]' in self._body()
-
-    def test_declares_config_dir_resolution_snippet(self):
-        """Pins the exact resolution shape this skill body prescribes,
-        mirroring test_declares_anchored_dollars_compare's treatment of the
-        mode-compare snippet: resolution decides which file even gets read,
-        so a prose-only description here (with no snippet to diverge from)
-        is the same drift risk the mode-compare snippet was pinned to
-        close. install.sh's own case statement gets behavioral coverage in
-        test_install_sh_sentinel_inventory.py (test_account_sentinel_resolves_against_claude_config_dir_when_set,
-        test_account_sentinel_does_not_union_with_home_claude,
-        test_account_sentinel_relative_claude_config_dir_reports_disabled),
-        so only the skill body's prescribed snippet is checked here."""
-        body = self._body()
-        assert '/*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;' in body
-        assert '*) config_dir="$HOME/.claude" ;;' in body
+        assert "~/.claude/scripts/pr-cost-section.sh" in body
 
 
 class TestRespondPrPromiseRedemption:
@@ -1381,6 +1356,137 @@ def _all_skill_md_paths() -> list[Path]:
     return paths
 
 
+# --- Trigger A regression: a $(...)-assigned variable referenced later in the
+# same fenced block. See docs/worktree-bash-guard.md for the full trigger
+# taxonomy this guards one shape of. Fence detection reuses the module-level
+# _FENCE_OPEN_RE (defined further below, keyed on the fence delimiter itself,
+# not a bash/sh language tag) so an untagged ``` fence is scanned the same as
+# a tagged ```bash one.
+
+# Matches an assignment at the start of a statement -- line start, or after a
+# statement separator (;, &&, ||) -- optionally preceded by local/export/
+# declare/readonly, so `local FOO=$(cmd)` and `echo x; FOO=$(cmd)` are found
+# the same as a bare leading `FOO=$(cmd)`. Not a full shell parser (a `;`
+# inside a string literal would also split here); over-flagging is the safe
+# direction for this scan, matching _closed_fence_line_indices's own bias.
+_TRIGGER_A_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|]\s*)\s*(?:local|export|declare|readonly)?\s*([A-Za-z_][A-Za-z0-9_]*)=\$\("
+)
+_TRIGGER_A_EXCLUSION_MARKER_RE = re.compile(r"<!-- (HOOK_TEST_FIXTURE|HOOK_SCRIPT_CONTENT_EXAMPLE):")
+
+
+def _fenced_code_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
+    """Every *closed* fenced code block as (open_index, content_lines).
+
+    Mirrors _closed_fence_line_indices's own closing-fence detection (a bare
+    run of the opener's character, at least as long as the opener, with no
+    trailing info string) but returns each block's own content instead of a
+    flat index set — the Trigger-A scan needs to look inside each block for
+    the assign-then-reference shape, not just which lines are code.
+    """
+    blocks: list[tuple[int, list[str]]] = []
+    open_index: int | None = None
+    open_run = ""
+    for index, line in enumerate(lines):
+        if open_index is None:
+            fence_match = _FENCE_OPEN_RE.match(line)
+            if fence_match:
+                open_index, open_run = index, fence_match.group(1)
+            continue
+        candidate = line.strip()
+        if candidate and set(candidate) == {open_run[0]} and len(candidate) >= len(open_run):
+            blocks.append((open_index, lines[open_index + 1 : index]))
+            open_index = None
+    return blocks
+
+
+def _fence_excluded_by_marker(lines: list[str], open_index: int) -> bool:
+    """True when the nearest non-blank line before the fence opener is a
+    HOOK_TEST_FIXTURE/HOOK_SCRIPT_CONTENT_EXAMPLE marker comment — an
+    explicit, structural opt-in a pytest-executed fixture or a documentation
+    example (never typed into an agent's Bash tool) uses to exempt itself."""
+    for index in range(open_index - 1, -1, -1):
+        stripped = lines[index].strip()
+        if stripped == "":
+            continue
+        return bool(_TRIGGER_A_EXCLUSION_MARKER_RE.search(stripped))
+    return False
+
+
+def _trigger_a_matches(markdown_text: str) -> list[str]:
+    """Variable names assigned via `$(...)` and referenced again in a later
+    statement in the same fenced block — the worktree-isolation Bash-tool
+    guard's Trigger A shape. "Later statement" includes the remainder of the
+    assignment's own line (a same-line `&&`/`;`-chained reference) as well as
+    every subsequent line. An assignment never referenced again (ordinary
+    documentation snippets corpus-wide) is not flagged."""
+    lines = markdown_text.split("\n")
+    matches: list[str] = []
+    for open_index, content in _fenced_code_blocks(lines):
+        if _fence_excluded_by_marker(lines, open_index):
+            continue
+        for i, line in enumerate(content):
+            for assign_match in _TRIGGER_A_ASSIGN_RE.finditer(line):
+                var_name = assign_match.group(1)
+                reference_re = re.compile(r"\$\{?" + re.escape(var_name) + r"\b")
+                remainder = line[assign_match.end() :]
+                later_lines = content[i + 1 :]
+                if reference_re.search(remainder) or any(reference_re.search(later_line) for later_line in later_lines):
+                    matches.append(var_name)
+    return matches
+
+
+class TestTriggerAFenceScan:
+    """Regression guard for the worktree-isolation Bash-tool guard's Trigger A
+    shape (docs/worktree-bash-guard.md): a $(...)-assigned variable used in a
+    later statement in the same fenced block. After this repo's script
+    migration, no SKILL.md in the corpus should carry this shape any more —
+    every multi-step recipe now calls a single dedicated script instead."""
+
+    def test_flags_tagged_fence(self) -> None:
+        text = "```bash\nFOO=$(echo hi)\necho \"$FOO\"\n```"
+        assert _trigger_a_matches(text) == ["FOO"]
+
+    def test_flags_untagged_fence(self) -> None:
+        text = "```\nFOO=$(echo hi)\necho \"$FOO\"\n```"
+        assert _trigger_a_matches(text) == ["FOO"]
+
+    def test_does_not_flag_marker_excluded_fence(self) -> None:
+        text = (
+            "<!-- HOOK_TEST_FIXTURE: example -->\n\n"
+            "```bash\nFOO=$(echo hi)\necho \"$FOO\"\n```"
+        )
+        assert _trigger_a_matches(text) == []
+
+    def test_flags_same_line_chained_reference(self) -> None:
+        text = '```bash\nFOO=$(git rev-parse HEAD) && echo "deploying $FOO"\n```'
+        assert _trigger_a_matches(text) == ["FOO"]
+
+    def test_flags_local_prefixed_assignment(self) -> None:
+        text = '```bash\nlocal FOO=$(cmd)\necho "$FOO"\n```'
+        assert _trigger_a_matches(text) == ["FOO"]
+
+    def test_flags_semicolon_joined_same_line(self) -> None:
+        text = '```bash\necho start; FOO=$(cmd); echo "$FOO"\n```'
+        assert _trigger_a_matches(text) == ["FOO"]
+
+    def test_does_not_flag_unused_assignment(self) -> None:
+        text = "```bash\nFOO=$(echo hi)\necho unrelated\n```"
+        assert _trigger_a_matches(text) == []
+
+    @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
+    def test_no_trigger_a_shape_in_corpus(self, skill_md_path: Path) -> None:
+        matches = _trigger_a_matches(skill_md_path.read_text())
+        assert not matches, (
+            f"{skill_md_path}: fenced block assigns and later references "
+            f"{matches!r} via $(...) — the worktree-isolation Bash-tool "
+            "guard's Trigger A shape (see docs/worktree-bash-guard.md); "
+            "replace with a single dedicated script call, or exclude with a "
+            "HOOK_TEST_FIXTURE/HOOK_SCRIPT_CONTENT_EXAMPLE marker comment if "
+            "this block is never typed into an agent's Bash tool"
+        )
+
+
 def test_disposition_rule_anchors_present() -> None:
     """Every DISPOSITION_RULE:<name> anchor pair exists, is ordered, and is non-trivial.
 
@@ -1700,11 +1806,22 @@ def test_handoff_and_brief_write_recipe_honors_config_dir_when_set(
     )
 
 
-def test_resume_context_script_exists_and_executable() -> None:
-    script = SCRIPTS_DIR / "resume-context.sh"
-    assert script.exists(), "claude/.claude/scripts/resume-context.sh must exist"
+@pytest.mark.parametrize(
+    "script",
+    sorted(p for p in SCRIPTS_DIR.glob("*.sh") if not p.name.startswith("_")),
+    ids=lambda p: p.name,
+)
+def test_scripts_are_executable(script: Path) -> None:
+    """Every script under claude/.claude/scripts/ is invoked by a hardcoded
+    literal path (e.g. ~/.claude/scripts/foo.sh), never `bash <path>` — a
+    script committed without the executable bit fails outright on first use
+    for every stow consumer simultaneously. Generalized from a single-script
+    check (resume-context.sh) so a newly-added script gets this coverage for
+    free instead of needing its own copy of the same assertion. A leading
+    underscore names a sourced library (e.g. _worktree-lib.sh), never invoked
+    directly, so it carries no executable-bit expectation."""
     assert os.access(script, os.X_OK), (
-        "resume-context.sh must be committed with the executable bit set "
+        f"{script.name} must be committed with the executable bit set "
         "(git add --chmod=+x) so the stow symlink is runnable"
     )
 

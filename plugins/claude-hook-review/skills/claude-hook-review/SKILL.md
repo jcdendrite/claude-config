@@ -34,6 +34,7 @@ Rejected forms: bare `./<rest>`, `../<rest>`, or unprefixed script names. Concre
 
 New gate hooks must follow the canonical pattern in Section 4 (`_lib_parse_tool_input_or_deny`) rather than reimplementing this inline form. The structural conventions — `set -uo pipefail`, `emit_deny` defined before sourcing `_lib.sh`, exit-0 contract — still apply:
 
+<!-- HOOK_SCRIPT_CONTENT_EXAMPLE: this fenced block documents a hook script's own file content — never typed into an agent's Bash tool. test_skills.py's Trigger-A regression scan (see docs/worktree-bash-guard.md) excludes it by this comment. -->
 ```bash
 #!/bin/bash
 set -uo pipefail   # explicit failure modes: unbound vars fail loudly,

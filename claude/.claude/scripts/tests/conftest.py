@@ -16,8 +16,12 @@ a worktree is identical regardless of which script is under test.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import textwrap
+import uuid
 from pathlib import Path
 
 import pytest
@@ -29,6 +33,108 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     here (with _asst/_user_msg) so test_context_composition.py doesn't re-derive its own,
     possibly-drifting copy of the requestId run-merge shape _dedup_turns_by_request_id relies on."""
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# `gh`-shim scaffolding shared by any test that PATH-shims `gh` for a
+# script under test. Promoted from test_cleanup_merged_branches.py so
+# test_respond_pr_safe_patch.py's own `gh` shim (a different API shape --
+# GET-then-PATCH against a PR review comment, not a merge-status query)
+# routes through the same credential-scrubbing helper instead of a third
+# hand-rolled copy. Each test file keeps its own domain-specific shim
+# *source* generator (e.g. _gh_shim_source in test_cleanup_merged_branches.py)
+# and passes it to _shimmed_env below.
+# ---------------------------------------------------------------------------
+
+# gh-credential env vars that must never leak from a contributor's real
+# shell into a test's PATH-shimmed subprocess (see _base_test_env).
+_SENSITIVE_ENV_VARS = frozenset({
+    "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
+})
+
+
+def _base_test_env() -> dict:
+    """Inherited env with DIRENV_* and gh-credential vars stripped.
+
+    Left as inherited, `direnv export bash` run from a test's tmp_path
+    would emit the *revert* half of a contributor's real DIRENV_* diff,
+    restoring a PATH without the test's own shim dir — the script's next
+    `gh` call would be the contributor's real gh with their real token,
+    against real GitHub.
+    """
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("DIRENV_") and key not in _SENSITIVE_ENV_VARS
+    }
+
+
+# Tools the script and _worktree-lib.sh need on a normal (non-lsof,
+# non-usage-error) run — mirrors TestGhMissing's min_bin list. Symlinking
+# only these into a curated directory keeps the absent-direnv PATH free of
+# a real direnv without also losing any other tool that happens to share
+# direnv's install directory (e.g. git, via the same package-manager prefix).
+_TOOLS_NEEDED_WITHOUT_DIRENV = ("git", "python3", "bash", "grep", "awk", "sed", "dirname")
+
+
+def _curated_path_without_direnv(tmp_path: Path) -> str:
+    curated_dir = tmp_path / f"curated_bin_{uuid.uuid4().hex}"
+    curated_dir.mkdir()
+    for tool in _TOOLS_NEEDED_WITHOUT_DIRENV:
+        tool_path = shutil.which(tool)
+        if tool_path:
+            (curated_dir / tool).symlink_to(tool_path)
+    return str(curated_dir)
+
+
+def _noop_direnv_shim_source() -> str:
+    """Default direnv shim installed for every test: `export bash` exits 0
+    with no output, modeling a directory with no identity-bearing .envrc.
+    Tests exercising direnv's own export payload pass their own source via
+    _shimmed_env's direnv_source parameter."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        sys.exit(0)
+    """)
+
+
+def _shimmed_env(
+    tmp_path: Path,
+    gh_shim_source_text: str,
+    *,
+    direnv_source: str | None = None,
+    direnv_present: bool = True,
+) -> dict:
+    """Build the credential-scrubbed, PATH-shimmed env every test's `gh`
+    invocation must use — the single seam `fake_gh` and every
+    hand-rolled shim site route through, so none can skip the
+    DIRENV_*/token scrubbing.
+
+    direnv_present=False replaces the inherited PATH with a curated
+    directory holding only the tools the script needs, none of them
+    `direnv` — deterministic on machines with and without direnv actually
+    installed, and immune to direnv sharing an install prefix with a tool
+    the script does need (e.g. git).
+    """
+    shim_dir = tmp_path / f"shim_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(gh_shim_source_text)
+    gh_shim.chmod(0o755)
+
+    if direnv_present:
+        direnv_shim = shim_dir / "direnv"
+        direnv_shim.write_text(direnv_source or _noop_direnv_shim_source())
+        direnv_shim.chmod(0o755)
+        base_path = os.environ.get("PATH", "")
+    else:
+        base_path = _curated_path_without_direnv(tmp_path)
+
+    new_path = os.pathsep.join([str(shim_dir), base_path])
+    return {**_base_test_env(), "PATH": new_path}
 
 
 def _write_subagent_jsonl(

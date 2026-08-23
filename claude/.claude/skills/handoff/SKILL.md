@@ -169,15 +169,10 @@ successful handoff resets the ignored-re-arm count instead of leaving it primed 
 the next session's first re-arm if the session id were ever reused:
 
 ```bash
-CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-SESSION_ID=$(head -n1 "$CONFIG_DIR/sessions/$PPID" 2>/dev/null)
-[ -n "$SESSION_ID" ] && printf 'handoff session=%s\n' "$SESSION_ID" >> "$CONFIG_DIR/.handoff-nudge.log"
-[ -n "$SESSION_ID" ] && rm -f "$CONFIG_DIR/.handoff-nudge-fired.d/$SESSION_ID-ignored"
+~/.claude/scripts/handoff-record-conversion.sh
 ```
 
-Best-effort: `sessions/$PPID` is the session-id lookup file `capture-session-id.sh` writes at
-session start; if it's absent, both the log append and the marker removal are silently skipped —
-this is a conversion metric and a defense-in-depth reset, not a gate. (Claude Code ≤2.1.223 could
-refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it
-recurs, split into single-statement calls with the session id substituted as a literal rather
-than carried in a variable.)
+Best-effort: silently skips the log append and marker removal if this session's id can't be
+resolved — a conversion metric and a defense-in-depth reset, not a gate. Recipes across this repo
+route through a dedicated script like this one instead of an inline multi-statement Bash call;
+see `docs/worktree-bash-guard.md` for why.
