@@ -123,7 +123,7 @@ If not all three hold, point at the canonical source.
 
 6. **`maxTurns` integer validation** — `maxTurns: 20`, not `maxTurns: "20"`. Strings are silently ignored; the cap will not apply.
 
-7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing" for current guidance, not this line. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is a repo-owned override rather than a per-dispatch request. Multi-call-site subagents do not pin `opus`; a single-caller, Opus-charter agent (`plan-architect`, dispatched only from `/plan-it` Step 5, which also keeps its own explicit per-dispatch parameter) is the deliberate exception — "single-caller" means documented intent, not a technical restriction, so re-check actual call sites before extending the exception to a different agent (`docs/design-decisions.md` §29 has the rationale).
+7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing" for current guidance, not this line. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is a repo-owned override rather than a per-dispatch request. Multi-call-site subagents do not pin `opus`; a single-caller, Opus-charter agent (`plan-architect`, dispatched only from `/plan-it` Step 5, which also keeps its own explicit per-dispatch parameter) is the deliberate exception — "single-caller" means documented intent, not a technical restriction, so re-check actual call sites before extending the exception to a different agent (`docs/design-decisions.md` §30 has the rationale).
 
 8. **Length** — under the 200-line target. Flag anything that drifts past 200 (and especially past 300) without a load-bearing reason.
 

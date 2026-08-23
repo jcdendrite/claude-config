@@ -21,20 +21,19 @@ tip) live in the `branch-management` skill.
 ## Detecting divergence
 
 Canonical recipe — used at the SessionStart advisory hook
-(`check-branch-divergence.sh`), the `/ready-for-review` pre-push gate,
-and the `/respond-pr` precheck. Same primitive everywhere so detection
-is uniform.
+(`check-branch-divergence.sh`, which runs this logic directly as a hook script, never through the
+Bash tool) and, via `~/.claude/scripts/branch-divergence-status.sh`, at the `/ready-for-review`
+pre-push gate and the `/respond-pr` precheck. Same detection primitive everywhere so divergence
+reporting is uniform; see `docs/worktree-bash-guard.md` for why the two skill-driven callers go
+through a dedicated script instead of restating the recipe inline.
 
-```
-DEFAULT=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's#^refs/remotes/origin/##')
-git fetch --no-tags --quiet origin "$DEFAULT"
-BEHIND=$(git rev-list --count "HEAD..origin/$DEFAULT")
-git merge-tree --write-tree "origin/$DEFAULT" HEAD   # trial merge; conflict files printed in trailer
+```bash
+~/.claude/scripts/branch-divergence-status.sh
 ```
 
-`git merge-tree --write-tree` performs a trial merge without touching
-the working tree or index; conflicting paths appear in the output's
-trailer block. Requires git ≥ 2.38.
+Reports the default branch, the behind-count, and the result of a `git merge-tree --write-tree`
+trial merge (conflict files, if any) in plain text to stdout — always, not only when there's
+something to flag. Requires git ≥ 2.38.
 
 Behind-count = 0 → in sync, no action. Behind > 0 with a clean trial
 merge → safe fast-forward or rebase candidate; run the [pre-flight

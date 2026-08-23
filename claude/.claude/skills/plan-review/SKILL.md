@@ -21,12 +21,21 @@ Write the active-session marker so this skill's own Write/Edit operations are no
 
 If the chain fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since the hook would block any Write/Edit during the review.
 
-If this session is in harness plan mode, the plan-mode system reminder names a file path under the Claude Code config directory's `plans/` subdirectory (e.g. `<config-dir>/plans/<slug>.md`) that the eventual `ExitPlanMode` call reads from directly — distinct from any plan committed under this repo's `.claude/plans/`. Declare that exact path so `require-plan-review.sh` can gate `ExitPlanMode` against it. Resolve this session's id via `~/.claude/scripts/marker.sh resolve-session-id` — a plain read, not a marker-shape write, so none of the write-authority restriction below applies to it. If it fails, abort and report; do not write a sibling file with no session id in its name. Otherwise write the plan-mode file's path, with no trailing newline, to `.plan-review-active.d/<the id just resolved>.planmode-path` under the config directory (`$CLAUDE_CONFIG_DIR`, or `~/.claude` when unset) — using the Write tool, not Bash. `marker.sh` has no argument for this path, and a Bash-written file at this path is not covered by the same subagent-write restriction a Write tool call is. `marker.sh write plan-review` reads this file to decide which plan set the completion marker covers, falling back to the repo-relative plan set when it is absent. Skip this sub-step entirely when no plan-mode reminder is present in this session.
+If this session is in harness plan mode, the plan-mode system reminder names a file path under the Claude Code config directory's `plans/` subdirectory (e.g. `<config-dir>/plans/<slug>.md`) that the eventual `ExitPlanMode` call reads from directly — distinct from any plan committed under this repo's `.claude/plans/`. Declare that exact path so `require-plan-review.sh` can gate `ExitPlanMode` against it. Resolve this session's id via `~/.claude/scripts/marker.sh resolve-session-id` — a plain read, not a marker-shape write, so none of the write-authority restriction below applies to it. If it fails, abort and report; do not write a sibling file with no session id in its name. Otherwise write the plan-mode file's path, with no trailing newline, to
+`<config-dir>/.plan-review-active.d/<the id just resolved>.planmode-path` — using the Write tool,
+not Bash, with `<config-dir>` resolved to this session's actual config directory before the call.
+Never paste the literal `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` expression into the Write tool's path
+argument — it is never shell-expanded there, so that would create a directory literally named the
+expression itself rather than resolving it. `marker.sh` has no argument for this path, and a
+Bash-written file at this path is not covered by the same subagent-write restriction a Write tool
+call is. `marker.sh write plan-review` reads this file (via the same config-dir resolution) to
+decide which plan set the completion marker covers, falling back to the repo-relative plan set when
+it is absent.
 
 `marker.sh` invocations stay hardcoded to `~/.claude/scripts/marker.sh` across this repo, uniformly and by design — see `settings.json`'s `Bash(~/.claude/scripts/marker.sh …)` allow-rule and `enforce-marker-script-shape.sh`'s anchor, neither of which recognizes a config-dir-aware form.
 
-<!-- HOOK_TEST_FIXTURE: declare-planmode-path — the hook-alignment test suite executes this recipe (a bash equivalent of the Write tool call above) to verify the resulting sibling file lands at the path and content require-plan-review.sh and marker.sh expect. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
-```
+<!-- HOOK_TEST_FIXTURE: declare-planmode-path — the hook-alignment test suite executes this recipe (a bash equivalent of the Write tool call above) to verify the resulting sibling file lands at the path and content require-plan-review.sh and marker.sh expect. Do not duplicate the recipe elsewhere; the test re-reads it from here. This fenced block is a pytest-executed simulation, never typed into an agent's Bash tool — test_skills.py's Trigger-A regression scan (see docs/worktree-bash-guard.md) excludes it by this same comment. -->
+```bash
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SESSION_ID=$(~/.claude/scripts/marker.sh resolve-session-id) || exit 1
 printf '%s' "$PLAN_MODE_FILE_PATH" > "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
@@ -215,11 +224,11 @@ S6. **Secret lifecycle** — Does the plan describe provisioning, storage, rotat
 
 ## Domain: Claude Code config
 
-Apply when the plan proposes new or modified content for `.claude/skills/**/SKILL.md`, `claude/.claude/agents/*.md` or `plugins/*/agents/*.md`, `CLAUDE.md`/`AGENTS.md`/`<config-dir>/projects/*/memory/`, hooks (`claude/.claude/hooks/*.sh`, `settings.json` hook entries), or `permissions.allow` rules.
+Apply when the plan proposes new or modified content for `.claude/skills/**/SKILL.md`, `claude/.claude/agents/*.md` or `plugins/*/agents/*.md`, `CLAUDE.md`/`AGENTS.md`/`.claude/rules/*.md`/`<config-dir>/projects/*/memory/`, hooks (`claude/.claude/hooks/*.sh`, `settings.json` hook entries), or `permissions.allow` rules.
 
 For SKILL.md content, invoke `skill-review` against the plan's drafted text. For agent-file content, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, and cross-reference vs duplication for its file type.
 
-For CLAUDE.md, AGENTS.md, or memory-file content, invoke `ai-instruction-and-memory-files` against the plan's drafted text — it owns placement (which surface), altitude, duplication, length cap, and the behavior test. Running it here, on the plan's proposed text, is the point: a placement or verbosity defect caught at `/code-review` has already been signed off on by the user at plan approval.
+For CLAUDE.md, AGENTS.md, memory-file, or path-scoped rule-file content, invoke `ai-instruction-and-memory-files` against the plan's drafted text — it owns placement (which surface), altitude, duplication, length cap, and the behavior test. Running it here, on the plan's proposed text, is the point: a placement or verbosity defect caught at `/code-review` has already been signed off on by the user at plan approval.
 
 For hook content, invoke `claude-hook-review`. For `permissions.allow` rules, invoke `/review-permissions`.
 

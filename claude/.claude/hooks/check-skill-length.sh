@@ -16,6 +16,9 @@
 # Plugin-scoped skills (plugins/*/skills/) currently have no override path
 # and all fall to the 200-line default — extend limit_for() if a plugin
 # skill earns the same exception.
+# pr-description/SKILL.md is capped at 210: it writes one paragraph per
+# line with no hard-wrap, so trimming words never reduces the line count,
+# only removing a whole paragraph, heading, or blank line does.
 #
 # The "if" field in settings.json is unreliable — the internal grep is the
 # actual gate. See require-code-review.sh for the same pattern and rationale.
@@ -66,6 +69,8 @@ limit_for() {
   case "$1" in
     claude/.claude/skills/code-review/SKILL.md|claude/.claude/skills/plan-review/SKILL.md|claude/.claude/skills/plan-review/ROUTING.md)
       echo 500 ;;
+    claude/.claude/skills/pr-description/SKILL.md)
+      echo 210 ;;
     *)
       echo 200 ;;
   esac

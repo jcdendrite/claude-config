@@ -866,7 +866,7 @@ Total             22          141   13.5%
 
 ## rearm-backtest
 
-**Purpose.** Backtest candidate re-arm band spacings for `nudge-handoff-near-context-cap.sh`'s one-shot nudge against the recorded corpus, before shipping a spacing value on guesswork. Each session's own real first-fire point (the lesser of 40% of its model's context window and the fixed 360,000-token `_HANDOFF_NUDGE_ABS_CAP` — mirroring the hook's actual behavior for both the 200k- and 1M-context-window arms) is held fixed; only re-arm spacing *past* that point is backtested. Model routing is likewise not replay-testable from session JSONL alone. The report states both exclusions explicitly rather than silently omitting them. See `.claude/plans/handoff-nudge-rearm-backtest.md` for the full design.
+**Purpose.** Backtest candidate re-arm band spacings for `nudge-handoff-near-context-cap.sh`'s one-shot nudge against the recorded corpus, before shipping a spacing value on guesswork. Each session's own real first-fire point (the lesser of 40% of its model's context window and the fixed 150,000-token `_HANDOFF_NUDGE_ABS_CAP` — mirroring the hook's actual behavior for both the 200k- and 1M-context-window arms) is held fixed; only re-arm spacing *past* that point is backtested. Model routing is likewise not replay-testable from session JSONL alone. The report states both exclusions explicitly rather than silently omitting them. See `.claude/plans/handoff-nudge-rearm-backtest.md` for the full design.
 
 Each candidate spacing is replayed against every in-scope session's own recorded turn sequence: real context/output growth is never altered, only the dollars charged after a simulated re-arm point are re-priced. That re-pricing uses a fresh-session rebuild ramp — $/1k-output-tokens bucketed by turn-index-since-a-fresh-start, re-derived from the current corpus every run (PR #605's own turn-index bands are reused for comparability, but the multipliers are never hardcoded — that PR's own table is a one-off, non-reproducible measurement). Two figures are reported per spacing:
 
@@ -888,7 +888,7 @@ Each candidate spacing is replayed against every in-scope session's own recorded
 Sessions in scope: 214
 Operator-response-lag sample: 4 joined 'nudged' log line(s) (0 excluded -- no matching session in scope), median lag 98,540 tokens past the fire point
 
-Model routing and each session's own fire threshold (the lesser of 40% of its model's context window and the fixed 360,000-token _HANDOFF_NUDGE_ABS_CAP -- mirroring the hook's real behavior) are held fixed and are NOT backtested by this report -- only re-arm spacing past the first fire varies.
+Model routing and each session's own fire threshold (the lesser of 40% of its model's context window and the fixed 150,000-token _HANDOFF_NUDGE_ABS_CAP -- mirroring the hook's real behavior) are held fixed and are NOT backtested by this report -- only re-arm spacing past the first fire varies.
 
    Spacing        Model              $   DeltaUSD      C_bar    DeltaCbar
 -------------------------------------------------------------------------

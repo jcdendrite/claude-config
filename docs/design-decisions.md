@@ -140,6 +140,23 @@ there is no tool-call boundary for "the parent is about to write code"
 (`Edit` / `Write` fire identically for code, config, and docs), so unlike the
 review gates (§1) it stays advisory.
 
+**Narrowed 2026-08-21.** For the subcase of implementing a plan that has
+already cleared `/plan-review`, "left unmade" no longer holds:
+`subagent-delegation`'s decision-made test now states delegation as the
+default for that case (scope and approach are already fixed by the
+plan), with `plan-it` Step 7 and `handoff` §3 pointing to it at the two
+points a session decides where implementation runs. The general case —
+any code-writing the parent might do inline, plan or no plan — stays
+advisory for the reason above: the routing rule still cannot be
+hook-enforced, since a hard deny still has no way to tell approved-plan
+implementation apart from any other legitimate inline edit (fixing a
+diff, editing the plan file itself, docs, config). See
+`.claude/plans/handoff-code-writer-delegation.md` for the transcript
+measurement that grounded this narrowing (102 plan-review-boundary
+sessions, 90d, this repo: only 33% of handoff §3 sections named
+`code-writer`, 35% of sessions were inline-only with zero delegation
+attempt).
+
 The name `code-writer` is job-shaped — an action-noun (like `code-review`)
 describing the work the agent does — not a persona job title.
 Anthropic's subagent documentation treats the agent `name` as a pure
@@ -335,7 +352,22 @@ Every settings claim above was verified directly against primary sources rather 
 - [Claude Code environment variables](https://code.claude.com/docs/en/env-vars) — confirms shell-exported environment variables are read at every `claude` launch regardless of the starting repository, and that a settings-file `env` block only wins over the shell when both set the same variable.
 - `.claude/plans/startup-context-bloat.md` — full measured breakdown and assumption ledger.
 
-## 29. `/plan-it` Step 5 dispatches a pinned-Opus `plan-architect` agent instead of anchoring the whole session (2026-08-22)
+## 29. Worktree-lock self-recognition keyed on session_id, not PID (2026-08-22)
+
+`_lib_worktree_collision_guard` (`claude/.claude/hooks/_lib.sh`) recognizes "this is my own lock" by comparing the acquiring process's PID against the PID stored in the worktree's `locked` file. `claude --continue`/`--resume` keeps a session's `session_id` stable but assigns the CLI process a new PID, so a resumed session's own pre-resume lock no longer PID-matches — self-recognition fails, and the guard falls through to a `kill -0` liveness check on the now-stale PID, which either reports the lock dead or, if the OS has since reissued that exact PID to an unrelated process, falsely reports the worktree already in use by a live session.
+
+The fix keys self-recognition on `session_id` instead: it's assigned by the harness and stays stable across `--continue`/`--resume` (only the PID changes), so storing it in the lock file's reason string at acquisition time (`claude-code pid <N> session <ID>`) and comparing it at every later check makes self-recognition survive a resume entirely. `kill -0` PID liveness is unchanged and still runs, but now only for a lock carrying no matching session_id — i.e. a genuinely foreign or old-format lock, the scenario it was always meant to cover. An old-format lock (predating this fix, or one whose write was truncated mid-flight by the guard's own 5s timeout) falls back to today's PID-only comparison rather than being treated as immediately foreign — the same degrade-not-auto-evict posture the guard already applies to every other malformed-lock case.
+
+Rewriting the lock's stored PID from `capture-session-id.sh` on every `SessionStart` (which already rewrites two other PID-keyed lookups it owns for the same `--continue` reason) was considered and rejected: it would need a new mechanism to discover which worktree(s) a session's *prior* PID might hold a lock in, and `capture-session-id.sh` has no reason to know about worktree locks — a `_lib.sh`/collision-guard concern. Session-id keying needs no new discovery mechanism and dissolves the bug at its source.
+
+This is the same shape §2 already fixed for the code-review marker gate: narrowing a gate's self-recognition to a transient identifier (there, a marker's session-id-suffixed filename; here, a lock's stored PID) instead of the property the gate actually wants ("this state has been reviewed" / "this session holds this lock") produces a false negative whenever that identifier changes but the underlying state hasn't. §2's fix widened matching to ignore the volatile identifier entirely (content-addressing, matched across every session suffix); this fix instead swaps the volatile identifier (PID) for the harness's own stable one (session_id), since PID liveness still needs a real PID to `kill -0` against for the genuinely-foreign case and has no broad-match substitute.
+
+### Sources
+
+- `.claude/plans/worktree-lock-pid-resume-mismatch.md` — full plan, per-mechanism ledger, and verified givens.
+- Anthropic, *Hooks reference* — https://code.claude.com/docs/en/hooks — confirms `session_id` stays the same across `--continue`/`--resume`, and that `SessionStart`'s `source` matcher includes a `resume` value precisely for this event.
+
+## 30. `/plan-it` Step 5 dispatches a pinned-Opus `plan-architect` agent instead of anchoring the whole session (2026-08-22)
 
 Opus-quality plan authoring previously required starting the entire session with `--model opus`, which escalated every inheriting subagent dispatch and every low-judgment turn in that session, not only Step 5's design synthesis. `/plan-it` Step 5 now dispatches a new repo-owned agent, `claude/.claude/agents/plan-architect.md`, with an explicit `model: "opus"` per-dispatch parameter, on every run regardless of the session's own model. The agent also pins `model: opus` in its own frontmatter, in addition to the per-dispatch parameter — belt-and-suspenders, not redundant: `docs/auto-mode.md` documents the per-invocation parameter as a *request* competing with resolution step 4 (parent inheritance), not a guaranteed override, and the specific resolution direction this design depends on (Sonnet parent → Opus child) is published as the same algorithm but not separately measured from the downgrade direction that is measured. A silently-Sonnet `plan-architect` dispatch would fail quietly — a plausible, well-formatted, lower-quality plan that could still clear `/plan-review` and land as a durable artifact — which is the asymmetry the pin exists to close.
 

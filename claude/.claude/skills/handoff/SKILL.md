@@ -71,7 +71,7 @@ Read the current task list — from your session's task-list tool if it exposes 
 If none: write "None."
 
 ## §3 Next concrete step (safe to execute autonomously)
-The exact command, file edit, or question to resume on. No vague "continue the work." Limit this section to reversible steps the resuming agent can execute without re-confirming with the engineer. Move irreversible or shared-state actions to §3.5.
+The exact command, file edit, or question to resume on. No vague "continue the work." Limit this section to reversible steps the resuming agent can execute without re-confirming with the engineer. Move irreversible or shared-state actions to §3.5. When the next step implements an approved plan, write it as the dispatch, not the work: name `code-writer`, the plan path, the phase, and its verification command, per `subagent-delegation`'s default. 'Implement Phase 2' reads to the resuming session as work to do inline.
 
 ## §3.5 Pending engineer authorization
 
@@ -146,6 +146,7 @@ Before writing the file, verify:
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file
 - Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
 - Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
+- If §3's next step implements an approved plan, it names `code-writer` as the dispatch rather than describing the work to do inline
 - Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the handoff path consumes the file out from under any remaining `Edit` calls
 
 ## After writing: record the conversion signal
@@ -158,15 +159,10 @@ successful handoff resets the ignored-re-arm count instead of leaving it primed 
 the next session's first re-arm if the session id were ever reused:
 
 ```bash
-CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-SESSION_ID=$(head -n1 "$CONFIG_DIR/sessions/$PPID" 2>/dev/null)
-[ -n "$SESSION_ID" ] && printf 'handoff session=%s\n' "$SESSION_ID" >> "$CONFIG_DIR/.handoff-nudge.log"
-[ -n "$SESSION_ID" ] && rm -f "$CONFIG_DIR/.handoff-nudge-fired.d/$SESSION_ID-ignored"
+~/.claude/scripts/handoff-record-conversion.sh
 ```
 
-Best-effort: `sessions/$PPID` is the session-id lookup file `capture-session-id.sh` writes at
-session start; if it's absent, both the log append and the marker removal are silently skipped —
-this is a conversion metric and a defense-in-depth reset, not a gate. (Claude Code ≤2.1.223 could
-refuse this exact shape via a buggy worktree-isolation Bash-tool check, fixed in 2.1.224 — if it
-recurs, split into single-statement calls with the session id substituted as a literal rather
-than carried in a variable.)
+Best-effort: silently skips the log append and marker removal if this session's id can't be
+resolved — a conversion metric and a defense-in-depth reset, not a gate. Recipes across this repo
+route through a dedicated script like this one instead of an inline multi-statement Bash call;
+see `docs/worktree-bash-guard.md` for why.

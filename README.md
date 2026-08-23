@@ -23,6 +23,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
   - [Worktree enforcement](#worktree-enforcement)
   - [Autonomous shipping](#autonomous-shipping)
   - [PR cost disclosure](#pr-cost-disclosure)
+  - [Prose tightening pass](#prose-tightening-pass)
   - [Permission-prompt tracking](#permission-prompt-tracking)
   - [Repo relocation](#repo-relocation)
   - [Private-project redaction](#private-project-redaction)
@@ -352,7 +353,17 @@ echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
 
 Cost is an organizational fact, not a per-repo one — each Claude account is its own billing entity, and this machine may run several isolated accounts under separate `CLAUDE_CONFIG_DIR` values. The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` when set and absolute, else `$HOME/.claude` — never both) and its content selects a mode rather than proving a repo identity: exactly `dollars` enables the section, and absent, empty, or any other value disables it. That resolve-one-path rule is what keeps one account's opt-in from activating disclosure under another.
 
-The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+
+### Prose tightening pass
+
+`pr-description` runs a `tighten-prose` pass over the drafted body before its checks. On by default, unlike PR cost disclosure above — opt out per account by touching a sentinel scoped the same way.
+
+```bash
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-description-tighten-prose-optout"
+```
+
+See [`docs/hooks.md`](docs/hooks.md)'s "Prose tightening opt-out" for the full mechanics.
 
 ### Permission-prompt tracking
 
@@ -458,7 +469,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `<config-dir>/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` once context crosses `nudge-handoff-near-context-cap.sh`'s computed threshold — 40% of the model's context window, capped at 360000 tokens (`HANDOFF_NUDGE_ABS_CAP` overrides it) — because cleaner context produces a higher-quality resume file, and every turn spent past a 360000-token prefix on the largest context window is waste. Resume with `resume-context --cwd <worktree-path> <config-dir>/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `<config-dir>/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` once context crosses `nudge-handoff-near-context-cap.sh`'s computed threshold — 40% of the model's context window, capped at 150000 tokens (`HANDOFF_NUDGE_ABS_CAP` overrides it) — because cleaner context produces a higher-quality resume file, and every turn spent past a 150000-token prefix on the largest context window is waste. Resume with `resume-context --cwd <worktree-path> <config-dir>/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
 3. **Post-compaction authorization boundary restatement (automatic).** `restore-authorization-boundary-on-compact.sh` fires only on `compact`, re-injecting `hookSpecificOutput.additionalContext` that restates the irreversible-action confirmation boundary — advisory, not a gate. Opt out via `~/.claude/.authorization-boundary-disabled`.
 
 ### When to use which
@@ -472,7 +483,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 ### Threshold reference
 
-- 360000 tokens (default): the absolute-token cap for `/handoff`'s suggested threshold — this repo's own chosen ceiling, not a vendor-specified figure, overridable via `HANDOFF_NUDGE_ABS_CAP`. `nudge-handoff-near-context-cap.sh` computes the actual per-session threshold as the lesser of 40% of the resolved model's context window (200k or 1M, model-dependent) and this cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
+- 150000 tokens (default): the absolute-token cap for `/handoff`'s suggested threshold — this repo's own chosen ceiling, not a vendor-specified figure, overridable via `HANDOFF_NUDGE_ABS_CAP`. `nudge-handoff-near-context-cap.sh` computes the actual per-session threshold as the lesser of 40% of the resolved model's context window (200k or 1M, model-dependent) and this cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `analyze-context` to inspect token usage for the current session.
 

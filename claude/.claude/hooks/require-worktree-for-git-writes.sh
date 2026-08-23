@@ -71,8 +71,15 @@
 #     degrading gracefully.
 #   - The collision guard's liveness check (`kill -0` on a stored PID) can
 #     rarely false-deny if that PID is reused by an unrelated process after
-#     the original session exited; bounded and self-clearing once whatever
-#     now holds that PID number exits, not closed outright.
+#     the original session exited — applies only to a foreign
+#     (different-session_id) or old-format lock, since a same-session resume
+#     recognizes its own lock by session_id before this check is ever
+#     reached; bounded and self-clearing once whatever now holds that PID
+#     number exits, not closed outright.
+#   - A `locked` file write killed mid-write (the 5s `_lib_capped` timeout)
+#     can leave a truncated `pid`/`session` field; a truncated session token
+#     fails the session-id character-class regex and is treated as
+#     unparseable, matching the guard's fail-closed default.
 #   - A dead-PID lock the collision guard detects is never auto-cleared —
 #     `git worktree unlock` has no ownership check, so an in-hook
 #     evict-then-relock would itself be racy. The deny message names the

@@ -88,13 +88,13 @@ _CONTEXT_DISTRIBUTION_THRESHOLD_PCTS: tuple[int, ...] = (30, 40, 50, 60)
 # consumed by cost/cost-trend, not a candidate-threshold sweep. Spans the
 # 200k-model effective floor (80_000, 40% of 200k) through the 1M-model's
 # uncapped 40%-of-window value (400_000) and beyond, into the range where
-# 1M-model sessions have actually been observed firing. 360_000 is included
+# 1M-model sessions have actually been observed firing. 150_000 is included
 # because it is the live 1M-model effective threshold today
 # (nudge-handoff-near-context-cap.sh's HANDOFF_NUDGE_ABS_CAP default) — a
 # re-run of this report must be able to show the value the hook is actually
 # configured to fire at, not just candidates for a future change.
 _CONTEXT_DISTRIBUTION_THRESHOLD_ABS: tuple[int, ...] = (
-    80_000, 135_000, 180_000, 250_000, 360_000, 400_000, 600_000, 800_000,
+    80_000, 135_000, 150_000, 180_000, 250_000, 400_000, 600_000, 800_000,
 )
 
 
