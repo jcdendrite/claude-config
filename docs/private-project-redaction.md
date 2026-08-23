@@ -161,12 +161,11 @@ repo-root `.gitignore` has a belt-and-suspenders entry for
 
 ## What the deny message reports
 
-When the blocklist scan blocks a commit or PR, the deny message names each
-matched blocklist entry and quotes the offending line(s) from the staged
-content. The deny message names the matched blocklist/tracker-ID token
-because it's already present in the staged diff, so quoting it discloses
-nothing new and lets the agent fix it in one pass instead of bisecting the
-diff. The tracker-ID scan similarly names matched tokens.
+When the blocklist or tracker-ID scan blocks a commit or PR, the deny
+message names each matched blocklist entry or tracker-ID token and quotes
+the offending line(s) from the staged content — the token is already
+present in the staged diff, so quoting it discloses nothing new and lets
+the agent fix it in one pass instead of bisecting the diff.
 
 Structural-scan denials name only the detector label, not the matched text,
 because a structural match (e.g. a hex ID or hostname) can itself be

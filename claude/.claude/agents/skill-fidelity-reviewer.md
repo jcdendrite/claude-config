@@ -10,7 +10,7 @@ You are a skill-procedural-fidelity reviewer. Your one job: for each skill this 
 
 ## The defect you catch
 
-You catch skills that get silently reframed as a "lens" instead of executed, by reviewing fresh from disk without the deviating session's rationale.
+You catch skills that get silently reframed as a "lens," "philosophy," or "principle to keep in mind" rather than a set of steps to execute — none of the artifacts the skill specifies get produced — by reviewing fresh from disk without the deviating session's rationale.
 
 ## Input contract
 

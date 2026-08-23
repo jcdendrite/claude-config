@@ -97,7 +97,7 @@ Full empirical record: [`case-studies/hashline-edit-format.md`](case-studies/has
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Flip `claude/.claude/settings.json`'s shared `model` default from `opusplan` to `sonnet` | Superseded, dropped after four revisions | Collided with `guard-settings-session-keys.sh`'s no-bypass commit block, touched 11 sites across 5 files, and still didn't fix `--model opus`-started sessions — `Explore.md`'s agent-owned override needs none of that. |
+| Flip `claude/.claude/settings.json`'s shared `model` default from `opusplan` to `sonnet` | Superseded, dropped after four revisions | Collided with `guard-settings-session-keys.sh`, which hard-blocks any Claude-Code-authored commit touching that key with no in-session bypass, requiring the engineer to commit it manually outside the harness. Also touched 11 sites across 5 files asserting "opusplan is the default," needed a new CHANGELOG entry and an escalation wrapper for Opus-during-planning users, and only fixed `Explore` for sessions already anchored to Sonnet — not one started with `--model opus`. Dropped in favor of the agent-owned override in `Explore.md`, which needs none of the above. |
 | `ANTHROPIC_MODEL=sonnet` environment variable | Rejected, sibling of the above | Sits above the `model` setting in Claude Code's own precedence order and only fixes one machine, not the repo-owned agent. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` global override | Rejected, sibling of the above | A global override `docs/auto-mode.md` already advises against — it would force every subagent to one model, not just `Explore`. |
 
@@ -112,16 +112,31 @@ Verdict unchanged: the `opusplan`-flip complications this row recorded are
 unaffected by this finding; reopening the flip is a separate decision, not
 made here.
 
-**2026-08-14 follow-up:** Superseded: `plan-mode-workflow-discipline.md`
-landed this flip as a coherence fix, not a cost win — once agent-initiated
-planning stays out of harness plan mode, `opusplan`'s Opus half is
-unreachable, so the original cost-lever rationale no longer applies. Reuse
-that framing rather than re-opening this row.
+**2026-08-14 follow-up:** `plan-mode-workflow-discipline.md` reopened this
+flip and landed it — resolving the question the note above left open. The
+falsification test cited there does more than confirm the pin holds outside
+plan mode: it removes this row's own cost-lever rationale for the flip,
+since the flip changes nothing about plan-mode-honored `model:` pins — the
+override that breaks them is gated on `permissionMode`, not on any model
+setting. `plan-mode-workflow-discipline.md` ships the flip instead as a
+coherence fix: once agent-initiated planning is kept out of harness plan
+mode entirely (that plan's actual fix, via an advisory `CLAUDE.md` bullet
+and an `EnterPlanMode` deny rule), `opusplan`'s Opus half is reachable only
+through a path the agent no longer takes, so the default no longer needs to
+advertise it. Next person proposing this flip as a cost win: the rationale
+above is refuted, not merely stale — reuse the coherence framing instead.
 
-The "11 sites/5 files" figure above is superseded by a stable-tree recount:
-5 editable-prose sites (README.md, `claude-auto.sh`, `settings.json`,
-`docs/auto-mode.md`, `docs/scripts.md`) plus 4 Axis-3-preserved hits; the
-commit-gate collision and manual-commit resolution are unchanged.
+The "11 sites across 5 files" figure above is also superseded — that count
+was taken during an earlier PR's editing process rather than measured
+against a stable point-in-time state.
+`plan-mode-workflow-discipline.md`'s own count, run against the tree it
+modified, found five files carrying a live "opusplan is the default"
+assertion in editable prose (README.md, `claude-auto.sh`, `settings.json`,
+`docs/auto-mode.md`, `docs/scripts.md`), plus four further hits in Axis-3
+preserved records left untouched. The commit-gate collision this row
+recorded is still real and still resolved the same way (the engineer
+commits the one-line flip manually) — only the cost-lever framing and the
+"separate decision" status change.
 
 ## From a 2026-08-15 session measurement — "Git-diff output in main-session context"
 
@@ -164,7 +179,7 @@ will drift on a later rerun).
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Model-conditional branch in `plan-it` Step 7 and `handoff`'s warrant section, gated on the plan's own pre-committed five-part criterion | Rejected — null result, all five required and two failed | Criteria: breakeven ≥20% stress margin; ramp-curve-methodology robustness; corpus-denominator validity; switch-in-place simulation accuracy; ≥20-session floor. Continue on Opus totaled $2,464.44, switch to Sonnet in place $1,855.80, fresh Sonnet handoff $1,643.25 (cheapest). The handoff arm's advantage over switching in place breaks even at only +12.9% work-inflation, below the required 20% stress-margin floor, and the winning arm flips depending on whether the context-rebuild ramp curve is scoped to Sonnet-anchored sessions or pooled across model families — both required checks, neither holds. The other three required checks do pass: the corpus-denominator concern traced to subagent sidechain transcripts this subcommand already excludes, and is consistent across a 90-day and an all-time window; the switch-in-place simulation matched the 8 sessions with a real observed switch to within a mean deviation of -0.1% (worst single session ±2.3%); and 95 sessions clears the 20-session floor, with the fresh-handoff-cheaper-than-switch-in-place direction surviving a 2,000-resample bootstrap in 98.2% of resamples. |
+| Model-conditional branch in `plan-it` Step 7 and `handoff`'s warrant section, gated on the plan's own pre-committed five-part criterion | Rejected — null result, all five required and two failed | Continue on Opus totaled $2,464.44, switch to Sonnet in place $1,855.80, fresh Sonnet handoff $1,643.25 (cheapest). The handoff arm's advantage over switching in place breaks even at only +12.9% work-inflation, below the required 20% stress-margin floor, and the winning arm flips depending on whether the context-rebuild ramp curve is scoped to Sonnet-anchored sessions or pooled across model families — both required checks, neither holds. The other three required checks do pass: the corpus-denominator concern traced to subagent sidechain transcripts this subcommand already excludes, and is consistent across a 90-day and an all-time window; the switch-in-place simulation matched the 8 sessions with a real observed switch to within a mean deviation of -0.1% (worst single session ±2.3%); and 95 sessions clears the 20-session floor, with the fresh-handoff-cheaper-than-switch-in-place direction surviving a 2,000-resample bootstrap in 98.2% of resamples. |
 | Continuing on Opus past the plan boundary (today's default behavior) | Not favored, direction robust | Loses to both alternatives in 100% of 2,000 session-level bootstrap resamples. Breakeven against switching in place is +32.8% work-inflation, against a fresh handoff +50.0% — the direction that continuing is the costliest arm is not the part this measurement leaves undecided. |
 | Family-pooled context-rebuild ramp curve for the fresh-handoff arm's pricing | Rejected in favor of a Sonnet-anchored-only curve | The Opus/Sonnet per-turn-position rate ratio ranges 1.14x–2.28x across buckets, not a flat ~2.5x matching the vendor price ratio. Pricing the handoff arm from a family-pooled curve overstates its cost by roughly 12% and changes which of switch-in-place/handoff wins; `plan-boundary` derives it from the 472 Sonnet-anchored sessions (~54M output tokens) in scope instead. |
 
@@ -219,22 +234,14 @@ before citing them forward.
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Building an LSP integration via an MCP bridge (Serena, `mcp-language-server`) | Rejected as the heavier primitive | Claude Code ships a built-in LSP tool, dormant until a code-intelligence plugin is installed — a bridge duplicates a first-party capability with third-party code and a new runtime. Schema cost is *not* the objection: MCP tool schemas are deferred by default under tool search, so idle tools do not sit in the per-turn baseline. |
-| Symbol-level navigation as a token-reduction lever | Rejected, below the double-digit bar | Upper bound ≈3.8% of billed input tokens on the most code-dense account, ≈1.7% on the other measured. `Read` output is ≈11.7% of billed input tokens, and Markdown — untouched by LSP — dominates read volume (42.6%) over indexable code (32.6%). |
+| Symbol-level navigation as a token-reduction lever | Rejected, below the double-digit bar | Upper bound ≈3.8% of billed input tokens on the most code-dense account, ≈1.7% on the other measured. `Read` output is ≈11.7% of billed input tokens, and only the whole-file-indexable-code slice — 32.6% of all read volume — is addressable at all. Markdown is the largest read bucket at 42.6% and LSP does not touch it. Both bounds carry an unverified read-to-billed conversion that could move in either direction, and no discount for comprehension reads a symbol lookup cannot replace. The 11.7% is against billed input tokens; the `context-composition-analyzer.md` entry above measures the same content against cumulative prompt-token growth, which counts a chunk once on entry rather than on every subsequent turn — different denominators, not conflicting figures. |
 | Code-dense repositories as a proxy for code-dense reading | Refuted | The account with by far the most statically-analyzable source still read 42.6% Markdown against 40.8% code. Portfolio composition does not predict read composition; measure the transcripts, not the tree. |
 | Enabling the native code-intelligence plugins | Adopted for diagnostics, not for tokens | Post-edit type errors without a compiler or linter run (vendor-documented, unmeasured here). Installed at user scope per account, so `claude/.claude/settings.json` is untouched and adoption is deliberately unrecorded in-repo. Carries a documented memory cost on large projects and false-positive import diagnostics in misconfigured monorepos. |
-
-**Denominator note:** the 11.7% figure above is against billed input tokens;
-the `context-composition-analyzer.md` entry (see the "From
-`context-composition-analyzer.md`" section above) measures the same content
-against cumulative prompt-token growth, which counts a chunk once on entry
-rather than on every subsequent turn — different denominators, not
-conflicting figures.
-
 ## From `background-slow-bash-calls.md` — "Default slow/network-bound Bash calls to `run_in_background`"
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Defaulting a Bash call expected to be slow or network-bound (branch push, PR create, CI-check poll) to `run_in_background: true`, so the main thread does not sit idle long enough to expire the prompt cache | Rejected, premise falsified | Transcript timestamps can't isolate execution time from wait/idle time (no per-call execution field exists), so the multi-minute durations that motivated this — including on zero-cost commands like `cd`, up to 20h — measure wait, not slowness. Figures are a one-off scan, not a rerunnable script — treat the precision accordingly. |
+| Defaulting a Bash call expected to be slow or network-bound (branch push, PR create, CI-check poll) to `run_in_background: true`, so the main thread does not sit idle long enough to expire the prompt cache | Rejected, premise falsified | The multi-minute call durations that motivated it are not execution time. A transcript records only the assistant `tool_use` timestamp and the matching `tool_result` timestamp — there is no per-call execution field in the schema — so any duration derived from it includes permission-prompt wait and operator idle. Scanning that window across the default declared-root scope found main-thread Bash calls at 5 minutes or more whose command shapes include `cd`, `pwd`, `echo` and `git status` at the same magnitude as `gh pr view` and `git push`, with the longest exceeding 20 hours; `cd` has no execution cost to background. The named commands measure sub-second on this machine (`git push --dry-run`, `gh pr list`). Figures are a one-off scan, not a rerunnable script — treat the precision accordingly. |
 | `run_in_background: true` for a Bash call whose execution genuinely does take minutes (not merely wait-inflated) | Rejected, mechanism does not reach the wait | `run_in_background` governs whether a call detaches after dispatch, not whether it is approved, so it does not shorten an approval wait. A backgrounded call also re-invokes the main thread on completion, so absent independent work to interleave it converts a blocking wait into an idle wait of the same length. The residual driver is the concurrent-session-switching finding in the `context-cost-root-cause.md` section above, not the shape of the Bash call. |
 
 ## From `delegate-instrument-authoring.md` — "Delegate the instrument along with the objective"

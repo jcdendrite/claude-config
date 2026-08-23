@@ -47,7 +47,10 @@ mkdir -p .claude && touch .claude/autonomous-shipping-optout
 
 ## Fire predicate and the exclusion-window tradeoff
 
-Both regexes scan only the final sentence by design: this can miss an earlier-sentence failure signal, but the loop guard caps forced retries at one per `prompt_id`, so the worst case is one wasted retry, not a runaway loop.
+The fire and exclusion regexes both scan only the **final sentence** of the last assistant message, not the whole message. This is a deliberate, accepted tradeoff, not an oversight:
+
+- If the exclusion regex scanned the whole message, "Fixed the failing test in the parser. Want me to commit this…?" — the modal shape after a routine bug-fix task — would never fire, because "failing" appears in an earlier sentence. That's the primary case this hook exists to catch; over-suppressing it defeats the fix.
+- Scoped to the final sentence, an earlier-sentence failure signal can be missed instead — but the loop guard caps forced retries at one per `prompt_id`, so the worst case is one wasted retry, not a runaway loop.
 
 ## Log location
 

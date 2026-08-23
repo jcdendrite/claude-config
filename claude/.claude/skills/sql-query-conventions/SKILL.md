@@ -98,7 +98,8 @@ column.
 - **`COUNT(*)` for existence checks:** use `EXISTS (...)` / `SELECT 1
   ... LIMIT 1` instead — both short-circuit on the first row, while
   `COUNT(*)` scans every match; reserve `COUNT(*)` for actual counts,
-  where an index-only scan keeps it cheap.
+  where a matching index and `WHERE` clause let Postgres plan an
+  index-only scan.
 - **Unindexed filter / sort columns:** if a list query filters or orders by a column that isn't indexed, call it out. Add a migration, or document the known scan if it's acceptable.
 - **Reading a whole table to compute in app code what belongs in the database:** if the answer is a scalar, an aggregate, or a ranked/partitioned result, compute it in SQL — do not fetch rows to JavaScript/Python and reduce there. Specifically: `GROUP BY` for aggregates, `ROW_NUMBER() / RANK() / DENSE_RANK() OVER (PARTITION BY ... ORDER BY ...)` for ranking or "first N per group," `SUM/AVG/MIN/MAX` with `FILTER (WHERE ...)` for conditional aggregates. Most of these exist because AI agents don't reach for window functions by default.
 

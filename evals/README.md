@@ -316,7 +316,7 @@ section) removes the surrounding pro-strictness skill text that would
 otherwise make the baseline block regardless, keeping baseline a genuine
 no-guidance control.
 
-**Gate.** `PASS`: `treatment_block_rate >= 0.8` (0.8, not 0.5, so a ~0.95→~0.55
+**Gate.** Routine `PASS` is `treatment_block_rate >= 0.8` (0.8, not 0.5, so a ~0.95→~0.55
 regression is caught) over non-excluded treatment samples. `baseline_block_rate`
 is diagnostic, not gating: it prints a non-gating drift alarm at `>= 0.3`
 (fixture rot — the control now blocks on its own). A timed-out, errored, or

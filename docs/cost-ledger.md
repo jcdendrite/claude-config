@@ -56,8 +56,10 @@ it from a persistent shell init file, not an ad hoc session variable, since
 an unset override on a later invocation silently falls back to the default
 path instead of erroring.
 
-`--record` refuses (exit 2) to union multiple accounts (declared via
-`~/.claude/transcript-config-dirs`) into a ledger path git could commit; it
-can't detect a cloud-sync folder or bare-repo dotfile manager (e.g. yadm)
-also syncing that path, so avoid pointing `COST_LEDGER_PATH` at either when
-the union must stay private.
+`--record` unions multiple accounts (declared via
+`~/.claude/transcript-config-dirs`) into a single row as usual, unless doing
+so would write that union into a ledger path git could commit — then it
+refuses (exit 2). The default path isn't one, so this refusal is dormant by
+default; it can't detect a cloud-sync folder or bare-repo dotfile manager
+(e.g. yadm) also syncing that path, so avoid pointing `COST_LEDGER_PATH` at
+either when the union must stay private.

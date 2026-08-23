@@ -11,9 +11,7 @@ paths:
 
 Before committing a skill or agent change, run `/skill-review` (or
 `/agent-review`) on the diff — an edit can violate the very rules the
-file enforces. The same rule applies to agent files
-(`claude/.claude/agents/*.md`, `plugins/*/agents/*.md`): invoke
-`/agent-review` and check the diff against its output before staging.
+file enforces.
 
 Rewording a checklist item near a fixture-verified clause can silently
 change what it matches — re-run a fresh allow/deny fixture pair (kept

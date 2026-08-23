@@ -38,14 +38,13 @@ something to flag. Requires git ≥ 2.38.
 Behind-count = 0 → in sync, no action. Behind > 0 with a clean trial
 merge → safe fast-forward or rebase candidate; run the [pre-flight
 checklist](#pre-flight-checklist) before force-pushing. Behind > 0
-with conflicts → resolve via rebase or merge per "The decision" below.
+with conflicts → resolve via rebase or merge per [The
+decision](#the-decision) below.
 
 ## The decision
 
 - **Rebase** — `git fetch origin && git rebase origin/main`. Replays commits on top of the current default-branch tip. Linear history. Rewrites SHAs → force-push required.
-- **Merge** — `git merge --no-ff origin/main`. Creates a merge commit. Preserves SHAs. No force-push.
-- `--no-ff` avoids a silent fast-forward when the branch is strictly behind.
-- `git pull --rebase` is equivalent to `fetch + rebase` — prefer the explicit two-step form.
+- **Merge** — `git merge --no-ff origin/main`. Creates a merge commit. Preserves SHAs. No force-push. (`--no-ff` matters: plain `git merge origin/main` fast-forwards if the feature branch is strictly behind.) `git pull --rebase` is equivalent to `fetch + rebase`; prefer the explicit two-step form.
 
 **Default is rebase on personal feature branches** — common choice, but not universal. Switch to merge when any *merge-required condition* applies. Defer to per-project policy when it contradicts this default.
 

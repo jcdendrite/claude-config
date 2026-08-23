@@ -22,19 +22,19 @@ Both events, captured verbatim from a debug hook dumping raw stdin (`session_id`
 
 No token-count or context-percentage field appears in either event's input.
 
-## Block reason visible to Claude? Refuted.
+## Assumption 1 — block reason visible to Claude? **Refuted.**
 
-Manual `/compact`, `PreCompact` exiting 2 with a stderr marker string suffixed by the debug hook's own PID (e.g. `SPIKE BLOCK MARKER PID12345: this string should only reach Claude if PreCompact block-reason is model-visible`). The marker reached the model only via terminal echo into `local-command-stdout`, not as genuine context injection. Confirmed via `/tmp/spike-2-block-manual.log`.
+Manual `/compact`, `PreCompact` exiting 2 with a stderr marker string suffixed by the debug hook's own PID (e.g. `SPIKE BLOCK MARKER PID12345: this string should only reach Claude if PreCompact block-reason is model-visible`). Probed directly afterward: the marker *was* visible to the model, but only because Claude Code echoes the hook's blocking stderr into the terminal output that becomes `local-command-stdout` in the transcript — a debug/terminal surface, not a context-injection path. Confirmed via `/tmp/spike-2-block-manual.log`.
 
-## Auto-compaction block safety: partially confirmed.
+## Assumption 2 — auto-compaction-block safety? **Partially confirmed.**
 
-`SPIKE_MODE=block`, `claude --autocompact 100000`, `trigger=auto`. Auto-triggered `PreCompact` blocks are re-attempted on every subsequent prompt and never crash the session — blocked (exit 2) 7 times over ~46 minutes (`/tmp/spike-3-block-auto.log`, 02:29–03:15 UTC); context reached 118K+ tokens and climbing by the end of the observation window.
+`SPIKE_MODE=block`, `claude --autocompact 100000`, `trigger=auto`. `PreCompact` fired and was blocked (exit 2) **7 times over ~46 minutes** (`/tmp/spike-3-block-auto.log`, 02:29–03:15 UTC) — the harness re-attempts compaction on essentially every subsequent prompt once past the configured window, and gets refused every time. No crash, no hard error, session kept accepting prompts throughout; context reached 118K+ tokens and climbing by the end of the observation window.
 
 **Not tested:** whether this holds all the way to the model's real ~1M context ceiling — that would require pushing far more filler than was practical here. Treat as "safe up to ~120K tokens / 7 blocked cycles," not "safe unconditionally."
 
-**Open question:** in this same run, the first two `PreCompact` fires (same `prompt_id`, 11 seconds apart) did not produce anything until a third fire (new `prompt_id`) 8 minutes later; cause not established.
+**Open, unresolved:** in this same run, the first two `PreCompact` fires (same `prompt_id`, 11 seconds apart) did not produce anything until a third fire (new `prompt_id`) 8 minutes later. No explanation was established — could be a retry after a transient failure, could be something else. Flagged here rather than guessed at.
 
-## `additionalContext` support on exit 0: refuted, categorically.
+## Assumption 3 — `additionalContext` support on exit 0? **Refuted, categorically.**
 
 `SPIKE_MODE=context`, both events returning:
 ```json
@@ -48,7 +48,7 @@ Every attempt — the manual-`/compact` probe, the equivalent test against auto-
 
 `PreCompact` and `PostCompact` are absent from that list entirely. This is a hard, harness-level constraint, not an incidental payload mistake — no output shape from either event can inject `additionalContext` in this build. Confirmed independently three ways: the schema error itself; a probe asking whether the marker was visible (no, not via any legitimate channel); and a direct grep of the model's own transcript for the literal `"additionalContext":"SPIKE...` JSON shape (zero real matches — the only hits were the model's own investigation quoting the string back).
 
-Where the marker *did* become visible each time was as literal text inside the validation-failure diagnostic itself, delivered via the same terminal-echo channel as the block-reason finding above, reproduced identically across two separate `/compact` runs.
+Where the marker *did* become visible each time was as literal text inside the validation-failure diagnostic itself, delivered via the same terminal-echo (`local-command-stdout`) channel as assumption 1's finding — not the intended delivery path. The repeat-fire test confirmed this is stable, not incidental: two `/compact` runs in the same session produced byte-for-byte identical failures, same schema dump, same marker-via-error-diagnostic-only visibility.
 
 ## Subagent context window — **Inconclusive.**
 

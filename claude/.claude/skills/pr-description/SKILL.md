@@ -66,7 +66,7 @@ not something you can resolve. If none match, proceed without a layer.
 
 Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
 
-Gate: resolve the config dir as `$CLAUDE_CONFIG_DIR` when it is set **and absolute**, else `$HOME/.claude` — a relative `$CLAUDE_CONFIG_DIR` is invalid, not a cwd-relative path, and disables the section. Read `<config-dir>/pr-cost-disclosure`, trim leading and trailing whitespace only, lowercase via `tr '[:upper:]' '[:lower:]'`. Exactly `dollars` → regenerate the block. Anything else — absent, unreadable, empty, interior whitespace, a second line, any other value — delete the block if one exists. An unreadable sentinel counts as absent (delete the block, don't leave it alone) — no third, indeterminate outcome. Resolve exactly one path ($CLAUDE_CONFIG_DIR xor $HOME/.claude) — checking both would leak one account's opt-in into another, since the sentinel is per-account.
+Resolve the section with a single script call:
 
 ```bash
 ~/.claude/scripts/pr-cost-section.sh
@@ -92,7 +92,7 @@ account enabling this for one engagement should not assume the fields are harmle
 
 ## Prose tightening pass
 
-Gate: resolve `config_dir` exactly as the Cost section's gate above; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+Gate: resolve `config_dir` via the same gate `pr-cost-section.sh` enforces; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
 
 ## Checks
 

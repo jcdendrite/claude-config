@@ -204,16 +204,12 @@ Plan mode is a separate axis from auto mode — a session can be in plan mode
 whether or not it is anchored via `--model auto`, and the two combine
 independently. Plan mode forces subagent dispatches to Opus regardless of a
 `model:` frontmatter pin or an explicit `model` param on the `Agent`
-dispatch, and this is confirmed independent of the parent's own model, not
-just correlated with it. Plan mode forces all subagent dispatches to Opus
-regardless of pins, independent of the parent's own model — measured and
-falsification-tested; see
-[case-studies/plan-mode-model-resolution.md](case-studies/plan-mode-model-resolution.md)
-for the counts and methodology. See
+dispatch, independent of the parent's own model, not just correlated with
+it — measured and falsification-tested; see
 [`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md)
-(lines 54 and 56 for the re-scan methodology) for the full investigation,
-primary-source citations, and rejected mitigations (`ExitPlanMode` timing,
-`CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
+(lines 54 and 56 for the re-scan methodology) for the counts, full
+investigation, primary-source citations, and rejected mitigations
+(`ExitPlanMode` timing, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
 
 No instruction-layer mitigation is known. Pass an explicit `model` on every
 dispatch anyway (see the global `CLAUDE.md`'s Model Routing section) — it

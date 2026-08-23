@@ -30,9 +30,13 @@ re-verify against current docs if precision matters.
   to validate — on large tables, add nullable, backfill in batches, then set
   the constraint.
 - **Add FK/CHECK constraints as `NOT VALID`, then `VALIDATE CONSTRAINT`
-  separately.** A plain CHECK/FK constraint full-scans and holds a heavy lock
-  for the duration; `NOT VALID` + a separate `VALIDATE CONSTRAINT` skips the
-  scan up front and validates under a lighter lock instead.
+  separately.** A plain **CHECK** constraint takes ACCESS EXCLUSIVE and
+  full-scans (blocks reads and writes); a plain **FK** constraint takes the
+  lighter SHARE ROW EXCLUSIVE (on both tables) but still full-scans and
+  blocks writes for the duration. Either way, `NOT VALID` skips the scan
+  (enforces new rows only) and the later `VALIDATE` takes a lighter lock
+  (SHARE UPDATE EXCLUSIVE), which is why the two-step form is preferred for
+  both constraint types.
 - **`ALTER TYPE ... ADD VALUE` runs inside a transaction (since PG12), but the
   new value can't be referenced until that transaction commits.**
 - **Destructive changes (`DROP`, type narrowing, rename) use expand/contract**
