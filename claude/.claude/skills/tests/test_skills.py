@@ -807,8 +807,15 @@ class TestContinuityFileBucketCrosscheck:
     """
 
     def test_handoff_prewrite_checklist_crosschecks_section3(self):
-        """handoff's pre-write checklist must re-scan §3 against the §3.5 rule."""
-        assert "re-checked against the §3.5 categorization rule" in _skill_file("handoff").read_text()
+        """handoff's pre-write checklist must direct re-checking a §3 step
+        against the §3.5 rule's underlying principle, not just the
+        mechanically-scanned anchor shapes check-handoff.py's soft warning
+        covers -- the script's anchor-shape scan is necessarily narrower than
+        the full categorization rule, so this residual instruction is what
+        keeps that gap from being a silent regression."""
+        body = _skill_file("handoff").read_text()
+        assert "can still belong in §3.5" in body
+        assert "not the underlying principle" in body
 
     def test_brief_prewrite_checklist_crosschecks_section6(self):
         """brief's pre-write checklist must re-scan §6 against the §6.5 rule."""
@@ -841,78 +848,25 @@ class TestTightenProseScopeCarveOutPhrases:
 class TestHandoffCommitMarkerCoveredWork:
     """Pin handoff's instruction to land marker-covered work before the boundary.
 
-    A completion marker records a hash of the exact state that was reviewed,
-    and the gate authorizes on that stored hash, so the marker outlives the
-    session that wrote it. What it does not outlive is a change to the state:
-    the gate recomputes that state's hash when it fires, and the marker's
-    stored value stops matching it. Which state each marker covers varies by
-    skill — staged diff, active plan set, HEAD sha — so the assertion below
-    pins the state-scoped phrasing rather than any one skill's state.
-    Finished-but-uncommitted work therefore survives the boundary only while
-    the resuming session leaves it untouched, which is why handoff tells the
-    writer to commit it rather than merely describe it.
+    §5 now delegates the live/historical/absent computation to
+    `marker.sh status` (see claude/.claude/scripts/marker.sh and
+    hooks/tests/test_marker_script.py's TestMarkerScriptStatus* classes for
+    the mechanism itself) rather than explaining the marker-content-hash
+    mechanics in prose — these tests pin that the delegation instruction and
+    the commit-first directive survive, not the mechanics explanation that
+    the deterministic script now owns.
     """
 
-    def test_handoff_section5_directs_committing_marker_covered_work(self):
-        """§5 must scope marker validity to the unchanged state and direct the
-        writer to commit finished marker-covered work before writing the file."""
+    def test_handoff_section5_directs_running_marker_status_and_committing_flagged_work(self):
+        """§5 must direct running marker.sh status, describe its live/
+        historical/absent labeling, and direct the writer to commit finished
+        marker-covered work before writing the file when the reconciliation
+        flag fired."""
         body = _skill_file("handoff").read_text()
-        # The affirmative clause is the load-bearing one — it replaced the
-        # false "markers die with their session" claim — so assert it from the
-        # start of its sentence. A bare "stays valid past the session boundary"
-        # substring would still match a negated rewrite ("never stays valid
-        # past the session boundary"); including the subject leaves nowhere to
-        # insert the negation without breaking the match. The invalidation
-        # clause below is pinned subject-first for the same reason: "any
-        # further change to that state" sits directly against "invalidates",
-        # so "does not invalidate" cannot be slipped in without breaking it.
-        assert "A completion marker stays valid past the session boundary" in body
-        assert "only while the state it covers is unchanged" in body
-        assert "any further change to that state invalidates it" in body
+        assert "Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim" in body
+        assert "each labeled live, historical, or absent" in body
+        assert "code-review or skill-review marker whose covered state has uncommitted" in body
         assert "commit it *before* writing this file" in body
-
-    def test_handoff_section5_maps_each_marker_to_the_state_it_covers(self):
-        """§5 must name which state each skill's completion marker hashes.
-
-        The four gates hash different things, and an agent that assumes the
-        staged diff universally will mis-read a plan-review or
-        ready-for-review marker. The mapping is asserted per skill so a future
-        edit cannot swap two entries — a mis-map reads as authoritative and
-        would reinstate exactly the wrong model this section exists to give.
-        """
-        body = _skill_file("handoff").read_text()
-        assert "the state whose hash it stores" in body
-        assert "staged diff for `/code-review` and `/skill-review`" in body
-        assert "active plan set for `/plan-review`" in body
-        assert "HEAD SHA for `/ready-for-review`" in body
-
-    def test_handoff_section5_directs_labelling_disarmed_gates_historical(self):
-        """§5 must distinguish a marker whose gate disarmed from one that expired.
-
-        Committing a plan file empties the active-plan set, so the plan-review
-        gate stops arming at all and the marker it left behind can never match
-        again. That is a different outcome from a marker invalidated by a
-        changed state, and §5 lists both kinds under one header — so without
-        an explicit label, a disarmed gate's marker reads to the resuming
-        session as still load-bearing.
-        """
-        body = _skill_file("handoff").read_text()
-        assert "committing the plan leaves its marker on disk gating nothing" in body
-        assert "Label such a marker historical" in body
-
-    def test_handoff_prewrite_checklist_verifies_marker_live_or_historical(self):
-        """The pre-write checklist must carry the live/historical verification.
-
-        Split from the §5-body assertion above because the two regress
-        independently: losing the body text means the writer is never told to
-        label, while losing the checklist line means the writer is told but
-        never verifies before writing. The failure modes differ, so the tests
-        do too — matching how the commit-first rule is covered by a body test
-        and a checklist test rather than one bundled assertion.
-        """
-        body = _skill_file("handoff").read_text()
-        assert "Every §5 marker is labelled live or historical" in body
-        assert "committed or superseded is not listed as if it still gates" in body
 
     def test_handoff_section5_does_not_claim_markers_die_with_their_session(self):
         """Guard against reintroducing the session-keyed expiry claim.
@@ -933,9 +887,9 @@ class TestHandoffCommitMarkerCoveredWork:
         """The pre-write checklist must carry the commit-first verification, with the
         §3 fallback for work that is not commit-ready."""
         assert (
-            "§5 is reconciled: finished work a live completion marker covers is committed "
-            "before this file is written; where it is not, §3 names the review skill the "
-            "resuming session must re-run to commit it" in _skill_file("handoff").read_text()
+            "§5's script output shows no unresolved reconciliation flag; where one "
+            "fired, §3 names the review skill the resuming session must re-run to "
+            "commit the covered work first" in _skill_file("handoff").read_text()
         )
 
 
