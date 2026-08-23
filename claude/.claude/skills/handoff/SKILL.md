@@ -15,14 +15,20 @@ mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"
 
 ## Before writing: is a handoff warranted?
 
-A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` rather than inferring. On `"status":"ok"`, write the handoff when `over_threshold` is `true` or when `already_fired` is `true`, and report `estimate` and `threshold`; say so when `nudge_disabled` is `true`, since the measurement still holds but no nudge will arrive on its own; and when `"model_recognized":false`, report `model` and `context_window` too — the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is. On `"status":"cannot-resolve"` or `"status":"schema-drift"`, name the `reason` and fall back to judgment rather than assuming either answer: session length, how much of the task remains, whether this is a natural seam. `docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
+A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` rather than inferring:
+
+- `"status":"ok"` — write the handoff when `over_threshold` is `true` or `already_fired` is `true`, and report `estimate` and `threshold`.
+- `nudge_disabled` is `true` — say so; the measurement still holds but no nudge will arrive on its own.
+- `"model_recognized":false` — also report `model` and `context_window`: the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is.
+- `"status":"cannot-resolve"` or `"status":"schema-drift"` — name the `reason` and fall back to judgment: session length, how much of the task remains, whether this is a natural seam.
+
+`docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
 
 ## Verify the handoff file with Bash, never Read
 
-A `Read` of any `<config-dir>/handoffs/*-handoff.md` path consumes the file — verify with a Bash
-command (`cat`, `grep`, `sed -n`, `wc -l`) instead. The consume fires from this
-authoring session too, mid-draft, long before any resume: the `Read` returns the
-content, and the file is gone from the canonical path by the next tool call.
+A `Read` of any `<config-dir>/handoffs/*-handoff.md` path consumes the file immediately —
+even mid-draft in this authoring session, before any resume — so verify with Bash
+(`cat`/`grep`/`sed -n`/`wc -l`) instead.
 
 If it already happened, that successful `Read` reports the temp path the file
 moved to. `cp` it back to `<config-dir>/handoffs/<slug>-handoff.md` before any
@@ -66,7 +72,11 @@ If none: write "None."
 
 Read the current task list — from your session's task-list tool if it exposes one, otherwise from the inline items you have been tracking (not reconstructed from memory) — and list each item with a stable ordinal, its status — `completed` / `in_progress` / `pending` — and, for pending/in_progress items, which ordinals block it and (for the in_progress item) its `activeForm`. Preserve order. Example: `3. [pending] Phase B: … (blocked by 2)`.
 
-**Resume directive:** §2.6 is the authoritative source of remaining task state on resume — do not reconstruct the task list from the plan file or from memory. As you resume, track the `pending` and `in_progress` items below, preserving order and their `blockedBy`/`blocks` relationships (map the serialized ordinals to the items in that position); completed items are listed for context only — do not re-add them. If your session exposes a task-list tool (e.g. `TaskCreate`/`TaskUpdate`), mirror the items into it — an `in_progress` item may take two calls (create, then set status) if creation can't set it directly. If it does not — common for resumed sessions — track them inline. Tracking these items is a safe, reversible action, not gated by the artifact preamble's re-confirm-before-executing rule (which is scoped to irreversible/shared-state actions); a missing task-list tool is not a blocker.
+**Resume directive:**
+- §2.6 is the authoritative source of remaining task state on resume — do not reconstruct the task list from the plan file or from memory.
+- Preserve order and the `blockedBy`/`blocks` relationships (map the serialized ordinals to the items in that position); completed items are listed for context only — do not re-add them.
+- If your session exposes a task-list tool (e.g. `TaskCreate`/`TaskUpdate`), mirror the `pending` and `in_progress` items into it — an `in_progress` item may take two calls (create, then set status) if creation can't set it directly. If it does not — common for resumed sessions — track them inline.
+- Tracking these items is a safe, reversible action, not gated by the artifact preamble's re-confirm-before-executing rule (which is scoped to irreversible/shared-state actions); a missing task-list tool is not a blocker.
 
 If none: write "None."
 
@@ -94,9 +104,9 @@ Header line: working directory + current git branch. Derive both from the worktr
 ## §5 Gates / markers
 List markers under `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.
 
-A completion marker stays valid past the session boundary, but only while the state it covers is unchanged — any further change to that state invalidates it. Finished work left uncommitted therefore reaches the resuming session one incidental edit away from a full re-review; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
+A completion marker only stays valid while the state it covers is unchanged, so commit finished work before writing this file — or, if it isn't commit-ready, say so here and name in §3 the review skill to re-run first.
 
-Committing can also disarm a gate outright rather than invalidating its marker: `/plan-review`'s gate arms only on an uncommitted or modified plan file, so committing the plan leaves its marker on disk gating nothing and unable to match again. Label such a marker historical. An unlabelled marker reads to the resuming session as load-bearing.
+Committing can disarm a gate outright (e.g. `/plan-review` only arms on an uncommitted plan) rather than merely invalidating its marker — label such a marker historical, since an unlabelled one reads to the resuming session as still load-bearing.
 
 ## §6 Open questions / decisions deferred
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
@@ -151,12 +161,10 @@ Before writing the file, verify:
 
 ## After writing: record the conversion signal
 
-Once the handoff file is written and verified, append one line recording this session's id to
-`nudge-handoff-near-context-cap.sh`'s own log — pairing it with that hook's `nudged` lines lets a
-future report count how often a nudge fire is followed by a handoff in the same session, without
-joining to transcript content. Also remove that session's escalation-ladder marker, so a
-successful handoff resets the ignored-re-arm count instead of leaving it primed to hard-block on
-the next session's first re-arm if the session id were ever reused:
+Once the handoff file is written and verified:
+
+- Append the session id to `nudge-handoff-near-context-cap.sh`'s own log (pairs with that hook's `nudged` lines for a future nudge→handoff conversion report).
+- Remove that session's escalation-ladder marker, so a successful handoff resets the ignored-re-arm count.
 
 ```bash
 ~/.claude/scripts/handoff-record-conversion.sh

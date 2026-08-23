@@ -43,19 +43,14 @@ definitions.
 | Internal hostname | a hostname ending in `.internal`, `.corp`, `.local`, `.lan`, `.intranet`, or `.private` — for `.internal`/`.corp`/`.lan`/`.intranet`/`.private`, also an FQDN shape like `host[.]corp[.]example[.]com` where the TLD word is a subdomain label, not the string end | a hostname on any other TLD, or a filename convention like `settings.local.json` (only `.local`'s boundary excludes a following dot-segment — `.local` doubles as a common per-machine-override filename convention, e.g. `[.]env[.]local`, that the other five words don't) |
 | Slack-channel shape | a `#`-prefixed lowercase-hyphenated word (also matches a markdown anchor link sharing the same shape, deliberately — see below) | a plain GitHub issue reference like `#421` (all-digit, excluded so this scan doesn't collide with ordinary issue cross-references) |
 
-Every illustrative shape above is written so it does not itself match the
-pattern it describes — committing this table must not trip the very
-detectors it documents. The angle-bracket placeholder in the home-rooted-path
-row (`/Users/<username>/`) is deliberate: `<` falls outside the detector's
-character class (`[A-Za-z0-9_.-]`), so the placeholder form never matches.
+Every example above is deliberately non-matching — e.g. the `<username>`
+placeholder uses `<`, which falls outside the detector's `[A-Za-z0-9_.-]`
+charset — so committing this table doesn't trip its own detectors.
 
-The Slack-channel detector's markdown-anchor collision is intentional, not an
-oversight: this repo's own docs use `#`-anchor links (a heading-derived
-fragment appended to a file path, e.g. `docs/skills.md#<heading-slug>`),
-which share the identical shape as a real Slack channel name (lowercase,
-hyphenated). Loosening the charset to exclude that shape would defeat the
-detector's actual purpose — rephrase around a false positive rather than
-narrow the pattern.
+The Slack-channel detector intentionally also matches markdown anchor links
+(e.g. `docs/skills.md#<heading-slug>`), which share the same
+lowercase-hyphenated shape as a real channel name; rephrase around a false
+positive rather than loosen the charset.
 
 ## Why the blocklist can't be armed by default
 
@@ -168,19 +163,14 @@ repo-root `.gitignore` has a belt-and-suspenders entry for
 
 When the blocklist scan blocks a commit or PR, the deny message names each
 matched blocklist entry and quotes the offending line(s) from the staged
-content. The matched token is the user's own private-project name, already in
-the staged content and in `<config-dir>/private-projects.md`; naming it in the
-deny discloses it to no new party, while letting the agent locate and remove it
-in one pass rather than bisecting the diff. The tracker-ID scan similarly names
-matched tokens.
+content. The deny message names the matched blocklist/tracker-ID token
+because it's already present in the staged diff, so quoting it discloses
+nothing new and lets the agent fix it in one pass instead of bisecting the
+diff. The tracker-ID scan similarly names matched tokens.
 
-The structural-shape scan is the deliberate exception: its deny message names
-only the detector label (e.g. "long hex identifier"), never the matched
-text. Unlike a tracker-ID token or a blocklisted project name, a structural
-match can itself be sensitive — a long hex identifier could be a live session
-ID, an IPv4 literal or internal hostname is network-recon-value data — so
-echoing it into the deny message would persist it into the session's
-transcript rather than merely repeating content already in the diff.
+Structural-scan denials name only the detector label, not the matched text,
+because a structural match (e.g. a hex ID or hostname) can itself be
+sensitive and echoing it would leak it into the session transcript.
 
 ## Performance
 

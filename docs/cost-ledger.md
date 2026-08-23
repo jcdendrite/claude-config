@@ -41,12 +41,9 @@ empty when either the findings-found or zero-finding side has zero measured
 `usd` is; read it alongside the percentage columns, not as a standalone
 score.
 
-`--machine-label` is rejected when it case-insensitively equals this
-machine's POSIX hostname (`socket.gethostname()`) — but that check does not
-cover macOS's separate device/computer name (`scutil --get ComputerName`),
-which can differ from the hostname. An operator whose device name differs
-from its hostname should independently avoid choosing a label that matches
-either.
+`--machine-label` is checked only against the POSIX hostname
+(`socket.gethostname()`), not macOS's separate `ComputerName` — avoid a
+label matching either.
 
 ## Data
 
@@ -59,17 +56,8 @@ it from a persistent shell init file, not an ad hoc session variable, since
 an unset override on a later invocation silently falls back to the default
 path instead of erroring.
 
-When more than one Claude account is declared in scope (via
-`~/.claude/transcript-config-dirs`), `--record` unions their corpora into a
-single row as usual, unless doing so would write that union into a path git
-could commit — it refuses (exit 2) only when the resolved ledger path sits
-inside a git working tree. The default path isn't one, so this refusal is
-dormant unless `COST_LEDGER_PATH` is pointed at a git-tracked location. The
-check walks up from the ledger path to the nearest existing ancestor and
-asks git directly, so it can't see two git-invisible ways the same figure
-could still end up shared: a cloud-sync folder (Dropbox, iCloud, OneDrive)
-syncing `$CLAUDE_CONFIG_DIR` or `COST_LEDGER_PATH`'s directory, and a
-bare-repo dotfile manager (yadm-style, tracking `$HOME` via
-`--git-dir`/`--work-tree` flags rather than an in-tree `.git`). Neither is
-closed by this check; avoid both if the ledger's multi-account union
-content should stay off a shared destination.
+`--record` refuses (exit 2) to union multiple accounts (declared via
+`~/.claude/transcript-config-dirs`) into a ledger path git could commit; it
+can't detect a cloud-sync folder or bare-repo dotfile manager (e.g. yadm)
+also syncing that path, so avoid pointing `COST_LEDGER_PATH` at either when
+the union must stay private.

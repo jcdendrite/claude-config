@@ -16,7 +16,7 @@ If the diff contains no test-relevant surface, say so and return **No testing co
 
 ## Reference material
 
-The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation. Reading the full body also runs its Step 0 project-layer glob, loading any project-specific layer for the repo under review.
+The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation.
 
 ## Core review angles
 
@@ -90,14 +90,10 @@ Do not pad with praise or restate the change. Findings or nothing.
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
-   `echo`, shell heredocs, or Python file writes. A shell heredoc carrying a
-   full review overruns the shell command-length limit and aborts mid-write; the
-   Write tool sends content as a structured parameter with no such limit. The
-   Write tool also creates parent directories automatically, so no `mkdir` step
-   is needed. Writing this file is explicitly required by this instruction; the
-   default "do not create .md files unless the user asks" rule does not apply
-   here — this instruction IS the request.
+1. Write all findings to `<path>` using the **Write tool**, not cat/echo/heredocs/Python
+   writes — heredocs can overrun the shell command-length limit and abort mid-write,
+   and Write auto-creates parent dirs; writing this file is required even though
+   it's a new .md file.
    Structure the file as:
    - `# staff-sdet` (H1 title)
    - One H2 per finding: `## <angle-name>`, then file:line, issue, production

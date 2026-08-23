@@ -44,11 +44,11 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 
 ## How to work
 
-1. Read every changed file fully. Config files (CI workflows, auth config, policy files) deserve the same scrutiny — adversarial changes often hide there.
+1. Read every changed file fully, including CI/auth/policy config — adversarial changes often hide there.
 2. Demonstrate exploitability — don't assert it. Trace attacker-controlled input to the privileged operation, confirm each hop. If you can't construct the path, say "potential finding, couldn't confirm exploitability."
 3. Untested security controls are indistinguishable from absent ones — flag missing allow/deny test coverage for security invariants as a finding, not a nit.
 4. Do not propose implementations. Propose controls.
-5. **Foundation question first.** Before scoring controls, answer: does the design require this class of control at all, or does a lower-privilege primitive in the source documentation, framework, or system make the whole control category unnecessary? If a lower-privilege primitive exists, lead with **Foundation concern** — name the primitive, quote the source if available — before any per-finding output. The control is the finding, not the gaps in the control.
+5. **Foundation question first:** before scoring controls, check whether a lower-privilege primitive eliminates the need for the whole control category; if so, lead with **Foundation concern** (name the primitive, cite the source) before any per-finding output. The control is the finding, not the gaps in the control.
 
 ## Shared ownership
 
@@ -82,14 +82,10 @@ Do not pad with praise or restate the change. Findings or nothing.
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
-   `echo`, shell heredocs, or Python file writes. A shell heredoc carrying a
-   full review overruns the shell command-length limit and aborts mid-write; the
-   Write tool sends content as a structured parameter with no such limit. The
-   Write tool also creates parent directories automatically, so no `mkdir` step
-   is needed. Writing this file is explicitly required by this instruction; the
-   default "do not create .md files unless the user asks" rule does not apply
-   here — this instruction IS the request.
+1. Use the Write tool, not `cat`/`echo`/heredocs — a full review can exceed the
+   shell command-length limit and abort mid-write, while Write has no such
+   limit, auto-creates parent dirs, and is explicitly authorized to create this
+   file despite the general .md-creation default.
    Structure the file as:
    - `# ciso-reviewer` (H1 title)
    - One H2 per finding: `## <angle-name>`, then file:line, issue, production
@@ -98,9 +94,8 @@ When your invocation prompt includes `findings_path: <path>`:
      `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
-   Do not include any findings inline when `findings_path` is present — the
-   parent reads them from the file. Including full findings inline when
-   `findings_path` is present is a defect.
+   Do not include findings inline when `findings_path` is present (the parent
+   reads them from the file) — doing so is a defect.
    If the dispatch prompt poses specific questions, answer them inside the
    findings file (e.g. under an `## Answers` heading) — not in the inline
    return. The inline summary stays one sentence regardless of how many

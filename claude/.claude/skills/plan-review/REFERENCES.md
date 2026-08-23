@@ -42,14 +42,12 @@ block for the citations rather than restating them here.
 Output format's positive enumeration requirement ("Every finding a spawned
 reviewer returns must appear in the rendered output") is plan-review's
 counterpart to `code-review/SKILL.md`'s Finding disposition step ("walk
-*every* reviewer-spawned finding and tag it ADDRESS or DEFER"). The two are
-not equivalent: plan-review has no ADDRESS/DEFER disposition station, so its
-requirement stops at enumeration rather than tagging. Deliberately not
-mirrored as a full disposition mechanism — the gap this closes is a finding
-going unlisted, not a missing taxonomy, and a taxonomy would be a heavier
-mechanism than that gap requires. Reconciliation's dedup rule (ROUTING.md)
-already covers *how* two attributed findings merge into one entry; this
-requirement only guarantees the merged or standalone entry is present at all.
+*every* reviewer-spawned finding and tag it ADDRESS or DEFER"). Unlike
+code-review's ADDRESS/DEFER disposition, plan-review's requirement only
+guarantees every finding is enumerated — reconciliation (ROUTING.md) already
+covers *how* two attributed findings merge into one entry, so this
+requirement only guarantees the merged or standalone entry is present at
+all.
 
 ## Smoke test — 2026-05-05
 

@@ -11,13 +11,10 @@ paths:
 Sources verified against Docker's official docs (2026-07): "Best practices for
 building images" and the BuildKit "Build secrets" guide.
 
-- **Pin the base image by digest, not a floating tag.** Docker: "Image tags
-  are mutable, meaning a publisher can update a tag to point to a new image."
-  Pinning to a digest (`FROM alpine:3.21@sha256:...`) guarantees "you're
-  guaranteed to always use the same image version, even if a publisher
-  replaces the tag." Tradeoff: a pinned digest freezes out upstream security
-  rebuilds silently — pair with an active refresh mechanism (e.g. Renovate/
-  Dependabot digest updates), don't pin and forget.
+- **Pin the base image by digest, not a floating tag** — tags are mutable
+  (Docker docs) — and pair the pin with an automated digest-refresh (e.g.
+  Renovate/Dependabot) since a frozen digest silently misses upstream
+  security rebuilds.
 - **Run as a non-root `USER`.** Docker: "If a service can run without
   privileges, use `USER` to change to a non-root user," and avoid installing
   `sudo` ("unpredictable TTY and signal-forwarding behavior").
@@ -36,9 +33,7 @@ building images" and the BuildKit "Build secrets" guide.
   defense-in-depth alongside explicit `COPY` paths — Docker: "To exclude files
   not relevant to the build... use a `.dockerignore` file," but a forgotten
   entry doesn't fail loudly, so don't rely on it alone.
-- **`apt-get update` and `apt-get install` in the SAME `RUN` layer**, with
-  `--no-install-recommends` and cleaning the package list. Docker: "Always
-  combine `RUN apt-get update` with `apt-get install` in the same `RUN`
-  statement" — "Using `apt-get update` alone... causes caching issues and
-  subsequent `apt-get install` instructions to fail" (a separate `update` layer
-  caches and serves a stale index on rebuild).
+- **Combine `apt-get update` and `apt-get install` in the same `RUN` layer**
+  (with `--no-install-recommends` and cache cleanup) — a separate `update`
+  layer caches a stale index that later `apt-get install` calls silently
+  reuse.

@@ -6,7 +6,7 @@
 touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
 ```
 
-`./install.sh` now offers this interactively on every run (see [`install.sh` machine-level opt-ins](../README.md#autonomous-shipping)) — the command above is the non-interactive/scripted alternative. A repo cannot grant this by committing anything; only this machine-level file can. To exempt one repo while the machine-level sentinel stays on: `mkdir -p .claude && touch .claude/autonomous-shipping-optout`.
+`./install.sh` offers this interactively on every run (see `README.md`'s "install.sh machine-level opt-ins" section) — the command above is the non-interactive/scripted alternative. A repo cannot grant this by committing anything; only this machine-level file can. To exempt one repo while the machine-level sentinel stays on: `mkdir -p .claude && touch .claude/autonomous-shipping-optout`.
 
 ## What the hook does
 
@@ -47,10 +47,7 @@ mkdir -p .claude && touch .claude/autonomous-shipping-optout
 
 ## Fire predicate and the exclusion-window tradeoff
 
-The fire and exclusion regexes both scan only the **final sentence** of the last assistant message, not the whole message. This is a deliberate, accepted tradeoff, not an oversight:
-
-- If the exclusion regex scanned the whole message, "Fixed the failing test in the parser. Want me to commit this, or do you want to review the diff first?" — the modal shape after a routine bug-fix task, and the case closest to the issue's own quoted examples — would never fire, because "failing" appears in an earlier sentence. That's the primary case this hook exists to catch; over-suppressing it defeats the fix.
-- With the exclusion window scoped to the final sentence, a failure signal in an *earlier* sentence is missed: "The push failed with a non-fast-forward error. Want me to push again after rebasing?" fires when it arguably shouldn't. The cost is bounded, not open-ended: the loop guard fires at most once per `prompt_id`, so the agent retries the already-failing operation exactly once, the retry fails again for the same underlying reason, and the *next* `Stop` event for the same `prompt_id` is not re-blocked — it ends the turn normally, reporting the failure. One wasted tool-call cycle, not a runaway loop and not a silently swallowed error.
+Both regexes scan only the final sentence by design: this can miss an earlier-sentence failure signal, but the loop guard caps forced retries at one per `prompt_id`, so the worst case is one wasted retry, not a runaway loop.
 
 ## Log location
 

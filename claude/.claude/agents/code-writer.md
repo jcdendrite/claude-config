@@ -34,7 +34,7 @@ is done when you have reviewed your own diff and fixed what that review found.
 Verify each of these on every change you write — they apply across every
 language and stack:
 
-- **Before modifying any test file:** Read `~/.claude/skills/test-conventions/SKILL.md`. Reading the full body runs its Step 0 project-layer glob, loading any `test-conventions-*` layer for the current repo. Do this before writing, not after — the skill body includes how-to guidance (parser libraries, structural helpers) that shapes the approach.
+- **Before modifying any test file:** Read `~/.claude/skills/test-conventions/SKILL.md` in full before writing — it loads repo-specific conventions and how-to guidance that shape the approach.
 - **Before writing a read-path SELECT query** (PostgREST `.from()/.select()` chains, list-returning ORM calls): Read `~/.claude/skills/sql-query-conventions/SKILL.md`. Does not apply to write-path (INSERT/UPDATE/DELETE), DDL, test fixtures, or document/KV stores.
 - Names describe intent. No generic placeholders.
 - Every branch a reader can reach is handled — error, empty, and
@@ -89,9 +89,8 @@ more focused task than writing it — use that asymmetry deliberately.
    the baseline only. A change that adds or alters logic in a domain gets that
    domain's reviewer read. When in doubt, read.
 6. Re-read the diff once more against CLAUDE.md §Engineering Judgment, §Working
-   Style, and §Code Comments, Documentation, and Prose — the same set the
-   code-review skill's Judgment-activation pass checks, applied here before
-   handoff. Flag each of these separately:
+   Style, and §Code Comments, Documentation, and Prose before handoff. Flag
+   each of these separately:
    - An unverified external-state claim.
    - An out-of-scope file edit.
    - An ungrounded timeout or literal.

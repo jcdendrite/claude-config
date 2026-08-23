@@ -5,13 +5,10 @@ report is dated, pinned to the commit it was derived from, and left unedited
 afterwards — a report records what was true when it ran, so it is a historical
 record rather than living documentation.
 
-**The one permitted edit** is a dated `## Status` section near the top, recording
-which findings have since been closed and by which commit. Findings themselves
-are never revised: a reader deciding whether to act on one needs to know it is
-already fixed, but rewriting the finding would destroy the record of what was
-true at the baseline. An instruction aimed at a future actor — a sequencing
-constraint, a "do X before Y" — may additionally be marked superseded in place,
-since leaving it unmarked reads as a live obligation.
+Findings are never revised (preserves the baseline record) — add a dated
+`## Status` section instead; a future-facing instruction (a sequencing
+constraint like "do X before Y") may additionally be marked superseded in
+place so it doesn't read as still live.
 
 This makes reports distinct from two neighbours:
 

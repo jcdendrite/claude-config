@@ -12,8 +12,6 @@ user-invocable: false
 
 # Edge Function Authentication Framework
 
-> Background: see REFERENCES.md for the ES256/HS256 gateway constraint that shapes the tier table below.
-
 ## Auth tiers
 
 ### Tier 1: Browser-invoked functions
@@ -25,16 +23,13 @@ Functions called from the browser via `supabase.functions.invoke()`.
 | `verify_jwt` | `false` |
 | In-code auth | User JWT validation (e.g., `requireUserJwt()` or equivalent) |
 
-**Why:** The browser sends an ES256 user JWT. The gateway cannot verify it.
-In-code auth is the **only** access control for these functions — there is no
-defense-in-depth layer. This makes in-code auth removal especially dangerous
-for browser-invoked functions.
+**Why:** The gateway can't verify the browser's ES256 JWT, so in-code auth is the only access control for Tier 1 — removing it fully opens the function.
 
-> _These patterns were extracted from a production Lovable Cloud project and genericized. Adapt file paths and error-code namespaces for your project._
+Adapt file paths and error-code namespaces to your project's own conventions.
 
 Your project will have its own auth utility location and naming convention for the user JWT validation helper.
 
-In-code JWT validation must cryptographically verify the token signature (not just decode it) and check the `exp` claim. Decode-only is not sufficient — the gateway provides no backup for Tier 1.
+In-code JWT validation must cryptographically verify the signature and check `exp` — decode-only isn't sufficient since Tier 1 has no gateway backup.
 
 ### Tier 2: Service-role / cron / trigger functions
 
@@ -46,10 +41,9 @@ using the service role key. Not called by browsers.
 | `verify_jwt` | `true` |
 | In-code auth | Service-role key validation (e.g., `requireServiceRole()` or equivalent) |
 
-**Why:** Service-role keys use HS256, which the gateway can verify. Both the
-gateway and in-code auth enforce access — defense in depth.
+**Why:** Service-role keys use HS256, which the gateway can verify — both gateway and in-code auth enforce access, giving defense in depth.
 
-**Caution:** `verify_jwt = true` accepts any HS256-signed JWT — including anon-role tokens issued to ordinary unauthenticated browsers. In-code auth must verify the `role` claim equals `service_role` in the decoded JWT payload (not a caller-supplied header value). Omitting this check allows anon callers to invoke service-role functions.
+**Caution:** `verify_jwt=true` accepts any HS256 JWT including anon tokens, so in-code auth must check the decoded `role` claim equals `service_role` (never a caller-supplied header) or anon callers can invoke service-role functions.
 
 ### Tier 3: Webhook functions
 
@@ -61,10 +55,9 @@ send a Supabase JWT of any kind.
 | `verify_jwt` | `false` |
 | In-code auth | Signature verification (Stripe signature, HMAC, etc.) |
 
-**Why:** External callers have no Supabase JWT. The function authenticates the
-caller by verifying a request signature specific to that service.
+**Why:** External callers have no Supabase JWT, so the function authenticates them via a service-specific request signature instead.
 
-**Critical:** Signature verification must consume the raw request body (`await req.arrayBuffer()` or `await req.text()`) before any other body read. Parsing the body as JSON before signature verification corrupts the HMAC check — some implementations then silently fall through to processing the unverified payload.
+**Critical:** Signature verification must consume the raw body (`req.arrayBuffer()`/`req.text()`) before any JSON parse — parsing first corrupts the HMAC check and can silently fall through to processing an unverified payload.
 
 ### Tier 4: Intentionally public functions
 
@@ -76,9 +69,7 @@ check).
 | `verify_jwt` | `false` |
 | In-code auth | None — but must not expose secrets or sensitive data |
 
-**Why:** No auth needed by design. The `verify_jwt = false` setting and
-absence of in-code auth must be justified with a comment in `config.toml`
-and in the function source.
+**Why:** No auth needed by design, but `verify_jwt = false` with no in-code auth must be justified in a comment in both `config.toml` and the function source.
 
 ## config.toml rules
 
@@ -87,9 +78,7 @@ and in the function source.
 1. **Never regenerate, overwrite, or remove entries** from `config.toml`.
 2. Every edge function in `supabase/functions/` **must** have an explicit
    `[functions.<name>]` section with a `verify_jwt` setting.
-3. **Never bulk-flip** existing `verify_jwt` entries. Each function's setting
-   was chosen individually based on its tier. If a single function needs to
-   change, change that one function and document why.
+3. **Never bulk-flip** `verify_jwt` entries — change one function at a time and document why, since each setting was chosen per its own tier.
 4. When changing a function's `verify_jwt` setting, verify it matches the
    correct tier above. Flipping a non-browser function from `true` to `false`
    removes a defense layer and requires justification.
@@ -110,9 +99,7 @@ and in the function source.
 Do not remove Authorization header validation or the in-code auth call from
 edge functions.
 
-For browser-invoked functions (Tier 1), in-code auth is the **sole** access
-control — removing it makes the function fully open. This is more critical
-than for Tier 2 functions, where the gateway provides a backup layer.
+Tier 1's in-code auth is the sole access control (no gateway backup, unlike Tier 2) — do not remove it.
 
 For service-role functions (Tier 2), in-code auth is defense-in-depth on top
 of gateway verification. Both should be present.

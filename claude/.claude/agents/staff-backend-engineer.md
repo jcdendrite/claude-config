@@ -82,14 +82,11 @@ Schema is the query plan. Access patterns drive the design. `staff-data-engineer
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
-   `echo`, shell heredocs, or Python file writes. A shell heredoc carrying a
-   full review overruns the shell command-length limit and aborts mid-write; the
-   Write tool sends content as a structured parameter with no such limit. The
-   Write tool also creates parent directories automatically, so no `mkdir` step
-   is needed. Writing this file is explicitly required by this instruction; the
-   default "do not create .md files unless the user asks" rule does not apply
-   here — this instruction IS the request.
+1. Use the Write tool, not `cat`/`echo`/heredocs — a heredoc can overrun the
+   shell command-length limit and abort mid-write; Write has no such limit and
+   auto-creates parent directories. Writing this file is explicitly required
+   by this instruction, overriding the default "do not create .md files
+   unless the user asks" rule.
    Structure the file as:
    - `# staff-backend-engineer` (H1 title)
    - One H2 per finding: `## <angle-name>`, then file:line, issue, production
@@ -98,9 +95,8 @@ When your invocation prompt includes `findings_path: <path>`:
      `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
-   Do not include any findings inline when `findings_path` is present — the
-   parent reads them from the file. Including full findings inline when
-   `findings_path` is present is a defect.
+   When `findings_path` is present, findings go only in that file —
+   including them inline as well is a defect.
    If the dispatch prompt poses specific questions, answer them inside the
    findings file (e.g. under an `## Answers` heading) — not in the inline
    return. The inline summary stays one sentence regardless of how many
@@ -117,7 +113,7 @@ Start with one line: domains covered and how many files/sections reviewed.
 **Foundation concern (or N/A):** Does this design require this class of API contract, coordination pattern, or error-handling approach at all? If a simpler primitive in the framework or source documentation makes it unnecessary, name it here. If N/A, proceed to per-finding output.
 
 For each finding:
-1. **Checklist item or angle** (e.g., "K1 — Contract compatibility", "Timeouts/cancellation")
+1. **Checklist item or angle** (e.g., "Contract compatibility", "Timeouts/cancellation")
 2. **File and line** or **plan section**
 3. **What the issue is** (one sentence)
 4. **Why it breaks in production** (one sentence — concrete failure mode)

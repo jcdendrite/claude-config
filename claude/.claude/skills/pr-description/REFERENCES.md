@@ -8,12 +8,9 @@ when changing a rule, to check whether the source still supports it.
 **Google Engineering Practices, "Writing good CL descriptions":**
 `https://google.github.io/eng-practices/review/developer/cl-descriptions.html`
 
-The skill body states each rule on its own rationale and does not name this
-source. That is deliberate: `SKILL.md` files under `claude/.claude/skills/`
-are stowed to every user of this repo, and a named organization's practice
-cited inline as the reason a rule holds is a source-material anchor the
-platform-genericness convention keeps out of a global skill body. The
-attribution belongs here.
+SKILL.md doesn't name this source inline — the platform-genericness
+convention keeps named-org citations out of a stowed global skill body — so
+the attribution lives here instead.
 
 "CL" (changelist) is that source's term for what this repo calls a PR. The
 rules transfer; the vocabulary does not, and the skill body uses PR
@@ -47,12 +44,9 @@ Were there decisions you made that aren't reflected in the source code? etc."*
 > informative details that help reviewers and future code searchers understand
 > each CL's effect.
 
-The page's own list of first lines that carry too little information includes
-*"Moving code from A to B"* and *"Phase 1"* — alongside *"Fix bug"*, *"Fix
-build"*, *"Add patch"*, *"Add convenience functions"*, and *"kill weird
-URLs"*. A bulleted list of commit subjects is a sequence of exactly these,
-which is why the skill rules that shape out rather than merely discouraging
-it.
+The skill shapes out (not merely discourages) bulleted commit-subject lists
+because they reproduce exactly the source's list of weak first lines (e.g.
+"Moving code from A to B", "Phase 1").
 
 **Sync mode rests on the same source:**
 
@@ -68,10 +62,10 @@ request." Useful for the mechanics of opening a PR, not for what belongs in
 one.
 
 **Conventional Commits (`https://www.conventionalcommits.org/`):** governs
-commit-message *format*, not PR body content. This repo's PR title convention
-is `<TICKET-ID>: <slug>`, derived from the branch name by `/ready-for-review`
-step 6, so adopting a second title grammar would conflict with an existing
-rule rather than fill a gap.
+commit-message format, not PR body content, and this repo already derives
+its PR title grammar (`<TICKET-ID>: <slug>`) from the branch name in
+`/ready-for-review` step 6, so adopting it would conflict rather than fill a
+gap.
 
 ## Tool behavior the skill depends on
 

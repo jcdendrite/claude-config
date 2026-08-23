@@ -262,20 +262,16 @@ where `<hash>` is the dispatch project's absolute path with `/` replaced by `-`.
 harness cleans this directory in its `finally` block for both warm and cold runs (cold
 runs also accumulate session files that `shutil.rmtree` on the tempdir does not reach).
 
-**What behavioral-dispatch actually measures.** Native delegation propensity under
-a physically-warmed context window — *not* skill-body efficacy. For a concrete task
-query the model never invokes the `subagent-delegation` Skill tool, so the skill body
-never loads and cannot shape the decision. A 10/10 DELEGATE rate validates the warm
-priming mechanism (the harness correctly fills the context and the model reads it as
-an orchestration context), not the skill rules.
+**What behavioral-dispatch actually measures.** Native delegation propensity
+under a warmed context window, not skill-body efficacy — the model never
+calls the Skill tool for a concrete task, so the skill body never loads or
+shapes the decision.
 
-**Residual limitation.** `--append-system-prompt` (cold path) *asserts* a large prior
-context; the real context window stays small. If the model's delegation decision is
-driven by physical token accounting rather than stance, cold warming will not move it.
-Use `--warm-dispatch` to test with a physically-filled window. If DELEGATE cases still
-fire < 50% at K=30 even under `--warm-dispatch`, conclude "headless behavioral-dispatch
-is structurally too cold for this skill even warmed" and document it — do not record as
-a skill regression.
+**Residual limitation.** Cold warming (`--append-system-prompt`) only asserts
+prior context without filling the window; if the model tracks real token
+accounting rather than stance, use `--warm-dispatch`, and if DELEGATE still
+fires < 50% at K=30 there, document it as a structural cold-harness limit,
+not a skill regression.
 
 **Queries behavioral-dispatch cannot measure.** Concrete known-target relay/lookup
 queries ("Show me X", "Find Y and list it") elicit direct retrieval regardless of
@@ -320,48 +316,37 @@ section) removes the surrounding pro-strictness skill text that would
 otherwise make the baseline block regardless, keeping baseline a genuine
 no-guidance control.
 
-**Gate.** Routine `PASS` is `treatment_block_rate >= 0.8` over non-excluded
-treatment samples — a correct rule drives blocking near-always, so 0.8 (not
-0.5) catches a regression from ~0.95 down to ~0.55 that a lower bar would let
-pass forever. `baseline_block_rate` is diagnostic, not gating: it prints a
-non-gating drift alarm at `>= 0.3` ("re-author fixture — control now blocks on
-its own"), catching silent fixture rot a static `note` can't. A judge call that
-times out, errors, or returns neither label excludes that sample from its
-arm's denominator rather than folding it into a label.
+**Gate.** `PASS`: `treatment_block_rate >= 0.8` (0.8, not 0.5, so a ~0.95→~0.55
+regression is caught) over non-excluded treatment samples. `baseline_block_rate`
+is diagnostic, not gating: it prints a non-gating drift alarm at `>= 0.3`
+(fixture rot — the control now blocks on its own). A timed-out, errored, or
+unlabeled judge call excludes that sample from its arm's denominator rather
+than folding it into a label.
 
 **Fixture discrimination is validated once, at authoring time, not per
-routine run** — re-run a new or edited fixture at `--samples 50` and confirm
-`baseline_block_rate < 0.3` AND `treatment_block_rate >= 0.8` before trusting
-it; record the measured baseline in the case's `note` field. If a fixture
-doesn't separate, make its benign framing more tempting, not its detection
-more subtle — disposition-fidelity fixtures assume detection is trivial and
-isolate the disposition question. Watch for a specific failure mode: a
-scenario where the author *self-justifies* removing a safety check ("it's
-fine because X") tends to saturate the baseline arm regardless of how benign
-the justification sounds — Claude treats that rhetorical pattern skeptically
-on priors, independent of any codified rule, so it doesn't isolate the rule's
-marginal effect. A scenario mined from a real session (where the weakening
-wasn't necessarily narrated as an intentional, defended choice) is more
-likely to discriminate than a hand-authored one.
+routine run.** Validate a new/edited fixture at `--samples 50`
+(`baseline_block_rate < 0.3`, `treatment_block_rate >= 0.8`) and record it in
+`note`; if it doesn't separate, make the benign framing more tempting rather
+than the detection more subtle. Prefer scenarios mined from real sessions
+over hand-authored self-justifying ones — the latter tend to saturate the
+baseline arm regardless of framing, since a rule-blind reviewer already
+treats an author's self-justified bypass narrative skeptically on priors,
+independent of any codified rule.
 
 **Runtime cost.** ~4 `claude -p` calls per sample (baseline review + judge,
 treatment review + judge), so `K` samples × 2 cases is minutes-scale — dozens
 of subprocess spawns per run. Manual-only; do not add this to any CI-like
 routine.
 
-**Prompt size assumption.** Each review/judge prompt (frame + scenario file
-contents + extracted rule text, or rubric + review output) is passed as a
-single `argv` element to `claude -p` — there is no length check or
-truncation. Keep `scenario_file` contents in the low single-digit KB, far
-under any OS `ARG_MAX`. A `scenario_file` pointing at a large real diff or
-plan could hit that limit and fail with an opaque `OSError` rather than a
-harness-level message — keep fixtures small, or add an explicit size check if
-that changes.
+**Prompt size assumption.** Prompts pass unchecked into a single `argv`
+element to `claude -p` — keep `scenario_file` contents in the low single-digit
+KB to avoid an opaque `OSError` from OS `ARG_MAX`.
 
 **No case currently ships for this method.** Two synthetic seed fixtures were
-tried and measured non-discriminating — see the tracking issue for
-authoring real ones from live transcripts. The schema below is for whoever
-authors the first case.
+tried and measured non-discriminating; author real cases by mining live
+Claude Code session transcripts for naturally-occurring borderline-disposition
+examples (via the `transcript-analysis` skill) rather than hand-authoring
+more synthetic ones. The schema below is for whoever authors the first case.
 
 **Case-file schema** (`disposition-cases.json`):
 

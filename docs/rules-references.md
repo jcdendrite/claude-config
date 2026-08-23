@@ -4,6 +4,19 @@ Reference material for `.claude/rules/*.md` files. Not loaded at runtime —
 read when editing a rule to verify a claim still holds or to add new
 guidance. One section per rule file; one entry per claim within a section.
 
+## Raw SQL & DDL conventions
+
+Source for `claude/.claude/rules/sql-ddl-conventions.md`.
+
+- `ALTER TABLE ... ADD COLUMN` rewrite behavior verified against
+  `postgresql.org/docs/current/sql-altertable.html`.
+- `ALTER TYPE ... ADD VALUE` transaction behavior verified against
+  `sql-altertype.html` and the PostgreSQL 12 release notes ("Now it can be
+  called in a later transaction, so long as the new enumerated value is not
+  referenced until after it is committed").
+- Schema-shape conventions distilled and specialist-verified from this repo's
+  `staff-data-engineer.md` / `staff-analytics-engineer.md` review agents.
+
 ## GitHub Actions workflow conventions
 
 Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched

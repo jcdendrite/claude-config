@@ -21,29 +21,16 @@ regressions. The `run_loop.py` description optimizer makes sense when
 you genuinely can't tell whether a wording change improves accuracy
 without measuring it.
 
-**Update:** skill evals have been adopted as a standalone local harness
-(`evals/run_skill_evals.py`) that adapts `run_eval.py`'s stream-json detection
-mechanism. The `skill-creator` *plugin* remains disabled — the mechanism is
-adopted but the plugin's voice and length conventions still conflict with this
-repo. The key distinction: this repo's harness measures the trigger fidelity
-of existing skills at local/manual cadence, not optimizing descriptions via
-the `run_loop.py` search loop.
+`skill-creator` stays disabled: its 500-line-body convention (its L92, L96)
+and first-person voice conflict with `check-skill-length.sh`'s 200-line cap
+and this repo's voice rules. Trigger-fidelity evals instead run via
+`evals/run_skill_evals.py`, a local adaptation of `run_eval.py`'s
+stream-json detection, without using `skill-creator`'s `run_loop.py`
+optimizer or enabling the plugin — the skill set has grown to ~23 skills
+used across many independent projects, so mis-fires now happen in
+sessions the owner doesn't observe.
 
-The original conditions have changed: the skill set has grown to ~23 skills
-used across many independent projects, meaning mis-fires now happen in
-sessions the owner doesn't observe. `evals/run_skill_evals.py` covers this
-without CI security risks (local auth, no `--dangerously-skip-permissions`),
-without per-token budget (Max-plan OAuth), and without flaky CI signals (the
-output is a human-read pass-rate report, not a binary gate).
-
-`skill-creator`'s body still conflicts in two concrete places: it advocates
-500-line skill bodies (its L92, L96), while `check-skill-length.sh` caps at
-200; and it uses a conversational, first-person voice ("Cool? Cool.") that
-`skill-review` explicitly rejects. Keeping it enabled would present
-contradictory authoring guidance every time a skill was edited.
-
-**Mechanism:** the `skill-creator@claude-plugins-official` entry is
-removed from `enabledPlugins` in `settings.json` entirely — not set to
-`false`. In this repo, `false` entries are quick-flip handles for
-plugins the user might want to enable for an occasional session;
-removing the entry means there's no foreseeable re-enable use case.
+**Mechanism:** per CLAUDE.md's plugin-disable policy, the
+`skill-creator@claude-plugins-official` entry is removed from
+`enabledPlugins` in `settings.json` entirely — not set to `false`.
+There is no foreseeable re-enable use case.

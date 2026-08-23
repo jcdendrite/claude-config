@@ -37,20 +37,10 @@ Examples:
 
 ### Why no `<type>/` prefix?
 
-Industry guides often recommend `<type>/<ticket>-<topic>` — e.g.,
-`feature/GH-1234-checkout`. That pattern adds signal when:
-
-- The team uses branch-prefix-keyed automation (changelog generation,
-  CI gating by branch type, auto-deploy paths).
-- Branches are scanned without opening the associated ticket.
-
-When neither applies — the ticket system already carries the work
-type as a label, and no automation keys off the branch prefix — the
-type prefix duplicates the tracker metadata without adding signal.
-
-If a specific project needs prefix-keyed automation, add the type
-prefix at that project's CLAUDE.md level. The global default stays
-prefix-free.
+Skip the `<type>/` prefix by default — it only earns its keep with
+branch-prefix-keyed automation or ticket-free branch scanning; add it
+via the project's own CLAUDE.md if either applies (see
+REFERENCES.md).
 
 ## Branch from a fresh default
 
@@ -79,23 +69,15 @@ call, before any other command touches the new path:
 
 then `EnterWorktree{path: "<absolute path to the worktree>"}`.
 
-`EnterWorktree` resolves a relative path against the session's current
-working directory, not the repo root, and has no idempotent path for
-"already there": if a `cd` — even a read-only one, to peek at a file —
-reaches the worktree first, a relative path doubles onto itself and an
-absolute path is rejected as already the current directory. Either way
-the anchor never completes, leaving the session on raw shell state
-with none of `EnterWorktree`'s other effects (subagent inheritance,
-`ExitWorktree` tracking). Pass an absolute path and call it first.
+Call `EnterWorktree` with an absolute path before any other command,
+including read-only ones — it resolves relative paths against cwd (not
+repo root) and has no idempotent "already there" case, so a prior `cd`
+silently leaves the session unanchored either way.
 
-Creating a worktree does not move the session into it. A session's
-working directory has an anchor that a stray `cd` is reset back to,
-and that anchor defaults to the main checkout. Until the session
-enters the worktree, an excursion that leaves the tree lands back on
-the default branch — and an excursion through a symlink that resolves
-*inside* the main checkout is kept with no notice at all, which is the
-silent case. Entering the worktree moves the reset target to it, so
-both kinds of excursion self-correct.
+Entering the worktree resets the session's cd-anchor to it; until
+then, a stray `cd` out (including one through a symlink that resolves
+inside the main checkout, which fails silently with no warning) snaps
+back to the main checkout.
 
 This matters beyond the current shell: a dispatched subagent starts in
 the parent's working directory at dispatch time, so an unanchored
@@ -103,12 +85,11 @@ parent hands its children the main checkout. Naming a working
 directory in the agent's prompt does not change where its commands
 run.
 
-The write check re-evaluates the parent's current anchor for the whole
-dispatch, not just at launch: re-anchoring mid-dispatch gets a
-subagent's `Write` and `Edit` calls denied outright rather than
-redirected, unless it was pinned at launch by `isolation: worktree` or
-an explicit cwd. Hold the anchor still for the life of any
-write-capable dispatch.
+Hold the anchor still for the life of any write-capable dispatch — the
+write check re-evaluates it for the whole dispatch, not just at
+launch, and re-anchoring mid-dispatch gets the subagent's Write/Edit
+calls denied outright (not redirected) unless pinned at launch via
+`isolation: worktree` or an explicit cwd.
 
 The anchor is session-scoped. A resumed session starts unanchored, so
 re-enter the worktree before running *any* other command or

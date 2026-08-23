@@ -46,11 +46,9 @@ dispatch the question instead of continuing inline.
 - A lookup whose result is a single artifact the parent consumes
   directly — one `Read` of a known path, or a `grep` that resolves to
   one value or one yes/no answer (e.g. confirming a symbol is defined
-  in exactly one place). The test is the *result shape*, not whether
-  the target is known: a relay lookup that returns a set of sites —
-  all callers, all usages, every file matching a pattern — is
-  locate-and-report, so dispatch it even when the target is known. An
-  unknown target is exploratory — dispatch that too.
+  in exactly one place). The test is result shape, not whether the
+  target is known: multi-site lookups (known or unknown target)
+  dispatch; single-value lookups stay inline.
 - A comprehension read whose content feeds your own writing, review, or
   design.
 - `Edit`/`Write` sequences where you are still deciding approach, scope,
@@ -59,10 +57,10 @@ dispatch the question instead of continuing inline.
   `code-writer` section below for the narrow exception.
 - The failure output or diff you reason over line by line — the artifact itself, not the investigation that precedes it.
 
-**No permission cost.** A subagent runs under the parent's permission
-mode. Under auto mode, its read-only diagnostics are evaluated by the
-same classifier that clears the parent's — delegating read-heavy work
-adds no permission prompts and needs no `permissions.allow` entries.
+**No permission cost.** A subagent inherits the parent's permission
+mode, so under auto mode its read-only diagnostics clear the same
+classifier as the parent's — no extra prompts, no `permissions.allow`
+entries needed.
 
 ## Step 2 — Pick the right subagent
 
@@ -71,10 +69,9 @@ adds no permission prompts and needs no `permissions.allow` entries.
 Run check commands (test suites, lint, typecheck, build) directly via the
 parent's Bash tool. Do not delegate them to a subagent.
 
-The Claude Code harness truncates Bash output at 30 KB — an inline heavy run
-costs the parent ~2 KB of context, not the full suite output. In practice,
-check suites almost never approach that limit, so the failure tail is visible
-directly in the parent's context with no follow-up read.
+Bash output truncates at 30 KB — well above typical check-suite size —
+so an inline heavy run costs the parent only the ~2 KB failure tail,
+with no follow-up read needed.
 
 - **Enumerate check commands and run them one at a time** (e.g., `pytest
   claude/.claude/`, then `ruff check claude/.claude/`) or as a single chained
@@ -87,14 +84,11 @@ directly in the parent's context with no follow-up read.
 - Commands scoped to a single test file or single test name during interactive
   debugging also stay inline.
 
-The harness automatically truncates Bash output at 30 KB — you never need to
-predict output size before running. On the rare overflow (a very large vitest
-output, a verbose suite with extensive debug logging), the harness persists the
-full output to a `tool-results/` file and returns a ~2 KB preview (the *first*
-2 KB, usually the startup banner). For those overflows, `grep` or `sed` the
-persisted file for the specific lines you need — do not re-run the command. On
-later turns, do not `Read` the whole persisted file: each full re-read re-bills
-the entire file size; extract only the slice you actually need.
+- On overflow, the harness persists full output to a `tool-results/`
+  file and returns only a ~2 KB preview — grep/sed the persisted file
+  for what you need.
+- Never re-run the command or `Read` the persisted file whole; each
+  full re-read re-bills the entire file size.
 
 ### Codebase discovery → `Explore` or `general-purpose`
 
@@ -110,13 +104,9 @@ than running it inline:
   on `general-purpose` — it has no model of its own and inherits the
   parent's, which under auto mode may be Opus.
 
-Discovery output inhales into the parent context exactly like a check
-suite does, and an auto-mode parent on Opus pays that in the most
-expensive tokens — for output it only needed an *answer* from. Dispatch
-any read whose purpose is to explore, map, or locate — even a single
-command. The ~3-query threshold is a trailing indicator; by the
-time a third command fires, multiple turns of exploratory output have
-already landed in context.
+Dispatch any exploratory read immediately, even a single command — a
+"~3-query" rule of thumb is only a trailing indicator, since by the
+third command multiple turns of output have already landed in context.
 
 This does not apply to *comprehension* reads: when you need a file's
 content in your own reasoning — to write or modify it, review it, or
@@ -130,10 +120,8 @@ finding how existing tests handle a pattern, locating the relevant
 convention, mapping an analogous code shape — dispatch that probe as an
 objective to `Explore` or `general-purpose`, both with an explicit
 `model: sonnet` per `CLAUDE.md`'s Model Routing rule — pass it even on
-`Explore`, whose `Explore.md` pin is a request, not a guarantee. Use the
-same split as Codebase discovery above: `Explore` for excerpt-level
-search (locate, grep, pattern-match); `general-purpose` when the probe
-must read whole files to understand structure or reproduce behavior.
+`Explore`, whose `Explore.md` pin is a request, not a guarantee. Use
+the same Explore/general-purpose split as Codebase discovery above.
 
 > "Diagnose why [test/check] fails; report root cause + minimal evidence
 > + proposed fix."

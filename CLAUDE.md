@@ -50,13 +50,10 @@ so run tests and lint from a worktree via `../../../.venv/bin/pytest` and
 
 **Footgun: never recommend `>>` writes through stow-symlinked files pointing
 at a git-tracked target.**
-Files under `~/.claude/` (e.g. `~/.claude/CLAUDE.md`) are symlinks to
-tracked files in this repo — appending via `>>` writes through the
-symlink and silently stages changes to the public repo. Edit the
-committed file directly via PR instead. This does not cover gitignored
-runtime state under `claude/.claude/` (e.g. `.handoff-nudge.log`) — an
-append there never reaches `git status`, so check `.gitignore` before
-assuming this rule blocks a specific write.
+Never `>>`-append to files under `~/.claude/` — they're symlinks to this
+repo's tracked files, so appends silently stage to the public repo; edit the
+committed file via PR instead. Exception: gitignored runtime state (e.g.
+`.handoff-nudge.log`) isn't tracked, so appending there is safe.
 
 **Terminology:** Use "project" / "private project", not "client", in
 `claude-config` prose. The redaction hook is `deny-private-project-refs`.
@@ -64,28 +61,23 @@ assuming this rule blocks a specific write.
 **Hook defense-in-depth:** Hooks must filter their own input by tool
 name and matcher; do not rely solely on settings.json `if` conditions.
 
-**Should this be a hook?** When the user asks for an automated or
-recurring behavior — "from now on when X…", "each time X…", "whenever
-X…", "before/after X…" — the answer is a hook configured in
-`.claude/settings.json`, not a memory or a skill instruction. The
-harness executes hooks; nothing in memory or a CLAUDE.md prose rule can
-fulfill an automatic-trigger request. Route to the `claude-hook-review`
-skill for hook design and review.
+**Should this be a hook?** When the user asks for automated/recurring
+behavior ("whenever X…", "each time X…"), configure a hook in
+`.claude/settings.json` — memory and skill instructions cannot fulfill an
+automatic-trigger request. Route to `claude-hook-review` for hook design and
+review.
 
 **Plugin config:** `enabledPlugins` only takes effect in
 `settings.json`, not `settings.local.json`.
 
-**Disabling a plugin: `false` vs. removing the entry.** In this repo's
-committed `claude/.claude/settings.json`, `enabledPlugins[name]: false`
-is reserved for plugins kept as quick-flip handles for occasional
-re-enable. Plugins with no foreseeable re-enable use case are removed
-from the map entirely. Don't propose `false` reflexively as the
-disable-pattern — it smuggles in a re-enable affordance the user may
-not want to extend. Mirror existing entries when in doubt.
+**Disabling a plugin: `false` vs. removing the entry.** `enabledPlugins[name]:
+false` is only for plugins kept as a re-enable handle; remove the entry
+entirely otherwise — don't default to `false`, since it implies a re-enable
+case that may not exist. Mirror existing entries when in doubt.
 
-**Plugin skills use `plugin:skill` names — never path-prefixed.** This repo's stow source (`claude/.claude/skills/**`) holds the same skill names that stow installs at personal scope (`~/.claude/skills/**`). Because the names clash, Claude Code renders the stow-source copies as directory-qualified duplicates in the available-skills listing — e.g. `.claude/worktrees/<branch>/claude:code-review` — and instructs the model to prefer that form. That qualification applies only to project skills. The three marketplace plugins registered in `enabledPlugins` (`skill-management`, `claude-hook-review`, `plugin-semver`) are never directory-scoped: invoke them by the fully-qualified `plugin:skill` name (`skill-management:skill-review`, `claude-hook-review:claude-hook-review`, `plugin-semver:plugin-semver`) with no directory or worktree path prepended.
+**Plugin skills use `plugin:skill` names — never path-prefixed.** Invoke the three marketplace plugins (`skill-management`, `claude-hook-review`, `plugin-semver`) by their fully-qualified `plugin:skill` name. See `docs/skills.md`'s "Skill architecture notes" section for why the stow-source skill listing renders directory-qualified duplicates.
 
-**No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` frontmatter has no `includes:`, `import:`, or `extends:` fields; the `@path` import syntax works in `CLAUDE.md` only, not in `SKILL.md`. When two skills need the same rule text, duplicate it into both skill files intentionally — do not extract it into a `_shared/` directory or similar abstraction. Duplication keeps each skill independently readable and prevents brittle cross-skill coupling. A skill directory may contain co-located auxiliary files (`REFERENCES.md` for edit-time reference; a runtime auxiliary like `plan-review/ROUTING.md` — an exception for load-bearing content that cannot be shortened, not a routine response to hitting the length cap) — these belong to one skill and are not cross-skill sharing. See [`docs/skills.md` — Skill architecture notes](docs/skills.md#skill-architecture-notes) for the full breakdown.
+**No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` frontmatter has no `includes:`, `import:`, or `extends:` fields; the `@path` import syntax works in `CLAUDE.md` only, not in `SKILL.md`. When two skills need the same rule text, duplicate it into both skill files intentionally — do not extract it into a `_shared/` directory or similar abstraction. Duplication keeps each skill independently readable and prevents brittle cross-skill coupling. A skill directory may contain co-located auxiliary files (`REFERENCES.md` for edit-time reference; a runtime auxiliary like `plan-review/ROUTING.md` — an exception for load-bearing content that cannot be shortened, not a routine response to hitting the length cap) — these belong to one skill and are not cross-skill sharing. See `docs/skills.md`'s "Skill architecture notes" section for the full breakdown.
 
 **`REFERENCES.md` is the edit-time co-located reference for a skill.** A skill directory may contain a `REFERENCES.md` alongside `SKILL.md` — use it for canonical URLs, key quotes, and framework notes that informed the skill's rules. `REFERENCES.md` is not loaded at skill runtime; read it manually (via Read or Bash) when editing a skill to verify a rule still holds or to add new guidance. Do not embed this reference material directly in `SKILL.md`. Some skills also contain a runtime auxiliary file in the same directory (e.g., `plan-review/ROUTING.md`); see [`docs/skills.md` — Skill architecture notes](docs/skills.md#skill-architecture-notes) for the two-pattern distinction.
 

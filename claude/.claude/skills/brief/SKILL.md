@@ -119,10 +119,8 @@ The slug names the work, not the date. Examples: `pr-242-flag-status-task.md`, `
 
 Reference files by path; do not inline contents. Aim for the smallest set of
 high-signal tokens that fully capture state — not a line budget. If the file runs
-past ~500 lines, that is a signal to check for content recoverable from disk
-(inlined diffs, tool output, file bodies) and cut that — not a mandate to cut
-continuity. Never drop a populated section or a load-bearing claim to hit a line
-count; completeness of state beats brevity here.
+past ~500 lines, cut content recoverable from disk (inlined diffs, tool output) —
+never drop a populated section or load-bearing claim to hit a line count.
 
 ## Pre-write checklist
 
