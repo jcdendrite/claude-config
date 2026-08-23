@@ -152,14 +152,10 @@ End with one of: **No fidelity concerns**, **Approve with concerns** (list), or 
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
-   `echo`, shell heredocs, or Python file writes. A shell heredoc carrying a
-   full review overruns the shell command-length limit and aborts mid-write; the
-   Write tool sends content as a structured parameter with no such limit. The
-   Write tool also creates parent directories automatically, so no `mkdir` step
-   is needed. Writing this file is explicitly required by this instruction; the
-   default "do not create .md files unless the user asks" rule does not apply
-   here — this instruction IS the request.
+1. Use the Write tool, not `cat`/`echo`/heredocs — a full review can exceed the
+   shell command-length limit and abort mid-write, while Write has no such
+   limit, auto-creates parent dirs, and is explicitly authorized to create this
+   file despite the general .md-creation default.
    Structure the file as:
    - `# skill-fidelity-reviewer` (H1 title)
    - One H2 per finding: `## <angle-name>`, then file:line, issue, production
@@ -168,9 +164,8 @@ When your invocation prompt includes `findings_path: <path>`:
      `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
-   Do not include any findings inline when `findings_path` is present — the
-   parent reads them from the file. Including full findings inline when
-   `findings_path` is present is a defect.
+   Do not include findings inline when `findings_path` is present (the parent
+   reads them from the file) — doing so is a defect.
    If the dispatch prompt poses specific questions, answer them inside the
    findings file (e.g. under an `## Answers` heading) — not in the inline
    return. The inline summary stays one sentence regardless of how many

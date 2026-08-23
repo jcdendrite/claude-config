@@ -90,10 +90,10 @@ Do not pad with praise or restate the change. Findings or nothing.
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Write all findings to `<path>` using the **Write tool**, not cat/echo/heredocs/Python
-   writes — heredocs can overrun the shell command-length limit and abort mid-write,
-   and Write auto-creates parent dirs; writing this file is required even though
-   it's a new .md file.
+1. Use the Write tool, not `cat`/`echo`/heredocs — a full review can exceed the
+   shell command-length limit and abort mid-write, while Write has no such
+   limit, auto-creates parent dirs, and is explicitly authorized to create this
+   file despite the general .md-creation default.
    Structure the file as:
    - `# staff-sdet` (H1 title)
    - One H2 per finding: `## <angle-name>`, then file:line, issue, production
@@ -102,9 +102,8 @@ When your invocation prompt includes `findings_path: <path>`:
      `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
-   Do not include any findings inline when `findings_path` is present — the
-   parent reads them from the file. Including full findings inline when
-   `findings_path` is present is a defect.
+   Do not include findings inline when `findings_path` is present (the parent
+   reads them from the file) — doing so is a defect.
    If the dispatch prompt poses specific questions, answer them inside the
    findings file (e.g. under an `## Answers` heading) — not in the inline
    return. The inline summary stays one sentence regardless of how many

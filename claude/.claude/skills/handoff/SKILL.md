@@ -26,9 +26,9 @@ A handoff resets context, and the fresh session re-pays for what this one alread
 
 ## Verify the handoff file with Bash, never Read
 
-A `Read` of any `<config-dir>/handoffs/*-handoff.md` path consumes the file immediately —
-even mid-draft in this authoring session, before any resume — so verify with Bash
-(`cat`/`grep`/`sed -n`/`wc -l`) instead.
+A `Read` of any `<config-dir>/handoffs/*-handoff.md` path consumes the file — verify with a Bash
+command (`cat`/`grep`/`sed -n`/`wc -l`) instead. The consume fires from this authoring session
+too, mid-draft, long before any resume.
 
 If it already happened, that successful `Read` reports the temp path the file
 moved to. `cp` it back to `<config-dir>/handoffs/<slug>-handoff.md` before any
@@ -72,11 +72,7 @@ If none: write "None."
 
 Read the current task list — from your session's task-list tool if it exposes one, otherwise from the inline items you have been tracking (not reconstructed from memory) — and list each item with a stable ordinal, its status — `completed` / `in_progress` / `pending` — and, for pending/in_progress items, which ordinals block it and (for the in_progress item) its `activeForm`. Preserve order. Example: `3. [pending] Phase B: … (blocked by 2)`.
 
-**Resume directive:**
-- §2.6 is the authoritative source of remaining task state on resume — do not reconstruct the task list from the plan file or from memory.
-- Preserve order and the `blockedBy`/`blocks` relationships (map the serialized ordinals to the items in that position); completed items are listed for context only — do not re-add them.
-- If your session exposes a task-list tool (e.g. `TaskCreate`/`TaskUpdate`), mirror the `pending` and `in_progress` items into it — an `in_progress` item may take two calls (create, then set status) if creation can't set it directly. If it does not — common for resumed sessions — track them inline.
-- Tracking these items is a safe, reversible action, not gated by the artifact preamble's re-confirm-before-executing rule (which is scoped to irreversible/shared-state actions); a missing task-list tool is not a blocker.
+**Resume directive:** §2.6 is the authoritative source of remaining task state on resume — do not reconstruct the task list from the plan file or from memory. As you resume, track the `pending` and `in_progress` items below, preserving order and their `blockedBy`/`blocks` relationships (map the serialized ordinals to the items in that position); completed items are listed for context only — do not re-add them. If your session exposes a task-list tool (e.g. `TaskCreate`/`TaskUpdate`), mirror the items into it — an `in_progress` item may take two calls (create, then set status) if creation can't set it directly. If it does not — common for resumed sessions — track them inline. Tracking these items is a safe, reversible action, not gated by the artifact preamble's re-confirm-before-executing rule (which is scoped to irreversible/shared-state actions); a missing task-list tool is not a blocker.
 
 If none: write "None."
 
@@ -104,9 +100,9 @@ Header line: working directory + current git branch. Derive both from the worktr
 ## §5 Gates / markers
 List markers under `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.
 
-A completion marker only stays valid while the state it covers is unchanged, so commit finished work before writing this file — or, if it isn't commit-ready, say so here and name in §3 the review skill to re-run first.
+A completion marker stays valid past the session boundary, only while the state it covers is unchanged — any further change to that state invalidates it. If work covered by a marker is finished, commit it *before* writing this file; if it isn't commit-ready, say so here and name in §3 the review skill to re-run first.
 
-Committing can disarm a gate outright (e.g. `/plan-review` only arms on an uncommitted plan) rather than merely invalidating its marker — label such a marker historical, since an unlabelled one reads to the resuming session as still load-bearing.
+Committing can disarm a gate outright instead of merely invalidating its marker — e.g. `/plan-review` only arms on an uncommitted plan, so committing the plan leaves its marker on disk gating nothing. Label such a marker historical, since an unlabelled one reads to the resuming session as still load-bearing.
 
 ## §6 Open questions / decisions deferred
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
