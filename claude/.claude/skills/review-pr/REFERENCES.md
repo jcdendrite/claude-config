@@ -44,10 +44,16 @@ loading a project directory:
 | `.gitattributes` (any depth) | git executes clean/smudge filter drivers named in it at checkout |
 | `.githooks/**`, `.husky/**` | conventional `core.hooksPath` target directory names; a repo commonly points `core.hooksPath` at one of these via setup instructions or a tool (Husky), and git then executes any file placed under it at checkout. `core.hooksPath` itself is local git config, not something a PR's file list carries directly — this is a heuristic over common target-directory names, not an exhaustive read of the actual configured value. |
 | `CLAUDE.md` (any path segment) | loaded as standing instructions by the reviewing harness when it works inside the checked-out tree |
-| `.claude/settings.json` | configures hooks and permissions the harness applies |
+| `.claude/settings.json`, `.claude/settings.local.json` | configures hooks and permissions the harness applies |
 | `.claude/hooks/**` | runs on every matching tool call the harness makes |
 | `.claude/agents/**` | defines subagent behavior the harness may dispatch |
 | `.mcp.json` | registers an MCP server the harness may launch |
+| `.gitmodules` | can point a submodule fetch/checkout at attacker-controlled content |
+
+Out of scope, named explicitly rather than left implicit: the operator's
+own editor/IDE auto-run configs (`.vscode/tasks.json` with
+`runOn: folderOpen`, `.idea/` run configs) are outside the reviewing
+harness's control surface, so this audit does not cover them.
 
 Content-blind by design: the predicate takes a path list, not file
 bodies, so a hit means "this path could be an execution-surface file,"
@@ -57,6 +63,12 @@ not "its content is malicious." Over-flagging is the accepted direction
 Every match folds case (`.MCP.json` matches the same as `.mcp.json`)
 because a case-insensitive filesystem (macOS default, Windows) resolves
 both to the same loaded file.
+
+## Why the findings-body declaration uses the Write tool, not Bash (Step 8)
+
+A spawned review-only subagent carries no Write tool for this path, so requiring the Write tool makes the step un-completable from a subagent by construction, rather than by convention.
+
+Passing the fixed path as a Bash argument would also put it in the process table and shell history, which the sibling-file design exists to avoid.
 
 **Trust classification never removes a stop condition, only widens it.**
 `authorAssociation` and `isCrossRepository` describe an account's

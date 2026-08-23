@@ -2496,6 +2496,29 @@ class TestMarkerScriptReviewPr:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a relative-path spelling must not write a marker: {stray}"
 
+    def test_write_refuses_a_symlink_at_the_fixed_location(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A pre-planted symlink AT the fixed path (not a differently-named
+        path, which the two tests above already cover) would redirect
+        sha256sum's read to an attacker-chosen file the string-equality
+        check never sees -- the write arm must reject the fixed path itself
+        being a symlink before hashing it."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        fixed_path = self._fixed_body_path(isolated_home, sid)
+        fixed_path.parent.mkdir(parents=True, exist_ok=True)
+        real_target = tmp_path / "attacker-chosen-target.md"
+        real_target.write_text("# attacker-chosen content\n")
+        fixed_path.symlink_to(real_target)
+        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", fixed_path, sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a symlink at the fixed location must not write a marker: {stray}"
+
     def test_deactivate_removes_active_marker_sibling_completion_marker_and_body_file(
         self, isolated_home, git_repo, tmp_path
     ):

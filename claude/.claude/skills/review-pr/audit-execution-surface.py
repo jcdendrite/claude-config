@@ -59,6 +59,9 @@ def _classify(path: str) -> str | None:
     if lower == ".claude/settings.json" or lower.endswith("/.claude/settings.json"):
         return ".claude/settings.json configures hooks and permissions the harness applies"
 
+    if lower == ".claude/settings.local.json" or lower.endswith("/.claude/settings.local.json"):
+        return ".claude/settings.local.json configures hooks and permissions the harness applies, same as settings.json"
+
     if lower.startswith(".claude/hooks/") or "/.claude/hooks/" in lower:
         return ".claude/hooks/** runs on every matching tool call the harness makes"
 
@@ -67,6 +70,9 @@ def _classify(path: str) -> str | None:
 
     if segments[-1] == ".mcp.json":
         return ".mcp.json registers an MCP server the harness may launch"
+
+    if segments[-1] == ".gitmodules":
+        return ".gitmodules can point a submodule fetch/checkout at attacker-controlled content"
 
     return None
 
