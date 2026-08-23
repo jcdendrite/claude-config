@@ -23,6 +23,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
   - [Worktree enforcement](#worktree-enforcement)
   - [Autonomous shipping](#autonomous-shipping)
   - [PR cost disclosure](#pr-cost-disclosure)
+  - [Prose tightening pass](#prose-tightening-pass)
   - [Permission-prompt tracking](#permission-prompt-tracking)
   - [Repo relocation](#repo-relocation)
   - [Private-project redaction](#private-project-redaction)
@@ -352,7 +353,17 @@ echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
 
 Cost is an organizational fact, not a per-repo one — each Claude account is its own billing entity, and this machine may run several isolated accounts under separate `CLAUDE_CONFIG_DIR` values. The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` when set and absolute, else `$HOME/.claude` — never both) and its content selects a mode rather than proving a repo identity: exactly `dollars` enables the section, and absent, empty, or any other value disables it. That resolve-one-path rule is what keeps one account's opt-in from activating disclosure under another.
 
-The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+
+### Prose tightening pass
+
+`pr-description` runs a `tighten-prose` pass over the drafted body before its checks. On by default, unlike PR cost disclosure above — opt out per account by touching a sentinel scoped the same way.
+
+```bash
+touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-description-tighten-prose-optout"
+```
+
+See [`docs/hooks.md`](docs/hooks.md)'s "Prose tightening opt-out" for the full mechanics.
 
 ### Permission-prompt tracking
 

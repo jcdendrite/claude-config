@@ -42,6 +42,7 @@ name where the file went.
 
 ## Artifact preamble (required — open this file with this block verbatim)
 
+<!-- HOOK_TEST_FIXTURE: artifact-preamble — check-handoff.py reads this exact fenced block at runtime to verify a draft's preamble against it. Do not duplicate the block elsewhere; the script re-reads it from here. -->
 ```
 HANDOFF ARTIFACT — agent-authored continuity file.
 This file was written by the prior session agent, not the engineer.
@@ -102,11 +103,10 @@ Steps the prior agent flagged as irreversible or shared-state — do not execute
 Header line: working directory + current git branch. Derive both from the worktree the work actually lives in rather than from ambient shell state — a session that drifted reports the main checkout and the default branch, sending the resuming session to the wrong tree with a header that looks authoritative. When the work lives in a linked worktree, name that path and direct the resuming session to re-enter it before running any command or dispatching any subagent: the anchor is session-scoped and does not survive the session boundary, so a resumed session starts in the main checkout. Then list paths edited this session and their state (staged / unstaged / committed). Include the most recent uncommitted work.
 
 ## §5 Gates / markers
-List markers under `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — filenames, which skill wrote each, and for completion markers, the state whose hash it stores. Each skill hashes the state it reviewed: staged diff for `/code-review` and `/skill-review`, active plan set for `/plan-review`, HEAD SHA for `/ready-for-review`.
 
-A completion marker stays valid past the session boundary, but only while the state it covers is unchanged — any further change to that state invalidates it. Finished work left uncommitted therefore reaches the resuming session one incidental edit away from a full re-review; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
+Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
 
-Committing can also disarm a gate outright rather than invalidating its marker: `/plan-review`'s gate arms only on an uncommitted or modified plan file, so committing the plan leaves its marker on disk gating nothing and unable to match again. Label such a marker historical. An unlabelled marker reads to the resuming session as load-bearing.
+A live marker whose reconciliation flag fired means finished work is one incidental edit away from a full re-review on resume; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
 
 ## §6 Open questions / decisions deferred
 Open AskUserQuestion exchanges, pending decisions the user still owes a call on, and recent failed commands + root causes the resuming session needs to know. If the session is in plan mode and §3's next step will be delegated to sub-agents, add an explicit note here that the resuming agent must call `ExitPlanMode` before spawning sub-agents — sub-agents inherit plan-mode state and will refuse to execute otherwise.
@@ -139,23 +139,25 @@ count; completeness of state beats brevity here.
 
 ## Pre-write checklist
 
-Before writing the file, verify:
-- Preamble block is present and verbatim at the top of the file
-- Every section §1–§7 above is populated
-- No placeholder text ("TBD", "TODO", "fill in later") in any section
+Run `<config-dir>/scripts/check-handoff.py <path>` against the draft file.
+It fails on: preamble mismatch, a missing/empty §1–§7 section,
+placeholder text ("TBD", "TODO", "fill in later"), an unresolved
+`<config-dir>`/`<slug>` token in §7, or §7 naming the wrong file. It
+warns (non-failing) on: a §3 step matching a §3.5 anchor shape, and a
+§2/§3/§6 section carrying no confidence tag. Fix every failure before
+writing; treat each warning as a prompt to re-check that step's
+bucketing or tagging, not as evidence it's already wrong.
+
+The script cannot check these — verify them yourself before writing:
 - §2 Status is consistent with §3 Next concrete step and §6 Open questions
 - You are not claiming "done" for any step whose verification is still pending
-- §7 Resume command names the exact file you are about to write
-- §7 Resume command's `<config-dir>` and `<slug>` placeholders are both resolved to real values — an unresolved token ships a command that cannot run
-- Markers in §5 use the globs `<config-dir>/*-markers/` and `<config-dir>/.*-active.d/` — not a hardcoded subdir list
 - §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
 - §2.5 names what was mid-flight at the time of the handoff, regardless of handoff reason — including any background subagent dispatch this session spawned, by its `agent-<agentId>`, marked collected or stranded
 - §2.6 is populated — a faithful task-list serialization with per-item ordinal, status, and blocking edges, or "None." — and carries the resume directive
-- §5 is reconciled: finished work a live completion marker covers is committed before this file is written; where it is not, §3 names the review skill the resuming session must re-run to commit it
-- Every §5 marker is labelled live or historical — a marker whose covered state was committed or superseded is not listed as if it still gates
+- §5's script output shows no unresolved reconciliation flag; where one fired, §3 names the review skill the resuming session must re-run to commit the covered work first
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file
-- Load-bearing claims in §2/§3/§6 carry a confidence tag — `[engineer-confirmed]`, `[verified: <evidence>]` (the command run, file read, or test output that established it), or `[assumed]` — so the resuming session re-verifies only what was never verified
-- Every §3 step has been re-checked against the §3.5 categorization rule: a step matching any §3.5 anchor shape is mis-bucketed — move it to §3.5 (bulk deletes include removing many branches or worktrees in one command). A cited justification ("per repo convention", "per memory") does not downgrade a step's irreversibility; a step claiming a convention names the file that states it
+- Every load-bearing claim in §2/§3/§6 carries a confidence tag — the script only checks that a section isn't entirely untagged, not that each individual claim is
+- A §3 step the script did *not* warn on can still belong in §3.5 — it only pattern-matches the named anchor shapes, not the underlying principle (mutates shared state irreversibly, or has externally-visible side effects outside this repo). A cited justification ("per repo convention", "per memory") never downgrades a step's irreversibility on its own; a step claiming a convention must name the file that states it
 - If §3's next step implements an approved plan, it names `code-writer` as the dispatch rather than describing the work to do inline
 - Draft verification used Bash (`cat`/`grep`/`sed -n`/`wc -l`), not `Read` — a `Read` of the handoff path consumes the file out from under any remaining `Edit` calls
 

@@ -1,0 +1,41 @@
+{
+  "skill_name": "plan-it",
+  "method": "description-fidelity",
+  "cases": [
+    {
+      "id": "audit-multi-service",
+      "query": "I need a plan for auditing our three microservices (billing, notifications, and auth) for inconsistent retry-and-backoff handling.",
+      "should_trigger": true
+    },
+    {
+      "id": "status-assessment",
+      "query": "Plan how we'd assess where the Postgres-to-CockroachDB migration currently stands across the five services that were supposed to have cut over.",
+      "should_trigger": true
+    },
+    {
+      "id": "multi-file-feature",
+      "query": "I need a plan for adding rate limiting to our public API — it'll touch the gateway middleware, the config schema, and the admin dashboard.",
+      "should_trigger": true
+    },
+    {
+      "id": "single-file-tweak",
+      "query": "Bump the timeout value in config/database.yml from 5s to 10s.",
+      "should_trigger": false
+    },
+    {
+      "id": "just-implement-it",
+      "query": "Go ahead and fix the null-check bug directly in the parser — no need to plan it out, just ship the one-line fix.",
+      "should_trigger": false
+    },
+    {
+      "id": "plan-already-exists",
+      "query": "Continue work on .claude/plans/add-rate-limiting.md — the plan is already there, pick up where it left off.",
+      "should_trigger": false
+    },
+    {
+      "id": "narrow-scope-plan-phrasing",
+      "query": "I need a plan for bumping the timeout value in config/database.yml from 5s to 10s.",
+      "should_trigger": false
+    }
+  ]
+}

@@ -223,6 +223,53 @@ class TestOwnershipMismatchRefused:
         assert _patch_calls(_read_calls(call_log)) == []
 
 
+class TestReplacementBodyMustPreserveMarker:
+    """The replacement body must itself start with the marker when the
+    target comment is already Claude-authored -- refuses to let a caller
+    silently strip the ownership marker via the PATCH. Zero PATCH calls on
+    refusal, not just exit code 1."""
+
+    def test_replacement_body_missing_marker_refused_no_patch(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="corrected text\n")
+        assert result.returncode == 1
+        assert "does not start with" in result.stderr
+        assert "ownership marker" in result.stderr
+        assert _patch_calls(_read_calls(call_log)) == []
+
+    def test_replacement_body_exactly_bare_marker_is_allowed(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="**[Claude Code]**")
+        assert result.returncode == 0
+        patches = _patch_calls(_read_calls(call_log))
+        assert len(patches) == 1
+        assert patches[0]["body"] == "**[Claude Code]**"
+
+    def test_replacement_body_with_marker_not_at_start_refused_no_patch(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text=" **[Claude Code]** corrected text\n")
+        assert result.returncode == 1
+        assert "does not start with" in result.stderr
+        assert "ownership marker" in result.stderr
+        assert _patch_calls(_read_calls(call_log)) == []
+
+    def test_replacement_body_wrong_case_marker_refused_no_patch(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _CLAUDE_CODE_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="**[claude code]** corrected text\n")
+        assert result.returncode == 1
+        assert "does not start with" in result.stderr
+        assert "ownership marker" in result.stderr
+        assert _patch_calls(_read_calls(call_log)) == []
+
+    def test_marker_prefixed_body_does_not_bypass_ownership_check(self, tmp_path, fake_gh):
+        env, call_log = fake_gh({"42": _HUMAN_BODY})
+        result = _run_script(tmp_path, env, ["owner/repo", "42"], input_text="**[Claude Code]** corrected text\n")
+        assert result.returncode == 1
+        assert "/replies" in result.stderr
+        assert "ownership marker" not in result.stderr
+        assert _patch_calls(_read_calls(call_log)) == []
+
+
 class TestAllowPathPatchesExactCommentWithExactBody:
     """The allow path: target comment is Claude-authored. Exactly one PATCH,
     against the exact comment id, with the exact stdin body."""
@@ -248,24 +295,23 @@ class TestPatchFailureAfterOwnershipCheckPropagates:
 
     def test_patch_failure_exits_nonzero(self, tmp_path, fake_gh):
         env, call_log = fake_gh({"7": _CLAUDE_CODE_BODY}, patch_exit=1)
-        result = _run_script(tmp_path, env, ["owner/repo", "7"], input_text="corrected text\n")
+        result = _run_script(tmp_path, env, ["owner/repo", "7"], input_text="**[Claude Code]** corrected text\n")
         assert result.returncode != 0
         patches = _patch_calls(_read_calls(call_log))
         assert len(patches) == 1
 
 
 class TestGhMagicValueShapedBodiesUseRawFlag:
-    """A body shaped like one of gh -F's magic values (a leading @, or the
-    literal null/true/false/an integer) must reach gh via -f (raw string),
-    not -F (typed) -- -F would read a leading-@ body as a filename or
-    type-coerce null/true/false/an integer instead of PATCHing the literal
-    text, corrupting or failing the write against a real PR comment."""
+    """The script always invokes gh with -f (raw string), never -F (typed),
+    regardless of body content -- including these marker-prefixed values
+    whose suffix still shapes like a gh -F magic value (leading @, or the
+    literal null/true/false/an integer) for illustration."""
 
     @pytest.mark.parametrize("tricky_body", [
-        "@correction, see below.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
-        "null",
-        "true",
-        "42",
+        "**[Claude Code]** @correction, see below.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+        "**[Claude Code]** null",
+        "**[Claude Code]** true",
+        "**[Claude Code]** 42",
     ])
     def test_magic_value_shaped_body_uses_raw_flag(self, tmp_path, fake_gh, tricky_body):
         env, call_log = fake_gh({"9": _CLAUDE_CODE_BODY})

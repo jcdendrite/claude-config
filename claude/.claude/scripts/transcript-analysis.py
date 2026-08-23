@@ -6528,7 +6528,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
 _PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
     # Key.
-    "repo", "pr_number", "machine",
+    "host", "repo", "pr_number", "machine",
     # Identity / provenance.
     "head_branch", "merged_at", "rate_stamp", "captured_at",
     "join_confidence", "supersedes", "status",
@@ -6547,6 +6547,17 @@ _PR_COST_LEDGER_COLUMNS: tuple[str, ...] = (
 )
 _PR_COST_LEDGER_HEADER_LINE = "\t".join(_PR_COST_LEDGER_COLUMNS)
 
+# Legacy header (no "host" column): every row under it is implicitly
+# _PR_COST_LEDGER_LEGACY_HOST_DEFAULT. _parse_pr_cost_ledger_file_text
+# recognizes both headers and normalizes a legacy row to the current column
+# shape before parsing -- see docs/pr-cost.md's backward-compat contract for
+# a new key column.
+if _PR_COST_LEDGER_COLUMNS[0] != "host":  # the slice below assumes this position; `assert` would
+    raise RuntimeError("_PR_COST_LEDGER_COLUMNS[0] must be 'host'")  # vanish under python -O
+_PR_COST_LEDGER_LEGACY_COLUMNS: tuple[str, ...] = _PR_COST_LEDGER_COLUMNS[1:]
+_PR_COST_LEDGER_LEGACY_HEADER_LINE = "\t".join(_PR_COST_LEDGER_LEGACY_COLUMNS)
+_PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
+
 _PR_COST_FLOAT_COLUMNS = (
     "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
     "opus_dollars", "opus_dollar_share_pct", "mean_context_at_turn",
@@ -6561,10 +6572,11 @@ _PR_COST_INT_COLUMNS = (
 _PR_COST_BOOL_COLUMNS = ("tests_changed", "plan_file_added", "risk_surface_flag")
 
 # status is a fixed enum carrying no embedded gh diagnostic text --
-# _GH_CALL_DEGRADED_AUTH from _gh_call_with_backoff folds into
-# _PR_COST_STATUS_DEGRADED_NETWORK here, since a mid-run auth failure and a
+# _GH_CALL_DEGRADED_AUTH and _GH_CALL_DEGRADED_HOST_MISMATCH from
+# _gh_call_with_backoff both fold into _PR_COST_STATUS_DEGRADED_NETWORK
+# here, since a mid-run auth or local-misconfiguration failure and a
 # generic transient one both just mean "this row's enrichment is
-# incomplete," not two distinguishable data states.
+# incomplete," not distinguishable data states.
 _PR_COST_STATUS_OK = "ok"
 _PR_COST_STATUS_DEGRADED_RATE_LIMIT = "degraded_rate_limit"
 _PR_COST_STATUS_DEGRADED_NETWORK = "degraded_network"
@@ -6581,10 +6593,12 @@ _PR_COST_JOIN_CONFIDENCE_VALUES = (
     _PR_COST_JOIN_CONFIDENCE_HIGH, _PR_COST_JOIN_CONFIDENCE_MEDIUM, _PR_COST_JOIN_CONFIDENCE_LOW,
 )
 
-# The gh-call-level outcome _gh_call_with_backoff itself returns on an
-# auth-shaped failure -- never a ledger status value; every caller folds it
-# into _PR_COST_STATUS_DEGRADED_NETWORK before it reaches a row (see above).
+# The gh-call-level outcomes _gh_call_with_backoff itself returns on an
+# auth-shaped or local-misconfiguration-shaped failure -- never ledger
+# status values; every caller folds them into _PR_COST_STATUS_DEGRADED_NETWORK
+# before they reach a row (see above).
 _GH_CALL_DEGRADED_AUTH = "degraded_auth"
+_GH_CALL_DEGRADED_HOST_MISMATCH = "degraded_host_mismatch"
 
 # Provisional placeholder ("As-of rule"): a merged PR's branch keeps
 # accruing local transcript activity for a while after merge, so
@@ -6639,18 +6653,29 @@ _PR_COST_GH_PR_LIST_LIMIT = 1000  # gh pr list's own default (30) silently
 _GIT_REMOTE_ORIGIN_TIMEOUT_S = 10  # Matches this file's other local git
 # calls (_ledger_path_is_git_tracked, _repo_scoped_project_slugs): no
 # network/credential work, so this only bounds a wedged invocation.
-# Anchored at the start (after an optional scheme/git@ prefix) so github.com
-# must be the URL's actual host, never merely a substring appearing later in
-# a malicious or misconfigured remote (e.g. https://attacker.example/github.com/x/y).
-_GIT_REMOTE_OWNER_REPO_RE = re.compile(
-    r"^(?:https?://|git://|ssh://(?:git@)?|git@)?github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
+# Anchored at the start (after an optional scheme/git@ prefix) so the captured
+# host is the URL's actual host, never merely a substring appearing later in
+# a malicious or misconfigured remote (e.g. https://attacker.example/github.com/x/y) --
+# whatever hostname it turns out to be, github.com or a GHE host alike.
+_GIT_REMOTE_HOST_OWNER_REPO_RE = re.compile(
+    r"^(?:https?://|git://|ssh://(?:git@)?|git@)?(?P<host>[A-Za-z0-9.-]+)[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
+# The host character class above has no port syntax, so a GHE remote on a
+# non-standard port (host:8443, ssh://git@host:2222/...) fails to parse and
+# the run aborts rather than misrouting.
 _GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 # Best-effort classification of a failed gh call's stderr text -- gh has no
 # structured error-kind field on stderr, so this is pattern matching against
 # gh's own documented error phrasing, not a guarantee.
 _GH_AUTH_ERROR_RE = re.compile(r"not logged into|gh auth login|authentication failed|http\s?401", re.IGNORECASE)
+# Matches gh's own stderr for an ambient GH_HOST that doesn't match any
+# configured git remote (verified against gh 2.97.0: "none of the git
+# remotes configured for this repository correspond to the GH_HOST
+# environment variable") -- a local shell-config mismatch, not a transient
+# failure, so it must not consume the retry budget the way a genuine
+# network error does.
+_GH_HOST_MISMATCH_ERROR_RE = re.compile(r"GH_HOST environment variable", re.IGNORECASE)
 _GH_RATE_LIMIT_ERROR_RE = re.compile(r"rate limit|http\s?429|http\s?403", re.IGNORECASE)
 _GH_RETRY_AFTER_RE = re.compile(r"retry.{0,3}after[:\s]+(\d+)", re.IGNORECASE)
 
@@ -6686,6 +6711,11 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
         )
     row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
 
+    if not row["host"] or row["host"] != row["host"].lower():
+        raise _PrCostLedgerParseError(
+            f"line {line_no}: malformed host value (must be lowercase) -- value omitted from"
+            " this diagnostic since the ledger's host column is never scrubbed at rest"
+        )
     if not row["repo"] or row["repo"] != row["repo"].lower():
         raise _PrCostLedgerParseError(
             f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
@@ -6744,8 +6774,10 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     """Canonical parser for the pr-cost ledger's tab-separated content.
 
     Unlike the weekly cost-ledger's markdown table, this format has no
-    preamble: line 1 must be exactly _PR_COST_LEDGER_HEADER_LINE, and every
-    following non-blank line is one tab-separated data row. Fails loud
+    preamble: line 1 must be exactly _PR_COST_LEDGER_HEADER_LINE (or the
+    pre-host-column _PR_COST_LEDGER_LEGACY_HEADER_LINE, the one documented
+    backward-compat exception -- see its own comment), and every following
+    non-blank line is one tab-separated data row. Fails loud
     (_PrCostLedgerParseError) on an unresolved git merge-conflict marker
     (reusing _COST_LEDGER_CONFLICT_MARKERS -- a generic git marker, not
     specific to the weekly ledger's own format), a missing/mismatched
@@ -6758,14 +6790,23 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
             if line.startswith(marker):
                 raise _PrCostLedgerParseError(f"line {line_no}: unresolved merge-conflict marker {marker!r}")
 
-    if not lines or lines[0] != _PR_COST_LEDGER_HEADER_LINE:
+    if not lines:
+        raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
+    if lines[0] == _PR_COST_LEDGER_HEADER_LINE:
+        is_legacy_header = False
+    elif lines[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
+        is_legacy_header = True
+    else:
         raise _PrCostLedgerParseError("missing or mismatched pr-cost ledger header row")
 
     rows: list[dict] = []
     for line_no, line in enumerate(lines[1:], start=2):
         if not line.strip():
             continue
-        rows.append(_parse_pr_cost_ledger_row_cells(line.split("\t"), line_no))
+        cells = line.split("\t")
+        if is_legacy_header:
+            cells = [_PR_COST_LEDGER_LEGACY_HOST_DEFAULT, *cells]
+        rows.append(_parse_pr_cost_ledger_row_cells(cells, line_no))
     return rows
 
 
@@ -6795,17 +6836,25 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
     return "\t".join(cells)
 
 
-def _latest_pr_cost_row(rows: Sequence[dict], repo: str, pr_number: int, machine_label: str | None) -> dict | None:
-    """Latest row (by captured_at) matching (repo, pr_number[, machine_label]).
+def _latest_pr_cost_row(
+    rows: Sequence[dict], host: str, repo: str, pr_number: int, machine_label: str | None,
+) -> dict | None:
+    """Latest row (by captured_at) matching (host, repo, pr_number[, machine_label]).
 
-    machine_label=None matches any machine -- read mode's default (an
-    operator checking "has any machine captured this PR yet" doesn't care
-    which one); --record always passes its own resolved machine_label,
-    matching the ledger's own (repo, pr_number, machine) key.
+    host and repo are compared as-is (no re-lowering here): both are
+    case-folded by the caller before reaching this function (host via
+    _git_remote_origin_host_and_owner_repo, repo via _resolve_pinned_gh_repo),
+    and every stored row's own host/repo cells are validated lowercase by
+    the parser -- the same convention _pr_cost_report's other identity
+    comparisons already rely on. machine_label=None matches any machine --
+    read mode's default (an operator checking "has any machine captured
+    this PR yet" doesn't care which one); --record always passes its own
+    resolved machine_label, matching the ledger's own (host, repo,
+    pr_number, machine) key.
     """
     matches = [
         r for r in rows
-        if r["repo"] == repo and r["pr_number"] == pr_number
+        if r["host"] == host and r["repo"] == repo and r["pr_number"] == pr_number
         and (machine_label is None or r["machine"] == machine_label)
     ]
     if not matches:
@@ -6814,7 +6863,7 @@ def _latest_pr_cost_row(rows: Sequence[dict], repo: str, pr_number: int, machine
 
 
 def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
-    """Append new_row to existing_rows, keyed by (repo, pr_number, machine).
+    """Append new_row to existing_rows, keyed by (host, repo, pr_number, machine).
 
     Unlike the weekly ledger's in-place replace, a duplicate key with
     --force APPENDS a new row (carrying new_row["supersedes"], already set
@@ -6889,13 +6938,14 @@ def _acquire_pr_cost_ledger_lock(lock_f) -> None:
             time.sleep(_COST_LEDGER_LOCK_POLL_INTERVAL_S)
 
 
-def _git_remote_origin_owner_repo() -> str:
-    """Case-folded owner/name parsed from this invocation's own
+def _git_remote_origin_host_and_owner_repo() -> tuple[str, str]:
+    """Case-folded (host, owner/name) parsed from this invocation's own
     `git remote get-url origin` -- the corpus-root side of _resolve_pinned_gh_repo's
     identity comparison, run from cwd (this subcommand's own worktree) rather
     than against the ~/.claude/projects/ transcript scan root, which is never
-    a git repository itself. github.com hosts only; a GitHub Enterprise
-    remote is not recognized and fails this parse.
+    a git repository itself. Accepts any host (github.com, a GitHub
+    Enterprise host, ...); whether gh actually holds credentials for that
+    host is left to the caller and to gh itself, not decided by this parse.
     """
     try:
         proc = subprocess.run(
@@ -6906,14 +6956,15 @@ def _git_remote_origin_owner_repo() -> str:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         print("pr-cost: could not resolve this repo's own remote (git remote get-url origin failed)", file=sys.stderr)
         sys.exit(1)
-    m = _GIT_REMOTE_OWNER_REPO_RE.search(proc.stdout.strip())
+    m = _GIT_REMOTE_HOST_OWNER_REPO_RE.search(proc.stdout.strip())
     if not m:
-        print("pr-cost: this repo's origin remote is not a recognizable github.com owner/repo URL", file=sys.stderr)
+        print("pr-cost: this repo's origin remote is not a recognizable host/owner/repo URL", file=sys.stderr)
         sys.exit(1)
-    return f"{m.group('owner')}/{m.group('repo')}".lower()
+    return m.group("host").lower(), f"{m.group('owner')}/{m.group('repo')}".lower()
 
 
 _GH_ERROR_KIND_AUTH = "auth"
+_GH_ERROR_KIND_HOST_MISMATCH = "host_mismatch"
 _GH_ERROR_KIND_RATE_LIMIT = "rate_limit"
 _GH_ERROR_KIND_NETWORK = "network"
 
@@ -6923,6 +6974,8 @@ def _classify_gh_error(stderr: str) -> str:
     one of the _GH_ERROR_KIND_* constants."""
     if _GH_AUTH_ERROR_RE.search(stderr):
         return _GH_ERROR_KIND_AUTH
+    if _GH_HOST_MISMATCH_ERROR_RE.search(stderr):
+        return _GH_ERROR_KIND_HOST_MISMATCH
     if _GH_RATE_LIMIT_ERROR_RE.search(stderr):
         return _GH_ERROR_KIND_RATE_LIMIT
     return _GH_ERROR_KIND_NETWORK
@@ -6949,16 +7002,18 @@ def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subproces
     _PR_COST_RATE_LIMIT_MAX_ELAPSED_S total elapsed -- a budget local to this
     one call (attempt/elapsed/backoff are all function-local state), not
     shared across the run: a --record sweep over many PRs can spend up to
-    that budget on each one in the worst case. An auth-shaped failure is
-    never retried: gh auth status already ran as a preflight, so a later one
-    is not expected to self-resolve by waiting.
+    that budget on each one in the worst case. An auth-shaped or
+    GH_HOST-mismatch-shaped failure is never retried: gh auth status already
+    ran as a preflight, and a local shell-config mismatch doesn't self-resolve
+    by waiting either way.
 
     Returns (proc, "") on success. On exhaustion, returns (None, status)
-    with status one of _GH_CALL_DEGRADED_AUTH, _PR_COST_STATUS_DEGRADED_RATE_LIMIT,
-    _PR_COST_STATUS_DEGRADED_NETWORK -- callers with no row yet to degrade
-    (repo-identity resolution, discovery) abort the whole run on any
-    non-empty status; per-PR enrichment instead marks that row's own status
-    column (folding _GH_CALL_DEGRADED_AUTH into _PR_COST_STATUS_DEGRADED_NETWORK
+    with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
+    _PR_COST_STATUS_DEGRADED_RATE_LIMIT, _PR_COST_STATUS_DEGRADED_NETWORK --
+    callers with no row yet to degrade (repo-identity resolution, discovery)
+    abort the whole run on any non-empty status; per-PR enrichment instead
+    marks that row's own status column (folding _GH_CALL_DEGRADED_AUTH and
+    _GH_CALL_DEGRADED_HOST_MISMATCH into _PR_COST_STATUS_DEGRADED_NETWORK
     there -- see _PR_COST_STATUS_VALUES).
     """
     attempt = 0
@@ -6983,6 +7038,18 @@ def _gh_call_with_backoff(argv: Sequence[str], *, label: str) -> tuple[subproces
         if kind == _GH_ERROR_KIND_AUTH:
             print(f"pr-cost: {label} failed ({kind}), not retrying (auth failures don't self-resolve)", file=sys.stderr)
             return None, _GH_CALL_DEGRADED_AUTH
+        if kind == _GH_ERROR_KIND_HOST_MISMATCH:
+            # Never echoes gh's own stderr (same discipline as every other
+            # print site here), but this specific failure has one fix an
+            # operator can actually act on, so name it instead of falling
+            # through to the generic network-failure message below.
+            print(
+                f"pr-cost: {label} failed ({kind}), not retrying -- gh's ambient GH_HOST"
+                " environment variable does not match this repo's own git remote host;"
+                " unset GH_HOST or point it at the correct host",
+                file=sys.stderr,
+            )
+            return None, _GH_CALL_DEGRADED_HOST_MISMATCH
         if attempt >= _PR_COST_RATE_LIMIT_MAX_ATTEMPTS or elapsed >= _PR_COST_RATE_LIMIT_MAX_ELAPSED_S:
             print(f"pr-cost: {label} failed ({kind}), giving up after {attempt} attempt(s)", file=sys.stderr)
             return None, (
@@ -7012,67 +7079,103 @@ def _pr_cost_abort_on_gh_failure(label: str, degraded: str) -> None:
     sys.exit(1)
 
 
-def _gh_auth_preflight_ok() -> bool:
-    """A single, non-retried `gh auth status` check, run before anything
-    else in this subcommand -- an auth failure caught here is cheaper than
-    one surfacing mid-run after a local corpus scan and gh discovery call."""
+def _gh_auth_preflight_ok(hostname: str) -> bool:
+    """A single, non-retried `gh auth status --hostname` check, run before
+    anything else in this subcommand -- an auth failure caught here is
+    cheaper than one surfacing mid-run after a local corpus scan and gh
+    discovery call. Scoped to one host because a bare `gh auth status`
+    evaluates every host it has ever held credentials for and fails
+    aggregate-wide on any one of them, including hosts irrelevant to this
+    run (e.g. a GHE-only token still triggers a github.com check)."""
     try:
         proc = subprocess.run(
-            ["gh", "auth", "status"], capture_output=True, text=True, timeout=_PR_COST_GH_TIMEOUT_S,
-            encoding="utf-8", errors="replace",
+            ["gh", "auth", "status", "--hostname", hostname], capture_output=True, text=True,
+            timeout=_PR_COST_GH_TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
     return proc.returncode == 0
 
 
-def _resolve_pinned_gh_repo(ordinal: int) -> tuple[str, dict]:
-    """Resolve gh's effective repo identity once, refuse (exit 2) if it
-    disagrees (case-folded) with this repo's own git remote identity, and
+def _resolve_pinned_gh_repo(corpus_host: str, corpus_repo: str, ordinal: int) -> tuple[str, dict]:
+    """Resolve gh's effective repo identity once, refuse (exit 2) if its
+    host or owner/name (case-folded) disagrees with corpus_host/corpus_repo
+    (this repo's own git remote identity, resolved by the caller), and
     return the confirmed owner/name to pin on every subsequent gh call this
     run makes -- gh's ambient target repo (a stale GH_REPO, `gh repo
-    set-default`, or an ambient cwd mismatch) can otherwise silently diverge
-    from the repo this invocation's own corpus and git remote actually
-    belong to. Also returns a fresh repo-kind redact map, used to scrub this
-    same repo value at every later print site this run needs. `ordinal` is
-    the redact label to use for this call's own mismatch-refusal message --
-    this resolution happens once per run, before any single account is "the"
-    account under --all-accounts, so the caller supplies it rather than this
-    function hardcoding one.
+    set-default`, or an ambient cwd mismatch) can otherwise silently
+    diverge from the repo this invocation's own corpus and git remote
+    actually belong to, including a same-named repo on a different host.
+    Also returns a fresh repo-kind redact map, used to scrub this same repo
+    value at every later print site this run needs. `ordinal` is the
+    redact label to use for this call's own mismatch-refusal message --
+    this resolution happens once per run, before any single account is
+    "the" account under --all-accounts, so the caller supplies it rather
+    than this function hardcoding one.
     """
-    corpus_repo = _git_remote_origin_owner_repo()
-    proc, degraded = _gh_call_with_backoff(["gh", "repo", "view", "--json", "nameWithOwner"], label="repo view")
+    # The mismatch check below folds a gh-side parse failure into gh_host=""
+    # and relies on that never coincidentally equaling corpus_host -- true
+    # today only because the sole caller resolves corpus_host via
+    # _git_remote_origin_host_and_owner_repo(), which itself never returns
+    # an empty string. Assert it here so a future caller violating that
+    # invariant fails loud instead of silently disabling the mismatch check.
+    if not corpus_host or not corpus_repo:
+        raise ValueError("_resolve_pinned_gh_repo requires a non-empty corpus_host and corpus_repo")
+    proc, degraded = _gh_call_with_backoff(
+        ["gh", "repo", "view", "--json", "nameWithOwner,url"], label="repo view"
+    )
     if degraded:
         _pr_cost_abort_on_gh_failure("gh repo view", degraded)
     try:
-        gh_repo = str(json.loads(proc.stdout or "{}")["nameWithOwner"]).lower()
+        payload = json.loads(proc.stdout or "{}")
+        gh_repo = str(payload["nameWithOwner"]).lower()
+        gh_url = str(payload["url"])
     except (json.JSONDecodeError, KeyError, TypeError):
         print("pr-cost: gh repo view returned unparseable JSON -- no row was captured", file=sys.stderr)
         sys.exit(1)
+    # url is the same https://host/owner/repo shape _GIT_REMOTE_HOST_OWNER_REPO_RE
+    # already parses for the local git remote, so reuse it here instead of a
+    # second host-parsing implementation.
+    url_match = _GIT_REMOTE_HOST_OWNER_REPO_RE.search(gh_url)
+    gh_host = url_match.group("host").lower() if url_match else ""
 
     repo_map: dict[tuple[int, str], str] = {}
-    if gh_repo != corpus_repo:
+    if gh_host != corpus_host or gh_repo != corpus_repo:
         print(
             "pr-cost: gh's effective target repo does not match this repo's own git remote identity"
-            f" ({_assign_root_scoped_redact_label('repo', ordinal, gh_repo, repo_map)} vs."
-            f" {_assign_root_scoped_redact_label('repo', ordinal, corpus_repo, repo_map)}) -- check"
-            " GH_REPO, `gh repo set-default`, or an ambient cwd mismatch",
+            f" ({_assign_root_scoped_redact_label('repo', ordinal, f'{gh_host}/{gh_repo}', repo_map)} vs."
+            f" {_assign_root_scoped_redact_label('repo', ordinal, f'{corpus_host}/{corpus_repo}', repo_map)}) --"
+            " check GH_REPO, `gh repo set-default`, or an ambient cwd mismatch",
             file=sys.stderr,
         )
         sys.exit(2)
     return gh_repo, repo_map
 
 
-def _gh_discover_merged_prs(pinned_repo: str) -> list[dict]:
+def _gh_host_qualified_repo(corpus_host: str, pinned_repo: str) -> str:
+    """`HOST/OWNER/REPO` form for a gh `--repo` argument -- gh's bare
+    `OWNER/REPO` form resolves against whichever host the ambient `GH_HOST`
+    environment variable names (api.github.com when unset), regardless of
+    the invoking directory's own git remote, so every gh call this
+    subcommand makes must host-qualify `--repo` to actually reach the
+    intended host instead of silently querying the wrong one under the
+    same owner/repo.
+    """
+    return f"{corpus_host}/{pinned_repo}"
+
+
+def _gh_discover_merged_prs(corpus_host: str, pinned_repo: str) -> list[dict]:
     """Bulk-discover every merged PR for the pinned repo in one call, with
     an explicit --limit -- never gh's own 30-item default, which would
     silently truncate a larger population with no error. Auth/config-shaped
     failures abort the whole run immediately (no retry); rate-limit/network
     failures retry under the shared backoff budget before aborting the same
-    way -- discovery has no per-row granularity to degrade into.
+    way -- discovery has no per-row granularity to degrade into. `--repo` is
+    host-qualified (see _gh_host_qualified_repo) so a GHE-pinned repo is
+    queried on its own host rather than on api.github.com.
     """
     argv = [
-        "gh", "pr", "list", "--repo", pinned_repo, "--state", "merged",
+        "gh", "pr", "list", "--repo", _gh_host_qualified_repo(corpus_host, pinned_repo), "--state", "merged",
         "--limit", str(_PR_COST_GH_PR_LIST_LIMIT),
         "--json", "number,headRefName,additions,deletions,changedFiles,mergedAt",
     ]
@@ -7086,15 +7189,20 @@ def _gh_discover_merged_prs(pinned_repo: str) -> list[dict]:
         sys.exit(1)
 
 
-def _gh_pr_view_enrichment(pinned_repo: str, pr_number: int) -> tuple[dict | None, str]:
+def _gh_pr_view_enrichment(corpus_host: str, pinned_repo: str, pr_number: int) -> tuple[dict | None, str]:
     """Per-PR enrichment call: commits/reviews/files, none of which
     `gh pr list` returns. Returns (payload, _PR_COST_STATUS_OK) on success,
     else (None, degraded) with degraded one of _gh_call_with_backoff's own
-    status strings -- the caller folds _GH_CALL_DEGRADED_AUTH into
-    _PR_COST_STATUS_DEGRADED_NETWORK before it reaches a ledger row's status
-    column.
+    status strings -- the caller folds _GH_CALL_DEGRADED_AUTH and
+    _GH_CALL_DEGRADED_HOST_MISMATCH into _PR_COST_STATUS_DEGRADED_NETWORK
+    before either reaches a ledger row's status column. `--repo` is
+    host-qualified (see _gh_host_qualified_repo) so a GHE-pinned repo is
+    queried on its own host rather than on api.github.com.
     """
-    argv = ["gh", "pr", "view", str(pr_number), "--repo", pinned_repo, "--json", "commits,reviews,files"]
+    argv = [
+        "gh", "pr", "view", str(pr_number),
+        "--repo", _gh_host_qualified_repo(corpus_host, pinned_repo), "--json", "commits,reviews,files",
+    ]
     proc, degraded = _gh_call_with_backoff(argv, label=f"pr view {pr_number}")
     if degraded:
         return None, degraded
@@ -7305,7 +7413,7 @@ def _pr_cost_asof_window_ok(merged_at_iso: str, window_days: float, now: datetim
 
 
 def _new_pr_cost_row(
-    *, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
+    *, host: str, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
     join_confidence: str, status: str, machine: str, captured_at: str, supersedes: str,
     plan_glob: str, risk_globs: Sequence[str], ordinal: int, branch_map: dict,
 ) -> dict:
@@ -7313,11 +7421,11 @@ def _new_pr_cost_row(
     head_branch is the SCRUBBED form (_assign_root_scoped_redact_label) --
     the join itself already ran on the raw `branch` value passed in here;
     this is the write boundary, the only point this run's branch value is
-    allowed to reach the ledger or stdout/stderr. `repo` is stored raw: it
-    is part of the row's own key and must stay stable and comparable across
-    runs for the ledger to function at all (PR numbers are only unique
-    per-repo) -- every *print* of it still routes through the caller's own
-    repo_map instead.
+    allowed to reach the ledger or stdout/stderr. `host` and `repo` are
+    stored raw: both are part of the row's own key and must stay stable and
+    comparable across runs for the ledger to function at all (PR numbers are
+    only unique per-(host, repo)) -- every *print* of `repo` still routes
+    through the caller's own repo_map instead.
     """
     dollars = agg["dollars"]
     tokens = agg["tokens"]
@@ -7330,6 +7438,7 @@ def _new_pr_cost_row(
     commits = (enrichment or {}).get("commits") or []
 
     return {
+        "host": host,
         "repo": pinned_repo,
         "pr_number": pr["number"],
         "machine": machine,
@@ -7380,7 +7489,7 @@ def _print_pr_cost_ledger_rows(rows: list[dict], ordinal: int, branch_map: dict,
 
 def _print_pr_cost_uncaptured(
     branch_totals: dict[str, dict], merged_prs: Sequence[dict], existing_rows: list[dict],
-    pinned_repo: str, machine_label: str | None, ordinal: int, branch_map: dict,
+    corpus_host: str, pinned_repo: str, machine_label: str | None, ordinal: int, branch_map: dict,
 ) -> None:
     """Read mode's gap listing: merged PRs with local corpus activity not
     yet captured in the ledger. Restricted to an unambiguous direct
@@ -7397,7 +7506,7 @@ def _print_pr_cost_uncaptured(
         if len(matches) != 1:
             continue
         pr = matches[0]
-        if _latest_pr_cost_row(existing_rows, pinned_repo, pr["number"], machine_label) is not None:
+        if _latest_pr_cost_row(existing_rows, corpus_host, pinned_repo, pr["number"], machine_label) is not None:
             continue
         any_uncaptured = True
         label = _assign_root_scoped_redact_label("branch", ordinal, branch, branch_map)
@@ -7491,7 +7600,8 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         )
         sys.exit(1)
 
-    if not _gh_auth_preflight_ok():
+    corpus_host, corpus_repo = _git_remote_origin_host_and_owner_repo()
+    if not _gh_auth_preflight_ok(corpus_host):
         print("pr-cost: gh auth status failed -- run `gh auth login` before pr-cost", file=sys.stderr)
         sys.exit(1)
 
@@ -7500,8 +7610,8 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     # below. redact_ordinals is computed first so _resolve_pinned_gh_repo's
     # own mismatch-refusal message has an ordinal to label with.
     redact_ordinals = _redaction_ordinals(roots)
-    pinned_repo, repo_map = _resolve_pinned_gh_repo(ordinal=redact_ordinals[roots[0].resolve()])
-    merged_prs = _gh_discover_merged_prs(pinned_repo)
+    pinned_repo, repo_map = _resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=redact_ordinals[roots[0].resolve()])
+    merged_prs = _gh_discover_merged_prs(corpus_host, pinned_repo)
     branch_map: dict[tuple[int, str], str] = {}  # shared across accounts; key already includes ordinal
 
     recorded = skipped_no_sentinel = skipped_other = 0
@@ -7538,7 +7648,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         if not record:
             _print_pr_cost_ledger_rows(existing_rows, ordinal, branch_map, repo_map)
             _print_pr_cost_uncaptured(
-                branch_totals, merged_prs, existing_rows, pinned_repo, machine_label, ordinal, branch_map
+                branch_totals, merged_prs, existing_rows, corpus_host, pinned_repo, machine_label, ordinal, branch_map
             )
             continue
 
@@ -7607,12 +7717,14 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             degraded_status_by_pr_number: dict[int, str] = {}
             for pr in matches:
                 print(f"pr-cost:   enriching PR #{pr['number']}...", file=sys.stderr)
-                payload, degraded = _gh_pr_view_enrichment(pinned_repo, pr["number"])
+                payload, degraded = _gh_pr_view_enrichment(corpus_host, pinned_repo, pr["number"])
                 if payload is not None:
                     enrichment_by_pr_number[pr["number"]] = payload
                 else:
                     degraded_status_by_pr_number[pr["number"]] = (
-                        _PR_COST_STATUS_DEGRADED_NETWORK if degraded == _GH_CALL_DEGRADED_AUTH else degraded
+                        _PR_COST_STATUS_DEGRADED_NETWORK
+                        if degraded in (_GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH)
+                        else degraded
                     )
 
             resolved_pr, join_confidence = _resolve_branch_pr(branch, matches, enrichment_by_pr_number, plan_glob)
@@ -7653,7 +7765,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         print(f"pr-cost: {exc}", file=sys.stderr)
                         sys.exit(1)
 
-                    already = _latest_pr_cost_row(current_rows, pinned_repo, resolved_pr["number"], machine_label)
+                    already = _latest_pr_cost_row(
+                        current_rows, corpus_host, pinned_repo, resolved_pr["number"], machine_label
+                    )
                     if already is not None and not force:
                         print(
                             f"pr-cost:   PR #{resolved_pr['number']} for machine={machine_label} is already"
@@ -7681,9 +7795,10 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                     agg = branch_totals.get(branch) or _new_pr_cost_agg()
                     captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
                     new_row = _new_pr_cost_row(
-                        pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg, enrichment=enrichment,
-                        join_confidence=join_confidence, status=row_status, machine=machine_label,
-                        captured_at=captured_at, supersedes=(already["captured_at"] if already else ""),
+                        host=corpus_host, pinned_repo=pinned_repo, pr=resolved_pr, branch=branch, agg=agg,
+                        enrichment=enrichment, join_confidence=join_confidence, status=row_status,
+                        machine=machine_label, captured_at=captured_at,
+                        supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
                     )
                     try:

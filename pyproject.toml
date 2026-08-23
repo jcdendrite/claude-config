@@ -5,6 +5,15 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "B", "I", "UP", "SIM"]
 
+# Long-line data, not code: this file embeds a frozen bash-source fixture (pipe-delimited
+# rows) as a Python string constant, so splitting lines would corrupt the frozen bytes.
+# `# noqa` does not suppress E501 inside a string literal — it is not a real comment token
+# there. Ruff's per-file-ignore has no block scope, so this silences E501 for the whole
+# file, not just the fixture — move the fixture to a sibling data file if this file ever
+# grows real test code with a genuinely long line.
+[tool.ruff.lint.per-file-ignores]
+"claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py" = ["E501"]
+
 [tool.pytest.ini_options]
 pythonpath = ["claude/.claude/tests", "claude/.claude/scripts", "evals", "plugins/skill-management/scripts", "plugins/lovable-cloud/tests"]
 # -n auto parallelizes the documented `pytest claude/.claude/` command itself

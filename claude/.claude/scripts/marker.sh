@@ -23,6 +23,13 @@ Subcommands:
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.
+  status     Report every completion marker (code-review, skill-review,
+             plan-review, ready-for-review) for this repo and every
+             active-bypass marker (plan-review, ready-for-review,
+             respond-pr, memory-skill) for this session, each as live,
+             historical, or absent. Takes no skill argument. Evicts a
+             stale (dead-PID) active-bypass marker for this session as a
+             side effect of classifying it.
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
@@ -132,6 +139,76 @@ _guard_staged_vs_unstaged() {
   fi
 }
 
+# _status_glob_has_match DIR PREFIX
+# True iff some file in DIR whose name begins with PREFIX exists, regardless
+# of content -- used by `status` to tell "historical" (a marker exists for
+# this repo but its hash is stale) apart from "absent" (no marker at all).
+_status_glob_has_match() {
+  local dir="$1" prefix="$2"
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local -a matched=("$dir/$prefix"*)
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+  # nullglob leaves the array empty on no match, so the first slot is unset
+  # (empty string) precisely when nothing matched.
+  [ -n "${matched[0]:-}" ]
+}
+
+# _status_report_completion_marker LABEL MARKERS_DIR REPO_HASH_PREFIX CURRENT_VALUE
+# Prints "  LABEL: live|historical|absent (...)" for `status`. Returns 0 when
+# live so a caller needing an extra live-only check (the reconciliation flag)
+# doesn't have to re-derive the state.
+_status_report_completion_marker() {
+  local label="$1" markers_dir="$2" prefix="$3" current_value="$4"
+  if [ -n "$current_value" ] && _lib_marker_value_present "$markers_dir" "$current_value" "$prefix"; then
+    printf '  %s: live (hash matches the current state)\n' "$label"
+    return 0
+  fi
+  if _status_glob_has_match "$markers_dir" "$prefix"; then
+    printf '  %s: historical (marker present, hash does not match the current state)\n' "$label"
+  else
+    printf '  %s: absent (no marker for this repo)\n' "$label"
+  fi
+  return 1
+}
+
+# _status_reconciliation_flag LABEL REPO_ROOT [PATHSPEC...]
+# Prints a flag line when the working tree holds unstaged changes overlapping
+# PATHSPEC (the whole repo when no pathspec is given) -- called only when the
+# corresponding marker is live, since "uncommitted changes overlap a
+# not-live marker" has nothing to reconcile.
+_status_reconciliation_flag() {
+  local label="$1" repo_root="$2"; shift 2
+  local diff_status
+  # Exit code checked exactly, not just nonzero: a capped call that times out
+  # also exits nonzero, and must not be misread as "differences found".
+  _lib_capped git -C "$repo_root" diff --quiet -- "$@"
+  diff_status=$?
+  if [ "$diff_status" -eq 1 ]; then
+    printf '  %s reconciliation flag: uncommitted changes overlap the diff this marker covers\n' "$label"
+  fi
+}
+
+# _status_report_active_bypass LABEL DIR_NAME SESSION_ID
+# Prints "  LABEL: live|stale|absent (...)" for `status`. Existence is
+# captured BEFORE calling _lib_active_bypass_marker_live, which evicts a
+# stale (dead-PID) marker as a side effect -- otherwise "stale" and "absent"
+# would be indistinguishable after the call evicts the file out from under us.
+_status_report_active_bypass() {
+  local label="$1" dir_name="$2" session_id="$3"
+  local marker_path="$CONFIG_DIR/$dir_name/$session_id"
+  local existed_before=0
+  [ -f "$marker_path" ] && existed_before=1
+  if _lib_active_bypass_marker_live "$dir_name" "$session_id"; then
+    printf '  %s: live (bypass marker present for this session)\n' "$label"
+  elif [ "$existed_before" -eq 1 ]; then
+    printf '  %s: stale (dead-PID marker evicted)\n' "$label"
+  else
+    printf '  %s: absent (no bypass marker for this session)\n' "$label"
+  fi
+}
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -171,7 +248,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     ;;
-  resolve-session-id)
+  resolve-session-id|status)
     if [ -n "$ARG2" ]; then
       usage
       exit 2
@@ -381,5 +458,56 @@ case "$SUBCOMMAND" in
   resolve-session-id)
     SESSION_ID=$(_resolve_session_id) || exit 2
     printf '%s' "$SESSION_ID"
+    ;;
+  status)
+    SESSION_ID=$(_resolve_session_id) || exit 2
+    REPO_ROOT=$(_resolve_repo_root) || exit 2
+    REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+    REPO_HASH_PREFIX="$REPO_HASH."
+
+    printf 'Completion markers (this repo):\n'
+
+    # code-review: hash of the whole-repo staged diff -- same recipe as the
+    # `write code-review` arm above. Capped so a stalled git diff can't hang
+    # the whole status report; a killed process yields an empty value, which
+    # _status_report_completion_marker already treats as absent/historical.
+    CODE_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
+    if _status_report_completion_marker code-review "$CONFIG_DIR/code-review-markers" "$REPO_HASH_PREFIX" "$CODE_REVIEW_VALUE"; then
+      _status_reconciliation_flag code-review "$REPO_ROOT"
+    fi
+
+    # skill-review: same recipe as the `write skill-review` arm above,
+    # scoped to the SKILL.md/ROUTING.md pathspecs.
+    SKILL_REVIEW_PATHSPECS=('claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md')
+    SKILL_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached -- "${SKILL_REVIEW_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
+    if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
+      _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"
+    fi
+
+    # plan-review: same recipe as the `write plan-review` arm above (the
+    # plan-mode sibling takes priority over _lib_active_plan_hash). A hash
+    # that can't be computed (unreadable plan-mode target) is treated as
+    # empty here rather than aborting -- `status` is a report, not a write,
+    # and the other three markers still deserve their own report.
+    PLANMODE_SIBLING="$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
+    if PLANMODE_TARGET=$(_lib_capped cat "$PLANMODE_SIBLING" 2>/dev/null); then
+      PLAN_REVIEW_VALUE=$(_lib_capped sha256sum -- "$PLANMODE_TARGET" 2>/dev/null | awk '{print $1}')
+    else
+      PLAN_REVIEW_VALUE=$(_lib_active_plan_hash "$REPO_ROOT") || PLAN_REVIEW_VALUE=""
+    fi
+    _status_report_completion_marker plan-review "$CONFIG_DIR/plan-review-markers" "$REPO_HASH_PREFIX" "$PLAN_REVIEW_VALUE"
+
+    # ready-for-review: same recipe as the `write ready-for-review` arm
+    # above. Unlike that arm, stderr is suppressed and an empty result is not
+    # fatal -- a zero-commit repo has no HEAD to hash, which `status` must
+    # report as absent rather than error on.
+    READY_FOR_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
+    _status_report_completion_marker ready-for-review "$CONFIG_DIR/ready-for-review-markers" "$REPO_HASH_PREFIX" "$READY_FOR_REVIEW_VALUE"
+
+    printf '\nActive-bypass markers (this session):\n'
+    _status_report_active_bypass plan-review ".plan-review-active.d" "$SESSION_ID"
+    _status_report_active_bypass ready-for-review ".ready-for-review-active.d" "$SESSION_ID"
+    _status_report_active_bypass respond-pr ".respond-pr-active.d" "$SESSION_ID"
+    _status_report_active_bypass memory-skill ".memory-skill-active.d" "$SESSION_ID"
     ;;
 esac
