@@ -99,6 +99,7 @@ Each account's own `~/.claude/.pr-cost-enabled` sentinel still individually gate
 `host` and `repo` are not protected the same way at rest:
 - `_new_pr_cost_row` stores both directly in the ledger row with no substitution, so every captured PR's host and owner/name pair sit in the ledger file in the clear, permanently, once written — an unmitigated gap.
 - Terminal output is the one place `repo` *is* covered: the read-mode listing computes a redacted label via the same `_assign_root_scoped_redact_label` call `head_branch` uses before printing, so a `repo` value doesn't reach your terminal in the clear even though it reaches the file that way. `host` has no equivalent terminal exposure to cover in the first place — no print path currently displays it, redacted or otherwise.
+- For a GHE host specifically, this gap carries more identification risk than for `repo` alone — an internal GHE hostname is often the single most distinctive organization-identifying token in the row, the same reasoning `deny-private-project-refs` uses to treat internal-TLD hostnames as an always-on structural detector.
 - Keeping the ledger file itself outside this repo's git tree does not close this — that only stops it from being published in a commit, not from sitting in the clear in a local file.
 
 ## Residual replication paths the git-tree check doesn't close

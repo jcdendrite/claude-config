@@ -16679,6 +16679,24 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
+    def test_ipv6_literal_host_does_not_resolve(self, monkeypatch, capsys):
+        """The host capture's `[A-Za-z0-9.-]+` class also excludes the
+        bracket/colon syntax of a bracketed IPv6-literal remote, so it fails
+        to parse and aborts rather than mis-splitting the literal into the
+        owner/repo capture groups -- same fail-closed shape as the port gap
+        above, via an independently-necessary exclusion (brackets/colons),
+        not a restatement of the port test's coverage."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://[::1]/owner/repo\n", "stderr": "",
+            })(),
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._git_remote_origin_host_and_owner_repo()
+        assert exc_info.value.code == 1
+        assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
+
 
 class TestGhAuthPreflightOkHostnameScoping:
     """_gh_auth_preflight_ok: scopes `gh auth status` to the given hostname
