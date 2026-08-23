@@ -53,7 +53,7 @@ A degraded row's dollar/token figures are still trustworthy (those come from the
 
 ## Data
 
-Ledger data lives outside this repo, at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default (`~/.claude/pr-cost-ledger.tsv` when `CLAUDE_CONFIG_DIR` is unset) — a local, per-account file that `--record` creates on first use and never enters this repo's git tree. Set `PR_COST_LEDGER_PATH` to an absolute path to record somewhere else instead; a relative value is rejected. Unlike the public, git-committed weekly cost ledger, a freshly created pr-cost ledger file is given restrictive `0600` permissions, since its rows carry branch names and a repo identifier the weekly ledger's rows don't.
+Ledger data lives outside this repo, at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` by default (`~/.claude/pr-cost-ledger.tsv` when `CLAUDE_CONFIG_DIR` is unset) — a local, per-account file that `--record` creates on first use and never enters this repo's git tree. Set `PR_COST_LEDGER_PATH` to an absolute path to record somewhere else instead; a relative value is rejected. Unlike the public, git-committed weekly cost ledger, a freshly created pr-cost ledger file is given restrictive `0600` permissions, since its rows carry branch names and a repo/host identifier the weekly ledger's rows don't.
 
 `--record` additionally requires the opt-in sentinel `~/.claude/.pr-cost-enabled` (prompted by `install.sh`, alongside `.cost-ledger-enabled`) — a write-taking subcommand shipped to every stow user stays consent-gated.
 
@@ -106,7 +106,7 @@ Each account's own `~/.claude/.pr-cost-enabled` sentinel still individually gate
 
 `--record` refuses (exit 2) when the resolved ledger path sits inside a git working tree, so the default location is never accidentally committed. That check walks up from the ledger path to the nearest existing ancestor and asks git directly whether it's tracked — it cannot see two git-invisible ways the same branch/repo data could still end up shared or duplicated outside this machine:
 
-- **A cloud-sync folder** (Dropbox, iCloud, OneDrive, or similar) syncing `$CLAUDE_CONFIG_DIR` or `PR_COST_LEDGER_PATH`'s directory. The ledger's branch names and repo identifier — more sensitive than the weekly ledger's aggregate-only rows — would replicate to every device and account the sync folder reaches.
+- **A cloud-sync folder** (Dropbox, iCloud, OneDrive, or similar) syncing `$CLAUDE_CONFIG_DIR` or `PR_COST_LEDGER_PATH`'s directory. The ledger's branch names and repo/host identifiers — more sensitive than the weekly ledger's aggregate-only rows — would replicate to every device and account the sync folder reaches.
 - **A bare-repo dotfile manager** (yadm-style, tracking `$HOME` via `--git-dir`/`--work-tree` flags rather than an in-tree `.git`). The git-tree check looks for a conventional in-tree `.git`; a bare-repo dotfile manager's tracking is invisible to it, so the ledger could be silently version-controlled and pushed to a remote without the check ever firing.
 
-Avoid both if the ledger's contents should stay off a shared destination — this is independent of, and in addition to, `repo`'s own raw-at-rest exposure above.
+Avoid both if the ledger's contents should stay off a shared destination — this is independent of, and in addition to, `repo`'s and `host`'s own raw-at-rest exposure above.

@@ -15,8 +15,9 @@
 session costs against GitHub PR data into a TSV cost ledger, but it
 hardcoded `github.com` in two places and therefore could not run at all
 against a GitHub Enterprise (GHE) remote: `_gh_auth_preflight_ok()` ran a
-bare `gh auth status` with no `--hostname` filter, and
-`_git_remote_origin_owner_repo()`'s regex matched only the literal string
+bare `gh auth status` with no `--hostname` filter, and the git-remote-parsing
+regex (now `_git_remote_origin_host_and_owner_repo`'s
+`_GIT_REMOTE_HOST_OWNER_REPO_RE`) matched only the literal string
 `github.com`, so a GHE remote URL never parsed. Fixing those two surfaced
 two deeper gaps: `gh pr list`/`gh pr view --repo` calls with a bare
 `OWNER/REPO` always resolve against `api.github.com` (or `GH_HOST`)
@@ -60,7 +61,7 @@ root-problem line itself):
 3. Existing ledger rows written before this change carry no `host` value at
   all (the column didn't exist) — a fact about already-persisted data this
   design must accept, not something it can retroactively correct.
-  `[verified: _PR_COST_LEDGER_LEGACY_COLUMNS at transcript-analysis.py:6551]`
+  `[verified: _PR_COST_LEDGER_LEGACY_COLUMNS at transcript-analysis.py:6557]`
 
 **Per mechanism:**
 
@@ -215,6 +216,8 @@ checkout using the same ledger file and confirm both rows coexist.
   cause a genuine host-mismatch or auth failure to fall through to the
   generic network-error path, which retries a non-retryable local
   misconfiguration for up to 15 minutes before giving up (a stall, not a
-  fast actionable exit) rather than breaking outright. No version guard
-  currently pins or checks `gh`'s stderr wording; accepted as a monitored
-  risk rather than fixed in this change.
+  fast actionable exit) rather than breaking outright — and per-PR
+  enrichment (`_gh_pr_view_enrichment`) hits this per PR in the run, so a
+  `--record` sweep over many PRs multiplies one stall into many. No version
+  guard currently pins or checks `gh`'s stderr wording; accepted as a
+  monitored risk rather than fixed in this change.

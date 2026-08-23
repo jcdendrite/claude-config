@@ -15563,9 +15563,18 @@ def _fake_pr_cost_subprocess_run(
                 proc.returncode = 1
                 proc.stderr = gh_repo_view_failure_stderr
             else:
-                proc.stdout = json.dumps({
+                # Real `gh --json` returns only the fields the caller asked
+                # for -- gating on the actual argv here (not hardcoding both
+                # keys) catches a caller that drops a required field from
+                # its own --json list, which a hardcoded payload would mask.
+                json_flag_index = cmd.index("--json")
+                requested_fields = set(cmd[json_flag_index + 1].split(","))
+                full_payload = {
                     "nameWithOwner": gh_repo_name_with_owner,
                     "url": f"https://{gh_repo_view_host}/{gh_repo_name_with_owner}",
+                }
+                proc.stdout = json.dumps({
+                    key: value for key, value in full_payload.items() if key in requested_fields
                 })
         elif cmd[:3] == ["gh", "pr", "list"]:
             if enforce_repo_pin is not None and not _argv_carries_repo_pin(cmd, enforce_repo_pin):
