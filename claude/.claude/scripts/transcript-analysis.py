@@ -38,13 +38,14 @@ from _config_dir import config_dir
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
 from transcript_analysis.corpus import SUBAGENT_SUBDIR, _parse_ts, _read_session_file_partitioned, iter_sessions
 from transcript_analysis.cost import (
-    # The eight names below are read only via _mod.<name> from test files (unit-testing a
+    # The nine names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly, or a monkeypatch retarget) -- cmd_cost/cmd_cost_trend are the
     # only two this file's own code calls bare, via p_cost/p_cost_trend.set_defaults below.
     _accumulate_per_account_turn,  # noqa: F401
     _attributed_branch,  # noqa: F401
     _cost_report,  # noqa: F401
     _cost_trend_report,  # noqa: F401
+    _print_branch_exclusion_diagnostic,  # noqa: F401
     _print_model_id_table,  # noqa: F401
     _print_thread_table,  # noqa: F401
     _print_token_class_table,  # noqa: F401
@@ -7792,6 +7793,19 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         )
                         continue
 
+                    if branch not in branch_totals and branch_totals:
+                        # branch_totals non-empty but missing this exact key means the account
+                        # saw local activity under some other branch name -- distinct from
+                        # genuine branch-idle (branch_totals empty), which is a legitimate
+                        # zero-cost case that must not warn.
+                        print(
+                            f"pr-cost:   PR #{resolved_pr['number']}'s branch has no matching"
+                            " local corpus activity, but this account's scan attributed activity"
+                            f" to {len(branch_totals)} other branch(es) -- this row may"
+                            " under-report if the branch was renamed; investigate locally with"
+                            " `cost --branches <branch>`",
+                            file=sys.stderr,
+                        )
                     agg = branch_totals.get(branch) or _new_pr_cost_agg()
                     captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
                     new_row = _new_pr_cost_row(
