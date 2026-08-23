@@ -120,7 +120,7 @@ B4. **Unresolved external dependencies** — Does the plan depend on external se
 
 B5. **Evidence and verification** — Does the plan cite a source for each finding/assertion (file:line, tool that flagged it, or how it was discovered)? When the plan asserts a specific code shape (function signature, exact line number, type field, import path), verify the cited source actually matches — citation alone is insufficient if the assertion misquotes it. **When the plan asserts a shape is "canonical," "the existing pattern," or "the convention," verify the cited example represents the broader population — run `git grep` and check the count. A single-call-site citation does not establish a pattern.** This extends to **external state the author cannot observe** — which env vars or secrets exist, CI/config contents, whether a migration was already applied, deployment status — assert these only with tool output or an explicit "unverified, confirm before relying on this" flag, never as fact.
 
-**An invoked-then-abbreviated skill is a missing evidence base.** When the plan names an invoked skill, verify its specified artifacts were produced; an unstated or silently-rebutted abbreviation is a finding.
+**An invoked-then-abbreviated skill is a missing evidence base.** When the plan names an invoked skill, verify its specified artifacts were produced — watch for the skill being reframed as a "lens," "philosophy," or "principle to keep in mind" rather than a procedure to execute; an unstated or silently-rebutted abbreviation is a finding.
 
 ### Scope
 

@@ -398,7 +398,9 @@ explicit (session model × permission mode × dispatch shape) matrix, then
 reads each run's `subagents/agent-*.jsonl` + `.meta.json` sidecars to report
 requested vs. observed subagent model, so the plan-mode subagent
 model-resolution question can be settled by measurement instead of corpus
-inference. Full design, hypotheses, and the run matrix live in
+inference — testing whether harness plan mode changes which model a
+dispatched subagent actually resolves to. Full design, hypotheses, and the
+run matrix live in
 [`.claude/plans/plan-mode-model-resolution-experiment.md`](../.claude/plans/plan-mode-model-resolution-experiment.md) —
 this is a pointer, not a restatement.
 

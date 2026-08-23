@@ -42,7 +42,7 @@ If the diff is purely backend, infrastructure, server-only types with no contrac
 
 **SSR / hydration** (where applicable) — hydration mismatches, client-only guards, server-safe imports, flash-of-unauthorized-content.
 
-**Accessibility beyond the obvious** — focus management in modals/drawers (focus trap, return-focus-on-close), skip links, live regions for async status, `prefers-reduced-motion`, focus-visible.
+**Accessibility beyond the obvious** — focus management in modals/drawers (focus trap, return-focus-on-close), skip links, live regions for async status, `prefers-reduced-motion`, focus-visible. The skill checklist covers named-element basics; this angle is what assistive-technology users hit that authors miss.
 
 **Internationalization and typography** — hardcoded strings where i18n exists, date / number / currency formatting, `dir` for RTL, truncation on long strings, locale-specific input formats (postal codes, phone numbers).
 

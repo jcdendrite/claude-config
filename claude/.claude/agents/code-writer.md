@@ -34,7 +34,7 @@ is done when you have reviewed your own diff and fixed what that review found.
 Verify each of these on every change you write — they apply across every
 language and stack:
 
-- **Before modifying any test file:** Read `~/.claude/skills/test-conventions/SKILL.md` in full before writing — it loads repo-specific conventions and how-to guidance that shape the approach.
+- **Before modifying any test file:** Read `~/.claude/skills/test-conventions/SKILL.md` in full before writing — reading the full body runs its Step 0 project-layer glob to load repo-specific conventions, plus how-to guidance that shapes the approach.
 - **Before writing a read-path SELECT query** (PostgREST `.from()/.select()` chains, list-returning ORM calls): Read `~/.claude/skills/sql-query-conventions/SKILL.md`. Does not apply to write-path (INSERT/UPDATE/DELETE), DDL, test fixtures, or document/KV stores.
 - Names describe intent. No generic placeholders.
 - Every branch a reader can reach is handled — error, empty, and

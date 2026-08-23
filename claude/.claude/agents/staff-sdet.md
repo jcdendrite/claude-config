@@ -16,7 +16,7 @@ If the diff contains no test-relevant surface, say so and return **No testing co
 
 ## Reference material
 
-The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation.
+The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation — reading the full body also runs its Step 0 project-layer glob, loading any project-specific layer for the repo under review.
 
 ## Core review angles
 
