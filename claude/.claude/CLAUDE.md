@@ -139,6 +139,7 @@ Code comments and durable in-repo documentation (REFERENCES.md, doc files, READM
 - **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message or PR body.
 - **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. Move the rationale to the commit message instead.
 - **One line, not a paragraph.** State the non-obvious constraint in a single sentence. A multi-paragraph rationale block is a signal the comment is doing the PR description's job instead of the code's — trim the narration, not the fact: a compressed comment that drops the actual constraint is worse than a verbose one that keeps it.
+- **Split multi-fact comments.** State each non-obvious fact as its own sentence rather than chaining several into one run-on via semicolons, dashes, and parentheticals — a reader shouldn't have to parse a whole sentence-cluster to find where one fact ends and the next begins. When the facts are genuinely parallel (a set of gaps, conditions, or exclusions of the same kind), use an explicit list, one item per fact, instead of nesting them as asides in unrelated prose. Facts that are tightly coupled — a cause and its direct effect — may still share a sentence.
 
 ## Output Preferences
 
