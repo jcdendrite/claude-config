@@ -1222,9 +1222,26 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
     builds_path_re = re.compile(r"[/.]\$\{?[A-Za-z_]*_ID\b")
     guards = ("_lib_valid_session_id_component", "_lib_active_bypass_marker_live")
 
+    # Sites where the matched _ID variable is not a filesystem path component
+    # at all -- e.g. a REST API URL path segment -- and is already fully
+    # constrained by a stricter, anchored regex earlier in the same file, so
+    # calling the (filesystem-scoped) guard there would be provably dead code
+    # rather than real validation. Exempts the whole file, not just the cited
+    # variable -- re-check this list if an exempted file later grows a second,
+    # genuinely filesystem-path-building _ID. Exemptions must name the file
+    # and cite the existing check that makes the guard redundant.
+    exempt_non_filesystem_id_sites = {
+        # COMMENT_ID feeds `repos/$REPO/pulls/comments/$COMMENT_ID`, a `gh
+        # api` URL path, not a filesystem path; already anchored to
+        # ^[0-9]+$ before use.
+        "respond-pr-safe-patch.sh",
+    }
+
     unguarded = []
     matched_any = []
     for hook in hook_files:
+        if hook.name in exempt_non_filesystem_id_sites:
+            continue
         text = hook.read_text()
         if not builds_path_re.search(text):
             continue
