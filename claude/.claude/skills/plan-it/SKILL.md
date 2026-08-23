@@ -14,6 +14,8 @@ argument-hint: "[optional topic or ticket id]"
 
 ## Step 1 — Branch + plan file
 
+`.claude/plans/` holds plans that gate a change to this repository — the plan file is provenance for that change, not the deliverable itself. Work that turns out to make no repository change (an audit, a status assessment) still runs this skill end to end, `/plan-review` included; scaffold the plan file here as normal, and Step 7 decides whether it gets committed.
+
 **If plan mode is active:** write the plan to the harness-provided plan path (named in the plan-mode system-reminder). Skip branch creation here — plan mode would block it. Resume the branch-management flow only after `ExitPlanMode` is approved: derive the slug, run `branch-management`, and move the plan file to `.claude/plans/<topic-slug>.md` on the new branch.
 
 **If that write fails** (e.g. a machine-level policy denies the harness-provided path): this is the one case where creating a branch happens before `ExitPlanMode` is approved — not a general license to branch during plan mode, only a recovery once the designated path write has already failed. In a git repository, derive the slug now, create its worktree (`branch-management`'s worktree steps), and write the plan to the repo-relative `.claude/plans/<topic-slug>.md` there instead — a path outside whatever denied the harness-provided one. The branch/worktree already exists by the time `ExitPlanMode` is approved, so skip the post-approval `branch-management` call above; nothing needs to move. Outside a git repository there is no repo-relative path to fall back to — present the full plan as chat text instead of a file and skip `ExitPlanMode`, asking the user to approve conversationally.
@@ -82,7 +84,7 @@ Write the plan with these sections:
 
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
-3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement)
+3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths.
 4. **Verification** — how to test end-to-end
 5. **Out of scope** — only if scope creep was observed
 
@@ -96,9 +98,21 @@ Invoke `/plan-review` against the written plan file. Address any findings before
 
 **Draft-PR handoff for design-doc or cross-team contract changes.** If the plan introduces a new design document (e.g., a new file under `docs/design/`) or defines a cross-team data contract (a schema shape, enum, or API surface that downstream teams or analytical pipelines depend on), after `ExitPlanMode` is approved and the plan + doc are committed on the implementation branch, push the branch and open a **draft** PR before starting implementation. Async comments on the rendered diff are easier to thread than prose in a plan file, and downstream reviewers may need lead time. Skip this for plans that are implementation-only (no new design doc, no cross-team contract).
 
-## Step 7 — Commit the plan, then choose where implementation runs
+## Step 7 — Commit or unwind the plan, then choose where implementation runs
 
-Commit the reviewed plan to the implementation branch before implementation begins — it makes an approved plan durable before a phase that rewrites the working tree, and `handoff` §5 already requires it.
+**If the Critical files section names at least one file:** commit the
+reviewed plan to the implementation branch before implementation
+begins — it makes an approved plan durable before a phase that
+rewrites the working tree, and `handoff` §5 already requires it.
+
+**If it names none:** the plan is the deliverable rather than
+provenance for a change, so it isn't committed — `mv` the plan file
+out of `.claude/plans/`, remove the branch and worktree created for
+it, and route the narrative through the project's own tracker or
+documentation tool (see that project's `CLAUDE.md`, or ask the
+engineer if undocumented) — the review still counts, it just ships as
+findings rather than a commit. Stop here — the choice below is about
+where implementation runs, and there is none.
 
 Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` and act on its JSON (`docs/handoff-nudge.md` carries the contract):
 
