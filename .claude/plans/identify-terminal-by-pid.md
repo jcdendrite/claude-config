@@ -137,8 +137,14 @@ multi-account config-dir precedence directly.
     unstripped compare would silently never match the no-tty sentinel
     and an unstripped device path would 404 with a misleading raw
     `FileNotFoundError` instead of the intended clean error. Raises a
-    caller-facing error for a nonexistent pid (nonzero exit) or a pid
-    with no controlling terminal (stripped output `"??"`).
+    caller-facing error for a nonexistent pid (nonzero exit), a pid
+    with no controlling terminal (stripped output `"??"`), or a
+    missing/hung `ps` (`FileNotFoundError`/`subprocess.TimeoutExpired`,
+    a 10s backstop). The returned tty name is also validated against a
+    bare-alphanumeric allowlist before any caller joins it onto `/dev` —
+    `ps` is resolved by bare name via `PATH`, so an unvalidated value
+    would let a compromised `ps` traverse (`../../../tmp/pwned`) outside
+    `/dev` entirely.
   - `_read_registry_entry(config_dir, pid)` — reads
     `<config_dir>/sessions/<pid>.json` if present; degrades to "no
     entry" (never raises) on `JSONDecodeError`/`OSError`/
@@ -177,12 +183,23 @@ multi-account config-dir precedence directly.
     passes through this: registry `cwd` (via `_read_registry_entry`
     above), an explicit `--title`, and a caller-supplied `--emoji` —
     `--emoji` is just as much free-form input as `--title`, and nothing
-    in this design distinguishes them.
+    in this design distinguishes them. Beyond C0 controls, DEL, and the
+    C1 range, also strips every Unicode Format-category (`Cf`)
+    character — bidi overrides (`U+202E`) and zero-width characters
+    (`U+200B`) fall outside those control ranges but can still render a
+    misleading title from an untrusted registry `cwd`. This control's
+    charter is escape/control-injection prevention, not full
+    invisible-character moderation: a zero-width-but-non-`Cf` codepoint
+    (e.g. a variation selector) passes through unstripped, since it
+    carries no escape-sequence risk.
   - `write_title(device_path, title)` — writes `\033]0;{title}\007` to
     the resolved device; checks `os.access(device, os.W_OK)` first for a
     clear error instead of a raw `PermissionError` traceback, and still
     wraps the write itself in `try/except PermissionError` as a backstop
-    for the check-then-write race.
+    for the check-then-write race. Authorization for this write is
+    delegated entirely to the OS's tty-permission bits on `device_path`
+    — there is no in-tool check that the caller owns the pid whose
+    terminal this is.
   - `--list` mode — scans `<config_dir>/sessions/*.json` across the
     resolved config dirs, keeps only entries whose pid is currently
     alive (`ps -p <pid>`) *and* pass the stale-registry-entry check
@@ -214,7 +231,9 @@ multi-account config-dir precedence directly.
 - `../../../.venv/bin/pytest claude/.claude/scripts/tests/test_mark_terminal.py`
   from the worktree. Covers, without a real interactive terminal (none
   is available in this sandboxed session or in CI):
-  - `_sanitize_for_terminal` strips ESC/BEL/DEL and other C0 controls.
+  - `_sanitize_for_terminal` strips ESC/BEL/DEL and other C0 controls,
+    the C1 control range, and Unicode Format-category (`Cf`) characters
+    (bidi overrides, zero-width characters).
   - `build_title`: registry hit → formatted title; registry miss →
     bare `PID {pid}` fallback; explicit `--title` overrides both;
     malformed JSON, a non-dict payload, and a non-string `cwd` (int,
@@ -229,7 +248,19 @@ multi-account config-dir precedence directly.
     exit (nonexistent pid), each producing the right stripped result or
     error; a non-positive or non-numeric pid argument is rejected before
     `ps` is ever invoked, with a clear error rather than a raw
-    stack trace.
+    stack trace; a tty name containing path separators (a compromised
+    `ps` on `PATH`) is rejected before it reaches `Path("/dev") / tty`;
+    a missing `ps` binary and a hung `ps` (via a pure fake `run=`
+    raising `subprocess.TimeoutExpired`, no real subprocess spawned)
+    each produce the intended clear error; `_ps_lstart`'s `TZ=UTC`/
+    `LC_ALL=C` env-forcing is asserted directly against the exact `env`
+    dict passed to `run(...)`, independent of what a PATH-stubbed `ps`
+    does with it.
+  - `main()`'s CLI dispatch: `--list` routes to `_run_list`; a
+    `resolve_tty`/`write_title` failure exits 1 with the underlying
+    error text; an invalid `--config-dir` exits 2; a missing `pid`
+    without `--list` is rejected by argparse; the non-Darwin platform
+    guard exits 2 before touching anything else.
   - The actual device write, exercised end-to-end against a real
     pseudo-terminal from Python's stdlib `pty.openpty()` — asserts the
     literal OSC byte sequence lands on the master fd for a legitimate
@@ -239,13 +270,20 @@ multi-account config-dir precedence directly.
     well-formed OSC sequence with the hostile content neutralized, not
     two. A device path that fails the `os.access(..., os.W_OK)` check
     (e.g. a `pty` slave `chmod`'d unwritable) asserts the intended clear
-    error, not a raw `PermissionError`.
+    error, not a raw `PermissionError`; a separate test exercises the
+    `except PermissionError` backstop independently, by forcing
+    `os.access()` to report writable while the underlying `open()`
+    still raises.
   - `--list`: a temp config-dir tree with fake `sessions/<pid>.json`
     files, a stubbed `ps` reporting which pids are alive, asserts dead
     pids are excluded, a stale (pid-recycled) entry is excluded even
     though its pid is alive, TTYs resolve for genuinely-live entries,
     and a `cwd` containing control characters prints sanitized in the
-    table — not just in the OSC write path.
+    table — not just in the OSC write path. Also covers mixed
+    digit-width column alignment across two pids, the same live pid
+    rendering as two rows when present under two config dirs (no
+    cross-dir dedup, unlike `build_title`'s first-match-wins), and an
+    unreadable `sessions/` dir being excluded rather than raised.
   - `resolve_config_dirs`: mirrors `post-crash-sessions.py`'s existing
     `--config-dir`/declared-roots test coverage in
     `test_post_crash_sessions.py:1841-1997` (explicit overrides
