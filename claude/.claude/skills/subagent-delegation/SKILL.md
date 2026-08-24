@@ -4,12 +4,14 @@ description: >
   Dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
   first exploratory read; 2nd/3rd Bash toward same question; delegating
-  implementation.
+  implementation; about to wait on a dispatched subagent, or about to
+  write a Bash `sleep`-then-recheck loop.
   DO NOT TRIGGER when: single-artifact targeted lookup (one file or
   value, not a multi-site sweep); comprehension read feeding your own
   writing/review/design; Edit/Write sequences where scope or content
   is still forming; the specific failure output or diff you reason over
-  line by line.
+  line by line; a `sleep` unrelated to waiting on a dispatch — a
+  documented backoff, a fixture's timing test.
 ---
 
 # Subagent delegation
@@ -173,3 +175,13 @@ diagnostics, log correlation, verbose `git diff` / state-survey bursts.
 Dispatch the objective — not the commands — to `general-purpose` with
 an explicit `model: sonnet` (a no-op when the parent is already
 Sonnet; keeps the dispatched work off Opus when the parent is not).
+
+## Step 3 — Wait for a dispatch without polling
+
+After dispatching, do not write a Bash `sleep N`-then-recheck loop to wait on it. End the turn, or continue
+other work, and let the harness's automatic `<task-notification>` delivery arrive — it fires even after the
+dispatching turn has already ended, so there is nothing to poll for.
+
+If you need inline confirmation before proceeding, check `ListAgents` once — never in a loop. For a
+cross-session peer that wants proactive notice instead of polling its own inbox, use `SendMessage`'s
+`notify_when_idle` instead.

@@ -57,10 +57,13 @@ def _append_args(
     step: str = "skill-invoked",
     status: str = "done",
     marker_hash: str | None = None,
+    attempt: str | None = None,
 ) -> list[str]:
     args = ["append", run_id, "--step", step, "--status", status]
     if marker_hash is not None:
         args += ["--marker-hash", marker_hash]
+    if attempt is not None:
+        args += ["--attempt", attempt]
     return args
 
 
@@ -78,6 +81,7 @@ class TestOrchestratorCheckpointAppendReadRoundTrip:
             "step": "skill-invoked",
             "status": "done",
             "marker_hash": "deadbeef",
+            "attempt": "1",
         }
 
     def test_append_defaults_marker_hash_to_n_a(self, isolated_home, git_repo):
@@ -85,6 +89,14 @@ class TestOrchestratorCheckpointAppendReadRoundTrip:
         checkpoint = _checkpoint_path(isolated_home, git_repo)
         record = json.loads(checkpoint.read_text().splitlines()[0])
         assert record["marker_hash"] == "n/a"
+
+    def test_append_defaults_attempt_to_1(self, isolated_home, git_repo):
+        """Omitting --attempt must default to "1" so every existing caller
+        (and existing test) that never passes --attempt is unaffected."""
+        _run(_append_args(), cwd=git_repo, home=isolated_home)
+        checkpoint = _checkpoint_path(isolated_home, git_repo)
+        record = json.loads(checkpoint.read_text().splitlines()[0])
+        assert record["attempt"] == "1"
 
     def test_missing_step_rejected(self, isolated_home, git_repo):
         args = ["append", RUN_ID, "--status", "done"]
@@ -134,6 +146,12 @@ class TestOrchestratorCheckpointFieldCapsRejectOverLength:
         stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
         assert stray == [], f"an over-cap run id must not write any checkpoint file: {stray}"
 
+    def test_over_length_attempt_rejected(self, isolated_home, git_repo):
+        args = _append_args(attempt="1" * 21)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _checkpoint_path(isolated_home, git_repo).exists()
+
 
 class TestOrchestratorCheckpointFieldCapsAllowAtExactBoundary:
     """The over-cap tests above only prove `-gt` rejects; without a case at
@@ -159,6 +177,41 @@ class TestOrchestratorCheckpointFieldCapsAllowAtExactBoundary:
         args = ["append", "x" * 128, "--step", "skill-invoked", "--status", "done"]
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
+
+    def test_exactly_max_attempt_allowed(self, isolated_home, git_repo):
+        args = _append_args(attempt="1" * 20)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+
+class TestOrchestratorCheckpointAttemptFieldValidation:
+    """--attempt must be numeric-only -- it feeds review-orchestrator's own
+    retry-cap comparison, so a non-numeric value must be rejected rather than
+    silently accepted and compared as a string."""
+
+    def test_numeric_attempt_accepted(self, isolated_home, git_repo):
+        result = _run(_append_args(attempt="2"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        checkpoint = _checkpoint_path(isolated_home, git_repo)
+        record = json.loads(checkpoint.read_text().splitlines()[0])
+        assert record["attempt"] == "2"
+
+    def test_non_numeric_attempt_rejected(self, isolated_home, git_repo):
+        result = _run(_append_args(attempt="two"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _checkpoint_path(isolated_home, git_repo).exists()
+
+    def test_empty_attempt_rejected(self, isolated_home, git_repo):
+        result = _run(_append_args(attempt=""), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _checkpoint_path(isolated_home, git_repo).exists()
+
+    def test_negative_attempt_rejected(self, isolated_home, git_repo):
+        """A leading '-' fails the digits-only check -- a negative attempt
+        count has no meaning for a retry counter."""
+        result = _run(_append_args(attempt="-1"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _checkpoint_path(isolated_home, git_repo).exists()
 
 
 class TestOrchestratorCheckpointOutsideGitRepo:
@@ -227,6 +280,47 @@ class TestOrchestratorCheckpointDuplicateStepRetry:
         assert result.returncode == 0, result.stderr
         lines = _checkpoint_path(isolated_home, git_repo).read_text().splitlines()
         assert len(lines) == 1, f"identical repeat append must be a no-op, got: {lines}"
+
+    def test_identical_retry_with_identical_attempt_is_still_deduped(self, isolated_home, git_repo):
+        """The new --attempt field must not weaken G2's existing dedup
+        guarantee: two 'started' appends for the same step with the SAME
+        --attempt are still a byte-identical line and still collapse to
+        one entry."""
+        _run(_append_args(status="started", attempt="1"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(status="started", attempt="1"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _checkpoint_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical attempt must still dedupe, got: {lines}"
+
+    def test_retry_with_a_different_attempt_survives_dedup(self, isolated_home, git_repo):
+        """This is the bug this field exists to fix: two redispatch attempts
+        of the same step produced byte-identical 'started' lines before
+        --attempt existed, so the second collapsed into the first and the
+        retry was unrepresentable. A distinct --attempt must now survive."""
+        _run(_append_args(status="started", attempt="1"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(status="started", attempt="2"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _checkpoint_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, (
+            f"a differing --attempt must survive dedup as a distinct line, got: {lines}"
+        )
+        attempts = {json.loads(line)["attempt"] for line in lines}
+        assert attempts == {"1", "2"}
+
+    def test_three_retries_of_the_same_step_all_survive_dedup(self, isolated_home, git_repo):
+        """review-orchestrator.md's retry cap is 3 total attempts -- this is
+        the boundary that prose grounds, so all three must survive as
+        distinct lines rather than collapsing partway through."""
+        _run(_append_args(status="started", attempt="1"), cwd=git_repo, home=isolated_home)
+        _run(_append_args(status="started", attempt="2"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(status="started", attempt="3"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _checkpoint_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 3, (
+            f"three distinct --attempt values must survive dedup as three lines, got: {lines}"
+        )
+        attempts = {json.loads(line)["attempt"] for line in lines}
+        assert attempts == {"1", "2", "3"}
 
     def test_progression_from_started_to_done_appends_a_new_line(self, isolated_home, git_repo):
         """The same step moving from 'started' to 'done' is genuine

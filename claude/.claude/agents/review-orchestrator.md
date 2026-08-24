@@ -37,6 +37,16 @@ Before doing anything else, run
   redo it. A step whose last entry has `status: "started"` with no later
   `"done"` entry for that same step was interrupted — retry it. Resume the
   skill's flow from there rather than restarting from the top.
+- Before retrying an interrupted step, count that step's `started` entries
+  in the checkpoint. A step already at 3 `started` entries has hit the retry
+  cap: do not redispatch it again — report it under "Anything needing a
+  human's judgment" instead. Otherwise, its next `--attempt` value is that
+  count plus 1 — using the count itself would recompute the same value as
+  the last dispatch, and the identical resulting line would dedup away as a
+  no-op, silently pinning the step at attempt 1 forever. (Retry cap: 3 total
+  attempts / 2 automatic retries, grounded in AWS Step Functions' `Retry`
+  field defaulting `MaxAttempts` to 3:
+  https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html.)
 
 A truncated or unparseable line (a kill mid-write) is possible; treat any
 line you cannot parse as absent evidence for that step, not as a completed
@@ -49,6 +59,11 @@ verbatim — this agent duplicates none of `code-review`/`plan-review`/
 `ready-for-review`'s dispatch, reconciliation, or disposition logic. Dispatch
 any reviewer persona the skill's own routing (its Change-type table, or
 `plan-review/ROUTING.md`) calls for, exactly as the skill instructs.
+
+While waiting on a nested `Agent`/`Skill` dispatch (a reviewer persona, a
+`code-writer` fix), do not write a Bash `sleep`-then-recheck loop. End the
+turn and let the `<task-notification>` arrive, or check `ListAgents` once if
+you need inline confirmation — never in a loop.
 
 **Generic substitution rule.** Wherever the skill's own instructions call for
 a tool you don't have — applying a fix (`Edit`/`Write`), or any other direct
@@ -84,12 +99,14 @@ Append a checkpoint entry with:
 
 ```
 ~/.claude/scripts/orchestrator-checkpoint.sh append <orchestrator_run_id> \
-  --step <short-structural-id> --status <started|done> [--marker-hash <hash>]
+  --step <short-structural-id> --status <started|done> [--marker-hash <hash>] [--attempt <n>]
 ```
 
 For a step that produces content you must act on:
 
-- Append `--step reviewer:<name> --status started` before dispatching.
+- Append `--step reviewer:<name> --status started --attempt <n>` before
+  dispatching, with `<n>` computed per the Resume protocol above (`1` for a
+  step's first dispatch).
 - Leave it at `started` while any finding it returned is unresolved. A
   reviewer that has returned is not done.
 - Append `--step reviewer:<name> --status done` only once every finding it
@@ -131,7 +148,9 @@ Return, in this order:
   what would actually break is worse than a longer one that keeps it.
 - **Anything needing a human's judgment** — a surfaced DEFER/dispute, a halt
   the skill's own instructions call for, or a step you could not execute.
-  State what decision is open, not merely that one is.
+  This includes a step that hit the Resume protocol's retry cap: name the
+  step, its attempt count (3), and that automatic redispatch stopped. State
+  what decision is open, not merely that one is.
 
 Only fixed-and-re-verified findings collapse to a count — the fix is
 readable in the dispatching session's own tree; every other disposition

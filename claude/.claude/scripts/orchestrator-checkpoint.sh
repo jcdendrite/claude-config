@@ -4,10 +4,10 @@
 # so a killed run can be re-dispatched with the same orchestrator_run_id and
 # resume from its last recorded step instead of restarting.
 # Usage: orchestrator-checkpoint.sh <append|read> <orchestrator_run_id> [args]
-# Entries are bounded to step id, status, and marker-hash only — never raw
-# findings or diff text — so this store never becomes a second durable copy
-# of exactly the content review-orchestrator exists to keep out of a
-# long-lived context.
+# Entries are bounded to step id, status, marker-hash, and attempt count
+# only — never raw findings or diff text — so this store never becomes a
+# second durable copy of exactly the content review-orchestrator exists to
+# keep out of a long-lived context.
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
 
@@ -19,6 +19,9 @@ set -u
 _CHECKPOINT_STEP_MAX_CHARS=200
 _CHECKPOINT_STATUS_MAX_CHARS=100
 _CHECKPOINT_MARKER_HASH_MAX_CHARS=128
+# Generously bounds a retry count that's realistically 1-3 -- the cap exists
+# to reject a pathological input, not to size an expected value.
+_CHECKPOINT_ATTEMPT_MAX_CHARS=20
 # Concatenated into the checkpoint filename (<repo-hash>.<run-id>.jsonl), same
 # as the fields above are concatenated into the JSON line -- well under the
 # ~184-byte budget filesystem NAME_MAX (255) leaves after the 65-byte
@@ -33,13 +36,16 @@ usage() {
 Usage: ~/.claude/scripts/orchestrator-checkpoint.sh <subcommand> <orchestrator_run_id> [args]
 
 Subcommands:
-  append <orchestrator_run_id> --step <id> --status <text> [--marker-hash <hash>]
+  append <orchestrator_run_id> --step <id> --status <text> [--marker-hash <hash>] [--attempt <n>]
              Append one checkpoint entry for this run. No-ops (exit 0) if the
              identical line already exists. Conventional --status values are
              "started" (a step began) and "done" (a step completed) — a
              resumed run should retry any step whose last entry is "started"
              with no later "done" entry for the same --step, and skip any
-             step whose last entry is "done".
+             step whose last entry is "done". --attempt is a numeric retry
+             count for this --step (defaults to "1") — pass a distinct value
+             on each redispatch of the same step so its "started" entry
+             doesn't dedup away against an earlier attempt's identical line.
   read <orchestrator_run_id>
              Print this run's checkpoint contents, or an absence message.
 EOF
@@ -113,9 +119,10 @@ case "$SUBCOMMAND" in
     STEP=""
     STATUS=""
     MARKER_HASH="n/a"
+    ATTEMPT="1"
     while [ $# -gt 0 ]; do
       case "$1" in
-        --step|--status|--marker-hash)
+        --step|--status|--marker-hash|--attempt)
           if [ $# -lt 2 ]; then
             printf "orchestrator-checkpoint.sh: %s requires a value\n" "$1" >&2
             exit 2
@@ -126,6 +133,7 @@ case "$SUBCOMMAND" in
         --step) STEP="$2"; shift 2 ;;
         --status) STATUS="$2"; shift 2 ;;
         --marker-hash) MARKER_HASH="$2"; shift 2 ;;
+        --attempt) ATTEMPT="$2"; shift 2 ;;
         *)
           printf "orchestrator-checkpoint.sh: unknown argument '%s'\n" "$1" >&2
           usage
@@ -151,6 +159,18 @@ case "$SUBCOMMAND" in
       printf 'orchestrator-checkpoint.sh: --marker-hash exceeds %d characters (got %d).\n' "$_CHECKPOINT_MARKER_HASH_MAX_CHARS" "${#MARKER_HASH}" >&2
       exit 2
     fi
+    # Accepts 0, but review-orchestrator.md's 1-indexed <n> computation
+    # (first dispatch = 1, each retry = prior count + 1) never produces it.
+    case "$ATTEMPT" in
+      ''|*[!0-9]*)
+        printf 'orchestrator-checkpoint.sh: --attempt must be numeric (got %s).\n' "$ATTEMPT" >&2
+        exit 2
+        ;;
+    esac
+    if [ "${#ATTEMPT}" -gt "$_CHECKPOINT_ATTEMPT_MAX_CHARS" ]; then
+      printf 'orchestrator-checkpoint.sh: --attempt exceeds %d characters (got %d).\n' "$_CHECKPOINT_ATTEMPT_MAX_CHARS" "${#ATTEMPT}" >&2
+      exit 2
+    fi
 
     if ! mkdir -p "$CHECKPOINT_DIR" 2>/dev/null; then
       printf 'orchestrator-checkpoint.sh: could not create the checkpoint directory %s. Abort without writing.\n' "$CHECKPOINT_DIR" >&2
@@ -163,8 +183,8 @@ case "$SUBCOMMAND" in
     # PIPE_BUF, so the O_APPEND write is atomic.
     # shellcheck disable=SC2016 # single-quoted on purpose: $step etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
-    LINE=$(_lib_jq -nc --arg step "$STEP" --arg status "$STATUS" --arg marker_hash "$MARKER_HASH" \
-      '{step: $step, status: $status, marker_hash: $marker_hash}')
+    LINE=$(_lib_jq -nc --arg step "$STEP" --arg status "$STATUS" --arg marker_hash "$MARKER_HASH" --arg attempt "$ATTEMPT" \
+      '{step: $step, status: $status, marker_hash: $marker_hash, attempt: $attempt}')
     if [ -z "$LINE" ]; then
       printf 'orchestrator-checkpoint.sh: could not build the checkpoint line (jq missing, failed, or timed out). Abort without writing.\n' >&2
       exit 2
