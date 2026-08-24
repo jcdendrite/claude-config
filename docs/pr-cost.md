@@ -1,6 +1,6 @@
 # Per-PR cost ledger
 
-A local, append-only record of this repo's own per-PR AI-tooling dollar cost, joined against GitHub PR size, rework, and review-surface data — one row per captured merged PR per machine, appended by `transcript-analysis.py pr-cost --record`. Claude Code deletes transcripts on a rolling window (`cleanupPeriodDays`, default 30 days), so a PR's spend not captured while its branch is still observable in the local corpus cannot be recovered later; the ledger survives past that deletion, but — unlike a git-tracked file — has no built-in backup or cross-machine replication of its own.
+A local, append-only record of this repo's own per-PR AI-tooling dollar cost, joined against GitHub PR size, rework, and review-surface data — one row per captured merged PR per machine, appended by `transcript-analysis.py pr-cost --record`. Capture before the transcript retention window (`cleanupPeriodDays`, default 30d) expires — once a branch's transcripts age out, that PR's spend is unrecoverable, and the ledger itself has no backup or cross-machine replication of its own.
 
 Unlike the weekly `cost-ledger` (`docs/cost-ledger.md`), whose rows are aggregate-only, every row here carries a branch name, a repo identifier, and a host identifier — see "Redaction: `head_branch` is opaque, `host`/`repo` are raw at rest" below before pointing this tool at any repo other than `claude-config`.
 
@@ -31,7 +31,7 @@ Columns, in ledger order (`_PR_COST_LEDGER_COLUMNS` in `transcript-analysis.py`)
 | `plan_file_added` | Whether exactly one changed file matches `--plan-file-glob` (default `.claude/plans/*.md`, claude-config-specific). |
 | `risk_surface_flag` | Whether any changed file matches a `--risk-surface-glob` (repeatable; the built-in defaults — `claude/.claude/hooks/**`, `claude/.claude/settings*.json`, `.github/workflows/**`, `install*.sh`, `claude/.claude/rules/**` — are claude-config-specific and inert against any other repo's tree until overridden). |
 
-The row parser (`_parse_pr_cost_ledger_row_cells`) is strict on column count — a row with more or fewer cells than `_PR_COST_LEDGER_COLUMNS` fails to parse rather than being read with columns shifted. Adding a column later is a migration, not a drop-in schema edit: existing rows need rewriting (or the new column needs a documented backward-compatible default) before the parser will accept them again.
+The row parser (`_parse_pr_cost_ledger_row_cells`) is strict on column count (fails rather than shifting cells), so adding a column later is a migration — existing rows must be rewritten or the new column needs a documented backward-compatible default.
 
 ### Join confidence
 
@@ -57,7 +57,7 @@ Ledger data lives outside this repo, at `$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv` 
 
 `--record` additionally requires the opt-in sentinel `~/.claude/.pr-cost-enabled` (prompted by `install.sh`, alongside `.cost-ledger-enabled`) — a write-taking subcommand shipped to every stow user stays consent-gated.
 
-**The file must not be hand-edited.** The design has no checksum or hash-chain layer over prior rows, so an out-of-band edit — correcting a typo, deleting a row, editing a dollar figure by hand — leaves no signal that the file no longer matches what `pr-cost` itself wrote. Treat it the same way you'd treat any other durable log: append through the tool, never through an editor.
+Never hand-edit this file: with no checksum/hash-chain layer over prior rows, an out-of-band edit (typo fix, row deletion, manual dollar edit) leaves no detectable trace — append only through the tool.
 
 ### Default (read) output
 

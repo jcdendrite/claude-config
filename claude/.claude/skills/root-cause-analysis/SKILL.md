@@ -36,7 +36,7 @@ A real bug in the right subsystem that affects a different population is not the
 
 - Pull records for the specifically reported users, items, or entities.
 - Inspect every field in the returned data — especially unfamiliar status values. Do not rely on a summary; read the raw values yourself.
-- Screenshots and error states in a report are engineering data. Read every label and value: "why would this field show this value?" An unexpected display value is often a direct artifact of corrupted underlying data.
+- Screenshots and error states are engineering data — read every label and ask "why would this field show this value?"; an unexpected value is often a direct artifact of corrupted underlying data.
 
 ## Stage E — Form a hypothesis
 
@@ -44,7 +44,7 @@ With full symptom, verified input, a captured asymmetry, and entity-level data i
 
 - What state is wrong, and what path set it wrong?
 - What would the system look like if the hypothesis is correct? (Verify that against the Stage D data.)
-- Distinguish "a real bug in the right area" from "the reported bug." An investigation will surface real fires to put out; the original fire still burns until the reported symptom is addressed.
+- Distinguish a real bug in the right area from the reported bug — the original fire still burns until the reported symptom is specifically addressed.
 
 ## Stage F — Confirm this incident before shipping
 
@@ -52,8 +52,8 @@ Before declaring the fix complete:
 
 - Verify that the fix would have changed the state of the specifically reported entities.
 - If you cannot confirm this, return to Stage D and pull the data.
-- Name explicitly when investigation sessions are drifting across repos without a principled root cause. When that happens: stop, acknowledge that prior fixes may be orthogonal, and run the playbook from Stage A before any further implementation.
+- Name it explicitly when an investigation is drifting without a principled root cause (e.g., jumping between subsystems or codebases). When that happens: stop, acknowledge prior fixes may be orthogonal, and restart from Stage A.
 
 ## Open questions / what we still don't know
 
-Maintain this list as a live artifact across sessions. Handoff files carry implementation state reliably but silently drop investigative prerequisites. An explicit list of what is not yet known, distinct from what has been built, prevents sessions from converging on the wrong fix.
+Maintain this list as a live artifact across sessions — handoff files preserve implementation state but silently drop investigative prerequisites, so track what's unknown separately from what's been built.

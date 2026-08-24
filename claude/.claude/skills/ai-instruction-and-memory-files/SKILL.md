@@ -27,7 +27,7 @@ Before writing any file under `memory/`, check in order:
 3. **Does this rule fire only inside a specific named skill's workflow?** If yes → that skill's `SKILL.md`, not memory. Skill bodies load at the moment the rule applies; memory loads every session whether the session uses that workflow or not.
 4. **Confirm the content fits a genuine memory use, not a rule.** Personal preference is always memory (user type). Feedback, project, and reference content are memory only when they don't generalize to a rule any contributor should follow (→ edit CLAUDE.md/AGENTS.md instead, per item 1): a correction or judgment call specific to how this user works (feedback type), time-sensitive state that fails CLAUDE.md's evergreen/behavior-test bar (project type), or a pointer unsafe to publish in a public repo — e.g. a private dashboard URL (reference type).
 
-If step 1, 2, or 3 produces a destination, write there and stop. This pre-write check is placed here — before the architecture overview — because the Step 0 procedural form is what runs reliably before the writer decides what to do. See §4 and §5 below for the full routing tables.
+If step 1, 2, or 3 produces a destination, write there and stop — see §4 and §5 for the full routing tables.
 
 # AI Instruction & Memory Files — Architecture
 
@@ -127,7 +127,7 @@ Claude Code when both files exist. Zero maintenance, single source.
 | Question | Answer |
 |---|---|
 | Am I adding a new guardrail? | Put it in AGENTS.md (canonical, cross-agent). Claude Code gets it via `@AGENTS.md` import; other AGENTS.md-aware agents (Codex, Cursor, Aider, Gemini CLI, Windsurf, Amp, Lovable) read it natively. |
-| The rule applies only when a specific skill is running (e.g., "write backticks literally when constructing a PR body via heredoc")? | Edit that skill's SKILL.md, not CLAUDE.md. CLAUDE.md is loaded every session — a context-specific rule there costs a global line of attention budget on every session that doesn't need it. The skill file is read at the exact moment the rule applies. |
+| The rule applies only when a specific skill is running (e.g., "write backticks literally when constructing a PR body via heredoc")? | Edit that skill's SKILL.md, not CLAUDE.md — CLAUDE.md costs every session's attention budget, while the skill file loads only when the rule actually applies. |
 | The rule applies only while a specific file type or path pattern is open, independent of which skill runs? | Add a path-scoped rule under `.claude/rules/*.md` — see Step 1 item 2 for why. |
 | The repo has CLAUDE.md but no AGENTS.md — should I add AGENTS.md? | Only if a non-Claude AGENTS.md-aware agent (Lovable, Cursor, Codex, Aider, etc.) is also using the repo. Otherwise CLAUDE.md alone is fine. |
 | CLAUDE.md is over 200 lines — what should I trim? | First: delete content that duplicates AGENTS.md (use `@AGENTS.md` import instead). Then: collapse narrative case studies into one-sentence principles. Leave only Claude-Code-specific project context. |

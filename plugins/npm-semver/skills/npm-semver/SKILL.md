@@ -27,11 +27,9 @@ constant, a build-injected string) — every other site should read from
 Per semver.org 2.0.0, determine the bump by backward compatibility against the
 package's declared public API, not by diff size.
 
-A declared public API is the precondition. Define what the package exposes
-(exports, CLI surface, documented config) and bump against that surface, not
-against internal refactors that don't cross it. Being unsure whether something
-belongs to the public API is itself the signal — the surface hasn't been
-declared yet, and no additional bump rule will resolve it.
+Bump against the package's declared public-API surface (exports, CLI,
+documented config), not diff size or internal refactors — if you're unsure
+whether something is on that surface, the surface hasn't been declared yet.
 
 | Change to the package | Bump |
 |---|---|
@@ -41,11 +39,9 @@ declared yet, and no additional bump rule will resolve it.
 
 ## Propagate to consumers
 
-A version bump alone does not update anything downstream. Each consuming
-repo has to re-pin the new version, reinstall, and re-run its own validation
-— on its own cadence, per that consumer's own pinning policy. This skill
-cannot enumerate or update those consumers; that list and policy live in the
-package's own docs.
+A version bump doesn't propagate — each consuming repo must re-pin, reinstall,
+and revalidate on its own cadence per its own pinning policy (see the
+package's own docs for that consumer list); this skill can't do it for you.
 
 ## Checklist
 

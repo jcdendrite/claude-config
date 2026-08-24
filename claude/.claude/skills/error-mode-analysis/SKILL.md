@@ -17,7 +17,7 @@ Always scope `--projects`/`--this-repo` — an unscoped run pools every project 
 
 `buckets`, `review-trace`, and `fail-seq` all accept `--projects GLOB`/`--this-repo` (cross-repo), `--branches B1,B2,...` (multiple branches/PRs at once), and (on `review-trace`) `--since`/`--until DATE` — the tooling already spans repos and calendar time; scope is a choice, not a limitation.
 
-**Default to breadth, not the narrowest concrete option.** A single PR or session is the highest-noise, lowest-confidence sample available — one human comment or one bad turn looks identical to a systemic gap when it's the only data point. Absent an explicit request to narrow (the user names one PR/branch), default the scope to: the current project, all branches, last 6 weeks. If a scoping question to the user goes unanswered, widen the default rather than narrowing it — the cost of over-scoping is a longer report; the cost of under-scoping is a false pattern promoted to a fix. Take the analysis window from `review-trace --since/--until`, not `buckets`' Date range column (see `transcript-analysis`'s Caveats).
+**Default to breadth, not the narrowest concrete option.** Default scope (unless the user names one PR/branch): the current project, all branches, last 6 weeks — widen rather than narrow if a scoping question goes unanswered, since under-scoping risks promoting a false pattern to a fix. Take the analysis window from `review-trace --since/--until`, not `buckets`' Date range column — `buckets` takes no `--since`/`--until` flags, so its Date range column reflects each branch's full session span, not the requested window.
 
 ## Step 2 — Collect transcript signals
 
@@ -26,7 +26,9 @@ Invoke `transcript-narrative` and `transcript-analysis` by name — do not resta
 - `transcript-narrative` produces the annotated per-phase timeline and a first pass of ranked lessons.
 - `transcript-analysis` produces the quantitative appendix (`fail-seq`, `review-trace`, `duration`, `subagents`, `pr-link`).
 
-`review-trace` is the most load-bearing subcommand for this step — it locates every skill invocation, hook denial, and reviewer-agent spawn per session, which is exactly the "pipeline working" and "bot findings" evidence Step 4 needs. `user-input --corrections-only` surfaces every FOLLOWUP/EXPLICIT_CORRECTION moment in a session with the prompt text itself — use it to populate Step 4's Human-unique and Cross-session process buckets with verbatim evidence instead of re-reading full transcripts by hand.
+`review-trace` locates every skill invocation, hook denial, and reviewer-agent spawn per session — exactly the Pipeline working and Post-commit bot evidence Step 4 needs.
+
+`user-input --corrections-only` pulls verbatim FOLLOWUP/EXPLICIT_CORRECTION prompts for Step 4's Human-unique and Cross-session process buckets, skipping a manual transcript re-read.
 
 ## Step 3 — Collect PR review comments
 
@@ -48,7 +50,7 @@ query($owner:String!, $repo:String!, $pr:Int!) {
 }'
 ```
 
-Compare each `totalCount` against its returned node count, including the nested `comments` inside each review thread. Where they differ — say `reviewThreads.totalCount` is 38 but 20 nodes came back — re-run the whole query (there is no per-connection call to isolate), adding `after:"<endCursor>"` only to the connection(s) still short and merging in only those; the other connection(s)' nodes come back as the same first page you already have. `reviewThreads.comments` carries its own `totalCount`/`pageInfo` per thread, one level below the top-level `reviewThreads` cursor — a thread over 100 comments needs this same after-cursor merge applied to that one thread alone. Do not reach for `--paginate`: it drives one cursor across the whole query, so with three connections the shared cursor diverges from at least one connection's own position — an observed run exited 0 while returning an empty node list for `reviewThreads` from the second page on, and a clean exit was not evidence the fetch was complete. Truncating one connection undercounts human-caught findings exactly the way fetching only inline comments does. This is a GraphQL-specific hazard: `gh api --paginate` tracks one `$endCursor` per query, so it doesn't extend to `respond-pr`'s three separate REST `--paginate` calls — each of those follows its own response `Link` header for its one endpoint and is unaffected.
+Compare each `totalCount` to its returned node count; re-run the query with `after:"<endCursor>"` only on connections still short — a re-queried short connection returns the same first page, not new data, so merge in only the connections you added the cursor to. `reviewThreads.comments` carries its own `totalCount`/`pageInfo` per thread, one level below the top-level cursor — a thread over 100 comments needs this same after-cursor merge applied to that one thread alone. Never use `--paginate` on this GraphQL query — it shares one cursor across all three connections, so it can silently truncate `reviewThreads` while exiting 0; this doesn't extend to `respond-pr`'s three separate REST `--paginate` calls, each of which follows its own response `Link` header and is unaffected.
 
 Skip reviews whose `body` is empty — a bare approval carries no finding to correlate.
 
@@ -85,7 +87,7 @@ Scrub Artifact B against these categories before it leaves the private machine:
 
 Two things this scrub relies on that are easy to get backwards:
 
-1. **A stowed commit hook is not a universal safety net.** If the destination repo is `claude-config`, its `deny-private-project-refs` commit hook mechanically re-checks the tracker-ID and project-name tiers on `git commit` — a genuine second layer there. For every *other* destination repo, that hook is not present or does not fire, and the manual scrub above is the only defense. Structural fingerprints are manual-only in every destination; no hook catches those.
+1. **A stowed commit hook is not a universal safety net.** The `deny-private-project-refs` hook only re-checks tracker-ID/project-name tiers, and only when the destination repo is `claude-config`; the manual scrub is the sole defense everywhere else and the only defense against structural fingerprints anywhere.
 2. **Scrub-complete and diffed is a precondition of transport, not a reminder to keep in mind.** Do not commit or push Artifact B until the checklist above has been walked and the document has been diffed line by line.
 
 ## Step 6 — Artifact B skeleton

@@ -13,15 +13,9 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
-package. `cost.py` and `reviewer_yield.py` are the two deliberate, temporary exceptions, in the
-opposite direction: cost-ledger (a later, still-unmigrated phase) calls `cost.py`'s
-`compute_cost_trend_data` and `reviewer_yield.py`'s `compute_reviewer_yield_data` from inside the
-shim, and review-trace/subagent-mix (also not yet migrated) call `reviewer_yield.py`'s
-`_is_reviewer_subagent_type`/`_index_subagent_dispatches` the same way — so the shim imports each
-module back for those names. This resolves cleanly (neither `cost.py` nor `reviewer_yield.py`
-imports the shim), but it means both modules' public surface is reachable from monolith code these
-phases left behind — expected to shrink to zero once cost-ledger's, review-trace's, and
-subagent-mix's own phases move.
+package. `cost.py` and `reviewer_yield.py` are the only modules the shim imports back into (not
+just from) — cost-ledger, review-trace, and subagent-mix still call their public functions from
+the shim until those phases migrate too.
 
 ## The package
 
@@ -37,20 +31,12 @@ JSONL transcript read/parse and session iteration: `iter_sessions`, `read_sessio
 Scan-root and project-scope resolution: `PROJECTS_DIR`, `resolve_scan_roots`,
 `print_resolved_scope`, the `--this-repo` project-slug machinery, and the multi-root
 `--config-dir` resolution cost-family subcommands share (`_resolve_cost_roots`,
-`_SUBCOMMANDS_WITH_OWN_CONFIG_DIR`). Also owns `_redaction_ordinals` (assigning each scan root
-a stable `account-N` number): this module's own multi-root scan functions need it for a
-non-redaction "scanning root N/M..." progress diagnostic, and `redaction.py` needs it too (for
-`_build_redact_map`'s account-namespaced labels) — keeping it here, rather than in `redaction.py`,
-makes that second dependency one-directional (`redaction.py` -> `scope.py`) instead of circular.
+`_SUBCOMMANDS_WITH_OWN_CONFIG_DIR`). Also owns `_redaction_ordinals` — kept here instead of
+`redaction.py` so `redaction.py`'s dependency on it stays one-directional, not circular.
 
-`PROJECTS_DIR` is this package's one reassignable global. Every reader outside this module —
-including `transcript-analysis.py` itself — reads it as `scope.PROJECTS_DIR` (attribute access on
-this module), never `from transcript_analysis.scope import PROJECTS_DIR`. The latter binds a
-reference at import time that a later `scope.PROJECTS_DIR = ...` reassignment (`main()`'s
-`--config-dir` handling, or a test's `monkeypatch.setattr(scope, "PROJECTS_DIR", ...)`) would never
-reach — the exact silent-desync failure mode this discipline exists to close off. The same
-attribute-access rule applies to any other cross-module state a test patches directly (e.g.
-`scope.config_dir`, `pricing._usage_drift_warned`): import the module, not a name out of it.
+Read reassignable module globals (`scope.PROJECTS_DIR`, `scope.config_dir`,
+`pricing._usage_drift_warned`) via attribute access, never `from module import NAME` — the latter
+binds at import time and misses later reassignment or monkeypatching.
 
 ### `redaction.py`
 
@@ -102,10 +88,9 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
-Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
-`transcript-analysis.py`'s own existing test suite (`tests/test_transcript_analysis.py`), which
-calls into the shim exactly as before — the split is an internal reorganization, not a change to
-what's tested or how. `cost.py`'s own tests live in `tests/test_transcript_cost.py`, the first
+Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised only
+through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which
+calls into the shim. `cost.py`'s own tests live in `tests/test_transcript_cost.py`, the first
 per-command-group test file the decomposition has produced; it loads its own independent copy of
 `transcript-analysis.py` via the same `spec_from_file_location` boilerplate
 `test_transcript_analysis.py` uses, rather than importing that file's `_mod`. `tests/conftest.py`

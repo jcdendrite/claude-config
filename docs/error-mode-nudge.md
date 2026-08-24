@@ -33,6 +33,6 @@ The log is append-only and not rotated automatically. Trim it periodically if di
 ## Known limitations
 
 - **One-shot per session.** The nudge fires at most once per session, even if friction keeps accumulating afterward.
-- **`claude -p` may leak stale markers and checkpoints.** One-shot invocations do not fire `SessionEnd`, so per-session marker and checkpoint files are not cleaned up automatically; both directories get a 30-day mtime-based eviction sweep on qualifying hook invocations, so they self-heal without manual cleanup.
-- **Denial dedup is not carried across checkpoint reads.** `friction-count`'s in-call denial dedup (`seen_denial_ids`) is local to each invocation and isn't persisted in the checkpoint, so a duplicate same-shape denial record straddling a checkpoint-read boundary can be double-counted. Accepted as low-likelihood and low-impact: it can only inflate the composite toward the threshold, never corrupt state.
+- **`claude -p` may leak stale markers and checkpoints.** `claude -p` skips `SessionEnd`, so marker/checkpoint files can leak — a 30-day mtime eviction sweep on qualifying hook invocations cleans them up automatically.
+- **Denial dedup is not carried across checkpoint reads.** `friction-count`'s in-call denial dedup (`seen_denial_ids`) isn't persisted across checkpoint reads, so a denial straddling a checkpoint boundary can be double-counted — accepted since it can only inflate the composite, never corrupt state.
 - **Threshold is a snapshot, not a live recalibration.** `FRICTION_THRESHOLD=12` was set from one backtest run on one machine's historical sessions; it does not self-adjust as usage patterns change.

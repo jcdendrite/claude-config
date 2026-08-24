@@ -55,20 +55,11 @@ claude-auto --model opus              # start auto mode on Opus
 claude-auto "summarize the open PRs"  # positional prompt passes through
 ```
 
-The wrapper resolves the mismatch between `opusplan` (a plan-mode/execution
-model pair) and auto mode's requirement for one concrete session model —
-relevant if you've set `opusplan` as your own default; this repo's shipped
-default, `sonnet`, already satisfies auto mode's requirement directly. It
-takes the same `--model` flag as `claude` and passes it through untouched. With
-no `--model`, it uses `ANTHROPIC_MODEL` if that is set, and `sonnet` otherwise
-— the alias resolves to the latest Sonnet, which auto mode accepts on every
-provider. That last step is a flat fallback, not a compatibility check: naming
-no model gets you Sonnet even when your configured default was already
-eligible. The tradeoff is deliberate — the wrapper can't read which model your
-settings resolve to, and always landing on an eligible one beats failing to
-start against a default like `opusplan`. Name the model explicitly whenever you
-care which one you get. `claude --permission-mode auto` also works directly
-once your default is already a single eligible model.
+With no `--model`, `claude-auto` falls back to `ANTHROPIC_MODEL` or `sonnet`
+regardless of whether your configured default was already eligible — pass
+`--model` explicitly to control which model starts. `claude --permission-mode
+auto` also works directly once your default is already a single eligible
+model.
 
 Where auto mode isn't the built-in default — Enterprise, a Claude Console API
 key account, an older Claude Code version, or another provider — make it the
@@ -96,8 +87,8 @@ close gaps the classifier's default block list doesn't cover:
 | `Bash(sudo *)`, `Bash(sudo)` | Privilege escalation — hard-blocks `sudo` regardless of permission mode |
 | `Read(**/.env)`, `Read(**/.env.local)`, `Read(**/.env.local.*)`, `Read(**/.env.production)`, `Read(**/.env.production.*)`, `Read(**/.env.development)`, `Read(**/.env.development.*)`, `Read(**/.env.staging)`, `Read(**/.env.staging.*)`, `Read(**/.env.test)`, `Read(**/.env.test.*)` | Local secret reads — hard floors on the well-known secret-bearing variants; the classifier won't flag in-working-directory reads as exfiltration |
 | `Read(**/credentials.json)`, `Read(**/.credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
-| `Bash(brew install *)`, `Bash(brew tap *)`, `Bash(brew reinstall *)`, `Bash(gem install *)`, `Bash(cargo install *)`, `Bash(go install *)`, `Bash(gh extension install *)`, `Bash(mas install *)`, `Bash(pipx install *)`, `Bash(apt-get install *)`, `Bash(apt install *)`, `Bash(yum install *)`, `Bash(dnf install *)`, `Bash(apk add *)`, `Bash(zypper install *)` | Package installs with no restore-command collision — a bare literal is always an install, never a routine dependency restore. The `curl \| bash` classifier rule this complements is a *soft* block that user intent can clear; these rules cannot be cleared regardless of what the conversation says |
-| `EnterPlanMode` | Agent-initiated plan mode entry — plan mode escalates all downstream subagent dispatches to Opus regardless of `model:` pins (see "Subagent delegation under plan mode" below). A human's `Shift+Tab`, `/plan` prefix, and `defaultMode` entry paths are untouched — this is the repo's first bare tool-name deny entry, which removes the tool from the session rather than blocking a call pattern |
+| `Bash(brew install *)`, `Bash(brew tap *)`, `Bash(brew reinstall *)`, `Bash(gem install *)`, `Bash(cargo install *)`, `Bash(go install *)`, `Bash(gh extension install *)`, `Bash(mas install *)`, `Bash(pipx install *)`, `Bash(apt-get install *)`, `Bash(apt install *)`, `Bash(yum install *)`, `Bash(dnf install *)`, `Bash(apk add *)`, `Bash(zypper install *)` | Package installs — hard-blocked (unlike the soft-blocked `curl \| bash` rule, these can't be cleared by user intent) |
+| `EnterPlanMode` | Agent-initiated plan mode entry — escalates downstream subagent dispatches to Opus regardless of `model:` pins; removes the tool from the session entirely rather than blocking a call pattern (human `Shift+Tab`/`/plan`/`defaultMode` paths unaffected) |
 
 The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed
 above. It allows the three conventional non-secret template suffixes
@@ -214,20 +205,12 @@ Plan mode is a separate axis from auto mode — a session can be in plan mode
 whether or not it is anchored via `--model auto`, and the two combine
 independently. Plan mode forces subagent dispatches to Opus regardless of a
 `model:` frontmatter pin or an explicit `model` param on the `Agent`
-dispatch, and this is confirmed independent of the parent's own model, not
-just correlated with it. A corrected re-scan of `staff-*`/`ciso-reviewer`
-dispatches with a Sonnet-declared pin, a Sonnet-family parent turn, and
-`permissionMode == "plan"` at dispatch time found 131 matching dispatches,
-129 of which resolved to Opus; 12 of those 131 already carried an explicit
-`model: sonnet` param, and all 12 still resolved to Opus. A falsification
-test ruled out the obvious confound — that, at measurement time, this repo's
-`opusplan` default made plan mode and an Opus-anchored parent nearly
-synonymous — by isolating 178 non-plan-mode dispatches from Opus-anchored
-parents: 178/178 still resolved to Sonnet, matching the pin. See
+dispatch, independent of the parent's own model, not just correlated with
+it — measured and falsification-tested; see
 [`case-studies/plan-mode-model-resolution.md`](case-studies/plan-mode-model-resolution.md)
-(lines 54 and 56 for the corrected re-scan) for the full investigation,
-primary-source citations, and rejected mitigations (`ExitPlanMode` timing,
-`CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
+(lines 54 and 56 for the re-scan methodology) for the counts, full
+investigation, primary-source citations, and rejected mitigations
+(`ExitPlanMode` timing, `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS`).
 
 No instruction-layer mitigation is known. Pass an explicit `model` on every
 dispatch anyway (see the global `CLAUDE.md`'s Model Routing section) — it

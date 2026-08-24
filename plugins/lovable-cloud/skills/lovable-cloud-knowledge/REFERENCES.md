@@ -11,7 +11,7 @@ Effective priority (highest to lowest):
 3. **AGENTS.md / CLAUDE.md** (repo files — AGENTS.md has the explicit "always read regardless of session length" guarantee)
 4. **Project code**
 
-All four are loaded every session. Lovable docs warn that in very long conversations instructions can drift; the "always read" guarantee for AGENTS.md is the defense-in-depth.
+All four load every session. Lovable's docs warn that instructions can drift in long conversations. AGENTS.md's always-read guarantee (above) exists specifically to defend against that drift.
 
 ## Primary sources
 

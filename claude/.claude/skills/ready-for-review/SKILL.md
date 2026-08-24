@@ -32,7 +32,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 
 ## 1. Preconditions (halt on fail)
 
-- **Session is anchored in the branch's worktree.** Under worktree enforcement, confirm the working directory is this branch's linked worktree and not the main checkout — an unanchored session runs verification, writes review markers, and dispatches subagents against the main checkout on the default branch, so every check below passes against the wrong tree (and the next bullet fails with a misleading reason). Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
+- **Session is anchored in the branch's worktree.** Confirm the working directory is this branch's linked worktree, not the main checkout — an unanchored session silently runs every later check against the wrong tree. Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
 - Current branch is not the default branch (`main` / `master` / `develop`).
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
@@ -72,7 +72,7 @@ resolves through a dedicated script rather than an inline multi-statement Bash c
 ~/.claude/scripts/pr-diff-against-base.sh
 ```
 
-The squash-merge artifact reviewers see is this diff; cumulative review surfaces cross-commit findings that per-commit review misses. Per-commit `/code-review` during iteration remains valuable — treat its findings as inputs here, not substitutes.
+Review the cumulative PR-vs-base diff, not per-commit deltas — that's what reviewers actually see; per-commit findings feed in as inputs, not substitutes.
 
 Because the reviewed diff is not the staged diff, do NOT write the
 review-completion marker (per `/code-review`'s own rule). If findings
@@ -115,7 +115,7 @@ body to a temp file and ends its report with a `BODY_FILE: <path>` line.
 
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
 
-The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. `-f` catches a missing path; `-s` alone would pass the whitespace-only file a truncated write leaves. Halting matters because an empty-bodied PR is unrepairable: step 5 takes its *sync* path once a PR exists, and sync checks a body against branch state rather than authoring one. Capture the PR number for step 7, then launch the CI watch now (see "CI watch (out-of-band)" below).
+The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Capture the PR number for step 7, then launch the CI watch now (see "CI watch (out-of-band)" below).
 
 ## 7. Final hygiene recheck (halt on fail)
 

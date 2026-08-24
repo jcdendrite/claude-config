@@ -49,8 +49,8 @@ Don't mix idioms across modules in the same runtime — it makes scattered reads
 ## Why
 
 - **12-Factor §III Config** explicitly rejects environment-named variables: *"env vars are granular controls, each fully orthogonal to other env vars. They are never grouped together as 'environments'."*
-- **Suffix patterns duplicate logic.** The "which environment am I?" decision is already encoded in which config source loaded. Adding `_DEV` / `_PROD` to variable names fans that decision out to runtime code that branches on `NODE_ENV`, requiring both values to be present where only one is ever read, leaking the env selector into every consumer.
-- **Rotation is cheaper with canonical names.** Rotating `STRIPE_SECRET_KEY` means updating one name in the prod store; rotating `STRIPE_SECRET_KEY_PROD` requires remembering which suffix prod reads and leaves a `_DEV` variant easy to update by mistake.
+- **Suffix patterns duplicate logic** — the env-source selection is already made by which config file loads; `_DEV`/`_PROD` re-encodes that same decision in runtime `NODE_ENV` branches, forcing both values to exist for a variable only one of which is ever read.
+- **Rotation is cheaper with canonical names** — one name to update in the prod store, versus remembering which suffix prod reads and risking an overlooked `_DEV` variant.
 - **Mainstream frameworks resolve per-env config by file/store selection, not renaming:** Next.js lookup order, Rails per-env credentials, Kubernetes Kustomize overlays, Docker Compose `--env-file` — all load different sources for the same variable name.
 
 ## Anti-patterns to flag
@@ -78,7 +78,7 @@ function getStripeKey() {
 }
 ```
 
-**Recommended pattern:** the prod deploy populates `STRIPE_SECRET_KEY` with the live key; the dev `.env` populates it with the test key. Stripe's `sk_live_…` vs `sk_test_…` value prefix encodes the mode inside the *value* — no code branch needed.
+**Recommended:** each env's config source populates `STRIPE_SECRET_KEY` with its own key (`sk_live_…` prod, `sk_test_…` dev) — the value prefix encodes the mode, so no code branch is needed.
 
 ### 3. Sentinel-value defaults that silently leak production-shaped state
 
@@ -91,11 +91,11 @@ const bucket = process.env.STORAGE_BUCKET;
 if (!bucket) throw new Error('STORAGE_BUCKET missing');
 ```
 
-**Convention defaults are fine** for non-sensitive ergonomics: `PORT ?? 3000`, `LOG_LEVEL ?? 'info'`, `MAX_RETRIES ?? 3`. The rule: if the default can point at live production state in the wrong env, fail fast (`STORAGE_BUCKET`, `DATABASE_URL`, `STRIPE_SECRET_KEY`). Otherwise a default is fine.
+Non-sensitive defaults (`PORT`, `LOG_LEVEL`, `MAX_RETRIES`) are fine; fail fast instead when a default could point at live production state (`STORAGE_BUCKET`, `DATABASE_URL`, `STRIPE_SECRET_KEY`).
 
 ### 4. Assuming client-side frameworks "know" the environment
 
-Client bundles (Vite, Next.js) bake env vars in at build time — the bundle is **frozen** with the values present when `next build` / `vite build` ran. Only `VITE_*` / `NEXT_PUBLIC_*` vars are inlined, at build time only. If CI builds the prod bundle under staging's env, the shipped prod bundle carries the wrong values permanently.
+Client bundles (`VITE_*`/`NEXT_PUBLIC_*`) bake env vars in at build time only — building the prod bundle under staging's env ships the wrong values permanently.
 
 ## Environment-aware *behavior* vs environment-aware *credentials*
 

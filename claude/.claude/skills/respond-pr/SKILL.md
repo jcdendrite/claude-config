@@ -13,11 +13,11 @@ Fetch all review comments on the current branch's open pull request and address 
    ```
    ~/.claude/scripts/marker.sh activate respond-pr
    ```
-   The `require-respond-pr.sh` PreToolUse hook bypasses while THIS session's marker exists and its stored PID is alive (PID liveness check via `kill -0`). Per-session keying prevents parallel respond-pr sessions from thrashing on cleanup or leaking bypass to unrelated sessions. If the chain fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since every gated `gh` call below will be blocked.
+   The `require-respond-pr.sh` PreToolUse hook bypasses while THIS session's marker exists and its stored PID is alive (PID liveness check via `kill -0`). Per-session keying avoids cross-session bypass leakage; if `marker.sh` can't resolve the session id, abort — every gated `gh` call below will be blocked without it.
 
-   **Marker lifecycle:** this marker must stay active for the entire skill session — step 9 is the only step that removes it. If you run other skills as intermediate steps (e.g., `/ready-for-review` before pushing in step 8), their cleanup must not touch this marker. If the marker is accidentally removed mid-session, restore it in a standalone Bash call before any subsequent `gh` command — the hook fires before the shell executes, so you cannot create the marker and use it atomically in the same call.
+   **Marker lifecycle:** this marker must stay active until step 9 removes it (including through any intermediate skill run, e.g. `/ready-for-review`); if it's lost mid-session, recreate it in its own Bash call before the next `gh` command — the hook checks before the shell runs, so same-call creation doesn't help.
 1. Identify the PR number for the current branch: `gh pr view --json number -q '.number'`
-2. Fetch **all three** types of comments. Two failure modes Claude commonly hits: (a) fetching only the first type and missing the other two; (b) fetching without `--paginate` and silently truncating at 30 results per type. Both produce reviews that look complete but miss real feedback.
+2. Fetch all three types with `--paginate` — missing a type or truncating at 30 results per type both look like a complete review while silently dropping feedback.
    - **Inline file comments:** `gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate`
    - **Top-level review comments:** `gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate --jq '.[] | select(.body != "")'`
    - **Issue-level comments:** `gh api repos/{owner}/{repo}/issues/{number}/comments --paginate`
@@ -86,11 +86,11 @@ Fetch all review comments on the current branch's open pull request and address 
    ```
    ~/.claude/scripts/marker.sh deactivate respond-pr
    ```
-   Removes only this session's file. If the skill errors out before reaching this step, the gate will evict the orphan automatically once the session's process ends — the hook checks PID liveness on each gate hit.
+   Removes only this session's marker; an orphaned marker from an errored-out session is evicted automatically once its PID dies (checked per gate hit).
 
 ## Attribution
 
-**CRITICAL:** All PR comment replies are posted through the user's GitHub token and will appear as the user's account. To avoid confusion, **always** prefix every reply body with `**[Claude Code]**` followed by the response content, and end the body with the attribution trailer: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`. The prefix marks authorship inline for thread readers; the trailer is the AI-disclosure line — they serve different readers and both are required.
+**CRITICAL:** All PR comment replies are posted through the user's GitHub token and will appear as the user's account. To avoid confusion, **always** prefix every reply body with `**[Claude Code]**` followed by the response content — identifies authorship for thread readers — and end the body with the attribution trailer: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`, the required AI-disclosure line for a different audience.
 
 Example:
 ```
@@ -121,5 +121,5 @@ gh api repos/owner/repo/pulls/4/comments/12345678/replies \
   and only then issues the PATCH — it never attempts one on a mismatch, so the ownership check can't
   be skipped or fumbled independently of the PATCH the way two separate Bash statements could be.
   (or `/issues/comments/{id}` for issue-level comments)
-- **Avoid SHA-pinned commit references.** When acknowledging a fix in a reply, prefer "addressed in the latest commit on this branch" over "fixed in commit `<sha>`". SHA references become stale if the branch is rebased or force-pushed; branch-tip language remains correct across rebases. If a prior reply in this session cited a SHA that is now stale, post a correction reply — do not leave stale SHAs uncorrected before requesting reviewer re-verification.
+- **Avoid SHA-pinned commit references.** When acknowledging a fix in a reply, prefer "addressed in the latest commit on this branch" over "fixed in commit `<sha>`" — SHAs go stale on rebase/force-push. Correct any prior reply that already cited one before requesting re-verification.
 - **A filed follow-up updates what already referenced it.** When you file a ticket a reply promised as `will create`, correct every place that promise was already published: post a correction reply for earlier replies, as with a stale SHA, and refresh the PR body by re-running `/pr-description`, which owns that surface. Nothing re-reads those artifacts for you.

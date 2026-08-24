@@ -38,13 +38,12 @@ worktree`) satisfies it.
 
 **Footgun: never recommend `>>` writes through stow-symlinked files pointing
 at a git-tracked target.**
-Files under `~/.claude/` (e.g. `~/.claude/CLAUDE.md`) are symlinks to
-tracked files in this repo — appending via `>>` writes through the
-symlink and silently stages changes to the public repo. Edit the
-committed file directly via PR instead. This does not cover gitignored
-runtime state under `claude/.claude/` (e.g. `.handoff-nudge.log`) — an
-append there never reaches `git status`, so check `.gitignore` before
-assuming this rule blocks a specific write.
+Never `>>`-append to files under `~/.claude/` — they're symlinks to this
+repo's tracked files, so appends silently stage to the public repo; edit the
+committed file via PR instead. Exception: verify a file is actually
+gitignored (e.g. `.handoff-nudge.log`) before treating it as safe to
+append to — untracked runtime state isn't staged, so appending there
+never leaks to the public repo.
 
 **Terminology:** Use "project" / "private project", not "client", in
 `claude-config` prose. The redaction hook is `deny-private-project-refs`.
@@ -52,13 +51,12 @@ assuming this rule blocks a specific write.
 **Hook defense-in-depth:** Hooks must filter their own input by tool
 name and matcher; do not rely solely on settings.json `if` conditions.
 
-**Should this be a hook?** When the user asks for an automated or
-recurring behavior — "from now on when X…", "each time X…", "whenever
-X…", "before/after X…" — the answer is a hook configured in
-`.claude/settings.json`, not a memory or a skill instruction. The
-harness executes hooks; nothing in memory or a CLAUDE.md prose rule can
-fulfill an automatic-trigger request. Route to the `claude-hook-review`
-skill for hook design and review.
+**Should this be a hook?** When the user asks for automated/recurring
+behavior ("from now on when X…", "whenever X…", "each time X…",
+"before/after X…"), configure a hook in
+`.claude/settings.json` — memory and skill instructions cannot fulfill an
+automatic-trigger request. Route to `claude-hook-review` for hook design and
+review.
 
 **Plugin skills use `plugin:skill` names — never path-prefixed.** This repo's stow source (`claude/.claude/skills/**`) holds the same skill names that stow installs at personal scope (`~/.claude/skills/**`). Because the names clash, Claude Code renders the stow-source copies as directory-qualified duplicates in the available-skills listing — e.g. `.claude/worktrees/<branch>/claude:code-review` — and instructs the model to prefer that form. That qualification applies only to project skills. The three marketplace plugins registered in `enabledPlugins` (`skill-management`, `claude-hook-review`, `plugin-semver`) are never directory-scoped: invoke them by the fully-qualified `plugin:skill` name (`skill-management:skill-review`, `claude-hook-review:claude-hook-review`, `plugin-semver:plugin-semver`) with no directory or worktree path prepended.
 

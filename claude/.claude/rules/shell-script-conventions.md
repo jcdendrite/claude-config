@@ -6,31 +6,19 @@ paths:
 
 ## Shell script conventions
 
-Sources verified against the Google Shell Style Guide (2026-07) for quoting,
-`[[ ]]`, and the `set -e`/`(( ))` caveat. `set -e`'s broader
-if/`&&`/`||`-condition exemption is documented Bash-manual behavior, not a
-Google-guide quote. `shellcheck`, `IFS= read -r`, `mktemp` portability, and
-`trap` composition are well-established shell-scripting practices not pinned
-to a fetched source this session — re-confirm at point of use if precision
-matters.
+Google Shell Style Guide (2026-07) grounds the quoting, `[[ ]]`, and
+`set -e`/`(( ))` guidance below. `shellcheck`, `IFS= read -r`, `mktemp`
+portability, and `trap` composition are general shell-scripting practice, not
+tied to a specific citation.
 
-- **These are bash conventions, not POSIX `sh`.** The `**/*.sh` glob can't
-  read the shebang. Google's style guide declares "Bash is the only shell
-  scripting language permitted for executables" for its own repos, so it never
-  needs to hedge — but not every repo makes that declaration. If the script's
-  shebang is `#!/bin/sh` (dash/POSIX), `pipefail`, `[[ ... ]]`, and array
-  expansions below are syntax errors — check the shebang before applying them.
-- **`set -euo pipefail` at the top of bash scripts.** Know the caveats:
-  Google's guide warns a standalone `(( expr ))` returns a false exit status
-  when `expr` evaluates to `0` — under `set -e` this **aborts the script
-  immediately** at that line, not "continues past it." Google's own example:
-  `set -e; i=0; (( i++ ))` "will cause the shell to exit" — the post-increment
-  expression evaluates to the old value (`0`), so the command "fails" even
-  though the increment worked. Guard arithmetic that can legitimately hit
-  zero: `(( count++ )) || true` or `: $(( count++ ))`. Separately, `-e` is
-  also suppressed for any command that is part of an `if`/`&&`/`||` test
-  (documented Bash behavior, not this specific Google-guide passage) — don't
-  treat `-e` as a substitute for checking exit codes at those sites.
+- **These are bash conventions, not POSIX `sh`.** The `**/*.sh` glob matches
+  by extension only — if the shebang is `#!/bin/sh` (POSIX/dash), `pipefail`,
+  `[[ ... ]]`, and array expansions below are syntax errors, so check the
+  shebang first.
+- **`set -euo pipefail` at the top of bash scripts.** Standalone `(( expr ))`
+  that evaluates to 0 trips `set -e` and aborts the script — guard with
+  `(( count++ )) || true`. `-e` is also suppressed for commands inside an
+  `if`/`&&`/`||` test — check exit codes explicitly there.
 - **Run `shellcheck`** (CI or pre-commit) — mechanically catches the quoting,
   `set -e`, and portability issues below; the highest-leverage single addition
   for a script-heavy repo.

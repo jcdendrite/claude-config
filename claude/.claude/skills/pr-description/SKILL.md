@@ -167,16 +167,15 @@ keeps concurrent runs in sibling worktrees from colliding, and the prefix
 makes the file identifiable to whoever meets it later — then populate it with
 the **`Write` tool**.
 
-Do not build the body through a shell. Backticks and `$(...)` in authored
-markdown are command substitutions the moment the shell parses them, and a
-heredoc redirect (`cat > "$f" <<EOF`) is parsed exactly as `--body "$(cat
-<<EOF)"` is — writing to a file does not by itself escape that. If a heredoc
-is unavoidable, the single-quoted `<<'EOF'` delimiter is mandatory.
+Author the body with the Write tool, not a shell heredoc. An unquoted
+`<<EOF` parses embedded backticks/`$(...)` as command substitution exactly
+like `--body "$(cat <<EOF)"` does — writing to a file does not by itself
+escape that. Use `<<'EOF'` if a heredoc is unavoidable.
 
-Write backticks literally either way. **Never write `` \` ``** to "escape"
-one: nothing consumes that backslash, so it survives into the body and breaks
-GitHub's code-span rendering. This holds for a `Write`-tool-authored file as
-much as for a heredoc — the hazard is in the delivered bytes, not the shell.
+**Never write `` \` ``** to "escape" a backtick — nothing consumes a
+backslash before a backtick, so it survives into the body unconsumed.
+This breaks GitHub's code-span rendering, whether authored via Write
+tool or heredoc.
 
 Then, by mode:
 
@@ -186,10 +185,9 @@ Then, by mode:
   form makes the path extractable rather than transcribed.
 - **Sync mode:** apply with `gh pr edit <n> --body-file <path>`.
 
-Write the path out as literal text in both commands — not a `$VAR` holding
-it. A redaction gate scans the file named by `--body-file` and resolves that
-argument statically, so a shell variable is opaque to it and the call fails
-closed.
+Write the path as literal text in both commands, not a `$VAR` — the
+redaction gate resolves `--body-file` statically, so a variable is opaque to
+it and the call fails closed.
 
 When a body already exists, keep the project's template structure intact —
 refresh content inside existing sections, don't restructure. Exception: a
@@ -197,4 +195,4 @@ section the template's own instructions say to delete once a condition holds
 is meant to be removed, not emptied or annotated — give any action item
 inside it a disposition first (see "Coordination-step preservation" below).
 
-**Coordination-step preservation.** Before applying an edit to an existing body, enumerate every action item that body carries — coordination steps, pre-deploy commands, manual external-system setup, sync workflows. For each, give it an explicit disposition: survive into the new body — and when its own section is being deleted under the exception above, name the remaining section it moves to, since a survivor with no home is the silent loss in disguise — answer-and-strip (Claude resolved it — see the "Reviewer-action items Claude can answer itself" bullet above), or strip-as-stale (no longer applies — see the `TBD` / `pending` markers bullet above). Deliberate removal is fine; silent loss during a wholesale restructure is the failure mode.
+**Coordination-step preservation.** Before applying an edit to an existing body, enumerate every action item that body carries — coordination steps, pre-deploy commands, manual external-system setup, sync workflows. Give each action item a disposition: survive (name its new section if the old one is deleted), answer-and-strip (Claude resolved it — see the "Reviewer-action items Claude can answer itself" bullet above), or strip-as-stale (no longer applies — see the `TBD` / `pending` markers bullet above). Deliberate removal is fine; a survivor left with no home is not.

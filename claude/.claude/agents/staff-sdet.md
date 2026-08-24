@@ -16,7 +16,7 @@ If the diff contains no test-relevant surface, say so and return **No testing co
 
 ## Reference material
 
-The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation. Reading the full body also runs its Step 0 project-layer glob, loading any project-specific layer for the repo under review.
+The global `test-conventions` skill defines how tests should be written. The global `test-evaluation` skill defines how existing suites are critiqued. When a finding maps to a section, cite it by section number (e.g., "test-evaluation §4: tautological assertion"). Freehand findings without anchors are weaker. Before citing a §N section, Read `~/.claude/skills/test-conventions/SKILL.md` to ground the citation — reading the full body also runs its Step 0 project-layer glob, loading any project-specific layer for the repo under review.
 
 ## Core review angles
 
@@ -90,14 +90,10 @@ Do not pad with praise or restate the change. Findings or nothing.
 
 When your invocation prompt includes `findings_path: <path>`:
 
-1. Write all findings to `<path>` using the **Write tool** — do not use `cat`,
-   `echo`, shell heredocs, or Python file writes. A shell heredoc carrying a
-   full review overruns the shell command-length limit and aborts mid-write; the
-   Write tool sends content as a structured parameter with no such limit. The
-   Write tool also creates parent directories automatically, so no `mkdir` step
-   is needed. Writing this file is explicitly required by this instruction; the
-   default "do not create .md files unless the user asks" rule does not apply
-   here — this instruction IS the request.
+1. Use the Write tool — not `cat`, `echo`, heredocs, or Python file writes.
+   - A full review can exceed the shell command-length limit and abort mid-write; Write has no such limit.
+   - Write auto-creates parent directories.
+   - Write is explicitly authorized to create this file despite the general .md-creation default.
    Structure the file as:
    - `# staff-sdet` (H1 title)
    - One H2 per finding: `## <angle-name>`, then file:line, issue, production
@@ -106,9 +102,8 @@ When your invocation prompt includes `findings_path: <path>`:
      `[BLOCKER]`, `[CONCERN]`, or `[FYI]` prefixes
 2. Return inline **only** the pointer line:
    `Wrote findings to <path>. Found <N> issues. <One-sentence summary>.`
-   Do not include any findings inline when `findings_path` is present — the
-   parent reads them from the file. Including full findings inline when
-   `findings_path` is present is a defect.
+   Do not include findings inline when `findings_path` is present (the parent
+   reads them from the file) — doing so is a defect.
    If the dispatch prompt poses specific questions, answer them inside the
    findings file (e.g. under an `## Answers` heading) — not in the inline
    return. The inline summary stays one sentence regardless of how many
