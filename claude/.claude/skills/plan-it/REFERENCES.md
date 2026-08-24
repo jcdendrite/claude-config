@@ -1,6 +1,7 @@
 # References — /plan-it
 
-Sources consulted during F-08 design. Read this file when editing SKILL.md
+Sources consulted while designing plan-it's section structure and
+assumption-ledger format. Read this file when editing SKILL.md
 to verify a rule still holds or to add new guidance.
 
 ## Plan/spec/RFC section-structure surveys
@@ -70,8 +71,8 @@ ambiguity is the bug, not flexibility.
 https://aider.chat/2024/09/26/architect.html
 
 Separates planning from editing: a plan must be precise enough that a second
-model can mechanically apply it. Motivates keeping plan-file as design
-artifact (plan-it's job) separate from execution (F-09 /build-it's job).
+model can mechanically apply it. Motivates keeping the plan file as a design
+artifact (plan-it's job) separate from whatever executes it.
 
 ### Cursor agent best practices (primary)
 https://cursor.com/blog/agent-best-practices
@@ -90,12 +91,10 @@ acceptance criteria as the termination condition.
 
 ## Assumption ledger — worked example and grammar
 
-Step 5's assumption ledger exists because a plan revision can silently
-contradict a fact the same session already verified — attention is
-captured by whatever finding is currently active. The catch tends to come
-from fresh context (a human's outside-view question, or a `plan-review`
-reviewer subagent), not from the authoring session re-checking itself. The
-ledger gives that fresh-context check something concrete to diff against.
+Step 5's assumption ledger exists so a fresh-context reviewer (a human
+question or a `plan-review` subagent, not the authoring session
+re-checking itself) has something concrete to diff a revision against,
+since a revision can silently contradict an already-verified fact.
 
 ### Grammar
 
@@ -138,14 +137,11 @@ plans [engineer-verified] — anchors: root
 
 ### Why three tags, not two
 
-A binary verified/unverified split loses the case where the *human* stated
-the fact directly, as an utterance in the session — that source can't be
-re-derived by a grep or doc lookup, but it also must never be silently
-overridden by the agent's own investigation finding something that looks
-contradictory. Splitting out `[engineer-verified]` gives a reviewer (per
-`plan-review`) a clear job: resolve `[unverified]` rows by checking them,
-but *escalate* `[engineer-verified]` contradictions to the human rather
-than resolving them unilaterally.
+A binary verified/unverified split can't represent a human-stated fact
+that can't be re-derived by grep yet must never be silently overridden —
+`[engineer-verified]` gives `plan-review` that job: auto-resolve
+`[unverified]` rows, but escalate `[engineer-verified]` contradictions to
+the human instead of overriding them.
 
 File-sourced facts are always `[verified: <file>]`; the tag exists only for
 utterances a grep can't re-derive.

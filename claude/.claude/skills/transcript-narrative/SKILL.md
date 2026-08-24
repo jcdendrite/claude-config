@@ -23,7 +23,7 @@ python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" ses
 
 `sessions --paths` prints its resolved-scope header (`SESSIONS SOURCES (...)`) to stderr — record that line. This invocation passes no `--projects`, so its scope label is always `*`; the root-count clause is what tells you whether the corpus covers every declared account or just one.
 
-Read each returned path directly with the Read tool. Do not hand-roll a glob for this step — `sessions --paths` is the single source of the file set. Check the `SESSIONS SOURCES (...)` line from Step 2: if its root-count clause reads "1 root (no ~/.claude/transcript-config-dirs declared)", the corpus covers only the active account — say so in the case study rather than assuming every declared account was scanned. From the records you read, filter to turns where:
+Read each returned path directly with the Read tool. Do not vendor a script or hand-roll a shell expression or glob for this step — `sessions --paths` is the single source of the file set. Check the `SESSIONS SOURCES (...)` line from Step 2: if its root-count clause reads "1 root (no ~/.claude/transcript-config-dirs declared)", the corpus covers only the active account — say so in the case study rather than assuming every declared account was scanned. From the records you read, filter to turns where:
 - `role == "user"`
 - `isSidechain` is absent or `false` — exclude subagent/sidechain turns entirely
 
@@ -32,8 +32,6 @@ Capture BOTH opening prompts AND mid-session steering turns. Later corrective or
 For each qualifying turn, record:
 - Session ID and timestamp
 - `message.content[].text` — the verbatim prompt text
-
-Do not vendor a script for this extraction, and do not hand-roll a shell expression or glob to find the files — `sessions --paths` above is the one place file discovery happens. Read only the paths it returned, with the Read tool, filtering by the criteria above.
 
 ## Step 3 — Bucket prompts into phases and build an annotated timeline
 
@@ -85,4 +83,3 @@ Distill lessons from the annotated timeline. For each lesson:
 - Tie it to the verbatim prompt arc that surfaced it (cite the phase and the specific prompt)
 - Rank by how clearly the lesson appears in the evidence — lessons with a direct, traceable prompt arc rank above those inferred from metrics alone
 
-For raw quantitative metrics without narrative synthesis, use `transcript-analysis` — the two skills are designed to be used together.

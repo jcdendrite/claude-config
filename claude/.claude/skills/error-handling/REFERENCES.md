@@ -9,7 +9,7 @@ Edit-time reference for `SKILL.md`. Not loaded at runtime. Read this file manual
 
 Section 3.1 — Standard members: `type` (URI reference identifying problem type), `title` (human-readable summary), `status` (HTTP status code), `detail` (human-readable explanation), `instance` (URI identifying the specific occurrence).
 
-**Cited for Rule 2.** The skill adopts a **simplified subset** — drops `type` URI, `status`, and `instance`; retains `detail` concept as `message`; adds `code` for programmatic discrimination. Rationale: `type` URIs are rarely dereferenceable in practice, `status` is redundant with the HTTP line, `instance` adds complexity without value for most applications. The simplified shape preserves machine-readability (`code`) and human-readability (`message`) while cutting the ceremony.
+**Cited for Rule 2** — the envelope is a simplified RFC 9457 subset (drops type/status/instance, keeps detail as message, adds code) because type URIs are rarely dereferenced and status duplicates the HTTP status line.
 
 ---
 
@@ -20,7 +20,7 @@ Section 3.1 — Standard members: `type` (URI reference identifying problem type
 
 Section 15.5.6 — 405 Method Not Allowed: "A server generating a 405 response MUST generate an Allow header field containing the list of methods presently supported by the target resource." (Verbatim quote from RFC 9110 §15.5.6 — not obtained via automated fetch; text is canonical.)
 
-**Cited for Rule 8 and Anti-pattern C.** Minting a code that maps to 405 requires shipping the `Allow` header — status-code semantics carry protocol obligations. Override to 405 without minting the correct code omits this header.
+**Cited for Rule 8 and Anti-pattern C** — minting a code that maps to 405 requires shipping the `Allow` header, since status-code semantics carry protocol obligations that an override-without-minting skips.
 
 ---
 

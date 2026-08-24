@@ -17,10 +17,7 @@ Review each `permissions.allow` entry against the security checklist below. The 
 
 ## Important: glob semantics
 
-The security of glob-based rules depends on how Claude Code's permission
-matcher evaluates them. When reviewing, assume the least restrictive
-interpretation unless you have verified the actual behavior. For example,
-assume `Bash(cmd:*)` matches the entire command string, not just arguments.
+Assume glob matches are least-restrictive until verified — e.g. treat `Bash(cmd:*)` as matching the entire command string, not just arguments, unless you've confirmed Claude Code's actual matcher behavior.
 
 ## Steps
 

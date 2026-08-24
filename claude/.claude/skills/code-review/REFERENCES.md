@@ -58,7 +58,7 @@ Key passages:
 Grounds the "Default ADDRESS" paragraph, criterion #1's
 "tests already running" condition, and the 3+-DEFER smell test.
 
-- **Criterion 1 "Orthogonal scope" touch/activate guard** — grounds in CLAUDE.md §Engineering Judgment "Audit structural siblings before scoping a fix narrowly" ("scope is set by the bug, not by where the symptom surfaced") and "Prove your change caused a failing check" (a change activating a latent bug makes it in-scope). Surfaced by a transcript audit of 10+ over-defer pushbacks.
+- **Criterion 1 "Orthogonal scope" touch/activate guard** — grounds in CLAUDE.md §Engineering Judgment "Audit structural siblings before scoping a fix narrowly" ("scope is set by the bug, not by where the symptom surfaced") and "Prove your change caused a failing check" (a change activating a latent bug makes it in-scope).
 
 ### Pre-existing problems and ticket discipline
 

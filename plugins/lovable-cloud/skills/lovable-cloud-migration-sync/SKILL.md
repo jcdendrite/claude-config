@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 # Lovable Migration Sync
 
-> _This skill was extracted from a production Lovable Cloud project and genericized. The workflow shape (identify unsynced migrations → diff against originals → db reset → delete originals → open PR) is generic; file names like `migration-sync-pr.yml` and test commands like `npm run verify` are project-specific examples — adapt for your project._
+> _The workflow shape (identify unsynced migrations → diff against originals → db reset → delete originals → open PR) is generic; file names like `migration-sync-pr.yml` and test commands like `npm run verify` are project-specific examples — adapt for your project._
 
 **This is the engineer-reviewed fallback flow** — its safety rests on an engineer reviewing the resulting PR before merging; contexts that delete without that review need a dedicated, project-provided gated procedure that fails closed, not this one.
 
@@ -98,30 +98,11 @@ with the user.
 cd <absolute repo path> && supabase db reset
 ```
 
-The reset replays the full migration set against a clean database;
-without it, the verify run validates pre-replay state and the
-migration sync is not actually exercised. NOTICEs from
-`DROP IF EXISTS` on not-yet-created objects are expected during the
-reset and harmless — Lovable duplicates run later in timestamp order
-than the originals did, so the reset replays the originals' creation
-against the duplicates' drops.
+Run reset before verify — verify otherwise checks pre-replay state. Expected `DROP IF EXISTS` NOTICEs during reset are harmless: Lovable's duplicates run later in timestamp order than the originals.
 
-**Ordering-artifact failures: delete first, then reset.** If `supabase db reset`
-fails with an "already exists" error for an object the Lovable duplicate creates —
-because the original ran first in timestamp order and the duplicate's `CREATE`
-fires without a preceding `DROP` — this is a local ordering artifact, not a logic
-error in the Lovable duplicate. On Lovable Cloud (where only the duplicate runs)
-this works correctly.
+An "already exists" failure on reset is a local timestamp-ordering artifact (original runs before duplicate locally; only the duplicate runs on Lovable Cloud) — not a bug in the duplicate; the FAIL-blocks-step-6 rule still applies to real logic errors (wrong predicates, missing DDL, weakened security checks).
 
-The fix: delete the original (step 6 below) first, then re-run `supabase db reset`
-with only the Lovable duplicate present. Do **not** modify the Lovable duplicate
-to add `DROP IF EXISTS` guards as a workaround — the duplicate must match exactly
-what Lovable Cloud executed. Editing it creates repo/production divergence even
-when the edit is a harmless no-op DROP.
-
-The "do not proceed on FAIL" rule applies to logic errors in the duplicate (wrong
-predicates, missing DDL, weakened security checks), not to ordering artifacts that
-disappear once the original is deleted.
+Fix: delete the original (step 6) first, then re-run reset with only the duplicate present — never edit the duplicate to add DROP IF EXISTS guards, even as a harmless no-op, since it must match exactly what Lovable Cloud executed.
 
 Once the reset completes, run your project's verify entry point inline:
 
@@ -146,10 +127,7 @@ slug-named file instead, then wait for Lovable to re-emit.
 git rm supabase/migrations/ORIGINAL_1.sql supabase/migrations/ORIGINAL_2.sql ...
 ```
 
-**Do not manually restore a deleted emit.** Re-adding a deleted UUID file by
-hand races Lovable's own re-emit and lands two identical UUID files on `main`.
-If an emit was deleted in error, delete the human original instead and let
-Lovable re-emit on its own.
+Never manually restore a deleted emit. Re-adding it by hand races Lovable's own re-emit and produces duplicate UUID files. If an emit was deleted in error, delete the human original instead and let Lovable re-emit on its own.
 
 ### 7. Commit and PR
 

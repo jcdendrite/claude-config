@@ -18,11 +18,7 @@ During a merge/rebase/cherry-pick, the index holds a carefully constructed
 mid-state: files from both sides, deletion markers, unresolved paths.
 **Any mutation of the index before commit silently corrupts that state.**
 
-Common way this goes wrong: you want to compare a file on another branch
-during conflict resolution, so you run
-`git checkout origin/main -- src/some-file.ts`. That *overwrites* the
-index entry for that path. If main had *deleted* a sibling file, the
-deletion marker can also get reset. The failure is silent until commit.
+Example: `git checkout origin/main -- src/some-file.ts` overwrites that path's index entry and can silently reset a sibling's deletion marker too — the failure only surfaces at commit.
 
 ## Safe read-only inspection
 
@@ -112,7 +108,7 @@ For the rest of this section, **`<upstream>`** = the ref whose state the merge w
 
 ### If GitHub's PR diff still shows restored files
 
-GitHub's Files-changed view renders `git diff <base>...<head>` (three-dot) — diff from the branch's *merge-base* to its tip. Files modified on the branch relative to the merge-base remain in the PR diff even after content now matches `<upstream>`. The only clean fix is a **fresh branch off current upstream** containing only the intended changes.
+GitHub's three-dot diff (merge-base→tip) still lists files as changed even after their content is reverted to match `<upstream>` — the only clean fix is a fresh branch off current upstream with just the intended changes.
 
 ## Rule of thumb
 
@@ -125,4 +121,4 @@ If `git status` shows `MERGING`, `REBASING`, `CHERRY-PICKING`, or any `UU` / `DU
 - `test -d "$(git rev-parse --git-path rebase-apply)"` — active apply-based rebase
 - `test -e "$(git rev-parse --git-path CHERRY_PICK_HEAD)"` — active cherry-pick
 
-**The reflog is your safety net.** `git reflog` logs every ref movement for 90 days (`gc.reflogExpire`). An accidental `reset --hard` is usually recoverable via `git reset --hard HEAD@{1}` if caught before `git gc` reaps the orphaned commits.
+`git reflog` retains every ref movement for 90 days (`gc.reflogExpire`) — recover an accidental `reset --hard` via `git reset --hard HEAD@{1}` before `git gc` reaps the orphaned commits.

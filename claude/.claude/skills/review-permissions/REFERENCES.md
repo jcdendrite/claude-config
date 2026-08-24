@@ -10,25 +10,23 @@ script, split across `permissions.allow` and `permissions.ask`:
 `allow`; `Bash(cleanup-merged-branches)` (and its absolute-path form) are
 `ask`.
 
-The destructive form was originally `allow`, on the reasoning that the script
-calls only absolute paths and execs no untrusted input (still true, and still
-why `--dry-run` is silently auto-approved). That reasoning covered *argument
-injection*, not *invocation without confirmation* — the script's own Tier A
-branch classification deletes without an internal per-branch prompt (see
-`docs/scripts.md`), so a global silent `allow` on the destructive form meant
-nothing outside the script confirmed a delete before it ran. Moving it to
-`permissions.ask` restores that confirmation at the Claude Code layer, and
-does so in every permission mode: per the primary source
-(`code.claude.com/docs/en/permissions`), ask outranks allow, and
-`bypassPermissions` "skips permission prompts, except those forced by explicit
-`ask` rules." Bare-name entries stay accepted at global scope for the same
-reason as before — installed to `~/.local/bin/` by `install.sh`. This is a
-plausibility argument, not a guarantee of the checklist's "unshadowable" bar:
-it holds only so long as `~/.local/bin` precedes any project- or
-tool-injected PATH entry of the same name (direnv, asdf/nvm shims, a
-project's own `./bin`) at invocation time. Accepted pre-existing exposure,
-unchanged by the `ask` move — the destructive form's exposure is reduced by
-this change, not eliminated by it.
+The destructive form is `permissions.ask` (not `allow`): the script's own
+Tier A branch classification deletes without an internal per-branch prompt
+(see `docs/scripts.md`), so `ask` is the only confirmation step before a
+delete; `--dry-run` stays `allow` since it execs no untrusted input.
+
+- Per the primary source (`code.claude.com/docs/en/permissions`), `ask`
+  outranks `allow` in every permission mode, including `bypassPermissions`,
+  which "skips permission prompts, except those forced by explicit `ask`
+  rules."
+- Bare-name entries are accepted at global scope because `install.sh`
+  installs the script to `~/.local/bin/`. This is a plausibility argument,
+  not a guarantee of the checklist's "unshadowable" bar: it holds only so
+  long as `~/.local/bin` precedes any project- or tool-injected PATH entry
+  of the same name (direnv, asdf/nvm shims, a project's own `./bin`) at
+  invocation time.
+- That PATH-shadowing exposure is accepted, not fixed, by the `ask` move —
+  it reduces the destructive form's exposure, not eliminates it.
 
 Checklist item 10 (PATH-resolved commands) applies. Justification accepted.
 

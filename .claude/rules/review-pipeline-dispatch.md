@@ -14,16 +14,15 @@ agent, or plugin files:
   (`require-skill-review.sh` blocks `git commit` until the behavioral-equivalence
   marker is written).
 - **agent file** (`claude/.claude/agents/*.md` or `plugins/*/agents/*.md`) →
-  `/agent-review` is invoked by the dispatcher but **not hook-enforced**. Agent
-  bodies are lazy-loaded and lower-blast-radius than skill descriptions, so
-  dispatcher-level invocation suffices and no pre-commit gate is added.
+  `/agent-review` is invoked by the dispatcher but **not hook-enforced**,
+  since agent bodies are lazy-loaded and lower-blast-radius than skill
+  descriptions.
 - **any file under a plugin directory** (a tree containing
   `.claude-plugin/plugin.json`) → `plugin-semver` is also required and
   **hook-enforced** (`require-plugin-version-bump.sh` blocks `git commit`
   unless the plugin's `version` was strictly raised since the branch's
-  merge-base with the default branch). This hook ships inside the
-  `plugin-semver` plugin itself, so it only takes effect once that plugin is
-  installed/updated to a version that carries it — a `git pull` alone does
-  not activate it, unlike stowed `claude/.claude/**` hooks.
+  merge-base with the default branch) — but this hook only activates once
+  `plugin-semver` itself is installed/updated to a version carrying it, not
+  on a bare `git pull`.
 
 `/code-review` invokes whichever applies automatically.

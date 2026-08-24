@@ -73,7 +73,7 @@ Recommended command after rebasing a personal branch:
 git push --force-with-lease --force-if-includes
 ```
 
-`--force-with-lease` alone has a gap: a stray `git fetch` updates the remote-tracking ref, making the lease look held even though you haven't integrated new commits. `--force-if-includes` closes that gap. Set `push.useForceIfIncludes=true` to apply it automatically.
+`--force-with-lease` alone can be fooled by a stray `git fetch` (it only checks the tracking ref, not integrated commits) — `--force-if-includes` closes that gap (`push.useForceIfIncludes=true` to apply automatically).
 
 **Critical gotcha for automation and fresh clones:** `--force-with-lease` without an explicit expected value requires a remote-tracking ref. In a shallow clone, `--single-branch` clone, or first push on a branch, that ref is missing and `--force-with-lease` silently degrades to `--force`. Use the explicit form:
 
@@ -83,7 +83,7 @@ git push --force-with-lease="<branch>:$(git rev-parse origin/<branch>)" \
          --force-if-includes origin <branch>
 ```
 
-`--force-if-includes` also depends on the local branch's reflog, which is empty on fresh/shallow clones. If reflogs are disabled (`core.logAllRefUpdates=false`), `--force-if-includes` silently no-ops.
+`--force-if-includes` also depends on the local reflog — it silently no-ops on fresh/shallow clones or when `core.logAllRefUpdates=false`.
 
 ## Never-force-push targets
 

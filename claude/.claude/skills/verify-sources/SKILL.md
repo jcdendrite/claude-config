@@ -15,30 +15,9 @@ user-invocable: true
 
 ## The failure mode this prevents
 
-A subagent reports "library X has deprecated function Y in favor of
-Z." You take the claim, plan a migration, present it. On inspection
-the source docs are about a narrower migration path — one that
-applies only to callers in a specific configuration. For the default
-configuration, Y is the right choice and Z is wrong. The plan is
-built on a confident-sounding misreading.
-
-The pattern fails the same way every time: an agent (or a secondary
-source — a blog post, an LLM summary, a forum answer) presents a
-claim *without the context that scoped it*. The claim is technically
-derivable from the docs but loses the qualifier that made it true. A
-reader who only sees the relayed claim cannot tell.
-
-The cost is asymmetric. Quick lookups that go wrong waste a few
-minutes. Strategic conclusions that go wrong waste a migration plan,
-a PR, a review cycle — and the user has to push back two or three
-times before the primary source is actually fetched.
-
-There is a second shape. An agent reaches a *real* source — a
-widely-starred community GitHub repo, a popular blog post — and cites it as
-"canonical" because it ranks high or is "most-cited." Reaching a source is
-not the same as reaching an authority. Popularity is not provenance: an
-unaffiliated aggregation is a lead to the originator or the first-party
-spec, never the citation itself.
+Secondary-source claims often drop the scoping context that made them
+true, and popular-but-unaffiliated sources get miscited as
+authoritative — see REFERENCES.md for the failure patterns.
 
 ## The rule
 
@@ -68,10 +47,8 @@ When research will inform a code or design decision:
    mode, or migration path — your conclusion has to carry the scope
    through. The unscoped form often points at opposite code from
    the scoped form.
-4. **Do this on the first pass.** If you find yourself relaying an
-   agent's claim verbatim, or quoting a summary as if it were the
-   source, the next user message will ask you to actually fetch it.
-   Skip the round trip.
+4. **Fetch the primary source on the first pass** — relaying a claim
+   verbatim just defers the fetch to a later round trip.
 
 **Triangulate durable decisions across multiple first-tier sources.**
 Depth on a single source (items 1–4) is not sufficient for a durable

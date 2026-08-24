@@ -16,7 +16,7 @@ description: >
 
 One application error-code namespace. One response envelope. One mapper at the consumer. Infrastructure codes are logged metadata — never user-visible identifiers.
 
-## The eight rules
+## The rules
 
 ### Rule 1 — Single application code namespace
 
@@ -76,9 +76,13 @@ Decision test: would the client or support team act differently on this code tha
 
 Never override the response status so it diverges from what the code's registry entry maps to. If a path needs a new status, mint the code that owns that status (including any protocol-required headers, e.g. `Allow` for 405 per RFC 9110 §15.5.6).
 
+### Rule 9 — Envelope is caller-invariant
+
+The error response envelope's shape and information content do not vary by caller authentication status. Richer detail belongs in server-side logs only, never in any authenticated response tier.
+
 ## Error propagation & capture (server-side)
 
-The eight rules above govern the response *envelope* — what crosses the wire to the consumer. These four govern the orthogonal axis: how an error travels from its origin to the response, and where it is reported to telemetry.
+The rules above govern the response *envelope* — what crosses the wire to the consumer. These four govern the orthogonal axis: how an error travels from its origin to the response, and where it is reported to telemetry.
 
 ### P1 — Throw the unexpected; return the expected
 Expected, recoverable conditions (invalid input, unauthorized, not found, conflict) are normal control flow — return the structured envelope. Genuinely unexpected failures (a query that should have succeeded, a broken dependency, an unreachable branch) are exceptions — throw them and let the boundary (P2) report and format. Reserve exceptions for the exceptional; do not use them for routine control flow, and do not swallow-and-return what the caller cannot act on.
@@ -111,7 +115,7 @@ on error err:
 
 ### B — Phantom codes (codes with no producer)
 
-A code is a contract between a producer that emits it and a consumer that maps it. Specific user copy is earned by a producer emitting a real code the registry defines — never by inventing a code for the *absence* of a code. A per-operation `<OP>_FAILED` code that no server path ever emits inverts the contract.
+A code needs a real producer that emits it (Rule 1's registry) — never mint a code (e.g. a per-operation `<OP>_FAILED`) for the absence of one.
 
 ### C — HTTP status override
 
@@ -142,7 +146,7 @@ Forcing a registry-500 code to a 200 response to suppress a retry hides the fail
 9. **Anti-pattern A** — Are there hardcoded toast/modal strings in catch blocks instead of `mapper(code ?? FALLBACK)`?
 10. **Anti-pattern B** — Are there codes in the registry that no server path ever emits?
 11. **Anti-pattern C** — Are there HTTP status overrides that diverge from the code's registered status?
-12. **Auth-conditional verbosity** — Does the error response vary in detail level based on caller authentication status? The same envelope shape and information content must be returned to all callers — richer detail belongs in server-side logs only, not in any authenticated response tier.
+12. **Auth-conditional verbosity** — Does the error response vary in detail level based on caller authentication status? (Rule 9)
 13. **Throw vs. return** — Are unexpected failures thrown (not returned), and expected recoverable conditions returned as structured envelopes? (P1)
 14. **Capture boundary** — Is telemetry capture wired into a single handler-boundary wrapper rather than scattered across catch blocks or inside the response formatter? (P2)
 15. **Typed throw** — When throwing across a boundary, does the error carry (a) the application error code from the single registry and (b) the underlying cause? Is the cause preserved rather than stringified into the user-facing message? (P3)

@@ -117,10 +117,8 @@ themselves.
 |---|---|---|
 | `deny-network-installs.sh` | `Bash` — denies a named-package install (npm/pnpm/yarn/bun/pip/pip3/uv-pip/uv-add), an `npx`/`bunx`/`uvx`/`pipx run`/`npm exec` invocation carrying an explicit `-y`/`--yes`, `pnpm`/`yarn dlx` unconditionally, or curl/wget co-occurring with a shell/interpreter in the same call | none |
 
-Always on, no bypass valve, closing the gap that let one agent install the
-wrong package from a public registry and then reach for a vendor
-`curl`-piped installer on its own initiative — nothing in this hook family
-previously stopped an agent from bringing new software onto the machine.
+Always on, no bypass valve — denies a named-package install or a
+curl/wget-plus-interpreter pattern regardless of mode.
 `permissions.deny` carries the unambiguous half of the same policy (`brew install`/`gem install`/`cargo install`/`go
 install`/`gh extension install`/`mas install`/`pipx install`/`apt(-get)
 install`/`yum install`/`dnf install`/`apk add`/`zypper install` — tools whose
@@ -195,8 +193,8 @@ removes a token from the command string.
 **Out of scope for this hook:** `brew`/`gem`/`cargo`/`go`/`gh extension`/
 `mas`/`pipx`/`apt(-get)`/`yum`/`dnf`/`apk`/`zypper` are covered only by the
 `permissions.deny` literal, not a `deny-network-installs.sh` fragment check —
-a `cd /tmp && brew install jq` bypasses the literal's prefix match; accepted,
-since the incident that motivated this family was `npm`/`curl`, not these.
+a `cd /tmp && brew install jq` bypasses the literal's prefix match; accepted:
+this hook's scope is npm/curl fetch patterns.
 
 ## WebFetch domain allowlisting — considered and rejected
 
@@ -276,10 +274,7 @@ gain a dependency with no install command at all — an agent edits the
 manifest directly, then a later bare `npm install`/`pnpm install` (the
 lockfile-restore shape `deny-network-installs.sh` deliberately allows)
 fetches whatever the edit just declared, with the prompt showing only the
-restore command and nothing naming the new package. Surfaced by a session
-that added four devDependencies to a manifest during unrelated work,
-reasoning that the packages already existed elsewhere in the same monorepo
-at identical versions — nothing required it to say so first.
+restore command and nothing naming the new package.
 
 Three layers close this, each targeting a different one of three surfaces
 (named install command, manifest edit, bare restore that follows) — this is

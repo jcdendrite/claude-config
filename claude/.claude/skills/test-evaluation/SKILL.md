@@ -36,7 +36,7 @@ These are heuristics, not rules — evaluate each case against the specific code
 - The test is flaky because of network conditions
 - The test creates real resources (emails, contacts) as a side effect
 
-Note: smoke tests serve a fundamentally different purpose (verifying deployment health, not behavior). They don't move down the pyramid — if a smoke test is failing, the issue is the deployment or infrastructure, not the test layer.
+Smoke tests verify deployment health, not behavior, so they never move down the pyramid — a failing one points to deployment/infra, not the test layer.
 
 ## 3. Flaky test diagnosis
 
@@ -52,8 +52,8 @@ When a test is intermittently failing:
    - Non-deterministic iteration order (hash maps/sets with no guaranteed order)
    - Port or resource conflicts in parallel execution
 2. **Fix the layer** — if the test is flaky because it hits a real service to test logic, push it down the pyramid (see section 2)
-3. **Quarantine in-test retries** — retry loops inside test code mask the underlying issue. If a fix isn't immediate, quarantine the test (skip with a tracking issue) rather than letting it erode trust in the suite. CI-level retry policies (rerun failed tests once before failing the build) are a separate, reasonable practice for transient infrastructure issues — but track retry rates and investigate if a test needs retries frequently
-4. **Never delete without replacement** — a flaky integration test that covers an auth boundary still represents needed coverage. Replace it with a reliable test at the right layer before removing it
+3. **Quarantine in-test retries** — retry loops inside test code mask the root cause. If a fix isn't immediate, quarantine the test (skip + tracking issue) instead of letting retries erode trust in the suite; CI-level rerun-once policies are a separate, fine practice but track their frequency.
+4. **Never delete without replacement** — a flaky test covering real risk (e.g. an auth boundary) must be replaced with a reliable test at the right layer, not simply deleted.
 
 ## 4. Anti-patterns
 
@@ -67,7 +67,7 @@ When a test is intermittently failing:
 | Tautological assertions | `assert("error" in body or "data" in body)` passes on any response | Assert specific values |
 | Duplicating production code in tests | Test passes with stale copy, drift | Import or call via integration |
 | Reading source files to test behavior | Tests source text, not runtime behavior | Call function, assert output |
-| Regex-parsing specific field values from runtime output in an assertion (log lines, JSON, XML) | Re-implements the production parser inside the test: passes when production parsing is broken, breaks on format changes. Exception: assertions checking only that the output *is* valid JSON or matches a line-format envelope (not specific field values within it) are format-contract tests and are not this anti-pattern | Parse with the library; assert on the resulting object; or call the production parse/validate function |
+| Regex-parsing specific field values from runtime output in an assertion (log lines, JSON, XML) | Re-implements the production parser: passes when parsing is broken, breaks on format changes (validity-only assertions on the envelope are exempt). | Parse with the library; assert on the resulting object; or call the production parse/validate function |
 | Unconditional global state deletion | Breaks subsequent tests that need the value | Save and restore in guaranteed cleanup |
 | In-test retry loops for flaky tests | Masks root cause, inflates suite duration | Root-cause and fix or quarantine |
 | Test interdependence | Test B depends on state from Test A; reorder breaks both | Each test sets up and tears down its own state |

@@ -25,7 +25,7 @@ These show that mainstream frameworks all resolve per-env config by **source sel
 
 ## Managed secret stores
 
-AWS Secrets Manager, Doppler, HashiCorp Vault don't prescribe variable naming — they provide per-environment namespacing so the consumer's code keeps reading a single canonical name. The per-env isolation happens at the store level, not in code.
+AWS Secrets Manager, Doppler, and HashiCorp Vault provide per-environment namespacing at the store level — the consumer's code still reads a single canonical variable name.
 
 ## Language config libraries (extended notes)
 
