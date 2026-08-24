@@ -64,19 +64,58 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_lovable_cloud_change_selects_lovable_cloud_tests(self):
-        result = _mod.select_pytest_targets(["plugins/lovable-cloud/scripts/new-migration"])
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/README.md"])
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.LOVABLE_CLOUD_TESTS_DIR,)
 
     def test_lovable_cloud_plugin_manifest_change_also_selects_skills_tests(self):
         """test_plugin_manifests.py (in SKILLS_TESTS_DIR, not the
-        lovable-cloud domain) reads this exact file by path via a glob
-        across every plugin's .claude-plugin/plugin.json -- without this
-        cross-domain exception, LOVABLE_CLOUD_DIR's broad domain rule
-        claims the path first and that dependent test goes unrun."""
+        lovable-cloud domain) globs every plugin's .claude-plugin/plugin.json
+        by path. Without this cross-domain exception, LOVABLE_CLOUD_DIR's
+        broad domain rule claims the path first and the dependent test goes
+        unrun."""
         result = _mod.select_pytest_targets([_mod.LOVABLE_CLOUD_PLUGIN_MANIFEST])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_lovable_cloud_hooks_change_also_selects_hooks_tests(self):
+        """test_hook_alignment.py and test_lib.py both glob
+        plugins/*/hooks/*.sh into HOOKS_TESTS_DIR's checks. Without this
+        cross-domain exception, LOVABLE_CLOUD_DIR's broad domain rule claims
+        the path first and those checks go unrun."""
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/hooks/deny-example.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
+    def test_lovable_cloud_skills_change_also_selects_skills_tests(self):
+        """test_skills.py globs plugins/*/skills/*/SKILL.md and
+        plugins/*/skills/**/REFERENCES.md into SKILLS_TESTS_DIR's checks.
+        Same cross-domain shape as the hooks and plugin-manifest cases
+        above."""
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/skills/lovable-cloud-knowledge/SKILL.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_lovable_cloud_agents_change_also_selects_skills_tests(self):
+        """test_skills.py globs plugins/*/agents/*.md into SKILLS_TESTS_DIR's
+        checks. plugins/lovable-cloud/agents/ doesn't exist on disk today,
+        but the rule must hold the moment it's added."""
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/agents/reviewer.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_lovable_cloud_scripts_shell_file_change_also_selects_hooks_tests(self):
+        """test_shellcheck.py lints every tracked shell script in the repo,
+        not just claude/.claude/hooks/. plugins/lovable-cloud/scripts/ and
+        plugins/lovable-cloud/lib/ both hold real shell scripts it covers,
+        so a change there must also select HOOKS_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/scripts/new-migration"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
+        result = _mod.select_pytest_targets(["plugins/lovable-cloud/lib/token-path.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_skill_management_scripts_change_selects_skills_tests(self):
         result = _mod.select_pytest_targets(["plugins/skill-management/scripts/validate_skill_structure.py"])
@@ -91,7 +130,7 @@ class TestSelectPytestTargets:
     def test_multi_domain_change_unions_both_target_sets(self):
         result = _mod.select_pytest_targets([
             "claude/.claude/scripts/mark-terminal.py",
-            "plugins/lovable-cloud/scripts/new-migration",
+            "plugins/lovable-cloud/README.md",
         ])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.LOVABLE_CLOUD_TESTS_DIR}
@@ -288,6 +327,28 @@ class TestComputeChangedPathsGitSmoke:
         changed = _mod.compute_changed_paths(local)
 
         assert "claude/.claude/scripts/new-script.py" in changed
+
+    def test_non_ascii_path_falls_open_to_full_suite(self, tmp_path):
+        """git's default core.quotePath=true escapes non-ASCII path bytes in
+        --name-only output, and _run_git doesn't override it. A non-ASCII
+        changed path therefore doesn't string-match any domain predicate.
+        That's the safe direction, pinned here as intentional rather than
+        left as an unverified comment claim."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        # Pinned explicitly rather than inherited, matching _init_repo's own
+        # --initial-branch=main precedent -- this test's assertion depends
+        # on core.quotePath's *default* value, not whatever the executing
+        # machine's ambient git config happens to set.
+        subprocess.run(["git", "config", "core.quotePath", "true"], cwd=local, check=True)
+        scripts_dir = local / "claude" / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "café.py").write_text("")
+
+        changed = _mod.compute_changed_paths(local)
+        result = _mod.select_pytest_targets(changed)
+
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
 
     def test_merge_base_lookup_failure_raises_for_caller_to_fall_open(self, tmp_path):
         """No origin remote configured at all (so origin/main can't

@@ -31,6 +31,11 @@ SKILLS_DIR = "claude/.claude/skills"
 SKILLS_TESTS_DIR = "claude/.claude/skills/tests"
 LOVABLE_CLOUD_DIR = "plugins/lovable-cloud"
 LOVABLE_CLOUD_TESTS_DIR = "plugins/lovable-cloud/tests"
+LOVABLE_CLOUD_HOOKS_DIR = "plugins/lovable-cloud/hooks"
+LOVABLE_CLOUD_SKILLS_DIR = "plugins/lovable-cloud/skills"
+LOVABLE_CLOUD_AGENTS_DIR = "plugins/lovable-cloud/agents"
+LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
+LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
 
@@ -43,11 +48,10 @@ TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_an
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 
 # test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
-# by file path, not by import — the same undeclared-dependency shape as
-# TRANSCRIPT_ANALYSIS_TEST_GLOB above, but only lovable-cloud needs an
-# explicit exception: it's the only plugin with a DOMAIN_RULES entry broad
-# enough to otherwise "claim" this path and suppress the safe unmatched-path
-# fallback to the full suite.
+# by path, not by import — the same undeclared-dependency shape as
+# TRANSCRIPT_ANALYSIS_TEST_GLOB. Only lovable-cloud needs an explicit
+# exception, because it's the only plugin whose DOMAIN_RULES entry is broad
+# enough to otherwise claim this path ahead of the unmatched-path fallback.
 LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.json"
 
 # Mirrors CI's own collectible pytest scope (see pyproject.toml's pythonpath
@@ -83,6 +87,18 @@ def _is_skill_management_or_evals_change(path: str) -> bool:
     return _is_under(path, SKILL_MANAGEMENT_SCRIPTS_DIR) or path == SKILL_EVALS_RUNNER
 
 
+def _is_lovable_cloud_hooks_change(path: str) -> bool:
+    return _is_under(path, LOVABLE_CLOUD_HOOKS_DIR)
+
+
+def _is_lovable_cloud_skills_or_agents_change(path: str) -> bool:
+    return _is_under(path, LOVABLE_CLOUD_SKILLS_DIR) or _is_under(path, LOVABLE_CLOUD_AGENTS_DIR)
+
+
+def _is_lovable_cloud_shell_script_change(path: str) -> bool:
+    return _is_under(path, LOVABLE_CLOUD_SCRIPTS_DIR) or _is_under(path, LOVABLE_CLOUD_LIB_DIR)
+
+
 # (predicate, target paths added when it matches) — a plain domain rule.
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
@@ -93,14 +109,30 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
 # Nothing here checks completeness against real cross-domain file reads in
-# the test suite: when a test starts reading a file outside its own
-# domain-rule tree by path or subprocess (as TRANSCRIPT_ANALYSIS_TEST_GLOB
-# and LOVABLE_CLOUD_PLUGIN_MANIFEST both already needed), audit this table
-# by hand and add the matching entry.
+# the test suite. When a test starts reading a file outside its own
+# domain-rule tree by path or subprocess — as TRANSCRIPT_ANALYSIS_TEST_GLOB
+# and LOVABLE_CLOUD_PLUGIN_MANIFEST both needed — audit this table by hand
+# and add the matching entry.
+#
+# test_hook_alignment.py and test_lib.py each glob plugins/*/hooks/*.sh,
+# folding plugins/lovable-cloud/hooks/ into HOOKS_TESTS_DIR's checks.
+# test_skills.py globs plugins/*/skills/*/SKILL.md, plugins/*/skills/**/
+# REFERENCES.md, plugins/*/agents/*.md, and plugins/*/skills/*/evals/
+# *-cases.json, folding plugins/lovable-cloud/skills/ and
+# plugins/lovable-cloud/agents/ into SKILLS_TESTS_DIR's checks.
+# test_shellcheck.py lints every tracked shell script in the repo, folding
+# plugins/lovable-cloud/scripts/ and plugins/lovable-cloud/lib/ into
+# HOOKS_TESTS_DIR's checks too.
+# lovable-cloud is the only plugin whose own DOMAIN_RULES entry is broad
+# enough to otherwise claim these paths ahead of the cross-plugin scans that
+# actually read them.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == LOVABLE_CLOUD_PLUGIN_MANIFEST, (SKILLS_TESTS_DIR,)),
+    (_is_lovable_cloud_hooks_change, (HOOKS_TESTS_DIR,)),
+    (_is_lovable_cloud_skills_or_agents_change, (SKILLS_TESTS_DIR,)),
+    (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
 )
 
 

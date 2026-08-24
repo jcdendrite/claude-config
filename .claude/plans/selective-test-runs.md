@@ -129,17 +129,34 @@ push, so the local run doesn't need to be exhaustive to remain safe.
   none existing in-repo (explore confirmed no Makefile/justfile/pre-commit
   wrapper exists to extend).
   - Domain rules (from explore agent's directory/dependency audit):
-    `hooks/` ↔ `hooks/tests/`; `scripts/` ↔ `scripts/tests/` (matched
-    by directory, not by the `transcript_*` filename-prefix subset,
-    since a plain scripts/ change has no reason to narrow further);
-    `skills/` (any `SKILL.md`) ↔ `skills/tests/`;
-    `plugins/lovable-cloud/` ↔ `plugins/lovable-cloud/tests/`.
-  - Cross-domain exception rules: a `hooks/` or `skills/` change also adds
-    `claude/.claude/scripts/tests/test_transcript_analysis*.py` (that
-    file shells into specific hook scripts and reads specific `SKILL.md`
-    files by path — see Approach); a change under
-    `plugins/skill-management/scripts/` or `evals/run_skill_evals.py`
-    also adds `claude/.claude/skills/tests/`.
+    - `hooks/` ↔ `hooks/tests/`.
+    - `scripts/` ↔ `scripts/tests/`, matched by directory rather than by
+      the `transcript_*` filename-prefix subset, since a plain scripts/
+      change has no reason to narrow further.
+    - `skills/` (any `SKILL.md`) ↔ `skills/tests/`.
+    - `plugins/lovable-cloud/` ↔ `plugins/lovable-cloud/tests/`.
+  - Cross-domain exception rules:
+    - A `hooks/` or `skills/` change also adds
+      `claude/.claude/scripts/tests/test_transcript_analysis*.py` — that
+      file shells into specific hook scripts and reads specific
+      `SKILL.md` files by path (see Approach).
+    - A change under `plugins/skill-management/scripts/` or
+      `evals/run_skill_evals.py` also adds `claude/.claude/skills/tests/`.
+    - A change to `plugins/lovable-cloud/.claude-plugin/plugin.json` also
+      adds `claude/.claude/skills/tests/` — `test_plugin_manifests.py`
+      globs every plugin's manifest by path.
+    - A change under `plugins/lovable-cloud/hooks/` also adds
+      `claude/.claude/hooks/tests/` — `test_hook_alignment.py` and
+      `test_lib.py` both glob every plugin's `hooks/*.sh` by path.
+    - A change under `plugins/lovable-cloud/skills/` or
+      `plugins/lovable-cloud/agents/` also adds
+      `claude/.claude/skills/tests/` — `test_skills.py` globs every
+      plugin's `skills/*/SKILL.md`, `skills/**/REFERENCES.md`, and
+      `agents/*.md` by path.
+    - A change under `plugins/lovable-cloud/scripts/` or
+      `plugins/lovable-cloud/lib/` also adds `claude/.claude/hooks/tests/`
+      — `test_shellcheck.py` lints every tracked shell script in the repo,
+      not only `claude/.claude/hooks/`.
   - Global triggers (any changed file among these → run the full suite,
     no domain narrowing): `claude/.claude/tests/helpers.py` (imported by
     hooks/, scripts/, skills/, and plugins/lovable-cloud/ test dirs),
