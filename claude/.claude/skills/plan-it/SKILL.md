@@ -36,7 +36,7 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Pass an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule. Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
 
-**Pattern claims require a grep, not a single example.** Before calling a shape "canonical," grep and cite call-site counts (e.g., "12 of 13 modules use form X; exception at `path/to/file:NN`") rather than a single example.
+**Pattern claims require a grep, not a single example.** Before calling a shape "canonical," "the existing pattern," or "how the codebase does X," grep and cite call-site counts (e.g., "12 of 13 modules use form X; exception at `path/to/file:NN`") rather than a single example.
 
 **If the task is a debugging or root-cause investigation** (fixing a reported bug or incident rather than building a new feature), consult `root-cause-analysis` before exploring — establish the full symptom and verify your tools fully ingested their input before forming any hypothesis.
 

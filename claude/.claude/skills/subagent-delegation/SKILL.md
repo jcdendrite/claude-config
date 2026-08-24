@@ -71,7 +71,7 @@ parent's Bash tool. Do not delegate them to a subagent.
 
 Bash output truncates at 30 KB — well above typical check-suite size —
 so an inline heavy run costs the parent only the ~2 KB failure tail,
-with no follow-up read needed.
+not the full suite output, with no follow-up read needed.
 
 - **Enumerate check commands and run them one at a time** (e.g., `pytest
   claude/.claude/`, then `ruff check claude/.claude/`) or as a single chained
@@ -85,8 +85,8 @@ with no follow-up read needed.
   debugging also stay inline.
 
 - On overflow, the harness persists full output to a `tool-results/`
-  file and returns only a ~2 KB preview — grep/sed the persisted file
-  for what you need.
+  file and returns only a ~2 KB preview (the *first* 2 KB, usually the
+  startup banner) — grep/sed the persisted file for what you need.
 - Never re-run the command or `Read` the persisted file whole; each
   full re-read re-bills the entire file size.
 

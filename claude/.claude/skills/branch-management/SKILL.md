@@ -72,7 +72,8 @@ then `EnterWorktree{path: "<absolute path to the worktree>"}`.
 Call `EnterWorktree` with an absolute path before any other command,
 including read-only ones — it resolves relative paths against cwd (not
 repo root) and has no idempotent "already there" case, so a prior `cd`
-silently leaves the session unanchored either way.
+silently leaves the session unanchored, with none of `EnterWorktree`'s
+other effects (subagent inheritance, `ExitWorktree` tracking).
 
 Entering the worktree resets the session's cd-anchor to it; until
 then, a stray `cd` out (including one through a symlink that resolves

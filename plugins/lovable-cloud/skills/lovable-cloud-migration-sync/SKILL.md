@@ -100,9 +100,9 @@ cd <absolute repo path> && supabase db reset
 
 Run reset before verify — verify otherwise checks pre-replay state. Expected `DROP IF EXISTS` NOTICEs during reset are harmless: Lovable's duplicates run later in timestamp order than the originals.
 
-An "already exists" failure on reset is a local timestamp-ordering artifact (original runs before duplicate locally; only the duplicate runs on Lovable Cloud) — not a bug in the duplicate; the FAIL-blocks-step-6 rule still applies to real logic errors.
+An "already exists" failure on reset is a local timestamp-ordering artifact (original runs before duplicate locally; only the duplicate runs on Lovable Cloud) — not a bug in the duplicate; the FAIL-blocks-step-6 rule still applies to real logic errors (wrong predicates, missing DDL, weakened security checks).
 
-Fix: delete the original (step 6) first, then re-run reset with only the duplicate present — never edit the duplicate to add DROP IF EXISTS guards, since it must match exactly what Lovable Cloud executed.
+Fix: delete the original (step 6) first, then re-run reset with only the duplicate present — never edit the duplicate to add DROP IF EXISTS guards, even as a harmless no-op, since it must match exactly what Lovable Cloud executed.
 
 Once the reset completes, run your project's verify entry point inline:
 

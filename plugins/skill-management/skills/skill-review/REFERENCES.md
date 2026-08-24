@@ -26,14 +26,15 @@ and first-person voice conflict with `check-skill-length.sh`'s 200-line cap
 and this repo's voice rules. Trigger-fidelity evals instead run via
 `evals/run_skill_evals.py`, a local adaptation of `run_eval.py`'s
 stream-json detection, without using `skill-creator`'s `run_loop.py`
-optimizer or enabling the plugin — the skill set has grown to ~23 skills
-used across many independent projects, so mis-fires now happen in
-sessions the owner doesn't observe. This covers it without:
+optimizer or enabling the plugin. The skill set has grown to ~23 skills
+used across many independent projects. Mis-fires now happen in sessions
+the owner doesn't observe, which is what makes a local eval run worth
+its cost. This covers it without:
 - CI security risk (local auth, no `--dangerously-skip-permissions`)
 - per-token budget (Max-plan OAuth)
 - flaky CI signal (a human-read pass-rate report, not a binary gate)
 
-**Mechanism:** per CLAUDE.md's plugin-disable policy, the
-`skill-creator@claude-plugins-official` entry is removed from
-`enabledPlugins` in `settings.json` entirely — not set to `false`.
-There is no foreseeable re-enable use case.
+**Mechanism:** the `skill-creator@claude-plugins-official` entry is
+removed from `enabledPlugins` in `settings.json` entirely, not set to
+`false`. `false` entries are reserved as quick-flip handles for
+occasional re-enable; this one has no foreseeable re-enable use case.

@@ -4,7 +4,7 @@
 
 - Before proposing changes, understand the intent of the existing code or configuration.
 - When making recommendations, evaluate them not just against generic best practices but also against this project's actual stack, tooling, and constraints.
-- **Single source of truth.** Every piece of knowledge has one authoritative home; other sites reference it, not restate it. Named exceptions: (1) DAMP test code, (2) instructional prose that must stand alone, (3) a small duplicated value that beats a bad abstraction.
+- **Single source of truth.** Every piece of knowledge has one authoritative home; other sites reference it, not restate it — this is DRY applied to prose and docs, not just code, since duplicated copies drift and a reader can't tell which is stale. Before writing something a second time, pick the canonical home and make the other site defer. Named exceptions: (1) DAMP test code, (2) instructional prose that must stand alone, (3) a small duplicated value that beats a bad abstraction. Absent a named exception, duplication is a defect.
 - Before taking any action that is destructive, irreversible, or has blast radius beyond the immediate change (data loss, breaking API changes, infrastructure modifications), flag the risk and confirm the approach.
 - When uncertain about a CLI flag, tool behavior, or API detail, verify rather than guessing.
 - **Worktree/repo scope constrains writes, not reads.** Check the filesystem (`ls`/`find`/`grep`/`Read`) before calling a claim unverifiable just because its source is outside this tree. Defer to a human only once that check has come up empty.
@@ -101,7 +101,7 @@
 ## Safety
 
 - Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install.
-- **Name every new package before it is fetched.** Name every new package's exact version and rationale before it's fetched — by install, manifest edit, or restore. For a manifest edit, get explicit confirmation first. For an install or restore, name the package before handing the command to the user via the `!` escape. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
+- **Name every new package before it is fetched.** Name every new package's exact version and rationale before it's fetched — by install, manifest edit, or restore. For a manifest edit, get explicit confirmation first. For an install or restore, this is in addition to — not instead of — the installing-new-software prohibition: name the package before handing the command to the user via the `!` escape. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
 - Never Read or `!`-cat files likely to hold secrets (`.env`, `.claude.json`, `credentials.json`, similar) — both reach your context the same way; when the user needs to inspect one, ask them to run the command in a separate terminal instead. The credential-path gate (SSH private key, `.netrc`, a cloud credential store, and similar) has no bypass:
   - Safe blocked command (e.g. `ssh-add`, `chmod`, `ssh -i`) — name it for the user to run via `!`.

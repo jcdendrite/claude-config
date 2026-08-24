@@ -13,7 +13,7 @@ Identify the branches, PRs, sessions, and date range under analysis. Use `transc
 python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets --this-repo
 ```
 
-Always scope `--projects`/`--this-repo` — an unscoped run pools every project on the machine.
+Always scope `--projects`/`--this-repo` — an unscoped run pools every project on the machine. See `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation, its gaps, and the subdirectory-session fallback.
 
 `buckets`, `review-trace`, and `fail-seq` all accept `--projects GLOB`/`--this-repo` (cross-repo), `--branches B1,B2,...` (multiple branches/PRs at once), and (on `review-trace`) `--since`/`--until DATE` — the tooling already spans repos and calendar time; scope is a choice, not a limitation.
 

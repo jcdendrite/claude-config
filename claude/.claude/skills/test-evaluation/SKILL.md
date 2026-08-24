@@ -52,7 +52,7 @@ When a test is intermittently failing:
    - Non-deterministic iteration order (hash maps/sets with no guaranteed order)
    - Port or resource conflicts in parallel execution
 2. **Fix the layer** — if the test is flaky because it hits a real service to test logic, push it down the pyramid (see section 2)
-3. **Quarantine in-test retries** — retry loops inside test code mask the root cause — quarantine the test (skip + tracking issue) instead; CI-level rerun-once policies are a separate, fine practice but track their frequency.
+3. **Quarantine in-test retries** — retry loops inside test code mask the root cause. If a fix isn't immediate, quarantine the test (skip + tracking issue) instead of letting retries erode trust in the suite; CI-level rerun-once policies are a separate, fine practice but track their frequency.
 4. **Never delete without replacement** — a flaky test covering real risk (e.g. an auth boundary) must be replaced with a reliable test at the right layer, not simply deleted.
 
 ## 4. Anti-patterns

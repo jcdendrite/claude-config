@@ -1,7 +1,7 @@
 {
   "name": "lovable-cloud",
   "description": "Skills and hooks for Lovable Cloud projects — Project/Workspace Knowledge fields, edge-function auth model, migration-sync workflow, and UTC-enforced migration filename generation.",
-  "version": "3.2.5",
+  "version": "3.2.6",
   "author": {
     "name": "Cordova Strategy"
   },
