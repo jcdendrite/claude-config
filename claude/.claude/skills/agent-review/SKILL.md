@@ -123,7 +123,7 @@ If not all three hold, point at the canonical source.
 
 6. **`maxTurns` integer validation** — `maxTurns: 20`, not `maxTurns: "20"`. Strings are silently ignored; the cap will not apply.
 
-7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing" for current resolution-reliability guidance, not this line — that guidance can change independently of this checklist. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is a repo-owned override rather than a per-dispatch request. Routinely-dispatched subagents do not pin `opus`.
+7. **`model` field discipline** — check against `~/.claude/CLAUDE.md` "Model Routing" for current guidance, not this line. `Explore`'s pin (`claude/.claude/agents/Explore.md`) is a repo-owned override rather than a per-dispatch request. An agent dispatched from many call sites, or dispatched at high frequency from even one, does not pin `opus` — the pin would leak into work that didn't ask for it. A single-caller agent dispatched at low, bounded frequency (`plan-architect`, dispatched only from `/plan-it` Step 5, once per plan) is the deliberate exception — re-check both the call-site count and the dispatch frequency before extending the exception to a different agent (`docs/design-decisions.md` §30 has the rationale).
 
 8. **Length** — under the 200-line target. Flag anything that drifts past 200 (and especially past 300) without a load-bearing reason.
 

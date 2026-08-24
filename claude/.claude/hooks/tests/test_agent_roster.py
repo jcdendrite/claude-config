@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 import yaml
-from helpers import CLAUDE_DIR, HOOKS_DIR
+from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT
 from validate_skill_structure import parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
@@ -54,8 +54,9 @@ CANARY_AGENTS = sorted(
 # When a new non-reviewer agent is added, add it here; the
 # test_no_uncategorized_agents test will fail until it is categorized.
 NON_REVIEWER_AGENTS = [
-    "code-writer.md",   # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
-    "Explore.md",       # same-named override of the harness built-in; read-only search, not a reviewer
+    "code-writer.md",     # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
+    "Explore.md",         # same-named override of the harness built-in; read-only search, not a reviewer
+    "plan-architect.md",  # non-reviewer planning agent; dispatched by /plan-it Step 5 for design synthesis
 ]
 
 # Maximum description length for agent frontmatter.
@@ -71,8 +72,9 @@ AGENT_DESCRIPTION_MAX_CHARS = 1000
 # above AND add its expected model here — test_expected_model_map_is_complete
 # will fail until both are updated.
 NON_REVIEWER_MODELS = {
-    "code-writer.md": "sonnet",  # implementer
-    "Explore.md": "sonnet",      # same-named built-in override
+    "code-writer.md": "sonnet",       # implementer
+    "Explore.md": "sonnet",           # same-named built-in override
+    "plan-architect.md": "opus",      # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
 }
 
 # Expected effort tier per agent. Mirrors NON_REVIEWER_MODELS's role for
@@ -83,6 +85,11 @@ NON_REVIEWER_MODELS = {
 # code-writer sits outside CANARY_AGENTS at "high", not "xhigh" — its
 # dispatches span a difficulty range rather than uniformly hard work
 # (see CLAUDE.md "Model & Effort Routing" and design-decisions.md §24).
+# plan-architect also sits outside CANARY_AGENTS but gets "xhigh", not "high"
+# like code-writer. /plan-review does run downstream, but it reviews the plan
+# document's plausibility, not executable behavior the way /code-review's test
+# suite backstops code-writer's diffs. A strategically wrong but well-written
+# design can still read as plausible and clear that review (design-decisions.md §24, §30).
 EXPECTED_EFFORT = {
     "Explore.md": "low",
     "comment-discipline-reviewer.md": "medium",
@@ -96,6 +103,7 @@ EXPECTED_EFFORT = {
     "staff-platform-engineer.md": "xhigh",
     "staff-product-engineer.md": "xhigh",
     "staff-sdet.md": "xhigh",
+    "plan-architect.md": "xhigh",
 }
 
 # Effort levels Claude Code recognizes.
@@ -338,6 +346,64 @@ class TestAgentFrontmatter:
         )
 
     @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_agent_name_matches_filename(self, agent_path):
+        """A mismatched `name:` silently defeats every filename-keyed test in this suite.
+
+        NON_REVIEWER_MODELS, EXPECTED_EFFORT, and the harness's own dispatch (by
+        `name:`, not filename — agent-review/REFERENCES.md) all key off the frontmatter
+        name. A stale `name:` left over from copy-pasting another agent as a template
+        would still pass every test above that only reads the correctly-named-by-path
+        file, while the harness actually dispatches something else for that name.
+        """
+        fm = parse_frontmatter(agent_path)
+        name = fm.get("name")
+        assert name == agent_path.stem, (
+            f"{agent_path.name}: frontmatter 'name: {name}' does not match its filename "
+            f"stem '{agent_path.stem}'. The harness dispatches by name, not filename — "
+            f"fix the mismatch so this file is the one that actually gets dispatched."
+        )
+
+    def test_agent_names_are_unique_across_the_tree(self):
+        """A duplicate `name:` value defeats every per-file test in this suite silently.
+
+        The harness dispatches on `name:`, not filename, and keeps one of two
+        same-named files while discarding the other without warning
+        (agent-review/REFERENCES.md). Every test above that resolves an agent
+        by a hardcoded filename (e.g. AGENTS_DIR / "plan-architect.md") only
+        checks that one file — a second file under a different filename
+        declaring the same `name:` with a wider `tools:` grant would pass
+        every test here while the harness could dispatch either one.
+
+        Unions project-scope (`claude/.claude/agents/`) and plugin-scope
+        (`plugins/*/agents/`) names into one namespace — stricter than the
+        cited "within one scope" collision rule strictly requires, but no
+        plugin agent exists yet to test the distinction against.
+        """
+        agent_files = list(self._AGENT_FILES) + sorted(
+            (REPO_ROOT / "plugins").glob("*/agents/*.md")
+        )
+        names_to_files: dict[str, list[str]] = {}
+        for path in agent_files:
+            try:
+                fm = parse_frontmatter(path)
+            except (yaml.YAMLError, ValueError) as exc:
+                pytest.fail(f"{path}: frontmatter failed to parse: {exc}.")
+            name = fm.get("name")
+            if not name:
+                # A nameless AGENTS_DIR file already fails test_required_fields_present.
+                # No equivalent required-field test exists yet for plugins/*/agents/*.md
+                # (no such directory exists today); a nameless plugin agent would pass
+                # uniqueness vacuously until one is added.
+                continue
+            names_to_files.setdefault(name, []).append(str(path.relative_to(REPO_ROOT)))
+        duplicates = {name: files for name, files in names_to_files.items() if len(files) > 1}
+        assert not duplicates, (
+            f"Duplicate agent name(s) declared: {duplicates}. The harness keeps "
+            f"one file and silently discards the other for a colliding `name:` — "
+            f"rename one file's `name:` field so dispatch is unambiguous."
+        )
+
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
     def test_description_length(self, agent_path):
         """Description must not exceed AGENT_DESCRIPTION_MAX_CHARS characters."""
         fm = parse_frontmatter(agent_path)
@@ -484,6 +550,12 @@ class TestNoGateReleaseRosterSync:
     harness built-ins it is mandate, which no frontmatter records. Only the
     first kind is checkable here, so it is asserted rather than verified by
     hand at review time, and the second is pinned as a closed exemption set.
+
+    One test below guards a tool-absence boundary outside this scope:
+    plan-architect isn't in `_LIB_NO_GATE_RELEASE_AGENTS` (its gate is
+    require-plan-review.sh's Write-deny on `.claude/plans/`, not
+    enforce-marker-script-shape.sh), so it gets no roster-wide coverage from
+    the tests above — its own exact-tools test is its sole guard.
     """
 
     def test_roster_members_have_agent_files_or_are_named_builtins(self):
@@ -566,6 +638,20 @@ class TestNoGateReleaseRosterSync:
             "Explore.md's tools: line changed. It must stay exactly "
             "Read, Grep, Glob — no Write, Edit, or Bash — per the agent's "
             "own stated design (see Explore.md's body)."
+        )
+
+    def test_plan_architect_tools_are_exactly_read_grep_glob(self):
+        """Pins plan-architect.md's own no-Write/Edit/Bash design guarantee.
+
+        The gate-bypass argument for this agent rests entirely on tool
+        absence (no Write to trip require-plan-review.sh, no Skill/Task to
+        delegate a gate release). A future edit widening its tools would
+        pass every other test here while silently reopening that trap.
+        """
+        assert self._declared_tools("plan-architect") == {"Read", "Grep", "Glob"}, (
+            "plan-architect.md's tools: line changed. It must stay exactly "
+            "Read, Grep, Glob — no Write, Edit, or Bash — per the agent's "
+            "own stated design (see plan-architect.md's body)."
         )
 
     def test_harness_builtin_exemptions_have_no_agent_file(self):

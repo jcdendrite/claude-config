@@ -91,7 +91,7 @@
 
 ## Model & Effort Routing
 
-- **Opus:** judgment-heavy reasoning and parent-dispatcher orchestration. For Opus planning turns, start the session with `--model opus` and run `/plan-it` (see Agent Briefing).
+- **Opus:** judgment-heavy reasoning and parent-dispatcher orchestration. `/plan-it` Step 5 dispatches Opus-pinned `plan-architect` automatically (see its own Step 5 for the mechanism). A user-started whole-session `--model opus` covers the rarer case where the *reads*, not only the synthesis, need Opus. It escalates every inheriting dispatch that session makes, so pass an explicit `model: sonnet` on each one (see below).
 - **Sonnet (default):** all code reading, code writing, and specialist reviewer agents. Pass an explicit `model: sonnet` on every dispatch, even ones with a `model:` pin — both are requests, not guarantees, and resolution doesn't always follow them; it costs nothing either way (see `docs/auto-mode.md` in the claude-config repo for the current measurement).
 - **Haiku:** narrow, deterministic skills only. Never for code authoring or judgment.
 - **Delegated code-writing dispatches to `code-writer`.** When implementation work is handed to a subagent — feature code, fixes, refactors, migrations, schema, scripts — dispatch the `code-writer` agent, not `general-purpose`. It carries `model: sonnet` frontmatter and self-reviews its own diff against the `staff-*` reviewer angles before returning, catching review-finding-class defects in its own context instead of as a parent round-trip. This is a substitution for the code-writing path only — it does not change when the parent delegates versus writes inline — see `subagent-delegation` for that call.
