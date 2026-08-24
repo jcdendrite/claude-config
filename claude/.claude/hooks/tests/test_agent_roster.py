@@ -85,9 +85,11 @@ NON_REVIEWER_MODELS = {
 # code-writer sits outside CANARY_AGENTS at "high", not "xhigh" — its
 # dispatches span a difficulty range rather than uniformly hard work
 # (see CLAUDE.md "Model & Effort Routing" and design-decisions.md §24).
-# plan-architect also sits outside CANARY_AGENTS but gets "xhigh": single-pass
-# design synthesis with no downstream pass correcting a shallow miss, same
-# class as the ciso-reviewer/staff-* rows below (design-decisions.md §24).
+# plan-architect also sits outside CANARY_AGENTS but gets "xhigh", not "high"
+# like code-writer: /plan-review does run downstream, but it reviews the plan
+# document's plausibility, not executable behavior the way /code-review's test
+# suite backstops code-writer's diffs — a strategically wrong but well-written
+# design can still read as plausible and clear that review (design-decisions.md §24, §30).
 EXPECTED_EFFORT = {
     "Explore.md": "low",
     "comment-discipline-reviewer.md": "medium",
@@ -343,6 +345,24 @@ class TestAgentFrontmatter:
             f"Declare a comma-separated tools list."
         )
 
+    @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
+    def test_agent_name_matches_filename(self, agent_path):
+        """A mismatched `name:` silently defeats every filename-keyed test in this suite.
+
+        NON_REVIEWER_MODELS, EXPECTED_EFFORT, and the harness's own dispatch (by
+        `name:`, not filename — agent-review/REFERENCES.md) all key off the frontmatter
+        name. A stale `name:` left over from copy-pasting another agent as a template
+        would still pass every test above that only reads the correctly-named-by-path
+        file, while the harness actually dispatches something else for that name.
+        """
+        fm = parse_frontmatter(agent_path)
+        name = fm.get("name")
+        assert name == agent_path.stem, (
+            f"{agent_path.name}: frontmatter 'name: {name}' does not match its filename "
+            f"stem '{agent_path.stem}'. The harness dispatches by name, not filename — "
+            f"fix the mismatch so this file is the one that actually gets dispatched."
+        )
+
     def test_agent_names_are_unique_across_the_tree(self):
         """A duplicate `name:` value defeats every per-file test in this suite silently.
 
@@ -364,7 +384,10 @@ class TestAgentFrontmatter:
         )
         names_to_files: dict[str, list[str]] = {}
         for path in agent_files:
-            fm = parse_frontmatter(path)
+            try:
+                fm = parse_frontmatter(path)
+            except (yaml.YAMLError, ValueError) as exc:
+                pytest.fail(f"{path}: frontmatter failed to parse: {exc}.")
             name = fm.get("name")
             if not name:
                 # A nameless AGENTS_DIR file already fails test_required_fields_present.

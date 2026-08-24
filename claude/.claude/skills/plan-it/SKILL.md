@@ -54,7 +54,14 @@ The dispatch prompt carries:
 
 Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it automatically at startup, like every subagent except `Explore`/`Plan`.
 
-Insert the returned text verbatim into the plan file's Approach, Critical files, Verification, and Out of scope sections — do not rewrite or summarize it further. If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. An unusable or truncated return (context-limit failure, tool error, or a return that ignores the required grammar) is re-dispatched from scratch rather than repaired inline — `plan-architect` is read-only and idempotent, so nothing durable is lost by retrying.
+Insert the returned text verbatim into the plan file's Approach, Critical files, Verification, and Out of scope sections — do not rewrite or summarize it further. If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session.
+
+Re-dispatch from scratch, rather than repairing inline, on any of these returns:
+- A context-limit failure or tool error mid-dispatch.
+- A truncated return.
+- A return that ignores the required grammar.
+
+`plan-architect` is read-only and idempotent, so nothing durable is lost by retrying.
 
 Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
