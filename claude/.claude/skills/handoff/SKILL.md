@@ -17,6 +17,16 @@ mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"
 
 A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` rather than inferring. On `"status":"ok"`, write the handoff when `over_threshold` is `true` or when `already_fired` is `true`, and report `estimate` and `threshold`; say so when `nudge_disabled` is `true`, since the measurement still holds but no nudge will arrive on its own; and when `"model_recognized":false`, report `model` and `context_window` too — the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is. On `"status":"cannot-resolve"` or `"status":"schema-drift"`, name the `reason` and fall back to judgment rather than assuming either answer: session length, how much of the task remains, whether this is a natural seam. `docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
 
+## Before writing: collect in-flight background dispatches
+
+Call `ListAgents` before drafting. For each row still `running` under "Subagents" that this session spawned, do not draft yet. If `ListAgents` errors or is unavailable, skip straight to recording every not-yet-returned dispatch as stranded in §2.5 — do not block on it.
+
+A dispatch still running when you check does not require staying in this turn: the harness delivers its `<task-notification>` automatically, including once this turn has already ended, and it lands in the transcript for you to see next time you run. So: end this turn without drafting rather than trying to wait synchronously — do not poll and do not call `TaskOutput`. On your next turn (the engineer's next message), check the transcript for any `<task-notification>` that already arrived and fold its output into §2.5/§6, then re-run `ListAgents` only for whatever dispatches are still unresolved. Repeat turn by turn until every dispatch is collected, or the engineer explicitly directs proceeding with the rest recorded stranded.
+
+This step applies only to `/handoff` run in a main interactive session — a subagent never reaches it as remediation for its own hard block, since the nudge hook's subagent gate exits before any escalation logic runs.
+
+If the hard block fires again before or during this wait, that also just ends the current turn (the same mechanism) — it is expected, not a new problem: it means this session is still past its threshold while already following the block's own remediation. Resume the collect step on the next turn exactly as described above.
+
 ## Verify the handoff file with Bash, never Read
 
 A `Read` of any `<config-dir>/handoffs/*-handoff.md` path consumes the file — verify with a Bash
@@ -59,7 +69,7 @@ done / in-flight / blocked.
 
 ## §2.5 Incomplete prerequisites
 
-If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. If the handoff reason is context-limit, note what was mid-flight: open tool calls, pending verifications (see §2.6 for task-list state).
+If this session executed one phase of a multi-phase plan, name the plan and the current phase. Enumerate prerequisite phases that were defined earlier and their completion status. If any are incomplete or unverified, list them here explicitly — do not omit them. Note what was mid-flight, whatever the handoff reason: open tool calls — including any background subagent dispatch this session spawned, named by its `agent-<agentId>` (never its full transcript path, which embeds this session's own id) — and pending verifications (see §2.6 for task-list state). Record each named dispatch as **collected** (its output was folded into this handoff before writing — see "Before writing: collect in-flight background dispatches" above) or **stranded** (not collected before this file was written, so the resuming session must re-dispatch the work from scratch rather than try to reach it).
 
 If none: write "None."
 
@@ -142,7 +152,7 @@ The script cannot check these — verify them yourself before writing:
 - §2 Status is consistent with §3 Next concrete step and §6 Open questions
 - You are not claiming "done" for any step whose verification is still pending
 - §2.5 is populated; if any prerequisite phases are incomplete or unverified, they are listed there, not silently omitted
-- If the handoff reason is context-limit, §2.5 names what was mid-flight at the time of the handoff
+- §2.5 names what was mid-flight at the time of the handoff, regardless of handoff reason — including any background subagent dispatch this session spawned, by its `agent-<agentId>`, marked collected or stranded
 - §2.6 is populated — a faithful task-list serialization with per-item ordinal, status, and blocking edges, or "None." — and carries the resume directive
 - §5's script output shows no unresolved reconciliation flag; where one fired, §3 names the review skill the resuming session must re-run to commit the covered work first
 - If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file

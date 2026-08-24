@@ -9496,7 +9496,9 @@ def _parse_nudge_log_entries(log_path: Path) -> list[dict]:
     tool controls.
 
     Each returned dict carries "kind" plus that kind's own fields:
-    - nudged: session, est (int), model, window (int), event
+    - nudged: session, est (int), model, window (int), event, and "action"
+      (only present when the line carries it -- a hard-block fire logs
+      action=block, an advisory fire logs no action field at all)
     - schema-drift: session, event
     - handoff: session
     """
@@ -9525,10 +9527,13 @@ def _parse_nudge_log_entries(log_path: Path) -> list[dict]:
                 window = int(fields["window"])
             except ValueError:
                 continue
-            entries.append({
+            entry = {
                 "kind": "nudged", "session": fields["session"], "est": est,
                 "model": fields["model"], "window": window, "event": fields["event"],
-            })
+            }
+            if "action" in fields:
+                entry["action"] = fields["action"]
+            entries.append(entry)
         elif kind == "schema-drift":
             if not {"session", "event"} <= fields.keys():
                 continue
@@ -9565,11 +9570,17 @@ def _operator_response_lag_from_log(
     has no entry in session_traces (a since-deleted transcript, or a session
     from an account/root outside the resolved scope), or whose trace never
     reaches est at all, is excluded and counted rather than silently dropped.
+    A hard-block fire (action=block) is excluded too: its overshoot is
+    forced by the block, not the voluntary operator-response lag this
+    function measures.
     """
     lags: list[int] = []
     excluded = 0
     for entry in log_entries:
         if entry.get("kind") != "nudged":
+            continue
+        if entry.get("action") == "block":
+            excluded += 1
             continue
         trace = session_traces.get(entry["session"])
         if not trace:

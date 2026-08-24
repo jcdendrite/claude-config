@@ -14592,6 +14592,21 @@ class TestParseNudgeLogEntries:
     def test_missing_log_file_returns_empty_list(self, tmp_path):
         assert _mod._parse_nudge_log_entries(tmp_path / "does-not-exist.log") == []
 
+    def test_action_block_field_is_captured_when_present(self, tmp_path):
+        """A hard-block fire's nudged line carries action=block -- captured
+        as an absent-key-by-default field, not an always-present None, so
+        an ordinary advisory line (no action= token) produces a dict with no
+        "action" key at all, matching test_all_three_line_shapes_are_parsed's
+        exact-equality assertion above."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch action=block\n"
+        )
+        assert _mod._parse_nudge_log_entries(log_path) == [
+            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
+             "window": 1000000, "event": "PostToolBatch", "action": "block"},
+        ]
+
 
 class TestOperatorResponseLagFromLog:
     def test_exact_match_join_measures_lag_past_the_fire_point(self):
@@ -14639,6 +14654,20 @@ class TestOperatorResponseLagFromLog:
         counted, not a false join to whichever value happens to be closest."""
         session_traces = {"s": [100, 200, 300]}
         log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
+        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
+        assert lags == []
+        assert excluded == 1
+
+    def test_hard_block_entry_is_excluded_and_counted_not_measured_as_lag(self):
+        """A hard-block fire's overshoot is forced by the block itself, not
+        the voluntary operator-response lag this function measures -- an
+        action=block entry is excluded from the lag population and counted,
+        even though its session_id joins and its trace does reach est."""
+        session_traces = {"abc": [100, 200, 405_000, 410_000]}
+        log_entries = [
+            {"kind": "nudged", "session": "abc", "est": 405_000, "model": "x",
+             "window": 1_000_000, "event": "PostToolBatch", "action": "block"},
+        ]
         lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
         assert lags == []
         assert excluded == 1
