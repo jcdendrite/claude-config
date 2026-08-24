@@ -71,11 +71,14 @@ not apply to any phase.
 | A6 | SC5's 8 duplicate sites are grouped into Phase 3 (redaction-default cluster) rather than Phase 10 (grab-bag), because they're the same file and the same conceptual defect (missing shared refusal helper) as Phase 3's other findings | [unverified — a placement call, not previously confirmed; low-stakes, stated here rather than re-asked] |
 | A7 | Three shared-helper extraction opportunities noticed during exploration beyond the report's own findings (C7's default-branch resolver in Phase 1, C10's PID-liveness helper in Phase 10, SC2's eviction-sweep helper in Phase 10) fold into their respective phases as sub-steps rather than becoming new phases or new findings | [unverified — a scope decision, stated here rather than re-asked, per engineer's "plan all 10 buckets, don't backlog" instruction extending naturally to in-scope sub-steps discovered while planning them] |
 | A8 | All 85 report finding IDs map onto either an actionable phase or the true N/A set (7 IDs); none is silently dropped | [verified: this session, `awk`-based section-header extraction cross-checked against every phase's bulleted findings — caught and corrected a gap where `S24`/`D5`/`D6`/`D7` had been omitted from an earlier draft] |
+| A9 | `plugins/skill-management/skills/skill-review/SKILL.md` has the same zero-headroom conflict as A4 (also exactly 200 lines, and Phase 6's C15 also adds content to it); resolved via the same `limit_for()` 500-line exception mechanism as A5, extended to this second file | [verified: this session's specialist review, `wc -l` = 200; the extension choice itself is unverified — same A5 scope-decision status] |
 
 **Flag to the engineer when presenting this plan:** A5 (the review-permissions
-line-cap exception) and A6 (SC5's placement) are scope decisions this plan
-made rather than ones already confirmed — call them out explicitly rather
-than letting them pass as settled.
+line-cap exception, now also extended to `skill-review/SKILL.md` per A9),
+A6 (SC5's placement), and D1 (the reopened evals/-collection decision,
+flagged at its own bullet in Phase 9) are scope decisions this plan made
+rather than ones already confirmed — call them out explicitly rather than
+letting them pass as settled.
 
 ### Dispatch split
 
@@ -141,9 +144,37 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   pattern from `require-ready-for-review.sh:158-169` (`git symbolic-ref
   --quiet refs/remotes/origin/HEAD`, fallback probing main/master/develop)
   into a new `_lib.sh` helper — 2+ files now want it — and call it from
-  `guard-settings-session-keys.sh`.
+  `guard-settings-session-keys.sh`. Add a regression test for the new
+  helper directly (a repo with a non-`main` default branch resolves
+  correctly), independent of any caller.
 
 **Dispatch 1b — shared-trio rollout, S2 wrap, and tests (S13, S14, SC1, C6, C9, C19, D3, D8, D9, D10, D12):**
+- **Bare-`&` fragment-splitting gap in the shared trio** (Critical, new —
+  found by this plan's own Opus-anchored review): `_lib_split_fragments`
+  (`_lib.sh:490-494`) splits command fragments on `;`, `&&`, `||`, `|`,
+  `$(`, and backtick, but not a bare single `&` — valid bash background-op
+  syntax needs no surrounding whitespace (`foo&git commit -m x` really
+  executes `git commit`). `_lib_fragment_invokes_git` (`_lib.sh:440-453`)
+  then never sees the fragment as starting with `git`, so any hook using
+  the shared trio misses this input shape entirely — confirmed the bespoke
+  regex this dispatch is about to retire (`grep -qE
+  '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'`) DOES catch it, but the shared
+  trio does not, and `deny-pii-in-commits.sh` (already on the shared trio)
+  is exploitable by this input today. Add bare `&` to
+  `_lib_split_fragments`'s split set (or an equivalent boundary check in
+  `_lib_fragment_invokes_git`) before or alongside this dispatch's own
+  regex→shared-trio swap below — this is a prerequisite, not a follow-on,
+  since the swap would otherwise trade a working detector for a broken
+  one. Add a `foo&git commit`-shaped regression test to every hook already
+  or newly using the shared trio, including `deny-pii-in-commits.sh` (not
+  just the 7 hooks converted in this dispatch). This new split boundary
+  must not regress the existing `&&` case or misfire on unrelated `&`
+  syntax: add two more cases to the same regression pass — (a) an
+  `&&`-separated git-commit command (e.g. `foo && git commit -m x`) is
+  still detected post-change, and (b) a redirect/fd-duplication use of
+  `&` that is not a command separator (`cmd 2>&1; git commit -m x`, `cmd
+  &> log; git commit -m x`) does not get mis-split into a spurious
+  fragment boundary and does not produce a false allow or false deny.
 - **GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE stripping** (new, closes a gap
   this phase's own "audit structural siblings" rationale otherwise leaves
   open): three sibling hooks already establish this idiom —
@@ -158,11 +189,33 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   GIT_WORK_TREE GIT_INDEX_FILE` inside `_lib_capped_for` (`_lib.sh:38-48`,
   before the `command -v`/exec dispatch) — every hook using
   `_lib_capped`/`_lib_jq`, present or future, gets this defense automatically
-  instead of needing it re-added per file.
+  instead of needing it re-added per file. `require-npm-version-bump.sh`
+  and `require-plugin-version-bump.sh` (both touched by the
+  regex→shared-trio swap below) make their git calls directly, bare, with
+  no `_lib_capped`/`_lib_jq` wrapper at all — their own plugin `_lib.sh`
+  copies explicitly state "No git helpers," so this choke-point fix never
+  reaches their ~20 `git rev-parse`/`merge-base`/`diff --cached`/`show`/
+  `cat-file` call sites. Add the same `unset GIT_DIR GIT_WORK_TREE
+  GIT_INDEX_FILE` to each plugin's own `_lib.sh`
+  (`plugins/npm-semver/hooks/_lib.sh`,
+  `plugins/plugin-semver/hooks/_lib.sh`), not duplicated inline in either
+  hook's body — each `_lib.sh` is already sourced before any hook-body git
+  call runs (both hooks already reuse it for `_lib_jq`), so this is a
+  strictly better placement than hook-body logic: it can't be skipped by
+  a call landing before the unset by accident, and it automatically covers
+  any future hook added to either plugin, matching this phase's own
+  choke-point rationale for `_lib_capped_for` above instead of
+  reintroducing the idiom-sprawl failure mode (SC1/S14) this phase exists
+  to close. Add a regression test for both the `_lib_capped_for` choke
+  point and each plugin's `_lib.sh` addition, asserting an ambient
+  `GIT_DIR` pointing at a different repo does not redirect the wrapped
+  call.
 - **Content-bearing sites need exit-status-aware handling, not a bare wrap**
-  (new — distinguishes these from the mechanical S2 wraps below): 3 of
-  S2's sites read full diff *content*, not cheap metadata, and one has a
-  **fail-open bug** if wrapped naively. `require-code-review.sh`'s empty-diff
+  (new — distinguishes these from the mechanical S2 wraps below): 4 of
+  S2's sites read full diff *content*, not cheap metadata (named
+  individually below), and all four have a **fail-open bug** if wrapped
+  naively (three share one gate shape, the fourth reaches the same bug
+  through an inverted one — see below). `require-code-review.sh`'s empty-diff
   gate check (currently ~line 85: `if [ -z "$(git -C "$REPO_ROOT" diff
   --cached 2>/dev/null)" ]; then exit 0; fi` — [verified: this session,
   read directly]) decides whether the code-review gate applies at all. If
@@ -174,13 +227,37 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   later. `require-skill-review.sh` has the identical pattern at its own
   empty-diff check (~line 116, confirmed byte-identical this session).
   `deny-private-project-refs.sh:454`'s unrestricted `git diff --cached --
-  ':(top,exclude)...'` is a fourth content-bearing read with the same
-  general shape (excluded from S2's mechanical list below for the same
-  reason). For these three sites: after wrapping, check `$?` for `124`
-  (the standard `timeout`(1)/`gtimeout`(1) exit code for "killed by cap")
-  before treating an empty result as "nothing to review" — on a `124`,
-  deny/error instead of silently passing. Add a regression test per site
-  using a staged diff sized to exceed the cap.
+  ':(top,exclude)...'` is a fourth content-bearing read, but its gate is
+  shaped differently: the result is captured into `$STAGED_DIFF`, then
+  gated by `if [ -n "$STAGED_DIFF" ]; then ... fi` (lines 455-494) — a
+  presence check guarding the scan, not the `-z ... exit 0` early-return
+  the other three share [verified: this session, read directly]. Line
+  489's own comment documents that an empty `$STAGED_DIFF` skips adding
+  *both* the diff and the raw command string to the scan target, "to
+  preserve historical behavior" for the true-empty case — but a
+  `_lib_capped` timeout produces the same empty string, so it silently
+  skips scanning inline command content too, not just the diff. For the
+  first three sites: do not leave the current one-line
+  `if [ -z "$(git ... 2>/dev/null)" ]; then exit 0; fi` shape intact with
+  `_lib_capped` merely substituted inside it — that shape discards the
+  wrapped command's own exit status entirely (`$?` after the `if` reflects
+  `[`'s result, never `124`), silently reproducing the exact fail-open bug
+  this fix exists to close. Use the explicit two-statement form instead:
+  `OUT=$(_lib_capped git ...); RC=$?; [ "$RC" = 124 ] && { echo "..." >&2;
+  exit 1; }; [ -z "$OUT" ] && exit 0` (deny/error on `124` before the
+  empty-string check ever runs). For the fourth site
+  (`deny-private-project-refs.sh:454`), apply the same RC-before-emptiness
+  discipline adapted to its own shape: immediately after
+  `STAGED_DIFF=$(_lib_capped git diff --cached -- ...)`, check `RC=$?; [
+  "$RC" = 124 ] && { echo "..." >&2; exit 1; }` before the existing `if [
+  -n "$STAGED_DIFF" ]` runs, so a timeout denies instead of silently
+  taking the same branch as "nothing staged". Add a regression test per
+  site (all four) using the `fake_git sleep`-shim pattern already
+  established in `test_deny_pii_in_commits.py:218-242`
+  (`test_staged_diff_git_timeout_denied` — a `git` wrapper on `$PATH` that
+  sleeps past the cap, deterministic and fast), not an actually oversized
+  diff — and assert the deny path itself fires, not just that a test
+  exists.
 - **7 bespoke-regex hooks (SC1/S14)**: `require-code-review.sh:64`,
   `guard-settings-session-keys.sh:57`, `check-skill-length.sh:60`,
   `check-claude-md-length.sh:58`,
@@ -193,10 +270,21 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   changes detection behavior on an authorization-gating boundary (each hook
   blocks a commit/version-bump/leaking-content path); add at minimum one
   alias-bypass test and one wrapper-command (`bash -c`/`eval`) allow/deny
-  test pair per converted hook, prioritizing the 3 with zero existing test
-  coverage — `require-npm-version-bump.sh`, `require-plugin-version-bump.sh`,
-  `require-skill-review.sh` (no test file exists for any of the three under
-  `plugins/` — [verified: this session's specialist review]).
+  test pair per converted hook. Each of these 7 hooks already has a
+  dedicated test suite (`test_require_code_review.py` 701 lines,
+  `test_guard_settings_session_keys.py` 766 lines,
+  `test_check_skill_length.py` 456 lines,
+  `test_check_claude_md_length.py` 652 lines,
+  `test_require_npm_version_bump.py` 550 lines,
+  `test_require_plugin_version_bump.py` 438 lines,
+  `test_require_skill_review.py` 1233 lines, all under
+  `claude/.claude/hooks/tests/`, not under `plugins/` — [verified: this
+  session's specialist review corrected an earlier draft's "zero existing
+  coverage" claim]); the swap's regression risk is uniform across all 7,
+  not concentrated in a "zero-coverage" subset. Each hook's full existing
+  suite staying green post-swap is the primary regression gate; the
+  alias-bypass/wrapper-command tests above are incremental coverage for
+  the swap's own new gap on top of that baseline.
 - **S2 unguarded external-call sites** (metadata/cheap calls only — the 3
   content-bearing sites above are handled separately) — wrap each in
   `_lib_capped`/`_lib_jq`: `deny-private-project-refs.sh:287,298`,
@@ -219,11 +307,18 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
 - **C6**: `check-claude-md-length.sh:62-63`, `check-skill-length.sh:64-65` —
   `REPO_ROOT` is computed and tested for emptiness but never threaded into
   `git diff --cached`/`git show` (implicit cwd). Thread `-C "$REPO_ROOT"`.
+  Add a regression test per file asserting `-C "$REPO_ROOT"` is actually
+  threaded (a divergent-cwd test, mirroring S3's `bash_input(cwd=...)`
+  pattern above).
 - **C9**: `session-marker-dashboard.sh:94` — `REPO_ROOT` git call unguarded
   (contrast the already-`_lib_jq`-wrapped call at `:102`). Wrap with
-  `_lib_capped`.
+  `_lib_capped`. Add a timeout-path test for this newly-wrapped call,
+  matching D9's sequencing note (write it after this dispatch's own wrap
+  lands).
 - **C19**: `consume-durable-continuity-file-on-read.sh:118-122` — inline
-  timeout check has no `gtimeout` probe; replace with `_lib_capped`.
+  timeout check has no `gtimeout` probe; replace with `_lib_capped`. Add a
+  `gtimeout`-probe regression test mirroring the pattern this dispatch
+  already establishes elsewhere in this phase.
 - **D3/D12**: `test_check_skill_length.py:419-436`,
   `test_check_claude_md_length.py:588+` — both have a timeout-absent test
   whose docstring admits it only exercises the already-capped `git show`
@@ -254,13 +349,32 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   `deny-pii-in-commits.sh:88-100`'s "Known gaps (documented, not closed):"
   comment block, matching the siblings' phrasing, and to
   `docs/security-hardening.md:451-458`'s "**Known gaps.**" paragraph for
-  this hook. D10 (below) adds the test that pins this same accepted gap —
-  land S13's documentation and D10's test together so the gap is both
-  named and pinned, not one without the other.
+  this hook. Given the bare-`&` fragment-splitting gap above also applies
+  to `deny-pii-in-commits.sh` today, name both residuals — alias
+  resolution and bare-`&` fragment-splitting — together in this same
+  Known-gaps addition and pinning test, not just the alias one. D10
+  (below) adds the test that pins this same accepted gap — land S13's
+  documentation and D10's test together so the gap is both named and
+  pinned, not one without the other.
 - **D10**: `test_deny_pii_in_commits.py` has zero alias/`git-ci`/`git-cm`
   tests; sibling pattern `test_reviewer_quoted_command_name_bypass_allowed`
   exists in `test_deny_reviewer_tree_mutation.py:648`. Add the analogous
   test.
+- **Plugin version bumps required** (blocker, new — `require-plugin-version-bump.sh`
+  hook-denies any commit touching a file inside a plugin's tree with no
+  matching `.claude-plugin/plugin.json` version bump): this phase's 1a+1b
+  dispatches touch `plugins/npm-semver/hooks/_lib.sh`,
+  `plugins/npm-semver/hooks/require-npm-version-bump.sh`,
+  `plugins/plugin-semver/hooks/_lib.sh`,
+  `plugins/plugin-semver/hooks/require-plugin-version-bump.sh`,
+  `plugins/skill-management/hooks/_lib.sh`,
+  `plugins/skill-management/hooks/require-skill-review.sh`, and
+  `plugins/lovable-cloud/hooks/_lib.sh`. Bump each of the 4 plugins'
+  `.claude-plugin/plugin.json` version per `plugin-semver`'s bump-magnitude
+  table before this phase's commit — the exit-124/GIT_DIR/bare-`&`
+  behavior changes above are minor-or-greater, not patch-only. Current
+  versions: npm-semver 1.0.3, plugin-semver 1.1.4, skill-management 3.2.2,
+  lovable-cloud 3.2.4.
 
 **Rollback**: each dispatch is one commit; revert that commit to undo. 1a's
 new `_lib.sh` helper (C7) has no consumer outside `guard-settings-session-keys.sh`
@@ -319,14 +433,44 @@ back-compat fix this requires.
   `:10512-10517`). Flip to default-on, replacing `--redact` with
   `--no-redact` to opt out, and refuse under multi-root — matching
   `p_cost`'s existing help text (`:10521-10527`, "Redacted by default").
-  This is a breaking flag-shape change: two SKILL.md files document the
-  current opt-in contract by name and must be updated in this same phase —
-  `transcript-analysis/SKILL.md:41` (`audit-routing --since 35d --redact`
-  example) and `:92-93` (explicitly contrasts `audit-routing`'s opt-in
-  `--redact` against `cost`'s default-on behavior — that contrast disappears
-  once this fix lands), and `transcript-narrative/SKILL.md:77,80`. Add a
-  regression test asserting `audit-routing` with no flags now redacts by
-  default, guarding the flip itself (not just the new opt-out path).
+  Implement the multi-root refusal via SC5's own
+  `_apply_no_redact_multi_root_refusal(args, scan_roots, subcommand_name)`
+  helper below, making `audit-routing` its 9th call site —
+  `cmd_audit_routing` currently has no multi-root refusal of any kind, so
+  this is a new call site, not a conversion of an existing bespoke one.
+  This is a breaking flag-shape change: two SKILL.md files and one
+  canonical reference doc document the current opt-in contract by name and
+  must be updated in this same phase — `transcript-analysis/SKILL.md:41`
+  (`audit-routing --since 35d --redact` example) and `:92-93` (explicitly
+  contrasts `audit-routing`'s opt-in `--redact` against `cost`'s
+  default-on behavior — that contrast disappears once this fix lands),
+  `transcript-narrative/SKILL.md:77,80`, and `docs/transcript-analysis.md`'s
+  own `## audit-routing` section (~lines 507-556, the canonical
+  flag-reference doc for this subcommand) plus its cross-references at
+  lines 45, 233, 570. Two more stale-parity citations need the same
+  treatment: `transcript_analysis/reviewer_yield.py:567`'s docstring
+  ("`--redact` is accepted for CLI parity with cost/audit-routing") and
+  `transcript-analysis.py:10355-10360`'s `reviewer-yield --redact`
+  argparse `help=` text (also framed as "parity with cost/audit-routing")
+  both go stale once `audit-routing` no longer has a bare opt-in
+  `--redact` flag — update both in the same commit
+  [verified: this session, both read directly]. Update the shared
+  `_audit_routing_args(redact: bool = False, ...)` test helper
+  (`claude/.claude/scripts/tests/conftest.py:456`) to a `no_redact: bool =
+  False` param, mirroring the sibling `_cost_args` helper's existing
+  `no_redact` shape (`conftest.py:412,444`) — this helper is consumed at
+  19 call sites (18 in `test_transcript_analysis.py`, 1 in
+  `test_transcript_cost.py:536`; grep
+  `_audit_routing_args(` in both files at dispatch time for the current
+  list, since line numbers drift), 3 of which pass `redact=True`
+  explicitly (`test_transcript_analysis.py:3661,13970`,
+  `test_transcript_cost.py:536` — confirmed this session) and will hard-break
+  (`TypeError`) if the param is renamed without updating them; update
+  every call site to the new signature in the same commit, matching this
+  phase's own citation-drift discipline already applied to
+  `transcript-analysis.py` itself. Add a regression test asserting
+  `audit-routing` with no flags now redacts by default, guarding the flip
+  itself (not just the new opt-out path).
 - **I1** (`read-scope`): `_read_scope_report:4226-4287` uses
   `_root_index_for_path` (`scope.py:615`, scan-order) instead of
   `_redaction_ordinals` (`scope.py:180`, resolved-path-sorted) at `:4284`;
@@ -370,6 +514,10 @@ symbol name at dispatch time — see Phase 3's citation-drift note.
   *next* `--record`.] Add a migration note to `docs/pr-cost.md` instructing
   existing users to `chmod 600` their ledger file once, since this fix
   provides no automatic remediation path for a ledger already on disk.
+  Add a regression test pinning both the fix and its forward-only
+  semantic: a pre-existing ledger file created with loose permissions
+  keeps them across a write that doesn't hit `--record`, then gets 0600
+  applied on its next `--record` write.
 - **S17** (GIT_DIR stripping): `_git_remote_origin_host_and_owner_repo:6941-6963`
   (subprocess call `:6951-6955`, no `env=`) and
   `_local_git_object_exists_batch:7215-7241` (subprocess call `:7229-7233`,
@@ -377,7 +525,11 @@ symbol name at dispatch time — see Phase 3's citation-drift note.
   pattern: `_ledger_path_is_git_tracked:5897-` env-prep block `:5911-5919`
   (copies `os.environ`, strips `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`,
   sets `LC_ALL=C`). Extract into a shared `_local_git_env()` helper (now
-  needed in 3 places) and apply ahead of both subprocess calls.
+  needed in 3 places) and apply ahead of both subprocess calls. Add a
+  regression test per new call site asserting an ambient `GIT_DIR`
+  pointing at a different repo does not redirect the call, mirroring the
+  GIT_DIR regression test this plan already requires for Phase 1's
+  `_lib_capped_for` choke point.
 - **SC4** (lock/write-file duplication): lock pair
   `_acquire_cost_ledger_lock:6264-6288` vs.
   `_acquire_pr_cost_ledger_lock:6914-6938` — near-identical; collapse into
@@ -432,7 +584,13 @@ Phase 3's citation-drift note.
   (this subcommand processes one dispatch transcript at a time, not the
   full corpus) rather than switching to a lighter tuple-extraction dedup —
   matches every other `_dedup_turns_by_request_id` call site's existing
-  shape, at the cost of this one tradeoff.
+  shape, at the cost of this one tradeoff. The stronger driver for this
+  fix is correctness, not just consistency: `_merge_assistant_run`'s own
+  docstring states `output_tokens` "ascends within the run, only reaching
+  its billed value on the last record" — meaning the current pre-fix
+  streaming code prices every raw assistant line's own `usage`
+  independently, which is very likely a real dollar-overcounting bug for
+  multi-block turns, not merely a shape-consistency nit.
 - Test: `TestSubagentMixDollars`,
   `claude/.claude/scripts/tests/test_transcript_analysis.py:987-1264` (7
   tests, zero requestId-sharing fixtures) — add one, mirroring the existing
@@ -453,7 +611,21 @@ Phase 3's citation-drift note.
   dispatcher-adjacent target of repeated cross-references (S12, C4, C15 all
   touch it), so trimming existing content risks losing it again under
   future edits. This is the plan's own scope decision (A5) — flagged to the
-  engineer at presentation, not previously confirmed.
+  engineer at presentation, not previously confirmed. Add a positive/negative
+  test pair for this new exception, mirroring the existing
+  `test_code_review_over_default_under_override_allows`/`_denies` pattern
+  in `test_check_skill_length.py`.
+- **C15's own target file also has zero headroom** (new — found by this
+  plan's own Opus-anchored review, the same conflict SC7/A4-A5 resolves
+  for `review-permissions/SKILL.md`; see A9): C15 below adds a sentence to
+  `plugins/skill-management/skills/skill-review/SKILL.md`, which is also
+  at exactly 200 lines (`wc -l` = 200) with zero headroom. Extend the same
+  `limit_for()` 500-line exception added above to this file too, in the
+  same edit — same rationale as A5 (dispatcher-adjacent, repeatedly
+  cross-referenced, trimming risks losing content again). This is an
+  extension of A5's scope decision, not a new one — flagged to the
+  engineer alongside A5 and A6 at presentation. Add the same test-pair
+  parity for this file's exception as SC7's above.
 - **S12**: `code-review/SKILL.md:176` and `plan-review/SKILL.md:233` — add
   "a bare `permissions.deny` entry was added, or `permissions.defaultMode`
   changed" to each skill's `/review-permissions` dispatch sentence.
@@ -488,6 +660,11 @@ Phase 3's citation-drift note.
 - Run `/skill-review` on every `SKILL.md` touched in this phase per
   `.claude/rules/skill-and-agent-self-review.md` (hook-enforced via
   `require-skill-review.sh`).
+- **Plugin version bump required**: this phase's C15 edit touches
+  `plugins/skill-management/skills/skill-review/SKILL.md` —
+  `require-plugin-version-bump.sh` hook-denies the commit unless
+  `plugins/skill-management/.claude-plugin/plugin.json`'s version is
+  bumped (patch, for a documentation-only addition) in the same commit.
 
 **Rollback**: revert this phase's commit, including the `limit_for()`
 exception addition — `check-skill-length.sh` reverts to enforcing 200 lines
@@ -538,9 +715,18 @@ revert also removes this phase's own added content.
   347). Update citations; the 10/9 count itself is still correct.
 - **C13**: `docs/scripts.md:37` — claims `install.sh` doesn't check
   `python3` version; actually `install.sh:25-35` checks `>=3.11`.
-- **C17 / I4** (same sentence, one fix resolves both): `evals/README.md:400`
-  — "CI lints `claude/.claude/` only"; actual is `ruff check claude/.claude/
-  plugins/` (`tests.yml:170`).
+- **C17 / I4** (same sentence, one fix resolves both, plus a sibling site
+  the original report didn't catch): `evals/README.md:400` — "CI lints
+  `claude/.claude/` only"; actual is `ruff check claude/.claude/ plugins/`
+  (`tests.yml:170`). The identical staleness exists a second place: root
+  `CLAUDE.md`'s Commands block documents
+  `.venv/bin/pytest claude/.claude/` and
+  `.venv/bin/ruff check claude/.claude/`, both omitting `plugins/`, while
+  CI actually runs both across `claude/.claude/ plugins/` — fix this
+  structural sibling in the same commit (append " plugins/" to both
+  existing command lines; this is a same-line edit with ~zero net line
+  growth, so it doesn't materially affect Phase 8's headroom check on this
+  same file).
 - **C22**: `docs/scripts.md:54` — "12 valid invocation shapes" for
   `marker.sh`; actual is 13 allow entries (`settings.json:4-16`) + 2
   `clear-stale` variants validated by regex but prompting rather than
@@ -560,6 +746,19 @@ revert also removes this phase's own added content.
 
 ### Phase 8 — Instruction-surface (S11, S19, S20, D6, C14, C24, SC6)
 
+- **Length-cap headroom check** (do this first in this phase — new,
+  found by this plan's own Opus-anchored review): root `CLAUDE.md` is 182
+  lines against `check-claude-md-length.sh`'s hook-enforced 200-line cap
+  ([verified: this session, `wc -l`] — re-verify at dispatch time, since
+  Phase 7's C17/I4 fix also touches this file's Commands block, though as
+  a same-line edit with ~zero net line growth). This phase stacks three
+  separate one-sentence additions onto it (S11, S20, D6 below) against
+  only 18 lines of headroom. If the three additions together would exceed
+  200 lines, tighten existing prose elsewhere in the file to make room
+  rather than requesting a `limit_for()` exception for this file — unlike
+  `review-permissions/SKILL.md` (Phase 6), root `CLAUDE.md` is a
+  contributor-facing overview document, not a dispatcher-adjacent
+  reference the exception pattern was designed for.
 - **S11**: root `CLAUDE.md:108-114` (text `:111-112`) — "don't merge your
   own PRs" is scoped to literal `gh pr merge`;
   `block-gh-pr-merge.sh:21-23` documents a `gh api .../pulls/N/merge`
@@ -569,7 +768,11 @@ revert also removes this phase's own added content.
   (frontmatter `paths`), risk text `:35-37` — glob matches
   `workflows/*.yml` only, not composite actions (`action.yml`). No
   `action.yml` exists yet in the repo (confirmed via `find`). Add
-  `**/.github/actions/*/action.yml` and `.yaml` to `paths`.
+  `**/.github/actions/*/action.yml` and `.yaml` to `paths`. Add a
+  case-file-style match assertion (e.g. `fnmatch`/`pathlib.match` against
+  a synthetic `.github/actions/foo/action.yml` path) confirming the new
+  glob actually matches — `test_rules_frontmatter.py` explicitly disclaims
+  verifying individual glob correctness on its own.
 - **S20**: root `CLAUDE.md` tiers `:121-143`, default statement
   `:137-138`, Provenance `:145-159` — "if in doubt, strip it" is attached
   to tier 2 only, never restated for tier 3 (Provenance, the
@@ -625,33 +828,62 @@ revert also removes this phase's own added content.
   closed"; add this check to this phase's Verification.]
 - **S25, rescoped** — [verified: this session's specialist review, `ruff
   check --select S` against `claude/.claude/ plugins/` on current `HEAD`
-  returns **10,547 findings**: 8,506 `S101` (99.8% confined to test files),
-  1,034 `S603`, 848 `S607`, 127 `S108`, 24 `S105`, 5 `S103`, 3 `S311`,
-  spanning ~100 distinct non-test files for the `S603`/`S607`/etc. classes
-  alone]. This is not the "triage a few findings" scope the original
-  report finding implies, and `tests.yml`'s Lint step (`ruff check
-  claude/.claude/ plugins/`, no `|| true`) is a hard blocking gate on
-  every PR after this one lands — landing the full `"S"` ruleset as
-  written would either force ~2,000 non-test findings into one
-  non-PR-sized diff or break CI for every subsequent PR. Split: **(a)**
-  add `"S"` to `pyproject.toml:6`'s select list plus one
+  returns **10,547 findings**: 8,506 `S101` (100% confined to test-path
+  files — zero non-test-path `S101` findings), 1,034 `S603`, 848 `S607`,
+  127 `S108`, 24 `S105`, 5 `S103`, 3 `S311`, spanning ~100 distinct
+  non-test files for the `S603`/`S607`/etc. classes alone]. This is not
+  the "triage a few findings" scope the original report finding implies,
+  and `tests.yml`'s Lint step (`ruff check claude/.claude/ plugins/`, no
+  `|| true`) is a hard blocking gate on every PR after this one lands —
+  landing the full `"S"` ruleset as written would either force ~2,000
+  non-test findings into one non-PR-sized diff or break CI for every
+  subsequent PR, including this phase's own commit. Split: **(a)** add
+  `"S"` to `pyproject.toml:6`'s select list, plus one
   `[tool.ruff.lint.per-file-ignores]` entry silencing `S101` on test-glob
-  paths (closes 99.8% of the volume with no per-line judgment needed) —
-  this lands in this phase. **(b)** the remaining ~100-file `S603`/`S607`/
+  paths (closes 100% of that class with no per-line judgment needed), plus
+  a second, repo-wide `ignore =` entry for the deferred non-test codes
+  (`S603,S607,S108,S105,S103,S311`) — without this second entry, this
+  phase's own commit leaves the 2,041 residual findings unsuppressed and
+  breaks the CI Lint gate it is meant to fix, contradicting this plan's
+  own Verification claim of no unexpected CI failure. Both ignore entries
+  land in this phase. **(b)** the remaining ~100-file `S603`/`S607`/
   `S108`/`S105`/`S103`/`S311` triage (each needing a judgment call between
-  a real fix and a `# noqa: S... — <rationale>` per CLAUDE.md's
-  suppression-rationale rule, plus a named owner to adjudicate them) is
-  **out of scope for this phase** — see Out of Scope.
+  a real fix and replacing the blanket ignore with a per-line
+  `# noqa: S... — <rationale>` per CLAUDE.md's suppression-rationale rule,
+  plus a named owner to adjudicate them) is **out of scope for this
+  phase** — see Out of Scope. This means Phase 9 lands the ruleset fully
+  enabled but with the non-test codes globally suppressed rather than
+  individually triaged; (b) is what narrows that suppression down to real
+  fixes and named exceptions over time.
 - **I5** (Very Low, informational, no fix needed): `dependabot.yml:7` limit
   is 3; exactly 2 actions are pinned repo-wide. Note only.
 - **D1**: `evals/test_measure_subagent_model_resolution.py` (876 lines) has
   zero CI collection (`tests.yml:160,166` roots are `claude/.claude/
   plugins/` only; `pyproject.toml:18` `pythonpath` is import-only, not a
-  collection root). Add this file (or its deterministic subset) to a
-  CI-collected path/invocation, without adopting the live-script's separate
-  no-CI rationale from `.claude/plans/plan-mode-model-resolution-experiment.md`
-  item M7 (that rationale covers a different, intentionally-uncollected
-  script).
+  collection root). This finding reopens a decision the source plan
+  already made and recorded:
+  `.claude/plans/plan-mode-model-resolution-experiment.md:450-457` states
+  "No `tests.yml` change... Recorded as a deliberate gap, not an
+  oversight" — a different, more directly on-point rationale (wiring cost
+  vs. benefit for a rarely-changed parser) than item M7 (which covers the
+  separate, intentionally-uncollected live script and does not apply to
+  this test file); `evals/README.md:23-25` separately states the never-CI
+  posture applies equally to this test. **Flag to the engineer at
+  presentation**: implementing D1 as a CI-wiring change means overriding
+  that prior, reasoned "no" — get explicit sign-off before dispatch rather
+  than treating D1's fix as uncontested. If the engineer confirms: do not
+  add `evals/` as a bare pytest collection root — confirmed empirically
+  that doing so also sweeps in
+  `evals/fixtures/temp-project/tests/test_calculator.py`, which fails to
+  import (`ModuleNotFoundError: No module named 'calculator'`, since its
+  sibling `calculator.py` isn't on any configured `pythonpath`) and
+  aborts collection entirely (`pytest ... --collect-only` against the real
+  `pyproject.toml` returns `Interrupted: 1 error during collection`, zero
+  tests run) — breaking CI for every subsequent PR, since `tests.yml`'s
+  test step has no `|| true`. Instead, collect this one file explicitly
+  (an explicit file path in the pytest invocation, not a bare `evals/`
+  root) or add `evals/fixtures` to `norecursedirs`/an explicit `--ignore`.
+  If the engineer does not confirm, drop D1 from this phase.
 - **D7**: zero eval coverage exists for any plugin-scoped skill despite
   explicit harness support — `evals/run_skill_evals.py:107-110,252-254`
   globs `plugins/*/skills/*/evals/*-cases.json`, but no plugin skill has
@@ -662,7 +894,14 @@ revert also removes this phase's own added content.
   finding) — mirroring an existing covered skill's case-file shape. Full
   coverage of all uncovered plugin skills is not required by this phase;
   closing the zero-coverage state for the one skill with real write/delete
-  blast radius is.
+  blast radius is. This edit adds a file under
+  `plugins/lovable-cloud/skills/lovable-cloud-migration-sync/evals/` —
+  bump `plugins/lovable-cloud/.claude-plugin/plugin.json`'s version
+  (patch, for a test-only addition) in the same commit or
+  `require-plugin-version-bump.sh` denies it.
+- **Plugin version bumps required**: this phase's D7 edit touches
+  `plugins/lovable-cloud/.claude-plugin/`-scoped files (see D7's own
+  bullet above); no other phase-9 change touches a plugin directory.
 
 **Rollback**: revert this phase's commit. The `"S"`-ruleset addition (S25a)
 is the highest-risk revert candidate in this plan — if it produces
@@ -707,29 +946,73 @@ noqas.
   idiom-unification thesis (Phase 1) doesn't leave a third copy of the
   exact pattern it exists to close standing in a different phase.
 - **C18**: `plugins/lovable-cloud/skills/lovable-cloud-migration-sync/SKILL.md:3-8`
-  still has TRIGGER prose plus `disable-model-invocation: true`. Confirmed
-  exactly 4 skills repo-wide carry that flag; the other 3
-  (`pr-description-claude-config`, `plan-review-claude-config`,
-  `code-review-claude-config`) correctly omit TRIGGER prose — this one is
-  the outlier. Strip the TRIGGER/DO NOT TRIGGER lines from its description.
+  still has TRIGGER prose plus `disable-model-invocation: true`. Corrected
+  count — [verified: this session's specialist review]: only 2 skills
+  repo-wide carry that flag, `pr-description-claude-config/SKILL.md` and
+  this one; the other 2 skill names an earlier draft of this plan cited
+  (`plan-review-claude-config`, `code-review-claude-config`) do not exist
+  as files anywhere in the repo. The underlying fix stands on its own
+  logic regardless of the count: `pr-description-claude-config/SKILL.md`
+  correctly omits TRIGGER prose given `disable-model-invocation: true`
+  makes auto-dispatch routing moot, and this skill should match. Strip the
+  TRIGGER/DO NOT TRIGGER lines from its description.
 - **C20**: `_config_dir.py:126` — one generic "unreadable" message covers 3
   distinct failure branches (`:116-119` not-absolute, `:121-124`
   not-a-directory/`is_valid`). Thread a reason string through. Add one
   test per failure branch asserting its distinguishing reason string
   appears in the error.
 - **C21**: `update-claude-config-plugins.sh:190-195` — the Python snippet
-  silently drops non-numeric version segments. Use
-  `packaging.version.Version` if available, or explicitly warn+skip on a
-  non-numeric segment instead of silently truncating. Add a test with a
-  non-numeric version segment asserting a warning (not silent truncation).
-- **C25**: `code-writer.md` (order: name, description, tools, model,
-  effort) and `Explore.md` (order: name, description, model, effort,
-  tools) both differ from all 10 `CANARY_AGENTS`' frontmatter order (model,
-  effort, name, description, tools). Reorder both to match.
+  silently drops non-numeric version segments, and runs via bare `python3`
+  (not `.venv/bin/python3`) as a standalone ops script any contributor
+  invokes with their own interpreter. `packaging` is not importable under
+  bare `python3` and is not declared in any requirements file — [verified:
+  this session's specialist review, reproduced `ModuleNotFoundError`] — so
+  for most real invocations the fallback path is the only path actually
+  taken, not an edge case. Guard the `packaging` use as optional-import
+  only (`try: import packaging.version except ImportError:` — do not add
+  `packaging` to any requirements file; that would trigger CLAUDE.md's
+  new-third-party-dependency disclosure rule for a dependency this fix
+  doesn't need to declare). On `ImportError`, warn and skip the
+  non-numeric segment rather than silently truncating it — this yields a
+  visible warning, not necessarily a *correct* version comparison, on the
+  path most invocations will actually take; state that limitation in the
+  warning text itself. Add a test with a non-numeric version segment
+  asserting a warning (not silent truncation) under both the
+  `packaging`-available and `ImportError` paths — force each branch
+  deterministically rather than relying on whichever `python3` the test
+  machine's ambient `PATH` happens to resolve: the existing harness
+  (`test_update_claude_config_plugins.py:141-143`'s `_run_script` only
+  prepends a fake `claude` shim dir to `PATH`, leaving the rest of
+  `PATH` — and hence `packaging`'s importability — at the ambient system
+  value [verified: this session, read directly]). Force the `ImportError`
+  branch with a `sys.path`-excluding shim or a `sys.modules['packaging']
+  = None` mock, and force the `packaging`-available branch by skipping
+  the test (with a clear reason) when `packaging` isn't actually
+  importable in the test environment, rather than asserting on an
+  unforced ambient state either way.
+- **C25** (optional — candidate to drop from this phase): `code-writer.md`
+  (order: name, description, tools, model, effort) and `Explore.md` (order:
+  name, description, model, effort, tools) both differ from all 10
+  `CANARY_AGENTS`' frontmatter order (model, effort, name, description,
+  tools). Confirmed — [verified: this session's specialist review,
+  `test_agent_roster.py` read in full] — no test asserts frontmatter key
+  order, and YAML frontmatter parsing (`yaml.safe_load`) is inherently
+  order-blind, so this is pure cosmetics with zero behavioral effect. Per
+  CLAUDE.md's Axis 4 (minimal, targeted changes) and Axis 1 bucket 1
+  (revert cosmetic-only edits by default), the engineer may prefer to drop
+  this finding from the phase entirely, or land it as a one-line
+  PR-description mention rather than a diff, rather than reorder two
+  files' frontmatter for no functional gain. If landed, reorder both to
+  match.
 - **C26**: `tests.yml:57-58` step "Detect hook-relevant changes" /
   `id: detect` now gates the full pytest+ruff pass, not just hooks. Rename
   the step/id and update the `SKIP_REGEX` comment (`:89`) to match its
-  actual scope.
+  actual scope. Every `steps.detect.outputs.*` reference in the same file
+  must be updated to the new id in the same commit — 9 lines as of this
+  review (`tests.yml:129,136,141,149,155,159,165,169,173`; re-grep
+  `steps.detect` at dispatch time since this drifts) — an incomplete
+  rename silently breaks every downstream job's `if:` condition rather
+  than failing loudly.
 - **D11**: no test exists for C5's flag-hoisted-form gap; companion pattern
   `test_gh_pr_flag_before_subcommand_denied` exists at
   `test_deny_private_project_refs.py:2915`. Add the analogous test once
@@ -769,6 +1052,15 @@ noqas.
 - **SC3**: `cleanup-merged-branches.sh:767` — `git fetch --prune` runs
   inside the per-branch loop (`:705-793`). Hoist a single fetch before the
   loop; adjust auto-pruned-detection to use the one batch fetch's output.
+- **Plugin version bumps required**: this phase's S23 edit touches
+  `plugins/plugin-semver/hooks/require-plugin-version-bump.sh`, and its
+  C18 and D14 edits both touch files under `plugins/lovable-cloud/`
+  (`.../skills/lovable-cloud-migration-sync/SKILL.md` and
+  `hooks/consume-migration-token.sh` respectively). Bump
+  `plugins/plugin-semver/.claude-plugin/plugin.json` (patch, for S23's
+  `_lib_jq` swap) and `plugins/lovable-cloud/.claude-plugin/plugin.json`
+  (patch, for C18+D14 together) in the same commits —
+  `require-plugin-version-bump.sh` hook-denies otherwise.
 
 **Rollback**: revert this phase's commit — self-contained; no other
 phase consumes this phase's new `_lib_pid_alive_with_recorded_start`
@@ -781,29 +1073,41 @@ phase's diff landing first.
 
 - **Phase 1**: `../../../.venv/bin/pytest claude/.claude/hooks/tests/` (all
   hook tests, plus the new/extended D2/D3/D8/D9/D10/D12 tests) and
-  `../../../.venv/bin/shellcheck` via `scripts/list-shell-files.sh | xargs
-  -0 .venv/bin/shellcheck` for every touched hook.
+  `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck`
+  for every touched hook. Confirm each of the 4 touched plugins'
+  `.claude-plugin/plugin.json` version was bumped (see this phase's
+  "Plugin version bumps required" bullet) before committing —
+  `require-plugin-version-bump.sh` hook-denies the commit otherwise.
 - **Phase 2**: targeted test for `require-ready-for-review.sh`'s
   `_lib_capped`-wrapped `gh pr view` call (timeout-path fixture, mirroring
-  Phase 1's D9-style pattern) + `shellcheck`.
+  Phase 1's D9-style pattern) + `../../../.venv/bin/shellcheck`.
 - **Phases 3–5**: `../../../.venv/bin/pytest
   claude/.claude/scripts/tests/test_transcript_analysis.py` plus each new
   `--redact`-default fixture and the new `TestSubagentMixDollars`
   requestId-sharing fixture; `../../../.venv/bin/ruff check
   claude/.claude/`.
 - **Phase 6**: `/skill-review` on every touched `SKILL.md` (hook-enforced
-  via `require-skill-review.sh`), plus a manual re-read confirming
-  `review-permissions/SKILL.md` still passes `check-skill-length.sh` under
-  its new 500-line exception.
+  via `require-skill-review.sh`), plus a manual re-read confirming both
+  `review-permissions/SKILL.md` and
+  `plugins/skill-management/skills/skill-review/SKILL.md` still pass
+  `check-skill-length.sh` under their new 500-line exception, and that
+  `plugins/skill-management/.claude-plugin/plugin.json`'s version was
+  bumped. If `review-permissions` later gains a `*-cases.json` eval file,
+  extend it with a case for this phase's new trigger conditions
+  (`permissions.deny`/`defaultMode`/`skillOverrides`) — not required for
+  this phase to land, since no case file exists yet.
 - **Phases 7–8**: no test suite covers prose accuracy — verify each fixed
   claim against the cited source file/line directly (re-run the same `wc
   -l`/`grep`/`sed` commands this plan's citations came from) before
   committing.
 - **Phase 9**: `.github/workflows/tests.yml` itself (push the branch and
   confirm the two-directory pip-ecosystem Dependabot config and the new
-  `ruff --select S` pass — S101 excepted via `per-file-ignores` — produce
-  no unexpected CI failure); `../../../.venv/bin/ruff check
-  claude/.claude/ plugins/`.
+  `ruff --select S` pass — S101 excepted via `per-file-ignores`, the
+  remaining `S603/S607/S108/S105/S103/S311` codes excepted via the
+  repo-wide `ignore =` entry — produce no unexpected CI failure);
+  `../../../.venv/bin/ruff check claude/.claude/ plugins/`; confirm
+  `plugins/lovable-cloud/.claude-plugin/plugin.json`'s version was bumped
+  for D7's new case file.
 - **Phase 10**: `../../../.venv/bin/pytest claude/.claude/ plugins/` (full
   suite across both collection roots — this phase edits files under
   `plugins/`: S23 → `plugins/plugin-semver/hooks/require-plugin-version-bump.sh`,
@@ -811,8 +1115,13 @@ phase's diff landing first.
   `plugins/lovable-cloud/skills/...SKILL.md`; CI's own two pytest passes
   always run both roots together, and `plugins/lovable-cloud/tests/` is a
   separate, real collection root the narrower `claude/.claude/`-only
-  command would miss) plus `shellcheck` for the shell-file changes (C5,
-  S23, SC2, SC3).
+  command would miss) plus `../../../.venv/bin/shellcheck` for the
+  shell-file changes (C5, S23, SC2, SC3); confirm
+  `plugins/plugin-semver/.claude-plugin/plugin.json` and
+  `plugins/lovable-cloud/.claude-plugin/plugin.json` versions were
+  bumped; push the branch and confirm CI's own two pytest passes and the
+  workflow-level changes actually run clean, matching Phase 9's own
+  explicit CI-exercise pattern above.
 - **Closing step, after all 10 phases have merged**: one full
   `../../../.venv/bin/pytest claude/.claude/ plugins/` and `../../../.venv/bin/ruff
   check claude/.claude/ plugins/` run against `HEAD`, in addition to each
