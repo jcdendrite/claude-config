@@ -758,6 +758,9 @@ if [ -f "$SETTINGS_FILE" ]; then
         echo "  ✓ $plugin (already installed)"
       else
         echo "  → installing $plugin"
+        # A GitHub-sourced marketplace plugin (e.g. pyright-lsp@claude-plugins-official)
+        # can hang this line indefinitely on a stalled network path, with no timeout guard.
+        # Ctrl-C and re-run — the already-installed check above makes re-running safe.
         claude plugin install "$plugin" -s project || \
           echo "[install] warning: failed to install $plugin at project scope" >&2
       fi
