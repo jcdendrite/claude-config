@@ -10,7 +10,9 @@
 # docs/handoff-nudge.md "Why this spacing". Past HANDOFF_NUDGE_BLOCK_AFTER
 # ignored re-arms, a further re-arm hard-blocks instead of advising — see
 # "Why this block-after count" in the same doc. The hard block uses
-# PostToolBatch's own exit-2 loop-stop, not a JSON envelope.
+# PostToolBatch's own exit-2 loop-stop, not a JSON envelope, and only fires
+# on that event: exit 2 on Stop forces continuation instead of blocking it,
+# so a Stop-registered re-arm falls through to the advisory path instead.
 #
 # Kill-switch: touching ~/.claude/.handoff-nudge-disabled suppresses all
 # nudges globally, including the hard block above (useful when running
@@ -23,7 +25,7 @@
 # dependency.
 #
 # Log file: ~/.claude/.handoff-nudge.log records two event types:
-#   nudged  session=<id> est=<n> model=<id> window=<n> event=<PostToolBatch|Stop>  — threshold crossed, nudge emitted (advisory or hard block alike)
+#   nudged  session=<id> est=<n> model=<id> window=<n> event=<PostToolBatch|Stop> [action=block]  — threshold crossed, nudge emitted; action=block present only on a hard-block fire
 #   schema-drift session=<id> event=<PostToolBatch|Stop>     — usage block present but all token fields 0/null
 #
 # --check mode: `nudge-handoff-near-context-cap.sh --check` reports the
@@ -168,7 +170,7 @@ resolve_rearm_spacing() {
 # re-arm; 10+ digits risks wrapping negative).
 resolve_block_after() {
   case "$HANDOFF_NUDGE_BLOCK_AFTER" in
-    ''|0|*[!0-9]*|0[0-9]*|?????????*) BLOCK_AFTER=3 ;;
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) BLOCK_AFTER=1 ;;
     *) BLOCK_AFTER=$HANDOFF_NUDGE_BLOCK_AFTER ;;
   esac
 }
@@ -602,13 +604,19 @@ if [ -f "$IGNORED_MARKER" ]; then
   case "$IGNORED_COUNT" in ''|*[!0-9]*) IGNORED_COUNT=0 ;; esac
 fi
 
-if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null; then
+if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null && [ "$HOOK_EVENT" = "PostToolBatch" ]; then
   # Hard block: PostToolBatch's own exit-2 contract stops the agentic loop
-  # before the next model call, with no JSON envelope.
-  printf 'nudged session=%s est=%s model=%s window=%s event=%s\n' \
+  # before the next model call, with no JSON envelope. Guarded to
+  # PostToolBatch only — on Stop, exit 2 forces the conversation to
+  # continue instead of blocking it, so that registration falls through to
+  # the advisory fire path below.
+  # A hook_event_name value degraded away from PostToolBatch by something
+  # other than a genuine Stop registration would silently fall through to
+  # advisory-only here too, with no distinguishing log signal.
+  printf 'nudged session=%s est=%s model=%s window=%s event=%s action=block\n' \
     "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
-  printf 'Context is past this session'\''s handoff-nudge threshold (%s tokens), and %s prior re-arms went unacted on this session (HANDOFF_NUDGE_BLOCK_AFTER=%s). Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session — or, if the current task is genuinely almost done, finish it in this reply instead of continuing past this point.\n' \
+  printf 'Context is past this session'\''s handoff-nudge threshold (%s tokens), and %s prior re-arms went unacted on this session (HANDOFF_NUDGE_BLOCK_AFTER=%s). Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session.\n' \
     "$THRESHOLD" "$IGNORED_COUNT" "$BLOCK_AFTER" >&2
   exit 2
 fi

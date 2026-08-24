@@ -44,6 +44,8 @@ Find the plan to review. Check, in order:
 2. If a plan was just written in `.claude/plans/`, read the most recent one
 3. If a plan exists in the current conversation context, use that
 
+Resolve the identified file to an absolute path now (`pwd`-join a relative match; use an argument path as-is if already absolute) and carry that exact string forward — Output format's closing line states it, not a value re-derived at write time.
+
 ## Step 2 — Detect domains
 
 Read the plan and classify which domains it touches. When using an agent to explore the codebase for plan context, use `general-purpose` — not `Explore`, which misses content past its read window and can't audit cross-file consistency — with an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule.
@@ -261,7 +263,7 @@ If any spawned reviewer's ledger cross-check finds the revision touching a row a
 **Enforcement-invariant findings are fix-or-ask.** When a finding is that the plan opens a path around an enforcement invariant — a gate, hook, permission check, required-approval, or marker guarantee that some mechanism currently makes unbypassable — the verdict may not be "Approve with changes: disclose in PR body." This finding class has exactly two dispositions: **Request changes** until the plan closes the hole, or a blocking one-line decision point via `AskUserQuestion` (e.g., "this design lets a UI flip bypass the full gate — accept?") before the verdict is finalized. Disclosure without a fix or explicit user acceptance is not informed consent — approval of a plan does not surface a hole buried mid-document to the human reading it.
 <!-- DISPOSITION_RULE:plan-review-fix-or-ask end -->
 
-End with the plan file's full absolute path, then a verdict: **Approve**, **Approve with changes** (list what), or **Request changes** (list blockers).
+End with the absolute path resolved in Step 1, then a verdict: **Approve**, **Approve with changes** (list what), or **Request changes** (list blockers).
 
 ## Record review completion + deactivate
 

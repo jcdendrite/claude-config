@@ -1063,6 +1063,90 @@ class TestHandoffTaskListPersistence:
         )
 
 
+class TestHandoffMidFlightNoteUnconditional:
+    """Pin that §2.5's mid-flight note and its pre-write-checklist crosscheck fire
+    unconditionally, not only on context-limit handoffs, so a phase-complete
+    handoff can't silently strand a still-running background dispatch with no
+    record of it.
+
+    Mutation-tested: re-adding the "If the handoff reason is context-limit,"
+    gate, or dropping the collected/stranded terms, flips these assertions red.
+    """
+
+    def test_handoff_section2_5_mid_flight_note_has_no_context_limit_gate(self):
+        """§2.5's mid-flight sentence must not gate on the handoff reason, and
+        must record each named dispatch as collected or stranded — pinned as one
+        contiguous span so the two claims are proven adjacent, not merely
+        present somewhere in the file."""
+        body = _skill_file("handoff").read_text()
+        assert "If the handoff reason is context-limit," not in body
+        assert (
+            "whatever the handoff reason: open tool calls — including any "
+            "background subagent dispatch this session spawned, named by its "
+            "`agent-<agentId>` (never its full transcript path, which embeds "
+            "this session's own id) — and pending verifications (see §2.6 for "
+            "task-list state). Record each named dispatch as **collected** "
+            "(its output was folded into this handoff before writing — see "
+            "\"Before writing: collect in-flight background dispatches\" above) "
+            "or **stranded**"
+            in body
+        )
+
+    def test_handoff_prewrite_checklist_mid_flight_line_has_no_context_limit_gate(self):
+        """The pre-write checklist's mid-flight line must not gate on the
+        handoff reason either, and must reference the collected/stranded label."""
+        assert (
+            "§2.5 names what was mid-flight at the time of the handoff, "
+            "regardless of handoff reason — including any background subagent "
+            "dispatch this session spawned, by its `agent-<agentId>`, marked "
+            "collected or stranded"
+            in _skill_file("handoff").read_text()
+        )
+
+
+class TestHandoffCollectStepPinsLoadBearingClauses:
+    """Pin the "Before writing: collect in-flight background dispatches" section's
+    load-bearing clauses, so a future edit can't silently drop the
+    ListAgents-unavailable fallback, reintroduce the deprecated blocking-wait
+    path, or lose the subagent/re-fire handling without a test failing.
+
+    Mutation-tested: dropping the ListAgents-unavailable fallback clause,
+    reintroducing polling/TaskOutput, or dropping the subagent-gate or
+    repeat-block-is-expected clauses each flips a distinct assertion below red.
+    """
+
+    def test_collect_step_falls_through_to_stranded_when_listagents_unavailable(self):
+        body = _skill_file("handoff").read_text()
+        assert "## Before writing: collect in-flight background dispatches" in body
+        assert (
+            "If `ListAgents` errors or is unavailable, skip straight to "
+            "recording every not-yet-returned dispatch as stranded"
+            in body
+        )
+
+    def test_collect_step_forbids_polling_and_taskoutput(self):
+        body = _skill_file("handoff").read_text()
+        assert "do not poll and do not call `TaskOutput`" in body
+
+    def test_collect_step_states_subagents_never_reach_it_via_their_own_block(self):
+        body = _skill_file("handoff").read_text()
+        assert (
+            "a subagent never reaches it as remediation for its own hard "
+            "block, since the nudge hook's subagent gate exits before any "
+            "escalation logic runs"
+            in body
+        )
+
+    def test_collect_step_treats_a_repeat_hard_block_as_expected(self):
+        body = _skill_file("handoff").read_text()
+        assert (
+            "it is expected, not a new problem: it means this session is "
+            "still past its threshold while already following the block's "
+            "own remediation"
+            in body
+        )
+
+
 class TestModelInvokableSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
 
