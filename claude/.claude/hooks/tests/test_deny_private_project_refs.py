@@ -2304,6 +2304,53 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "The internal service lives at 10.20.30.40 in the VPC",
+            "Reproduced with the key at ~/.ssh/id_ed25519 loaded",
+            "Session data was read from /Users/alice/.claude/projects",
+            "Session 9fe9b39a-6b7e-4e0f-9a0f-96081f0a215b drove the spike",
+            "The dashboard is hosted at metrics.eng.corp for this team",
+            "Discussed in #eng-platform-alerts before filing",
+        ],
+        ids=["ipv4", "ssh_key_path", "home_rooted_path", "long_hex", "internal_hostname", "slack_channel"],
+    )
+    def test_structural_detector_in_staged_diff_denied(self, claude_config_repo, payload):
+        """Every structural detector must scan staged file content, not
+        just the command string — mirrors test_tracker_id_in_staged_diff_denied
+        for the tracker-ID detector."""
+        (claude_config_repo / "file.txt").write_text(f"first\nsecond\n// {payload}\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Generic refactor'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_removing_structural_content_from_staged_diff_is_allowed(self, claude_config_repo):
+        """A redaction commit that *removes* structural content must not be
+        blocked, mirroring test_removing_a_tracker_id_is_allowed for the
+        structural detectors' shared ADDED_LINES exclusion."""
+        (claude_config_repo / "notes.txt").write_text(
+            "The internal service lives at 10.20.30.40 in the VPC\n"
+        )
+        subprocess.run(["git", "add", "notes.txt"], cwd=claude_config_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=claude_config_repo, check=True)
+        (claude_config_repo / "notes.txt").write_text("The internal service moved.\n")
+        subprocess.run(["git", "add", "notes.txt"], cwd=claude_config_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Redact notes'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     # -- Structural scan: fail-closed on a grep engine error ----------------
 
     def test_structural_grep_engine_error_fails_closed(self, claude_config_repo, tmp_path):

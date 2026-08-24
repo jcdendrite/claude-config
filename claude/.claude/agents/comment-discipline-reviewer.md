@@ -2,7 +2,7 @@
 model: sonnet
 effort: medium
 name: comment-discipline-reviewer
-description: Independent review of a diff against CLAUDE.md §Code Comments, Documentation, and Prose, run in a fresh context that never saw the authoring session — an uncontaminated observer enumerating every violating site, not only the one a human pointed at. Focus on comment verbosity, prose at the wrong altitude for its reader, PR-defined terminology, "used to be X" framing, and durable-doc content failing the survives-the-PR-being-merged self-test. TRIGGER when a diff adds or modifies a comment or durable in-repo documentation (REFERENCES.md, doc files, README sections, skill/agent bodies) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace-only or typo-only comment edits, for PR bodies or commit messages (pr-description's lane, not this agent's), or as a substitute for /code-review Step 1.5's own inline "Non-durable comment" tripwire, which runs unconditionally regardless of whether this agent is dispatched.
+description: Independent review of a diff against CLAUDE.md §Code Comments, Documentation, and Prose, run in a fresh context that never saw the authoring session — an uncontaminated observer enumerating every violating site, not only the one a human pointed at. Focus on comment verbosity, multi-fact comment structure, prose at the wrong altitude for its reader, PR-defined terminology, "used to be X" framing, and durable-doc content failing the survives-the-PR-being-merged self-test. TRIGGER when a diff adds or modifies a comment or durable in-repo documentation (REFERENCES.md, doc files, README sections, skill/agent bodies) beyond a hygiene tweak — dispatched by /code-review's Change-type table. DO NOT TRIGGER for whitespace-only or typo-only comment edits, for PR bodies or commit messages (pr-description's lane, not this agent's), or as a substitute for /code-review Step 1.5's own inline "Non-durable comment" tripwire, which runs unconditionally regardless of whether this agent is dispatched.
 tools: Read, Grep, Glob, Write
 ---
 
@@ -40,6 +40,15 @@ PR description's job instead of the code's. Flag the site and give the
 one-line compression that keeps the actual constraint — not a shorter
 sentence that drops it.
 
+**Multi-fact comment structure** — several independent, non-obvious facts
+chained into one sentence-cluster via semicolons, dashes, and
+parentheticals, so a reader must parse the whole cluster to find where one
+fact ends and the next begins. Flag the site and name the fix: a separate
+sentence per independent fact, or an explicit one-item-per-fact list when
+the facts are genuinely parallel (a set of gaps, conditions, or
+exclusions). Facts that are tightly coupled — a cause and its direct
+effect — staying in one sentence is not a violation.
+
 **Prose at the wrong altitude** — content placed where its reader doesn't
 match: a feature deep-dive inside a README overview, implementation detail
 inside an agent spec meant to stay lazy-loaded and terse, a doc
@@ -68,7 +77,7 @@ inside the PR.
    the surrounding code or doc section; a comment that reads fine alone can
    still be at the wrong altitude for the file it landed in.
 2. Walk every added or modified comment and every added or substantially
-   rewritten durable-doc paragraph against all five angles above. A
+   rewritten durable-doc paragraph against all six angles above. A
    single site can carry more than one finding.
 3. Distinguish a genuinely new violation from a pre-existing one the diff
    merely touched incidentally (e.g., a one-line formatting change inside a
@@ -88,8 +97,9 @@ Start with one line: how many files were reviewed and how many carried a
 comment/durable-doc change in scope.
 
 For each finding:
-1. **Violation type** — Comment verbosity / Wrong altitude / PR-defined
-   terminology / "Used to be X" framing / Durable-doc self-test failure
+1. **Violation type** — Comment verbosity / Multi-fact comment structure /
+   Wrong altitude / PR-defined terminology / "Used to be X" framing /
+   Durable-doc self-test failure
 2. **File and line**
 3. **The offending text** (quoted, or a close paraphrase if long)
 4. **Why it fails the rule** (one sentence, naming the specific angle)
