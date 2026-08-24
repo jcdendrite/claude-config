@@ -79,25 +79,54 @@ not apply to any phase.
 | A9 | `plugins/skill-management/skills/skill-review/SKILL.md` has the same zero-headroom conflict as A4 (also exactly 200 lines, and Phase 6's C15 also adds content to it); resolved via the same `limit_for()` 500-line exception mechanism as A5, extended to this second file | [verified: this session's specialist review, `wc -l` = 200; the extension choice itself is unverified — same A5 scope-decision status] |
 
 **Flag to the engineer when presenting this plan:** A5 (the review-permissions
-line-cap exception, now also extended to `skill-review/SKILL.md` per A9),
-A6 (SC5's placement), and D1 (the reopened evals/-collection decision,
-flagged at its own bullet in Phase 9) are scope decisions this plan made
-rather than ones already confirmed — call them out explicitly rather than
-letting them pass as settled. Three more scope decisions to flag:
+line-cap exception, now also extended to `skill-review/SKILL.md` per A9)
+and A6 (SC5's placement) are scope decisions this plan made rather than
+ones already confirmed — call them out explicitly rather than letting them
+pass as settled.
 
-- **Phase 1 may warrant a third split.** Review findings concentrate on
-  Phase 1 across four distinct failure modes (an inline-alias bypass, a
-  new fail-closed denial mode, and two separate test-coverage holes), on
-  top of the file count and mixed review lenses the 1a/1b split already
-  acknowledges. G2 fixes the 10-bucket grouping [engineer-verified], so
-  this plan does not re-cut it unilaterally — but the phase's load-bearing
-  breadth is worth a decision rather than an assumption.
-- **Phase 9's `S103` scoping** — whether to exclude
-  `transcript-analysis.py` from the repo-wide ignore so Phase 4's S16
-  permission fix keeps CI regression protection (see Phase 9's S25 bullet).
-- **Whether Phase 9 warrants a `CHANGELOG.md` entry** — it is
-  contributor-facing rather than stow-user-facing (see "CHANGELOG
+**Resolved with the engineer at presentation** — the following four items
+were flagged as open and are now settled, [engineer-confirmed] this
+session:
+
+- **Phase 1 stays 1a/1b, no third split.** G2 fixes the 10-bucket grouping
+  [engineer-verified], so this plan does not re-cut it. Confirmed this is
+  not a deferral: all four failure modes the review findings concentrated
+  in Phase 1 (the inline-alias bypass, the bare-`&` gap, the fail-closed
+  exit-124 handling across all 4 content-bearing sites, and the
+  alias-bypass/wrapper-command test pairs for the 7 converted hooks) are
+  already fully specified with concrete fixes and required tests inside
+  Dispatch 1b above — the two Critical prerequisites additionally land as
+  their own standalone PR first per the "Exception" carve-out, which is a
+  sequencing choice, not a scope reduction. A round-4 review found the
+  Exception carve-out had no stated dispatch mechanism for producing that
+  standalone PR — fixed below at the Exception paragraph itself (a
+  two-commit sequence inside Dispatch 1b's own worktree, not an
+  undeclared third dispatch).
+- **Phase 9's `S103` scoping: keep it out of the repo-wide ignore.** A
+  round-4 security review found the originally-proposed mechanism
+  (per-file-ignores excluding `transcript-analysis.py`) doesn't work —
+  `ruff`'s `per-file-ignores` is additive-only and cannot un-suppress a
+  rule already in the top-level `ignore =` list, verified empirically
+  against `ruff 0.6.9`. Corrected mechanism: leave `S103` out of the
+  top-level `ignore =` entirely, and instead add `per-file-ignores` rows
+  for the (non-`transcript-analysis.py`) files among the 5 current `S103`
+  findings, identified at implementation time. See Phase 9's S25 bullet
+  for the full mechanism and its verification step.
+- **Phase 9 gets no `CHANGELOG.md` entry.** It is a contributor-facing
+  lint-config change with no stow-user-visible effect (see "CHANGELOG
   entries").
+- **D1 confirmed: wire in `evals/` CI collection.** Overrides the prior
+  "no CI wiring" decision recorded in
+  `.claude/plans/plan-mode-model-resolution-experiment.md:450-457` and
+  `evals/README.md:23-25`, per D1's own bullet in Phase 9. Verified this
+  session and independently re-verified by round-4 review that
+  `test_measure_subagent_model_resolution.py` makes no live Claude API
+  call — no cost concern. A round-4 review found the original mechanism
+  description understated what's required (collecting the file explicitly
+  and guarding the `evals/fixtures` collection error are both needed, not
+  alternatives) and surfaced a `staff-backend-engineer.md`/`Explore.md`
+  content-coupling risk and `evals/README.md` staleness — all corrected in
+  D1's own bullet in Phase 9.
 
 ### Branch and PR shape
 
@@ -121,8 +150,14 @@ implementation, so no phase branch carries it.
 The inline git-config-alias sentinel in `_lib_extract_git_subcmd` and the
 bare-`&` addition to `_lib_split_fragments` are specified in Dispatch 1b
 below, but they should merge as their own small PR immediately after this
-plan PR, not bundled with 1b's 7-hook conversion and S2 wraps. This plan
-publishes working invocations for both bypasses, and
+plan PR, not bundled with 1b's 7-hook conversion and S2 wraps.
+**Mechanism [engineer-confirmed]:** dispatch Dispatch 1b's `code-writer`
+into its own worktree as normal, but instruct it to make the two
+prerequisite fixes (plus their own tests) as a first commit, open and
+merge that as its own PR before continuing, then make the remaining
+1b-scope changes (7-hook conversion, `GIT_DIR` stripping, S2 wraps) as a
+second commit/PR from the same worktree — not a separate undeclared
+dispatch. This plan publishes working invocations for both bypasses, and
 `deny-pii-in-commits.sh` — whose credential-value tier is unconditional for
 every stow install (`settings.json:276` registers the hook with no `if`
 matcher) — is defeatable by them until the fix ships [verified: this
@@ -273,8 +308,11 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
     and a `\git` shell-alias escape. D10's planned test mirrors the
     persistent-alias pattern and exercises neither inline form.
 
-  Tests: one per form (`-c`, `GIT_CONFIG_KEY_*`) asserting the deny path
-  fires, plus a negative case confirming a non-alias `-c` use
+  Tests: one per form — `-c alias.x=`, `--config-env`, and
+  `GIT_CONFIG_KEY_*` each get their own case; a round-4 review found
+  `--config-env` silently absent from an earlier "one per form" phrasing
+  that only named two of the three — asserting the deny path fires for
+  each, plus a negative case confirming a non-alias `-c` use
   (`git -c core.pager=cat commit`) still resolves to `commit` rather than
   tripping the sentinel.
 - **GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE stripping** (new, closes a gap
@@ -1022,8 +1060,9 @@ revert also removes this phase's own added content.
   `"S"` to `pyproject.toml:6`'s select list, an `S101` ignore on test-glob
   paths (closes 100% of that class with no per-line judgment needed), and a
   repo-wide `ignore =` entry for the deferred non-test codes
-  (`S603,S607,S108,S105,S103,S311`). Three constraints on how those two
-  ignore entries are written:
+  (`S603,S607,S108,S105,S311` — `S103` is deliberately excluded from this
+  entry, see below). Three constraints on how those two ignore entries are
+  written:
 
   - Add the `S101` glob as a new **row inside the existing**
     `[tool.ruff.lint.per-file-ignores]` table (`pyproject.toml:12`, already
@@ -1035,15 +1074,17 @@ revert also removes this phase's own added content.
     and pointing at this plan's Out-of-Scope entry. CLAUDE.md's
     suppression-rationale rule is not satisfied by a rationale that lives
     only in a plan file.
-  - Scope `S103` narrowly if practical — see the closing note on this
-    bullet.
+  - `S103` is excluded from this repo-wide `ignore =` entry entirely — see
+    the closing note on this bullet for why and for the mechanism that
+    keeps it enforced.
 
   Both ignore entries land in this phase: without the repo-wide one, this
   phase's own commit leaves the 2,041 residual findings unsuppressed and
   breaks the CI Lint gate it is meant to fix, contradicting this plan's
   own Verification claim of no unexpected CI failure. **(b)** the
   remaining ~100-file `S603`/`S607`/
-  `S108`/`S105`/`S103`/`S311` triage (each needing a judgment call between
+  `S108`/`S105`/`S311` triage (`S103` is fully handled within this phase,
+  not deferred to (b) — see below) (each needing a judgment call between
   a real fix and replacing the blanket ignore with a per-line
   `# noqa: S... — <rationale>` per CLAUDE.md's suppression-rationale rule,
   plus a named owner to adjudicate them) is **out of scope for this
@@ -1055,11 +1096,32 @@ revert also removes this phase's own added content.
   class Phase 4's S16 hardens (`os.chmod(tmp_name, 0o600)` on the PR-cost
   ledger). Suppressing it repo-wide gives that fix zero forward regression
   protection: a later edit reintroducing loose ledger permissions passes
-  lint. Prefer scoping `S103` to a `per-file-ignores` row that excludes
-  `transcript-analysis.py`; if its residual `S103` count there makes that
-  impractical, record the exception in the Out-of-Scope entry so whoever
-  picks up (b) knows `S103` is the one deferred code with a same-plan fix
-  behind it.
+  lint.
+
+  **`S103` mechanism [engineer-confirmed]:** `ruff`'s `per-file-ignores`
+  table is additive-only — it adds suppressions on top of the top-level
+  `ignore =` list; it cannot un-suppress a rule the top-level list already
+  silences for one file [verified: this session's specialist review,
+  reproduced empirically against `ruff 0.6.9` — an `os.chmod(tmp, 0o777)`
+  call in a file named in a `per-file-ignores` "exclusion" row still
+  produced zero findings when `S103` was also in the top-level `ignore =`
+  list]. A `per-file-ignores` row naming `transcript-analysis.py` does
+  **not** preserve S16's CI protection if `S103` stays in the top-level
+  `ignore =` alongside `S603`/`S607`/etc. — do not implement it that way.
+  Instead: leave `S103` **out of** the top-level `ignore =` entry (so it
+  stays selected and enforced by default), and add `S103` to
+  `per-file-ignores` scoped only to whichever of the 5 current `S103`
+  findings are *not* in `transcript-analysis.py` — identify those file(s)
+  at implementation time via `.venv/bin/ruff check --select S103
+  claude/.claude/ plugins/` (this plan does not cite their locations, only
+  the aggregate count). This leaves `S103` enforced everywhere except the
+  named files, with `transcript-analysis.py` uncovered by any suppression
+  and therefore still protected. Add a verification step to this phase: a
+  scratch `os.chmod(tmp, 0o777)`-shaped line added temporarily to
+  `transcript-analysis.py`, confirming `ruff check --select S103` still
+  flags it post-config, then remove the scratch line — CI passing alone
+  does not prove `S103` is still enforced there, since a misconfigured
+  suppression also produces a green run.
 - **I5** (Very Low, informational, no fix needed): `dependabot.yml:7` limit
   is 3; exactly 2 actions are pinned repo-wide. Note only.
 - **D1**: `evals/test_measure_subagent_model_resolution.py` (876 lines) has
@@ -1073,22 +1135,64 @@ revert also removes this phase's own added content.
   vs. benefit for a rarely-changed parser) than item M7 (which covers the
   separate, intentionally-uncollected live script and does not apply to
   this test file); `evals/README.md:23-25` separately states the never-CI
-  posture applies equally to this test. **Flag to the engineer at
-  presentation**: implementing D1 as a CI-wiring change means overriding
-  that prior, reasoned "no" — get explicit sign-off before dispatch rather
-  than treating D1's fix as uncontested. If the engineer confirms: do not
-  add `evals/` as a bare pytest collection root — confirmed empirically
-  that doing so also sweeps in
-  `evals/fixtures/temp-project/tests/test_calculator.py`, which fails to
-  import (`ModuleNotFoundError: No module named 'calculator'`, since its
-  sibling `calculator.py` isn't on any configured `pythonpath`) and
-  aborts collection entirely (`pytest ... --collect-only` against the real
-  `pyproject.toml` returns `Interrupted: 1 error during collection`, zero
-  tests run) — breaking CI for every subsequent PR, since `tests.yml`'s
-  test step has no `|| true`. Instead, collect this one file explicitly
-  (an explicit file path in the pytest invocation, not a bare `evals/`
-  root) or add `evals/fixtures` to `norecursedirs`/an explicit `--ignore`.
-  If the engineer does not confirm, drop D1 from this phase.
+  posture applies equally to this test. **[engineer-confirmed] at
+  presentation**: implementing D1 as a CI-wiring change overrides that
+  prior, reasoned "no" — confirmed explicitly rather than treated as
+  uncontested. Also confirmed this session: the test makes no live Claude
+  API call. Its external interactions are `subprocess.run(["claude",
+  "--version"])` (stubbed via `monkeypatch` at
+  `test_measure_subagent_model_resolution.py:701-708`) and a
+  `subprocess.Popen`-based live-dispatch launcher (stubbed at the function
+  level via `monkeypatch.setattr(msmr, "_run_claude_to_completion",
+  fake_run_claude)`, line 399) — both fully intercepted, so collecting it
+  in CI carries no API cost [verified: this session and independently
+  re-verified by round-4 review]. A round-4 review also found this test
+  hard-asserts on the live, committed frontmatter content of two other
+  files (`claude/.claude/agents/staff-backend-engineer.md` and
+  `Explore.md`, via `TestAgentFrontmatterParsing` and
+  `TestGatherEnvironmentReport::test_reports_expected_keys`) — collecting
+  it in required CI means a routine frontmatter edit to either agent file
+  (e.g. re-pinning `model:`/`tools:` per the Model & Effort Routing rule)
+  now fails this test with no obvious signal that the failure is content
+  drift rather than a resolution-logic regression. Accepted as-is per the
+  test file's own docstring intent (config-loading checks against the
+  repo's real agent files); no action required, but an implementer hitting
+  this failure mode later should know it's expected coupling, not a bug in
+  either file.
+
+  **CI-wiring mechanism [engineer-confirmed]:** do not add `evals/` as a
+  bare pytest collection root — confirmed empirically that doing so also
+  sweeps in `evals/fixtures/temp-project/tests/test_calculator.py`, which
+  fails to import (`ModuleNotFoundError: No module named 'calculator'`,
+  since its sibling `calculator.py` isn't on any configured `pythonpath`)
+  and aborts collection entirely (`pytest ... --collect-only` against the
+  real `pyproject.toml` returns `Interrupted: 1 error during collection`,
+  zero tests run) — breaking CI for every subsequent PR, since
+  `tests.yml`'s test step has no `|| true`. A round-4 review found the
+  plan's original two mitigations were presented as alternatives when they
+  are not: collecting the file explicitly and guarding against the
+  `evals/fixtures` collection error are two separate, both-required steps.
+  Do both: **(1)** add `evals/test_measure_subagent_model_resolution.py`
+  as an explicit positional path in `tests.yml`'s parallel-pass `pytest`
+  invocation (line 160, the `-m "not timing"` pass — this file has no
+  `timing`-marked tests, so adding it to the serial timing-pass line 166
+  too is harmless but not required) — without this, no `pyproject.toml`
+  change alone wires anything into CI, since neither `norecursedirs` nor
+  `--ignore` adds a collection root by itself. **(2)** guard the
+  `evals/fixtures` collection-error path either via `evals/fixtures` in
+  `pyproject.toml`'s `norecursedirs` or via `--ignore=evals/fixtures` on
+  the same `tests.yml` line — required only if step (1)'s explicit path
+  doesn't already exclude `fixtures/` implicitly (confirm at
+  implementation time; both forms were verified this session to fix the
+  bare-root case, but (1) uses an explicit file path, not the bare root,
+  so re-verify whether (2) is still needed once (1) is in place). Also
+  update `evals/README.md:23-25`, which currently states the harness's
+  never-CI posture "applies equally to `measure_subagent_model_resolution.py`"
+  — add a one-line disambiguation once D1 ships: the live harness (real
+  `claude -p` subprocess, real subscription auth) still never runs in CI,
+  but this test file's own unit tests now do, fully mocked. Add this D1
+  wiring to this phase's own Verification checklist explicitly (not just
+  implied by "run every pytest command above").
 - **D7**: zero eval coverage exists for any plugin-scoped skill despite
   explicit harness support — `evals/run_skill_evals.py:107-110,252-254`
   globs `plugins/*/skills/*/evals/*-cases.json`, but no plugin skill has
@@ -1341,12 +1445,18 @@ phase's diff landing first.
   committing.
 - **Phase 9**: `.github/workflows/tests.yml` itself (push the branch and
   confirm the two-directory pip-ecosystem Dependabot config and the new
-  `ruff --select S` pass — S101 excepted via `per-file-ignores`, the
-  remaining `S603/S607/S108/S105/S103/S311` codes excepted via the
-  repo-wide `ignore =` entry — produce no unexpected CI failure);
-  `../../../.venv/bin/ruff check claude/.claude/ plugins/`; confirm
-  `plugins/lovable-cloud/.claude-plugin/plugin.json`'s version was bumped
-  for D7's new case file.
+  `ruff --select S` pass — S101 excepted via `per-file-ignores`,
+  `S603/S607/S108/S105/S311` excepted via the repo-wide `ignore =` entry,
+  and `S103` left selected repo-wide with only its non-`transcript-analysis.py`
+  site(s) excepted via `per-file-ignores` (see S25's `S103` mechanism
+  note) — produce no unexpected CI failure); `../../../.venv/bin/ruff check
+  claude/.claude/ plugins/`; the scratch `os.chmod(tmp, 0o777)` check
+  confirming `S103` still fires in `transcript-analysis.py` post-config
+  (see S25); confirm `evals/test_measure_subagent_model_resolution.py` is
+  now collected by both of `tests.yml`'s pytest passes per D1's mechanism
+  above, and that `evals/README.md`'s never-CI disambiguation was added;
+  confirm `plugins/lovable-cloud/.claude-plugin/plugin.json`'s version was
+  bumped for D7's new case file.
 - **Phase 10**: `../../../.venv/bin/pytest claude/.claude/ plugins/` (full
   suite across both collection roots — this phase edits files under
   `plugins/`: S23 → `plugins/plugin-semver/hooks/require-plugin-version-bump.sh`,
@@ -1433,11 +1543,12 @@ hook-enforced.
   test asserting raw message text still appears under `--redact` so the
   limitation is pinned as intended rather than free to drift either way.
 - Phase 9's S25 ruff-`S` triage for the ~100 non-test files carrying
-  `S603`/`S607`/`S108`/`S105`/`S103`/`S311` findings (10,547 total findings
-  minus the `S101` test-file class this plan's Phase 9 does silence) — see
-  Phase 9's rescoped S25 bullet. This needs its own scoping pass (a named
-  triage owner, a per-finding fix-vs-suppress decision) before it can land
-  as a PR-sized phase; it is not planned here.
+  `S603`/`S607`/`S108`/`S105`/`S311` findings (10,547 total findings minus
+  the `S101` test-file class this plan's Phase 9 does silence; `S103` is
+  fully handled within Phase 9, not deferred here) — see Phase 9's
+  rescoped S25 bullet. This needs its own scoping pass (a named triage
+  owner, a per-finding fix-vs-suppress decision) before it can land as a
+  PR-sized phase; it is not planned here.
 - `review-ledger.sh`'s `_sweep_stale_ledger_files` (Phase 10's SC2) —
   deliberately left out of the shared `_lib_evict_stale_state_files`
   extraction; see Phase 10's SC2 bullet for why forcing it in isn't a
