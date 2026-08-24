@@ -92,7 +92,7 @@ account enabling this for one engagement should not assume the fields are harmle
 
 ## Prose tightening pass
 
-Gate: resolve `config_dir` via the same gate `pr-cost-section.sh` enforces; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+Gate: resolve `config_dir` exactly as the Cost section's gate above; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
 
 ## Checks
 

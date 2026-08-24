@@ -52,8 +52,10 @@ so run tests and lint from a worktree via `../../../.venv/bin/pytest` and
 at a git-tracked target.**
 Never `>>`-append to files under `~/.claude/` — they're symlinks to this
 repo's tracked files, so appends silently stage to the public repo; edit the
-committed file via PR instead. Exception: gitignored runtime state (e.g.
-`.handoff-nudge.log`) isn't tracked, so appending there is safe.
+committed file via PR instead. Exception: verify a file is actually
+gitignored (e.g. `.handoff-nudge.log`) before treating it as safe to
+append to — untracked runtime state isn't staged, so appending there
+never leaks to the public repo.
 
 **Terminology:** Use "project" / "private project", not "client", in
 `claude-config` prose. The redaction hook is `deny-private-project-refs`.

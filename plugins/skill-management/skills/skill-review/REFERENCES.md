@@ -28,7 +28,10 @@ and this repo's voice rules. Trigger-fidelity evals instead run via
 stream-json detection, without using `skill-creator`'s `run_loop.py`
 optimizer or enabling the plugin — the skill set has grown to ~23 skills
 used across many independent projects, so mis-fires now happen in
-sessions the owner doesn't observe.
+sessions the owner doesn't observe. This covers it without:
+- CI security risk (local auth, no `--dangerously-skip-permissions`)
+- per-token budget (Max-plan OAuth)
+- flaky CI signal (a human-read pass-rate report, not a binary gate)
 
 **Mechanism:** per CLAUDE.md's plugin-disable policy, the
 `skill-creator@claude-plugins-official` entry is removed from

@@ -20,10 +20,11 @@ delete; `--dry-run` stays `allow` since it execs no untrusted input.
   which "skips permission prompts, except those forced by explicit `ask`
   rules."
 - Bare-name entries are accepted at global scope because `install.sh`
-  installs the script to `~/.local/bin/`; this holds only so long as
-  `~/.local/bin` precedes any project- or tool-injected PATH entry of the
-  same name (direnv, asdf/nvm shims, a project's own `./bin`) at invocation
-  time.
+  installs the script to `~/.local/bin/`. This is a plausibility argument,
+  not a guarantee of the checklist's "unshadowable" bar: it holds only so
+  long as `~/.local/bin` precedes any project- or tool-injected PATH entry
+  of the same name (direnv, asdf/nvm shims, a project's own `./bin`) at
+  invocation time.
 - That PATH-shadowing exposure is accepted, not fixed, by the `ask` move —
   it reduces the destructive form's exposure, not eliminates it.
 
