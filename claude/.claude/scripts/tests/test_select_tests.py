@@ -137,13 +137,10 @@ class TestSelectPytestTargets:
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR}
 
     def test_skill_management_hooks_and_skills_change_is_unmatched_and_falls_open(self):
-        """No DOMAIN_RULES entry matches plugins/ broadly, only
-        LOVABLE_CLOUD_DIR is scoped that way.
-
-        So a hooks/*.sh or SKILL.md change under a non-lovable-cloud plugin
-        falls open to the full suite rather than silently under-selecting.
-        This locks in that safety net for skill-management specifically.
-        """
+        """Only LOVABLE_CLOUD_DIR is broadly scoped under plugins/, so a
+        hooks/*.sh or SKILL.md change under any other plugin (here:
+        skill-management) falls open to the full suite instead of
+        silently under-selecting."""
         result = _mod.select_pytest_targets(["plugins/skill-management/hooks/require-skill-review.sh"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
@@ -350,12 +347,9 @@ class TestComputeChangedPathsGitSmoke:
 
     def test_modified_tracked_file_is_included(self, tmp_path):
         """An uncommitted modification to an already-tracked, already-pushed
-        file must show up in the computed changed-set.
-
-        Exercises `git diff --name-only HEAD`'s tracked-modification path,
-        distinct from `test_working_tree_dirty_file_is_included` below,
-        which exercises `git ls-files --others`'s untracked-file path.
-        """
+        file must appear in the changed-set — exercises `git diff
+        --name-only HEAD`'s tracked-modification path, distinct from
+        `test_working_tree_dirty_file_is_included`'s untracked-file path."""
         local, _bare = _make_repo_with_remote(tmp_path)
         hooks_dir = local / "claude" / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)
@@ -386,16 +380,13 @@ class TestComputeChangedPathsGitSmoke:
         assert "claude/.claude/scripts/new-script.py" in changed
 
     def test_non_ascii_path_falls_open_to_full_suite(self, tmp_path):
-        """git's default core.quotePath=true escapes non-ASCII path bytes in
-        --name-only output, and _run_git doesn't override it. A non-ASCII
-        changed path therefore doesn't string-match any domain predicate.
-        That's the safe direction, pinned here as intentional rather than
-        left as an unverified comment claim."""
+        """git's default core.quotePath=true escapes non-ASCII bytes in
+        --name-only output, so a non-ASCII changed path never string-matches
+        a domain predicate and falls open to the full suite."""
         local, _bare = _make_repo_with_remote(tmp_path)
-        # Pinned explicitly rather than inherited, matching _init_repo's own
-        # --initial-branch=main precedent.
-        # This test's assertion depends on core.quotePath's *default* value,
-        # not whatever the executing machine's ambient git config sets.
+        # Pinned explicitly, matching _init_repo's own --initial-branch=main
+        # precedent, so this depends on core.quotePath's default rather than
+        # the executing machine's ambient git config.
         subprocess.run(["git", "config", "core.quotePath", "true"], cwd=local, check=True)
         scripts_dir = local / "claude" / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
@@ -491,11 +482,9 @@ class TestRunGitFailureModes:
 
 class TestComputeChangedPathsFailureModes:
     """compute_changed_paths' GitDiffUnavailable branches for the dirty-diff
-    and untracked-list calls, exercised via the run= DI seam.
-
-    TestComputeChangedPathsGitSmoke's real-git fixtures cover the
-    merge-base lookup failure but not these two calls.
-    """
+    and untracked-list calls, exercised via the run= DI seam —
+    TestComputeChangedPathsGitSmoke's real-git fixtures cover only the
+    merge-base-lookup failure, not these two."""
 
     def test_dirty_diff_failure_raises_git_diff_unavailable(self, tmp_path):
         def fake_run(cmd, **kwargs):
@@ -521,11 +510,13 @@ class TestComputeChangedPathsFailureModes:
 
 
 class TestMainComposition:
-    """main()'s selection-to-invocation wiring, with compute_changed_paths
-    and run_pytest both monkeypatched so neither a real git diff nor a real
-    pytest subprocess runs."""
+    """main()'s selection-to-invocation wiring, with resolve_repo_root,
+    compute_changed_paths, and run_pytest all monkeypatched so no real git
+    diff, git rev-parse, or pytest subprocess runs."""
 
     def test_git_diff_unavailable_falls_back_to_full_suite(self, monkeypatch):
+        fake_repo_root = Path("/fake/repo/root")
+
         def fake_compute_changed_paths(repo_root):
             raise _mod.GitDiffUnavailable("stub failure")
 
@@ -533,8 +524,10 @@ class TestMainComposition:
 
         def fake_run_pytest(pytest_argv, *, cwd):
             recorded["pytest_argv"] = pytest_argv
+            recorded["cwd"] = cwd
             return 0
 
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(_mod, "compute_changed_paths", fake_compute_changed_paths)
         monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
 
@@ -542,17 +535,22 @@ class TestMainComposition:
 
         assert exit_code == 0
         assert recorded["pytest_argv"] == list(_mod.FULL_SUITE_TARGETS)
+        assert recorded["cwd"] == fake_repo_root
 
     def test_domain_selected_paths_are_passed_through_to_run_pytest(self, monkeypatch):
-        def fake_compute_changed_paths(repo_root):
-            return ["claude/.claude/scripts/mark-terminal.py"]
-
+        fake_repo_root = Path("/fake/repo/root")
         recorded = {}
+
+        def fake_compute_changed_paths(repo_root):
+            recorded["repo_root_passed_to_compute"] = repo_root
+            return ["claude/.claude/scripts/mark-terminal.py"]
 
         def fake_run_pytest(pytest_argv, *, cwd):
             recorded["pytest_argv"] = pytest_argv
+            recorded["cwd"] = cwd
             return 0
 
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
         monkeypatch.setattr(_mod, "compute_changed_paths", fake_compute_changed_paths)
         monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
 
@@ -560,3 +558,29 @@ class TestMainComposition:
 
         assert exit_code == 0
         assert recorded["pytest_argv"] == [_mod.SCRIPTS_TESTS_DIR, "-k", "foo"]
+        assert recorded["repo_root_passed_to_compute"] == fake_repo_root
+        assert recorded["cwd"] == fake_repo_root
+
+    def test_argv_none_falls_back_to_sys_argv(self, monkeypatch):
+        """main()'s real entry point (`sys.exit(main())` under
+        `__main__`) always calls it with argv=None; this pins that branch
+        since both tests above supply an explicit argv."""
+        fake_repo_root = Path("/fake/repo/root")
+        recorded = {}
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: ["claude/.claude/scripts/mark-terminal.py"],
+        )
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            recorded["pytest_argv"] = pytest_argv
+            return 0
+
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+        monkeypatch.setattr(sys, "argv", ["select-tests.py", "-k", "bar"])
+
+        exit_code = _mod.main(None)
+
+        assert exit_code == 0
+        assert recorded["pytest_argv"] == [_mod.SCRIPTS_TESTS_DIR, "-k", "bar"]

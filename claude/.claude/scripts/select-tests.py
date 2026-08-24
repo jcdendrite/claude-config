@@ -48,15 +48,17 @@ TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_an
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 
 # test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
-# by path, not by import — the same undeclared-dependency shape as
-# TRANSCRIPT_ANALYSIS_TEST_GLOB. Only lovable-cloud needs an explicit
-# exception, because it's the only plugin whose DOMAIN_RULES entry is broad
-# enough to otherwise claim this path ahead of the unmatched-path fallback.
+# by path, not by import.
+# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB.
+# Only lovable-cloud needs an explicit exception, because its DOMAIN_RULES
+# entry is the only one broad enough to otherwise claim this path ahead of
+# the unmatched-path fallback.
 LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.json"
 
-# check-handoff.py hardcodes this path and test_check_handoff.py reads it
-# directly by path, not by import — the same undeclared-dependency shape as
-# TRANSCRIPT_ANALYSIS_TEST_GLOB and LOVABLE_CLOUD_PLUGIN_MANIFEST.
+# check-handoff.py hardcodes this path.
+# test_check_handoff.py reads it directly by path, not by import.
+# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB and
+# LOVABLE_CLOUD_PLUGIN_MANIFEST.
 HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
 
 # Matches CI's own collectible pytest scope verbatim (see
@@ -221,9 +223,12 @@ def resolve_repo_root(*, cwd: Path, run=subprocess.run) -> Path:
 def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
     """Return the sorted union of every path changed on HEAD since
     diverging from origin/main plus every dirty or untracked working-tree
-    path, relative to repo_root. Raises GitDiffUnavailable if any of the
-    underlying git calls fails (most commonly: no origin/main to diverge
-    from, e.g. a detached HEAD with no origin remote configured)."""
+    path, relative to repo_root.
+
+    Raises GitDiffUnavailable if any underlying git call fails. Most
+    commonly: a detached HEAD with no origin remote configured, so
+    origin/main can't be found.
+    """
     merge_base_output = _run_git(["merge-base", "HEAD", "origin/main"], cwd=repo_root, run=run)
     if merge_base_output is None or not merge_base_output.strip():
         raise GitDiffUnavailable("could not resolve merge-base against origin/main")
@@ -250,9 +255,11 @@ def compute_changed_paths(repo_root: Path, *, run=subprocess.run) -> list[str]:
 
 
 def _expand_target(target: str, *, repo_root: Path) -> list[str]:
-    """A plain directory/file target passes through unchanged; a
-    glob-pattern target (e.g. TRANSCRIPT_ANALYSIS_TEST_GLOB) expands to its
-    concrete repo-root-relative matches, sorted for deterministic argv."""
+    """A plain directory/file target passes through unchanged.
+
+    A glob-pattern target (e.g. TRANSCRIPT_ANALYSIS_TEST_GLOB) expands to
+    its concrete repo-root-relative matches, sorted for deterministic argv.
+    """
     if "*" not in target:
         return [target]
     return sorted(str(match.relative_to(repo_root)) for match in repo_root.glob(target))
