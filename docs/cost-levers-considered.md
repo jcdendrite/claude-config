@@ -284,11 +284,11 @@ Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/c
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Relocate hook-backed and doc-backed rationale out of the two always-loaded `CLAUDE.md` files onto surfaces that load only when the content's own trigger fires (`.claude/rules/`, `pr-description/SKILL.md`) — root `CLAUDE.md` | Adopted; landed on target | Root `CLAUDE.md`: 182 lines / 13,061 chars → 137 lines / 8,376 chars (-45 lines / -4,685 chars), matching the plan's projection. Four items (marker-mechanism sentence, settings.json/skill-authoring conventions, PR-merge pointer, redaction-section trim) relocated as scoped. |
-| Same relocation — global `claude/.claude/CLAUDE.md` | Adopted; net landed larger than projected | Global `claude/.claude/CLAUDE.md`: 141 lines / 27,332 chars (this plan's stated baseline) → 145 lines / 27,879 chars (+4 lines / +547 chars net, the opposite of the projected cut). See breakdown below. |
+| Same relocation — global `claude/.claude/CLAUDE.md` | Adopted; net landed larger than projected | Global `claude/.claude/CLAUDE.md`: 141 lines / 27,332 chars (this plan's stated baseline) → 146 lines / 28,450 chars (+5 lines / +1,118 chars net, the opposite of the projected cut). See breakdown below. |
 
 Breakdown for the global-file row above:
 
-- Unrelated intervening commits grew the file +9 lines / +776 chars between the plan's baseline measurement and implementation (150 lines / 28,108 chars immediately before the relocation began).
+- Unrelated intervening commits grew the file +10 lines / +1,347 chars between the plan's baseline measurement and implementation (151 lines / 28,679 chars immediately before the relocation began).
 - The relocation's own cuts against that pre-relocation state undershot the estimate (-5 lines / -229 chars).
 - The marker-mechanism sentence's cut was dropped entirely: a pinned test in `claude/.claude/skills/tests/test_skills.py` asserts that sentence survives verbatim.
 - The "Ground every choice" category-6 bullet's ticket-prose coverage was kept rather than deleted, since no other skill picks up that surface.
