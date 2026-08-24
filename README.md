@@ -508,6 +508,14 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 
+For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree, then maps each changed path to its test domain. Any change it can't map with confidence falls back to running the full suite:
+
+```bash
+.venv/bin/python3 claude/.claude/scripts/select-tests.py
+```
+
+Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is an additional, opt-in convenience, not a replacement for the full-run command above — CI always runs the whole suite regardless.
+
 ## Acknowledgments
 
 Heavy reliance on official Anthropic documentation throughout: [Claude Code docs](https://code.claude.com/docs/en/), [permission modes reference](https://code.claude.com/docs/en/permission-modes), [auto-mode engineering deep dive](https://www.anthropic.com/engineering/claude-code-auto-mode), [skill best practices](https://code.claude.com/docs/en/skill-best-practices), and [Claude Code best practices](https://code.claude.com/docs/en/best-practices). Stow distribution pattern inspired by the GNU Stow community.
