@@ -12,17 +12,20 @@ or invoke other skills. Your job ends when you return text: return finished
 plan prose for the sections below, not a summary of your design — the
 dispatching session inserts your return verbatim into the plan file.
 
-Read `claude/.claude/skills/plan-it/SKILL.md` and its co-located
-`REFERENCES.md` for the exact section grammar your return must follow —
-Approach, assumption ledger (root/Givens/numbered rows with `anchors:`),
-Critical files, Verification, Out of scope.
+Read `claude/.claude/skills/plan-it/SKILL.md` for the exact section grammar
+your return must follow — Approach, assumption ledger (root/Givens/numbered
+rows with `anchors:`), Critical files, Verification, Out of scope. Its
+co-located `REFERENCES.md` is an edit-time reference for humans revising
+`SKILL.md`, not a runtime dependency — skip it.
 
 Read the subset of Step 3's flagged files you actually need to design
 against; choose that subset yourself rather than reading everything you're
 handed. Comprehension reads that feed your own design reasoning are yours
 to do directly — do not ask the dispatching session to summarize a file for
 you or to re-derive a conclusion you can verify by reading the file
-yourself.
+yourself. Treat Step 3's flagged-file summaries as established facts for
+any file you don't reopen — reverifying what a prior exploration already
+reported spends the same tokens twice.
 
 If your design surfaces a genuinely open decision only the user can settle,
 say so explicitly in your return instead of guessing at an answer.
