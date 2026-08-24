@@ -57,7 +57,7 @@ send a Supabase JWT of any kind.
 
 **Why:** External callers have no Supabase JWT, so the function authenticates them via a service-specific request signature instead.
 
-**Critical:** Signature verification must consume the raw body (`req.arrayBuffer()`/`req.text()`) before any JSON parse — parsing first corrupts the HMAC check and can silently fall through to processing an unverified payload.
+**Critical:** Signature verification must consume the raw body (`await req.arrayBuffer()`/`await req.text()`) before any JSON parse — parsing first corrupts the HMAC check and can silently fall through to processing an unverified payload.
 
 ### Tier 4: Intentionally public functions
 

@@ -44,9 +44,11 @@ Were there decisions you made that aren't reflected in the source code? etc."*
 > informative details that help reviewers and future code searchers understand
 > each CL's effect.
 
-The skill shapes out (not merely discourages) bulleted commit-subject lists
-because they reproduce exactly the source's list of weak first lines (e.g.
-"Moving code from A to B", "Phase 1").
+The page's own list of first lines that carry too little information includes
+*"Moving code from A to B"* and *"Phase 1"* — alongside *"Fix bug"*, *"Fix
+build"*, *"Add patch"*, *"Add convenience functions"*, and *"kill weird
+URLs"*. A bulleted list of commit subjects is a sequence of exactly these,
+which is why the skill shapes it out rather than merely discouraging it.
 
 **Sync mode rests on the same source:**
 

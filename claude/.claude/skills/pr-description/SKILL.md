@@ -167,14 +167,15 @@ keeps concurrent runs in sibling worktrees from colliding, and the prefix
 makes the file identifiable to whoever meets it later — then populate it with
 the **`Write` tool**.
 
-Author the body with the Write tool, not a shell heredoc — an unquoted
+Author the body with the Write tool, not a shell heredoc. An unquoted
 `<<EOF` parses embedded backticks/`$(...)` as command substitution exactly
-like `--body "$(cat <<EOF)"` does, so use `<<'EOF'` if a heredoc is
-unavoidable.
+like `--body "$(cat <<EOF)"` does — writing to a file does not by itself
+escape that. Use `<<'EOF'` if a heredoc is unavoidable.
 
-Write backticks literally — a backslash-escaped backtick survives into the
-body unconsumed and breaks GitHub's code-span rendering, whether authored via
-Write tool or heredoc.
+**Never write `` \` ``** to "escape" a backtick — nothing consumes a
+backslash before a backtick, so it survives into the body unconsumed.
+This breaks GitHub's code-span rendering, whether authored via Write
+tool or heredoc.
 
 Then, by mode:
 

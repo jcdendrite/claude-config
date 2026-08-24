@@ -44,7 +44,9 @@ reviewer returns must appear in the rendered output") is plan-review's
 counterpart to `code-review/SKILL.md`'s Finding disposition step ("walk
 *every* reviewer-spawned finding and tag it ADDRESS or DEFER"). Unlike
 code-review's ADDRESS/DEFER disposition, plan-review's requirement only
-guarantees every finding is enumerated — reconciliation (ROUTING.md) already
+guarantees every finding is enumerated. The gap this closes is a finding
+going unlisted, not a missing taxonomy. A taxonomy would be a heavier
+mechanism than that gap requires. Reconciliation (ROUTING.md) already
 covers *how* two attributed findings merge into one entry, so this
 requirement only guarantees the merged or standalone entry is present at
 all.

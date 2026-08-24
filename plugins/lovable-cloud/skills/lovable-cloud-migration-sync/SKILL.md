@@ -127,7 +127,7 @@ slug-named file instead, then wait for Lovable to re-emit.
 git rm supabase/migrations/ORIGINAL_1.sql supabase/migrations/ORIGINAL_2.sql ...
 ```
 
-Never manually restore a deleted emit — re-adding it by hand races Lovable's re-emit and produces duplicate UUID files; if deleted in error, delete the human original instead and let Lovable re-emit.
+Never manually restore a deleted emit. Re-adding it by hand races Lovable's own re-emit and produces duplicate UUID files. If an emit was deleted in error, delete the human original instead and let Lovable re-emit on its own.
 
 ### 7. Commit and PR
 

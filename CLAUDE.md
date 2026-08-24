@@ -52,7 +52,8 @@ never leaks to the public repo.
 name and matcher; do not rely solely on settings.json `if` conditions.
 
 **Should this be a hook?** When the user asks for automated/recurring
-behavior ("whenever X…", "each time X…"), configure a hook in
+behavior ("from now on when X…", "whenever X…", "each time X…",
+"before/after X…"), configure a hook in
 `.claude/settings.json` — memory and skill instructions cannot fulfill an
 automatic-trigger request. Route to `claude-hook-review` for hook design and
 review.

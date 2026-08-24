@@ -26,9 +26,9 @@ Invoke `transcript-narrative` and `transcript-analysis` by name — do not resta
 - `transcript-narrative` produces the annotated per-phase timeline and a first pass of ranked lessons.
 - `transcript-analysis` produces the quantitative appendix (`fail-seq`, `review-trace`, `duration`, `subagents`, `pr-link`).
 
-`review-trace` locates every skill invocation, hook denial, and reviewer-agent spawn per session — the primary evidence source for Step 4.
+`review-trace` locates every skill invocation, hook denial, and reviewer-agent spawn per session — exactly the Pipeline working and Post-commit bot evidence Step 4 needs.
 
-`user-input --corrections-only` pulls verbatim FOLLOWUP/EXPLICIT_CORRECTION prompts for Step 4's Human-unique and Cross-session buckets, skipping a manual transcript re-read.
+`user-input --corrections-only` pulls verbatim FOLLOWUP/EXPLICIT_CORRECTION prompts for Step 4's Human-unique and Cross-session process buckets, skipping a manual transcript re-read.
 
 ## Step 3 — Collect PR review comments
 
@@ -50,7 +50,7 @@ query($owner:String!, $repo:String!, $pr:Int!) {
 }'
 ```
 
-Compare each `totalCount` to its returned node count; re-run the query with `after:"<endCursor>"` only on connections still short. `reviewThreads.comments` carries its own `totalCount`/`pageInfo` per thread, one level below the top-level cursor — a thread over 100 comments needs this same after-cursor merge applied to that one thread alone. Never use `--paginate` on this GraphQL query — it shares one cursor across all three connections, so it can silently truncate `reviewThreads` while exiting 0; this doesn't extend to `respond-pr`'s three separate REST `--paginate` calls, each of which follows its own response `Link` header and is unaffected.
+Compare each `totalCount` to its returned node count; re-run the query with `after:"<endCursor>"` only on connections still short — a re-queried short connection returns the same first page, not new data, so merge in only the connections you added the cursor to. `reviewThreads.comments` carries its own `totalCount`/`pageInfo` per thread, one level below the top-level cursor — a thread over 100 comments needs this same after-cursor merge applied to that one thread alone. Never use `--paginate` on this GraphQL query — it shares one cursor across all three connections, so it can silently truncate `reviewThreads` while exiting 0; this doesn't extend to `respond-pr`'s three separate REST `--paginate` calls, each of which follows its own response `Link` header and is unaffected.
 
 Skip reviews whose `body` is empty — a bare approval carries no finding to correlate.
 

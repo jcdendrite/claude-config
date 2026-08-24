@@ -33,22 +33,22 @@ claude-config repo — re-confirm there if precision matters.
   for the attacker-controlled field list and GitHub's remediation guidance).
 - **`pull_request_target` and `workflow_run` run with base-repo write access
   and secrets in context**, including for `workflow_run` when triggered by
-  an untrusted fork PR run — never check out or execute code from the
+  an untrusted fork PR run. Never check out or execute code from the
   triggering ref or its inputs (uploaded artifacts,
-  `github.event.workflow_run.*`) under these events; use `pull_request` for
+  `github.event.workflow_run.*`) under these events — use `pull_request` for
   untrusted contributions instead (citation: docs/rules-references.md).
 - **When authenticating to a cloud provider, prefer OIDC over long-lived
   secrets** — but a repo-only OIDC trust condition still grants every
   branch, tag, and PR in that repo, so pin the narrowest subject the job
   needs (e.g. `repo:ORG/REPO:environment:NAME` or
   `repo:ORG/REPO:ref:refs/heads/BRANCH`; citation: docs/rules-references.md).
-- **Give every job a real `timeout-minutes` budget** — the 360-minute
-  default applies regardless of runner type, but the platform backstop that
-  would otherwise catch a too-high explicit value differs 20x: GitHub-hosted
+- **Give every job a real `timeout-minutes` budget.** The 360-minute default
+  applies regardless of runner type. The platform backstop that would
+  otherwise catch a too-high explicit value differs 20x: GitHub-hosted
   execution is capped at 6h no matter what you set, while self-hosted is
-  capped at 5 days, so it's a too-high value on a self-hosted job — not an
-  unset one — that leaves the runner (and its credentials) exposed for days
-  if the job runs away.
+  capped at 5 days. On self-hosted, it's a too-high value — not an unset
+  one — that leaves the runner (and its credentials) exposed for days if
+  the job runs away.
 - **`concurrency:` with `cancel-in-progress: true` for PR/feature-branch
   validation only** — not for deploy or push-to-default-branch workflows,
   where cancelling mid-run risks leaving a deploy or release partially applied.

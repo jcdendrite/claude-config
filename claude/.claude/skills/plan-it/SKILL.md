@@ -36,7 +36,7 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 Find similar features, the target subsystem, and integration points. Spawn `general-purpose` subagents in parallel when scope warrants — judge fan-out from surface area, do not default to a fixed count. Pass an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule. Read the files each subagent flags before designing. Do not use `Explore` here; its read-excerpt window is wrong for design-context analysis.
 
-**Pattern claims require a grep, not a single example.** Before calling a shape "canonical," "the existing pattern," or "how the codebase does X," grep and cite call-site counts (e.g., "12 of 13 modules use form X; exception at `path/to/file:NN`") rather than a single example.
+**Pattern claims require a grep, not a single example.** Before calling a shape "canonical," "the existing pattern," or "how the codebase does X," run `git grep` (or ripgrep) and cite call-site counts (e.g., "12 of 13 modules use form X; exception at `path/to/file:NN`") rather than a single example.
 
 **If the task is a debugging or root-cause investigation** (fixing a reported bug or incident rather than building a new feature), consult `root-cause-analysis` before exploring — establish the full symptom and verify your tools fully ingested their input before forming any hypothesis.
 
@@ -48,7 +48,7 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 
 Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
-**External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — a paraphrase or bare pattern name risks crystallizing a wrong interpretation.
+**External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — not a paraphrase, not a summary, not the section heading. A bare pattern name risks crystallizing a wrong interpretation.
 
 **Name the dispatch split.** Implementation of an approved plan is
 delegated to `code-writer` per phase by default (`subagent-delegation`);
@@ -70,7 +70,7 @@ other's.
 
 **Assumption ledger.** The Approach section carries a structured ledger — recording what was checked and what wasn't, so a later revision can be diffed against it instead of silently drifting from a fact the session already established:
 - **One root problem/threat line** stating what the plan solves, followed by the **givens** it accepts — conditions the design treats as fixed that lie beyond its own reach. Each carries a one-sentence reason: another party owns it, a vendor or protocol imposes it, or dissolving the design's dependence on it needs a decision outside this plan. "The engineer decided it" is not such a reason — tag that `[engineer-verified]` on its own row. A condition the plan *could* change but deliberately won't is not a given — record it in **Out of scope** with its reason. A given with no qualifying reason is an untested premise, and `plan-review` Step 4 fires on it.
-- **Per mechanism:** a one-line justification anchored to `anchors: root` or `anchors: row<N>`, so completeness is a real parse, not another judgment call. This is where the over-powered-primitive check lives: if a mechanism is heavier, more privileged, or wider-scope than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — enumerate at least two lighter primitives from the source documentation/system and justify in one sentence why each fails, anchored to the row it replaces; fewer than two found means re-read the source before continuing.
+- **Per mechanism:** a one-line justification anchored to `anchors: root` or `anchors: row<N>`, so completeness is a real parse, not another judgment call. This is where the over-powered-primitive check lives: if a mechanism is heavier, more privileged, or wider-scope than the task requires — a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration — enumerate at least two lighter primitives from the source documentation/system and justify in one sentence why each fails, anchored to the row it replaces; fewer than two found means re-read the source with the specific question "what mechanisms exist that do NOT require this heavier choice?" before continuing.
 - **Every material assumption gets its own row, tagged:**
   - `[verified: <source>]` — checked against code/docs this session, source citable — and prose describing a restriction is not evidence about behavior, so when the claim is what a tool or path can reach, run it and cite the result.
   - `[unverified]` — asserted, load-bearing, not checked; anything downstream inherits the flag.

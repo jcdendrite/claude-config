@@ -12,8 +12,8 @@ Sources verified against Docker's official docs (2026-07): "Best practices for
 building images" and the BuildKit "Build secrets" guide.
 
 - **Pin the base image by digest, not a floating tag** — tags are mutable
-  (Docker docs) — and pair the pin with an automated digest-refresh (e.g.
-  Renovate/Dependabot) since a frozen digest silently misses upstream
+  (Docker docs). Pair the pin with an automated digest-refresh (e.g.
+  Renovate/Dependabot), since a frozen digest silently misses upstream
   security rebuilds.
 - **Run as a non-root `USER`.** Docker: "If a service can run without
   privileges, use `USER` to change to a non-root user," and avoid installing

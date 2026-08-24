@@ -121,4 +121,4 @@ If `git status` shows `MERGING`, `REBASING`, `CHERRY-PICKING`, or any `UU` / `DU
 - `test -d "$(git rev-parse --git-path rebase-apply)"` — active apply-based rebase
 - `test -e "$(git rev-parse --git-path CHERRY_PICK_HEAD)"` — active cherry-pick
 
-The reflog retains every ref movement for 90 days (`gc.reflogExpire`) — recover an accidental `reset --hard` via `git reset --hard HEAD@{1}` before `git gc` reaps the orphaned commits.
+`git reflog` retains every ref movement for 90 days (`gc.reflogExpire`) — recover an accidental `reset --hard` via `git reset --hard HEAD@{1}` before `git gc` reaps the orphaned commits.

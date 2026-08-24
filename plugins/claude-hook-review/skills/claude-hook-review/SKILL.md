@@ -37,12 +37,15 @@ New gate hooks must follow the canonical pattern in Section 4 (`_lib_parse_tool_
 <!-- HOOK_SCRIPT_CONTENT_EXAMPLE: this fenced block documents a hook script's own file content — never typed into an agent's Bash tool. test_skills.py's Trigger-A regression scan (see docs/worktree-bash-guard.md) excludes it by this comment. -->
 ```bash
 #!/bin/bash
-set -uo pipefail   # -e intentionally omitted: hook checks exit codes explicitly rather than aborting; use this pattern in new gates.
+set -uo pipefail
+# -e intentionally omitted: hook checks exit codes explicitly rather than aborting.
+# Use this pattern in new gates.
 
 emit_deny() {
   local reason="$1"
   local reason_json
-  # Defined before sourcing _lib.sh so a failed source can still deny; use _lib_jq over jq when available for its timeout backstop.
+  # Defined before sourcing _lib.sh so a failed source can still deny.
+  # Use _lib_jq over jq when available for its timeout backstop.
   if declare -F _lib_jq >/dev/null 2>&1; then
     reason_json=$(printf '%s' "$reason" | _lib_jq -Rs . 2>/dev/null)
   else
