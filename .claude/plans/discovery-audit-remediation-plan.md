@@ -294,7 +294,7 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   Fix at the helper, not per-hook: make `_lib_extract_git_subcmd` treat an
   inline alias definition as unresolvable, returning a sentinel the callers
   treat as the gated verb (fail closed), since the hook cannot know what the
-  alias expands to. Three details:
+  alias expands to. Four details:
 
   - Two syntactic forms reach this: `-c alias.x=` / `--config-env`, and a
     `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` / `GIT_CONFIG_COUNT`
@@ -307,14 +307,27 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   - Distinct from S13's residual below, which is a *persistent* git alias
     and a `\git` shell-alias escape. D10's planned test mirrors the
     persistent-alias pattern and exercises neither inline form.
+  - **Sentinel design [verified: this session's specialist review]:** all 8
+    current/soon-current shared-trio callers compare the extracted
+    subcommand against the literal string `"commit"` only, so a helper that
+    returns the literal `"commit"` on an unresolvable inline alias closes
+    the bypass for every caller today — but this only holds because no
+    caller yet gates on a different verb; an empty-string sentinel (the
+    helper's existing "nothing found" return) would fail *open* against any
+    `[ "$subcmd" = "<verb>" ]` check. Document this as a `"commit"`-specific
+    assumption in the helper's own comment, requiring re-verification
+    before the shared trio gates any non-`commit` verb, rather than leaving
+    the choice implicit.
 
   Tests: one per form — `-c alias.x=`, `--config-env`, and
-  `GIT_CONFIG_KEY_*` each get their own case; a round-4 review found
-  `--config-env` silently absent from an earlier "one per form" phrasing
-  that only named two of the three — asserting the deny path fires for
-  each, plus a negative case confirming a non-alias `-c` use
+  `GIT_CONFIG_KEY_*` each get their own case, asserting the deny path fires
+  for each, plus a negative case confirming a non-alias `-c` use
   (`git -c core.pager=cat commit`) still resolves to `commit` rather than
-  tripping the sentinel.
+  tripping the sentinel. Add one further case with the trio wired to a
+  non-`commit` target verb exercising the alias-bypass path, so the
+  `"commit"`-specific sentinel assumption above has regression coverage
+  rather than depending on every future caller happening to also gate on
+  `commit`.
 - **GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE stripping** (new, closes a gap
   this phase's own "audit structural siblings" rationale otherwise leaves
   open): three sibling hooks already establish this idiom —
@@ -324,76 +337,86 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   GIT_DIR / GIT_WORK_TREE env overrides"). None of the ~12 hooks this phase
   touches unset these vars, so an ambient `GIT_DIR` (a poisoned shell rc or
   CI env var) could redirect their `git rev-parse`/`diff --cached`/`show`
-  calls at a different repo/index, defeating the guard itself. Fix at the
-  single choke point every wrapped call passes through: add `unset GIT_DIR
-  GIT_WORK_TREE GIT_INDEX_FILE` inside `_lib_capped_for` (`_lib.sh:38-48`,
-  before the `command -v`/exec dispatch) — every hook using
-  `_lib_capped`/`_lib_jq`, present or future, gets this defense automatically
-  instead of needing it re-added per file. `require-npm-version-bump.sh`
-  and `require-plugin-version-bump.sh` (both touched by the
-  regex→shared-trio swap below) make their git calls directly, bare, with
-  no `_lib_capped`/`_lib_jq` wrapper at all — their own plugin `_lib.sh`
-  copies explicitly state "No git helpers," so this choke-point fix never
-  reaches their ~20 `git rev-parse`/`merge-base`/`diff --cached`/`show`/
-  `cat-file` call sites. Add the same `unset GIT_DIR GIT_WORK_TREE
-  GIT_INDEX_FILE` to each plugin's own `_lib.sh`
-  (`plugins/npm-semver/hooks/_lib.sh`,
-  `plugins/plugin-semver/hooks/_lib.sh`), not duplicated inline in either
-  hook's body — each `_lib.sh` is already sourced before any hook-body git
-  call runs (both hooks already reuse it for `_lib_jq`), so this is a
-  strictly better placement than hook-body logic: it can't be skipped by
-  a call landing before the unset by accident, and it automatically covers
-  any future hook added to either plugin, matching this phase's own
-  choke-point rationale for `_lib_capped_for` above instead of
+  calls at a different repo/index, defeating the guard itself.
+
+  Fix at the single choke point every wrapped call passes through: add
+  `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` inside `_lib_capped_for`
+  (`_lib.sh:38-48`, before the `command -v`/exec dispatch) — every hook
+  using `_lib_capped`/`_lib_jq`, present or future, gets this defense
+  automatically instead of needing it re-added per file.
+
+  Three plugin `_lib.sh` copies make their hooks' git calls directly, bare,
+  with no `_lib_capped`/`_lib_jq` wrapper at all, so the choke-point fix
+  above never reaches them, and each explicitly states "No git helpers"
+  [verified: this session's specialist review]:
+  `plugins/npm-semver/hooks/_lib.sh` and
+  `plugins/plugin-semver/hooks/_lib.sh` (both touched by the
+  regex→shared-trio swap below, ~20 `git rev-parse`/`merge-base`/
+  `diff --cached`/`show`/`cat-file` call sites between them), and
+  `plugins/skill-management/hooks/_lib.sh`
+  (`require-skill-review.sh` makes 7 bare `git -C "$REPO_ROOT" ...` calls
+  at the lines this phase's own S2 bulk-wrap list already names for this
+  file). Add the same `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` to all
+  three plugins' own `_lib.sh` files, not duplicated inline in any hook's
+  body.
+
+  Each `_lib.sh` is already sourced before any hook-body git call runs (all
+  three hooks already reuse it for `_lib_jq`), so this placement is
+  strictly better than hook-body logic: it can't be skipped by a call
+  landing before the unset by accident, and it automatically covers any
+  future hook added to any of the three plugins — matching this phase's
+  own choke-point rationale for `_lib_capped_for` above instead of
   reintroducing the idiom-sprawl failure mode (SC1/S14) this phase exists
-  to close. Add a regression test for both the `_lib_capped_for` choke
-  point and each plugin's `_lib.sh` addition, asserting an ambient
+  to close. Add a regression test for the `_lib_capped_for` choke point and
+  each of the three plugins' `_lib.sh` additions, asserting an ambient
   `GIT_DIR` pointing at a different repo does not redirect the wrapped
   call.
 - **Content-bearing sites need exit-status-aware handling, not a bare wrap**
   (new — distinguishes these from the mechanical S2 wraps below): 4 of
-  S2's sites read full diff *content*, not cheap metadata (named
-  individually below), and all four have a **fail-open bug** if wrapped
-  naively (three share one gate shape, the fourth reaches the same bug
-  through an inverted one — see below). `require-code-review.sh`'s empty-diff
-  gate check (currently ~line 85: `if [ -z "$(git -C "$REPO_ROOT" diff
-  --cached 2>/dev/null)" ]; then exit 0; fi` — [verified: this session,
-  read directly]) decides whether the code-review gate applies at all. If
-  this call is wrapped in `_lib_capped` and a legitimately large staged
-  diff exceeds the 5s cap, `timeout` SIGTERMs the process, stdout comes
-  back empty, and the `-z` check reads that as "nothing staged" — silently
-  skipping the gate for exactly the large-diff case most needing review,
-  the opposite of this same file's own "fail closed" comment two blocks
-  later. `require-skill-review.sh` has the identical pattern at its own
-  empty-diff check (~line 116, confirmed byte-identical this session).
-  `deny-private-project-refs.sh:454`'s unrestricted `git diff --cached --
-  ':(top,exclude)...'` is a fourth content-bearing read, but its gate is
-  shaped differently: the result is captured into `$STAGED_DIFF`, then
-  gated by `if [ -n "$STAGED_DIFF" ]; then ... fi` (lines 455-494) — a
-  presence check guarding the scan, not the `-z ... exit 0` early-return
-  the other three share [verified: this session, read directly]. Line
-  489's own comment documents that an empty `$STAGED_DIFF` skips adding
-  *both* the diff and the raw command string to the scan target, "to
-  preserve historical behavior" for the true-empty case — but a
-  `_lib_capped` timeout produces the same empty string, so it silently
-  skips scanning inline command content too, not just the diff. For the
-  first three sites: do not leave the current one-line
-  `if [ -z "$(git ... 2>/dev/null)" ]; then exit 0; fi` shape intact with
-  `_lib_capped` merely substituted inside it — that shape discards the
-  wrapped command's own exit status entirely (`$?` after the `if` reflects
-  `[`'s result, never `124`), silently reproducing the exact fail-open bug
-  this fix exists to close. Use the explicit two-statement form instead:
-  `OUT=$(_lib_capped git ...); RC=$?; [ "$RC" = 124 ] && { echo "..." >&2;
-  exit 1; }; [ -z "$OUT" ] && exit 0` (deny/error on `124` before the
-  empty-string check ever runs). For the fourth site
-  (`deny-private-project-refs.sh:454`), apply the same RC-before-emptiness
-  discipline adapted to its own shape: immediately after
-  `STAGED_DIFF=$(_lib_capped git diff --cached -- ...)`, check `RC=$?; [
-  "$RC" = 124 ] && { echo "..." >&2; exit 1; }` before the existing `if [
-  -n "$STAGED_DIFF" ]` runs, so a timeout denies instead of silently
-  taking the same branch as "nothing staged". Add a regression test per
-  site (all four) using the `fake_git sleep`-shim pattern already
-  established in `test_deny_pii_in_commits.py:218-242`
+  S2's sites read full diff *content*, not cheap metadata, and all four
+  have a **fail-open bug** if wrapped naively — three share one gate shape,
+  the fourth reaches the same bug through an inverted one.
+
+  - `require-code-review.sh`'s empty-diff gate check (currently ~line 85:
+    `if [ -z "$(git -C "$REPO_ROOT" diff --cached 2>/dev/null)" ]; then
+    exit 0; fi` — [verified: this session, read directly]) decides whether
+    the code-review gate applies at all. If this call is wrapped in
+    `_lib_capped` and a legitimately large staged diff exceeds the 5s cap,
+    `timeout` SIGTERMs the process, stdout comes back empty, and the `-z`
+    check reads that as "nothing staged" — silently skipping the gate for
+    exactly the large-diff case most needing review, the opposite of this
+    same file's own "fail closed" comment two blocks later.
+  - `require-skill-review.sh` has the identical pattern at its own
+    empty-diff check (~line 116, confirmed byte-identical this session).
+  - For both of the above: do not leave the current one-line
+    `if [ -z "$(git ... 2>/dev/null)" ]; then exit 0; fi` shape intact with
+    `_lib_capped` merely substituted inside it — that shape discards the
+    wrapped command's own exit status entirely (`$?` after the `if`
+    reflects `[`'s result, never `124`), silently reproducing the exact
+    fail-open bug this fix exists to close. Use the explicit two-statement
+    form instead: `OUT=$(_lib_capped git ...); RC=$?; [ "$RC" = 124 ] && {
+    echo "..." >&2; exit 1; }; [ -z "$OUT" ] && exit 0` (deny/error on
+    `124` before the empty-string check ever runs).
+  - `deny-private-project-refs.sh:454`'s unrestricted `git diff --cached --
+    ':(top,exclude)...'` is the fourth content-bearing read, but its gate
+    is shaped differently: the result is captured into `$STAGED_DIFF`,
+    then gated by `if [ -n "$STAGED_DIFF" ]; then ... fi` (lines 455-494)
+    — a presence check guarding the scan, not the `-z ... exit 0`
+    early-return the other sites share [verified: this session, read
+    directly]. Line 489's own comment documents that an empty
+    `$STAGED_DIFF` skips adding *both* the diff and the raw command string
+    to the scan target, "to preserve historical behavior" for the
+    true-empty case — but a `_lib_capped` timeout produces the same empty
+    string, so it silently skips scanning inline command content too, not
+    just the diff. Apply the same RC-before-emptiness discipline adapted
+    to this site's own shape: immediately after `STAGED_DIFF=$(_lib_capped
+    git diff --cached -- ...)`, check `RC=$?; [ "$RC" = 124 ] && { echo
+    "..." >&2; exit 1; }` before the existing `if [ -n "$STAGED_DIFF" ]`
+    runs, so a timeout denies instead of silently taking the same branch
+    as "nothing staged".
+
+  Add a regression test per site (all four) using the `fake_git sleep`-shim
+  pattern already established in `test_deny_pii_in_commits.py:218-242`
   (`test_staged_diff_git_timeout_denied` — a `git` wrapper on `$PATH` that
   sleeps past the cap, deterministic and fast), not an actually oversized
   diff — and assert the deny path itself fires, not just that a test
@@ -403,9 +426,15 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   instead of silently passing. The cap is hardcoded with no per-invocation
   override (`_lib.sh:38-48`). Confirm 5s is realistic headroom for a large
   staged diff on a cold cache before shipping, and add the new behavior to
-  `docs/security-hardening.md`'s Known-gaps paragraph for these hooks so
-  a user who hits it can recognize it — the deny message alone does not
-  distinguish "timed out" from "review actually missing".
+  `docs/security-hardening.md`'s Known-gaps paragraph for these hooks so a
+  user who hits it can recognize it — the deny message alone does not
+  distinguish "timed out" from "review actually missing". Scope that
+  Known-gaps addition explicitly to the timeout case: only `RC=124` is
+  special-cased above, so a non-timeout, non-zero `git` exit (e.g. the
+  binary absent, `RC=127`) still falls through to the pre-existing
+  `[ -z "$OUT" ] && exit 0` branch — pre-existing behavior at these sites,
+  not newly introduced by this fix, but worth naming alongside the timeout
+  case so a reader of the Known-gaps entry knows its boundary.
 - **7 bespoke-regex hooks (SC1/S14)**: `require-code-review.sh:64`,
   `guard-settings-session-keys.sh:57`, `check-skill-length.sh:60`,
   `check-claude-md-length.sh:58`,
@@ -776,28 +805,31 @@ Phase 3's citation-drift note.
   materialize records, `records = _dedup_turns_by_request_id(records)  #
   dedup before pricing (must run first, see pricing.py)`, then iterate.
   Change `_dispatch_usage_summary` from streaming-parse-per-line to
-  materialize-then-dedup-then-iterate. This trades the current O(1)-memory
-  streaming pass (one record parsed, aggregated into scalars/sets, then
-  discarded) for O(file size) peak memory — holding every record's full
-  body (thinking blocks, tool_use payloads, embedded diff/image content in
-  tool_result blocks), not just the `model`/`usage`/`timestamp` fields this
-  function consumes. Accepted as a transient, per-dispatch-invocation cost
-  (this subcommand processes one dispatch transcript at a time, not the
-  full corpus) rather than switching to a lighter tuple-extraction dedup —
-  matches every other `_dedup_turns_by_request_id` call site's existing
-  shape, at the cost of this one tradeoff. The stronger driver for this
-  fix is correctness, not just consistency: `_merge_assistant_run`'s own
-  docstring states `output_tokens` "ascends within the run, only reaching
-  its billed value on the last record", and that `input_tokens` and the
-  `cache_*` classes are *identical* — not delta — across every record in a
-  run [verified: this session's specialist review]. The pre-fix streaming
-  code prices every raw assistant line's own `usage` independently, so a
-  multi-block turn is overcounted twice over: the ascending output
-  component, and — the larger driver, since cache/context tokens dominate
-  spend per this repo's own `docs/cost-levers-considered.md` — the
-  identical input/cache-read/cache-write tokens re-billed once per
-  physical record. This is a real dollar-overcounting bug, not a
-  shape-consistency nit; materialize-then-dedup fixes both components.
+  materialize-then-dedup-then-iterate.
+
+  This trades the current O(1)-memory streaming pass (one record parsed,
+  aggregated into scalars/sets, then discarded) for O(file size) peak
+  memory — holding every record's full body (thinking blocks, tool_use
+  payloads, embedded diff/image content in tool_result blocks), not just
+  the `model`/`usage`/`timestamp` fields this function consumes. Accepted
+  as a transient, per-dispatch-invocation cost (this subcommand processes
+  one dispatch transcript at a time, not the full corpus), matching every
+  other `_dedup_turns_by_request_id` call site's existing shape rather than
+  switching to a lighter tuple-extraction dedup.
+
+  This is also a correctness fix, not just a consistency one:
+  `_merge_assistant_run`'s own docstring states `output_tokens` "ascends
+  within the run, only reaching its billed value on the last record," and
+  `input_tokens` and the `cache_*` classes are *identical* — not delta —
+  across every record in a run [verified: this session's specialist
+  review]. The pre-fix streaming code prices every raw assistant line's own
+  `usage` independently, so a multi-block turn is overcounted twice over:
+  the ascending output component, and — the larger driver, since
+  cache/context tokens dominate spend per this repo's own
+  `docs/cost-levers-considered.md` — the identical
+  input/cache-read/cache-write tokens re-billed once per physical record.
+  This is a real dollar-overcounting bug, not a shape-consistency nit;
+  materialize-then-dedup fixes both components.
 - Test: `TestSubagentMixDollars`,
   `claude/.claude/scripts/tests/test_transcript_analysis.py:987-1264` (7
   tests, zero requestId-sharing fixtures) — add one, mirroring the existing
@@ -1168,11 +1200,10 @@ revert also removes this phase's own added content.
   and aborts collection entirely (`pytest ... --collect-only` against the
   real `pyproject.toml` returns `Interrupted: 1 error during collection`,
   zero tests run) — breaking CI for every subsequent PR, since
-  `tests.yml`'s test step has no `|| true`. A round-4 review found the
-  plan's original two mitigations were presented as alternatives when they
-  are not: collecting the file explicitly and guarding against the
-  `evals/fixtures` collection error are two separate, both-required steps.
-  Do both: **(1)** add `evals/test_measure_subagent_model_resolution.py`
+  `tests.yml`'s test step has no `|| true`. Collecting the file explicitly
+  and guarding against the `evals/fixtures` collection error are two
+  separate, both-required steps, not alternatives. Do both: **(1)** add
+  `evals/test_measure_subagent_model_resolution.py`
   as an explicit positional path in `tests.yml`'s parallel-pass `pytest`
   invocation (line 160, the `-m "not timing"` pass — this file has no
   `timing`-marked tests, so adding it to the serial timing-pass line 166
