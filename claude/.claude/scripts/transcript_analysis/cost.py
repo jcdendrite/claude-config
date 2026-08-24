@@ -155,6 +155,53 @@ def _print_thread_table(main_total: float, subagent_total: float, grand_total: f
     print(f"{'subagent':<10} {subagent_total:>14,.2f} {render._pct_of(subagent_total, grand_total):>7}")
 
 
+def _print_branch_exclusion_diagnostic(
+    excluded_turns_by_branch: dict[str, int],
+    excluded_transcript_ids: set[str],
+    *,
+    redact: bool,
+    markdown: bool = False,
+) -> None:
+    """Surface --branches's record-drop path (see _attributed_branch) instead of
+    leaving an excluded branch silently invisible in the report.
+
+    No-op when nothing was excluded.
+    markdown=True (--summary's always-redacted shape) prints one aggregate line only --
+    no branch names, no transcript ids.
+    Non-summary mode prints a full per-branch turn-count table: raw branch names under
+    --no-redact, or deterministic sequential "branch-N" labels (sorted real-name order,
+    mirroring project_repr_label's convention above) under the redact=True default.
+    "?" (unresolved branch) is never assigned a sequential label.
+    """
+    if not excluded_turns_by_branch:
+        return
+
+    total_excluded_turns = sum(excluded_turns_by_branch.values())
+    if markdown:
+        print(
+            f"\nBranch-filter exclusions: {total_excluded_turns:,} turns excluded across"
+            f" {len(excluded_transcript_ids):,} transcript files (branch names redacted)"
+        )
+        return
+
+    # "?" (the unresolved-branch sentinel) carries no identifying information,
+    # so it is never assigned a sequential label -- only real branch names are.
+    sequential_labels = (
+        {
+            branch: f"branch-{i}"
+            for i, branch in enumerate(sorted(b for b in excluded_turns_by_branch if b != "?"), start=1)
+        }
+        if redact
+        else {}
+    )
+
+    print("\n## Branch-filter exclusions\n")
+    print(f"{'Branch':<16} {'Turns':>8}")
+    for branch, count in sorted(excluded_turns_by_branch.items()):
+        label = sequential_labels.get(branch, branch)
+        print(f"{label:<16} {count:>8}")
+
+
 # A root whose earliest in-scope turn is more than this many seconds newer
 # than a requested --since window's start fires _cost_report's
 # corpus-coverage warning below -- one day, not zero, so ordinary
@@ -325,6 +372,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         else {}
     )
     unpriced_tokens: dict[str, int] = defaultdict(int)
+    # Turn counts (not re-priced dollars) tallied per branch a --branches
+    # filter dropped a record for, plus the distinct transcript files those
+    # drops span -- feeds _print_branch_exclusion_diagnostic below.
+    excluded_turns_by_branch: dict[str, int] = defaultdict(int)
+    excluded_transcript_ids: set[str] = set()
     bucket_totals: dict[str, float] = defaultdict(float)
     # Earliest in-scope turn timestamp seen per root ordinal, regardless of
     # --since -- feeds the corpus-coverage warning after the loop below, so a
@@ -403,6 +455,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             if branch_filter is not None:
                 attributed_branch = _attributed_branch(rec, branch_index)
                 if attributed_branch is None or attributed_branch not in branch_filter:
+                    excluded_turns_by_branch[attributed_branch or "?"] += 1
+                    excluded_transcript_ids.add(session_id)
                     continue
 
             model = msg.get("model", "")
@@ -559,6 +613,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             print(f"{bucket:<8} {val:>14,.2f} {render._pct_of(val, grand_total):>7}")
 
     _print_thread_table(main_total, subagent_total, grand_total, markdown=summary_mode)
+
+    if branch_filter is not None:
+        _print_branch_exclusion_diagnostic(
+            excluded_turns_by_branch, excluded_transcript_ids, redact=redact, markdown=summary_mode
+        )
 
     if summary_mode:
         return

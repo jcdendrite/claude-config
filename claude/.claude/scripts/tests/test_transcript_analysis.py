@@ -16066,11 +16066,14 @@ class TestPrCostReportOrchestration:
     the single local-corpus-scan guarantee), never gh-integration coverage."""
 
     def test_target_pr_with_zero_branch_records_uses_zero_valued_agg_default(
-        self, fake_projects, tmp_path, monkeypatch,
+        self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         """_new_pr_cost_row's zero-valued shape is used correctly when
         branch_totals.get(branch) misses (--pr targeting a merged PR whose
-        branch carries no local corpus activity at all)."""
+        branch carries no local corpus activity at all). branch_totals is
+        empty here (genuinely branch-idle), which must stay silent -- the
+        renamed-branch mismatch warning in the sibling test below is gated on
+        branch_totals being non-empty specifically to not fire on this case."""
         (tmp_path / ".pr-cost-enabled").touch()
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
@@ -16091,6 +16094,46 @@ class TestPrCostReportOrchestration:
         assert row["cache_read_usd"] == pytest.approx(0.0)
         assert row["input_usd"] == pytest.approx(0.0)
         assert row["unpriced_turns"] == 0
+        assert "no matching" not in capsys.readouterr().err
+
+    def test_renamed_branch_mismatch_warns_but_still_writes_zero_valued_row(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """The account's local corpus recorded activity under "old-name", but
+        the targeted PR's resolved head branch is "new-name" (a mid-work
+        rename) -- branch_totals.get(branch) misses even though the scan
+        wasn't branch-idle, so the mismatch warning must fire on stderr and
+        the row must still be written (visibility only, not a skip -- ledger
+        Row 8). --pr targets the PR by its current head branch directly,
+        which is what surfaces the mismatch: sweep mode instead iterates
+        branch_totals's own keys, so "old-name" would never even match this
+        PR's "new-name" headRefName."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="old-name"),
+        ])
+        merged_prs = [{
+            "number": 99, "headRefName": "new-name", "additions": 5, "deletions": 1,
+            "changedFiles": 2, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=99, machine_label="ci1")
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+
+        err = capsys.readouterr().err
+        assert "has no matching local corpus activity" in err
+        assert "1 other branch(es)" in err
+        assert "old-name" not in err
+        assert "new-name" not in err
+
+        rows = _mod._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["turn_count"] == 0
+        assert row["session_count"] == 0
 
     def test_captured_row_carries_correct_token_counts_alongside_dollars(
         self, fake_projects, tmp_path, monkeypatch,
@@ -17912,6 +17955,48 @@ class TestPrCostAllAccounts:
         captured = capsys.readouterr()
         assert "account-2 has no local corpus activity for this branch" in captured.err
         assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+
+    def test_all_accounts_renamed_branch_mismatch_hits_the_skip_not_the_new_warning(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Distinct from the single-account --pr N mismatch
+        (test_renamed_branch_mismatch_warns_but_still_writes_zero_valued_row):
+        under --all-accounts, an account whose branch_totals is non-empty but
+        missing the PR's branch hits the pre-existing branch-not-in-corpus
+        skip (this test's sibling above) before the new mismatch-warning
+        print is ever reached -- the skip's own `continue` fires first."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()
+        (acct_b / ".pr-cost-enabled").touch()
+        proj_a = roots[0] / "-home-user-testrepo"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="new-name"),
+        ])
+        proj_b = roots[1] / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="old-name"),  # renamed away from the PR's branch
+        ])
+        merged_prs = [{
+            "number": 5, "headRefName": "new-name", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        args = _pr_cost_args(record=True, pr=5, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)
+
+        rows_a = _mod._parse_pr_cost_ledger_file_text((acct_a / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_a) == 1
+        assert rows_a[0]["turn_count"] > 0
+        assert not (acct_b / "pr-cost-ledger.tsv").exists()  # skipped, not zero-recorded
+        err = capsys.readouterr().err
+        assert "account-2 has no local corpus activity for this branch" in err  # the pre-existing skip fires
+        assert "has no matching local corpus activity" not in err  # the new warning must not also fire
+        assert "old-name" not in err
+        assert "new-name" not in err
 
     def test_targeted_pr_already_captured_converts_to_per_account_skip_not_hard_abort(
         self, tmp_path, monkeypatch, capsys,

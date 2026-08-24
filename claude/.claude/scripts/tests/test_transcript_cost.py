@@ -131,6 +131,17 @@ def _extract_summary_unpriced(out: str) -> tuple[int, int]:
     return int(match.group(1).replace(",", "")), int(match.group(2))
 
 
+def _diagnostic_section(out: str) -> str:
+    """Slice out _print_branch_exclusion_diagnostic's own printed block (from
+    its heading through the next '## ' section header, or end of output) --
+    scopes a "no raw id here" assertion to the diagnostic itself, since the
+    report's own unrelated 'Top N sessions by dollars' table legitimately
+    prints transcript ids elsewhere in the same output."""
+    start = out.index("## Branch-filter exclusions")
+    next_header = out.find("\n## ", start + len("## Branch-filter exclusions"))
+    return out[start:] if next_header == -1 else out[start:next_header]
+
+
 def _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """Active profile (config_dir() via CLAUDE_CONFIG_DIR) plus one declared
     root (via TRANSCRIPT_CONFIG_DIRS_FILE), each holding a matching --this-repo
@@ -1726,6 +1737,67 @@ class TestCostMarkdownTablePrinters:
         )
 
 
+class TestPrintBranchExclusionDiagnostic:
+    """Direct unit coverage of _print_branch_exclusion_diagnostic, mirroring
+    TestCostMarkdownTablePrinters's precedent -- pins the function's own
+    labeling/sorting/redaction invariants without paying a full _cost_report
+    fixture per case. TestCostBranchFilter below keeps its own full-report
+    integration tests for the wiring (_cost_report populates the right dict/
+    set and passes the right redact/markdown), since that is the actual
+    public-PR-body leak surface and is worth covering end-to-end too."""
+
+    def test_no_exclusions_is_a_noop(self, capsys):
+        _mod._print_branch_exclusion_diagnostic({}, set(), redact=True)
+        assert capsys.readouterr().out == ""
+
+    def test_markdown_mode_prints_aggregate_only_regardless_of_redact(self, capsys):
+        _mod._print_branch_exclusion_diagnostic(
+            {"feature-a": 2, "feature-b": 1}, {"t1", "t2"}, redact=False, markdown=True
+        )
+        out = capsys.readouterr().out
+        assert "3" in out and "2" in out  # 3 turns, 2 transcript files
+        assert "feature-a" not in out
+        assert "feature-b" not in out
+
+    def test_non_summary_redact_default_sorts_labels_and_never_labels_sentinel(self, capsys):
+        """Mixed named branches plus the "?" sentinel, non-summary redact=True
+        (the default): labels are assigned in sorted real-name order, and "?"
+        -- carrying no identifying information -- is never assigned one."""
+        _mod._print_branch_exclusion_diagnostic(
+            {"feature-b": 1, "feature-a": 2, "?": 3}, {"t1"}, redact=True
+        )
+        out = capsys.readouterr().out
+        assert "feature-a" not in out
+        assert "feature-b" not in out
+        cols_a = _table_cols(out, header_contains="Turns", row_contains="branch-1", row_startswith=True)
+        assert cols_a["Turns"] == "2"  # sorted order: feature-a is branch-1
+        cols_b = _table_cols(out, header_contains="Turns", row_contains="branch-2", row_startswith=True)
+        assert cols_b["Turns"] == "1"  # feature-b is branch-2
+        cols_q = _table_cols(out, header_contains="Turns", row_contains="?", row_startswith=True)
+        assert cols_q["Turns"] == "3"  # "?" prints literally, never as a branch-N label
+
+    def test_non_summary_no_redact_shows_raw_names(self, capsys):
+        _mod._print_branch_exclusion_diagnostic({"feature-a": 5}, {"t1"}, redact=False)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Turns", row_contains="feature-a", row_startswith=True)
+        assert cols["Turns"] == "5"
+
+    def test_real_branch_name_shaped_like_generated_label_is_remapped(self, capsys):
+        """A real branch literally named "branch-1" must not be mistaken for
+        the diagnostic's own generated label -- the dict-key lookup in the
+        print loop always substitutes the generated label for a redacted
+        branch, so a same-shaped raw name never passes through unredacted."""
+        _mod._print_branch_exclusion_diagnostic({"branch-1": 1, "aaa-first": 2}, {"t1"}, redact=True)
+        out = capsys.readouterr().out
+        # sorted(["aaa-first", "branch-1"]) -> aaa-first is branch-1, branch-1 (real) is branch-2
+        cols_real_branch1 = _table_cols(
+            out, header_contains="Turns", row_contains="branch-2", row_startswith=True
+        )
+        assert cols_real_branch1["Turns"] == "1"  # the real "branch-1" branch, remapped
+        cols_aaa = _table_cols(out, header_contains="Turns", row_contains="branch-1", row_startswith=True)
+        assert cols_aaa["Turns"] == "2"  # "aaa-first" sorts first, gets the "branch-1" label
+
+
 class TestCostBranchFilter:
     """--branches: per-record (not per-session) gitBranch filtering."""
 
@@ -1781,6 +1853,132 @@ class TestCostBranchFilter:
 
         _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(1.00)
+
+    def test_branch_exclusion_diagnostic_counts_excluded_records_not_sessions(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Reuses test_branch_filter_is_per_record_not_per_session's fixture
+        shape: one session, records on two branches, filtered to one branch.
+        Asserts the excluded count is 1 transcript / 1 turn, not 2 -- guards
+        against a session-level (rather than per-record) tally."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            _priced("claude-sonnet-5", input=500_000, branch="main"),
+        ])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-a"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Branch-filter exclusions: 1 turns excluded across 1 transcript files" in out
+
+    def test_no_branch_exclusions_prints_nothing(self, fake_projects, capsys):
+        """--branches main with every record already on main: zero
+        exclusions -- the diagnostic prints nothing, pinning the deliberate
+        empty-case no-op."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main"),
+            _priced("claude-sonnet-5", input=500_000, branch="main"),
+        ])
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Branch-filter exclusions" not in out
+
+    def test_null_git_branch_excluded_record_shown_as_question_mark(self, fake_projects, capsys):
+        """Extends test_null_git_branch_record_counted_unfiltered_excluded_under_branch_filter:
+        a null-gitBranch record excluded under --branches main renders under
+        this codebase's existing "?" sentinel for an unresolved branch (see
+        _attributed_branch's None-return docstring), not silently merged into
+        another row."""
+        no_branch_rec = _priced("claude-sonnet-5", input=1_000_000)
+        no_branch_rec["gitBranch"] = None
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            no_branch_rec,
+            _priced("claude-sonnet-5", input=500_000, branch="main"),
+        ])
+        _mod._cost_report(_cost_args(branches="main", no_redact=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Turns", row_contains="?", row_startswith=True)
+        assert cols["Turns"] == "1"
+
+    def test_summary_mode_diagnostic_redacts_both_excluded_branch_names(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--summary with two distinct excluded branch names: the aggregate
+        line's counts are correct, and neither literal branch name nor any
+        redacted sequential label leaks -- this is the sole redaction control
+        against the PR-body leak path, since pr-cost-section.sh embeds this
+        output verbatim into a public PR."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        _write_jsonl(mine / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch="feature-a")])
+        _write_jsonl(mine / "sess-b.jsonl", [_priced("claude-sonnet-5", input=500_000, branch="feature-b")])
+        _write_jsonl(mine / "sess-main.jsonl", [_priced("claude-sonnet-5", input=250_000, branch="main")])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="main"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Branch-filter exclusions: 2 turns excluded across 2 transcript files" in out
+        assert "feature-a" not in out
+        assert "feature-b" not in out
+        assert "branch-1" not in out
+        assert "branch-2" not in out
+
+    def test_non_summary_redact_default_shows_sequential_branch_labels(self, fake_projects, capsys):
+        """Non-summary, redact=True (the default, no --no-redact): excluded
+        branch names render as deterministic sequential branch-N labels,
+        assigned in sorted order of the real names, not the raw names; the
+        diagnostic's own block prints no raw transcript id, only a count."""
+        _write_jsonl(fake_projects / "deadbeef0001.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-b"),
+            _priced("claude-sonnet-5", input=500_000, branch="feature-a"),
+            _priced("claude-sonnet-5", input=250_000, branch="main"),
+        ])
+        _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        diagnostic_block = _diagnostic_section(out)
+        assert "feature-a" not in diagnostic_block
+        assert "feature-b" not in diagnostic_block
+        assert "deadbeef0001" not in diagnostic_block
+        cols_1 = _table_cols(out, header_contains="Turns", row_contains="branch-1", row_startswith=True)
+        assert cols_1["Turns"] == "1"  # sorted order: feature-a assigned branch-1
+        cols_2 = _table_cols(out, header_contains="Turns", row_contains="branch-2", row_startswith=True)
+        assert cols_2["Turns"] == "1"  # feature-b assigned branch-2
+
+    def test_non_summary_no_redact_shows_raw_branch_names(self, fake_projects, capsys):
+        """Non-summary, --no-redact: excluded branch names render as the real
+        branch name, not a redacted label; the diagnostic's own block still
+        prints no raw transcript id, only a count."""
+        _write_jsonl(fake_projects / "deadbeef0002.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            _priced("claude-sonnet-5", input=500_000, branch="main"),
+        ])
+        _mod._cost_report(_cost_args(branches="main", no_redact=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Turns", row_contains="feature-a", row_startswith=True)
+        assert cols["Turns"] == "1"
+        assert "deadbeef0002" not in _diagnostic_section(out)
 
 
 class TestCostTokensColumn:
