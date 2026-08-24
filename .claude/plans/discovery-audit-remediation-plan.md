@@ -48,9 +48,14 @@ re-litigating the report's own severity or scope calls.
   the IDs are how this plan cross-references `findings.md`; changing them
   would just break that cross-reference, not affect remediation]
 - G2 — The 10-bucket grouping and phase-1-first sequencing are fixed.
-  [engineer-verified]
+  [engineer-verified] [reason: inside this plan's reach — Approach's
+  "Alternatives considered" paragraph weighs the severity-tier and per-file
+  splits against it. Without this given the plan re-derives a bucketing,
+  which changes review ergonomics but not which findings get fixed.]
 - G3 — All 10 phases are planned now; none is deferred to a backlog.
-  [engineer-verified]
+  [engineer-verified] [reason: inside reach — the plan could park the
+  Low/Very-Low tail. Without this given, Phases 7-10 become an unplanned
+  backlog and A8's 85-finding coverage claim no longer holds.]
 
 **Per-mechanism justification** (anchors: root): each phase reuses an
 existing in-repo helper or pattern rather than introducing a new one — see
@@ -70,7 +75,7 @@ not apply to any phase.
 | A5 | Resolving A4's conflict by extending `check-skill-length.sh`'s `limit_for()` 500-line exception (already granted to `code-review/SKILL.md`, `plan-review/SKILL.md`, `plan-review/ROUTING.md`) to `review-permissions/SKILL.md`, rather than trimming existing content first | [unverified — this is this plan's own scope decision, not previously confirmed with the engineer; flagged explicitly below] |
 | A6 | SC5's 8 duplicate sites are grouped into Phase 3 (redaction-default cluster) rather than Phase 10 (grab-bag), because they're the same file and the same conceptual defect (missing shared refusal helper) as Phase 3's other findings | [unverified — a placement call, not previously confirmed; low-stakes, stated here rather than re-asked] |
 | A7 | Three shared-helper extraction opportunities noticed during exploration beyond the report's own findings (C7's default-branch resolver in Phase 1, C10's PID-liveness helper in Phase 10, SC2's eviction-sweep helper in Phase 10) fold into their respective phases as sub-steps rather than becoming new phases or new findings | [unverified — a scope decision, stated here rather than re-asked, per engineer's "plan all 10 buckets, don't backlog" instruction extending naturally to in-scope sub-steps discovered while planning them] |
-| A8 | All 85 report finding IDs map onto either an actionable phase or the true N/A set (7 IDs); none is silently dropped | [verified: this session, `awk`-based section-header extraction cross-checked against every phase's bulleted findings — caught and corrected a gap where `S24`/`D5`/`D6`/`D7` had been omitted from an earlier draft] |
+| A8 | All 85 report finding IDs map onto either an actionable phase or the true N/A set (7 IDs); none is silently dropped | [verified: this session, `awk`-based section-header extraction cross-checked against every phase's bulleted findings; `S24`, `D5`, `D6`, and `D7` are Low/Medium findings that are *not* N/A-tagged and are placed in Phases 6-9] |
 | A9 | `plugins/skill-management/skills/skill-review/SKILL.md` has the same zero-headroom conflict as A4 (also exactly 200 lines, and Phase 6's C15 also adds content to it); resolved via the same `limit_for()` 500-line exception mechanism as A5, extended to this second file | [verified: this session's specialist review, `wc -l` = 200; the extension choice itself is unverified — same A5 scope-decision status] |
 
 **Flag to the engineer when presenting this plan:** A5 (the review-permissions
@@ -78,7 +83,75 @@ line-cap exception, now also extended to `skill-review/SKILL.md` per A9),
 A6 (SC5's placement), and D1 (the reopened evals/-collection decision,
 flagged at its own bullet in Phase 9) are scope decisions this plan made
 rather than ones already confirmed — call them out explicitly rather than
-letting them pass as settled.
+letting them pass as settled. Three more scope decisions to flag:
+
+- **Phase 1 may warrant a third split.** Review findings concentrate on
+  Phase 1 across four distinct failure modes (an inline-alias bypass, a
+  new fail-closed denial mode, and two separate test-coverage holes), on
+  top of the file count and mixed review lenses the 1a/1b split already
+  acknowledges. G2 fixes the 10-bucket grouping [engineer-verified], so
+  this plan does not re-cut it unilaterally — but the phase's load-bearing
+  breadth is worth a decision rather than an assumption.
+- **Phase 9's `S103` scoping** — whether to exclude
+  `transcript-analysis.py` from the repo-wide ignore so Phase 4's S16
+  permission fix keeps CI regression protection (see Phase 9's S25 bullet).
+- **Whether Phase 9 warrants a `CHANGELOG.md` entry** — it is
+  contributor-facing rather than stow-user-facing (see "CHANGELOG
+  entries").
+
+### Branch and PR shape
+
+Each phase gets its own branch and worktree, cut fresh from `main` after
+the previous phase has merged: `git worktree add .claude/worktrees/<slug>
+-b <slug>` per the `branch-management` skill, with the phase's
+`code-writer` dispatched into it **without** `isolation: worktree` (these
+are PR-bound implementation dispatches, per CLAUDE.md's Agent Briefing).
+Ten phases means ten branches and ten PRs — the plan's own "PR-sized
+phases" premise requires it; running every phase's dispatch inside this
+plan's worktree would accumulate all 10 into one branch and produce
+exactly the mega-diff the phasing exists to avoid. Cutting each branch
+after the prior merge is also what makes Phases 3-5's citation-drift
+re-resolution work: each dispatch reads a `transcript-analysis.py` that
+already carries the previous phase's edits.
+
+This plan file itself ships in its own standalone PR ahead of
+implementation, so no phase branch carries it.
+
+**Exception — land Phase 1's two `_lib.sh` prerequisites first, standalone.**
+The inline git-config-alias sentinel in `_lib_extract_git_subcmd` and the
+bare-`&` addition to `_lib_split_fragments` are specified in Dispatch 1b
+below, but they should merge as their own small PR immediately after this
+plan PR, not bundled with 1b's 7-hook conversion and S2 wraps. This plan
+publishes working invocations for both bypasses, and
+`deny-pii-in-commits.sh` — whose credential-value tier is unconditional for
+every stow install (`settings.json:276` registers the hook with no `if`
+matcher) — is defeatable by them until the fix ships [verified: this
+session's specialist review]. The underlying bug is already public in
+`_lib.sh`, so this shrinks a disclosure window rather than closing a new
+hole, but the fix is small and fully specified, so there is no reason to
+make it wait on the rest of the dispatch.
+
+### CHANGELOG entries
+
+`CHANGELOG.md`'s `[Unreleased]` section is this repo's user-facing record
+for stow consumers, and its established convention attaches an explicit
+**Migration:** note to breaking or behavior-changing entries [verified:
+this session, 4 such notes present in the file]. Three phases change
+behavior a stow user can observe on `git pull` and each needs an entry
+with a Migration note in its own PR:
+
+- **Phase 1** — git-command detection changes on 7 authorization-gating
+  hooks, plus the new fail-closed-on-timeout denial at the 4
+  content-bearing sites.
+- **Phase 3** — S15's `--redact` → `--no-redact` flag-shape break on
+  `audit-routing`.
+- **Phase 6** — the `check-skill-length.sh` cap relaxation, which changes
+  what the length gate permits for every stow user.
+
+Phase 9's ruff-`"S"` addition is contributor-facing rather than
+stow-user-facing (it gates this repo's own CI, not an installed surface) —
+flag to the engineer whether it warrants an entry rather than assuming
+either way. No other phase changes observable behavior.
 
 ### Dispatch split
 
@@ -149,8 +222,8 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   correctly), independent of any caller.
 
 **Dispatch 1b — shared-trio rollout, S2 wrap, and tests (S13, S14, SC1, C6, C9, C19, D3, D8, D9, D10, D12):**
-- **Bare-`&` fragment-splitting gap in the shared trio** (Critical, new —
-  found by this plan's own Opus-anchored review): `_lib_split_fragments`
+- **Bare-`&` fragment-splitting gap in the shared trio** (Critical; not in
+  the source report): `_lib_split_fragments`
   (`_lib.sh:490-494`) splits command fragments on `;`, `&&`, `||`, `|`,
   `$(`, and backtick, but not a bare single `&` — valid bash background-op
   syntax needs no surrounding whitespace (`foo&git commit -m x` really
@@ -175,6 +248,35 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   `&` that is not a command separator (`cmd 2>&1; git commit -m x`, `cmd
   &> log; git commit -m x`) does not get mis-split into a spurious
   fragment boundary and does not produce a false allow or false deny.
+- **Inline git-config alias bypass in `_lib_extract_git_subcmd`**
+  (Critical; not in the source report — prerequisite, same class as the
+  bare-`&` gap above): git resolves an alias defined inline in the same
+  command string, so `git -c alias.ci=commit ci -m x` runs `git commit`
+  while `_lib_extract_git_subcmd` (`_lib.sh:462-485`) returns `ci` and the
+  gated-verb comparison never matches [verified: this session's specialist
+  review, reproduced empirically against a copy of `_lib.sh`].
+
+  Fix at the helper, not per-hook: make `_lib_extract_git_subcmd` treat an
+  inline alias definition as unresolvable, returning a sentinel the callers
+  treat as the gated verb (fail closed), since the hook cannot know what the
+  alias expands to. Three details:
+
+  - Two syntactic forms reach this: `-c alias.x=` / `--config-env`, and a
+    `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` / `GIT_CONFIG_COUNT`
+    assignment prefix. `-c` is in the helper's skip-next flag list; the
+    env-assignment prefix is skipped by its `past_git` walk.
+  - Close it as a prerequisite rather than propagate it. Only
+    `deny-pii-in-commits.sh` is on the shared trio today; this dispatch
+    widens the gap to all 8 converted hooks, the credential/PII scanner
+    among them.
+  - Distinct from S13's residual below, which is a *persistent* git alias
+    and a `\git` shell-alias escape. D10's planned test mirrors the
+    persistent-alias pattern and exercises neither inline form.
+
+  Tests: one per form (`-c`, `GIT_CONFIG_KEY_*`) asserting the deny path
+  fires, plus a negative case confirming a non-alias `-c` use
+  (`git -c core.pager=cat commit`) still resolves to `commit` rather than
+  tripping the sentinel.
 - **GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE stripping** (new, closes a gap
   this phase's own "audit structural siblings" rationale otherwise leaves
   open): three sibling hooks already establish this idiom —
@@ -257,7 +359,15 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   (`test_staged_diff_git_timeout_denied` — a `git` wrapper on `$PATH` that
   sleeps past the cap, deterministic and fast), not an actually oversized
   diff — and assert the deny path itself fires, not just that a test
-  exists.
+  exists. This trade is fail-open for fail-closed, which introduces a
+  denial mode stow users do not have today: a legitimately large staged
+  diff that exceeds `_lib_capped`'s 5s cap now blocks the commit outright
+  instead of silently passing. The cap is hardcoded with no per-invocation
+  override (`_lib.sh:38-48`). Confirm 5s is realistic headroom for a large
+  staged diff on a cold cache before shipping, and add the new behavior to
+  `docs/security-hardening.md`'s Known-gaps paragraph for these hooks so
+  a user who hits it can recognize it — the deny message alone does not
+  distinguish "timed out" from "review actually missing".
 - **7 bespoke-regex hooks (SC1/S14)**: `require-code-review.sh:64`,
   `guard-settings-session-keys.sh:57`, `check-skill-length.sh:60`,
   `check-claude-md-length.sh:58`,
@@ -279,12 +389,20 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   `test_require_plugin_version_bump.py` 438 lines,
   `test_require_skill_review.py` 1233 lines, all under
   `claude/.claude/hooks/tests/`, not under `plugins/` — [verified: this
-  session's specialist review corrected an earlier draft's "zero existing
-  coverage" claim]); the swap's regression risk is uniform across all 7,
-  not concentrated in a "zero-coverage" subset. Each hook's full existing
-  suite staying green post-swap is the primary regression gate; the
-  alias-bypass/wrapper-command tests above are incremental coverage for
-  the swap's own new gap on top of that baseline.
+  session's specialist review]); the swap's regression risk is uniform
+  across all 7, not concentrated in a zero-coverage subset. Those 7 suites
+  are a weaker baseline than their line counts suggest, though: every
+  git-commit case in them invokes the single literal shape
+  `git commit -m foo`, with no flag, hoisted-flag, or alias variety —
+  contrast `deny-pii-in-commits.sh`, already on the shared trio, whose
+  suite exercises ~14 distinct shapes (`--amend`, `-am`, `-c user.name=`,
+  `-C .`, `add . && commit`) [verified: this session's specialist review].
+  So "the full existing suite stays green" proves only that the canonical
+  shape still detects; a broken flag-walk in the new
+  `_lib_extract_git_subcmd` usage would ship undetected. Add one
+  hoisted-flag-form case per converted hook (e.g. `git -C . commit -m x`)
+  alongside the alias-bypass and wrapper-command pairs above, rather than
+  treating suite-stays-green as the primary gate.
 - **S2 unguarded external-call sites** (metadata/cheap calls only — the 3
   content-bearing sites above are handled separately) — wrap each in
   `_lib_capped`/`_lib_jq`: `deny-private-project-refs.sh:287,298`,
@@ -304,6 +422,17 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   `plugins/npm-semver/hooks/_lib.sh:16-22`,
   `plugins/plugin-semver/hooks/_lib.sh:16-22`,
   `plugins/skill-management/hooks/_lib.sh:52-58`.
+  Add one timeout-path test per newly-`_lib_capped`-wrapped **git** call
+  site, reusing the `fake_git sleep`-shim pattern cited above. Wrapping
+  creates a timeout branch that did not exist before, so the pre-existing
+  suite cannot cover it, and several of these hooks are deny-hooks where
+  the branch decides allow-vs-deny — the individually-named S2-adjacent
+  findings below (C6/C9/C19/D9) each already carry this instruction, and
+  the bulk sites need it for the same reason. The three `_lib_jq`-only
+  sites (`deny-credential-file-reads.sh:38`, `deny-env-reads.sh:58`,
+  `deny-data-file-reads.sh:77`) are exempt: each parses one small
+  already-in-memory JSON blob, so a 5s timeout is not a reachable state
+  [verified: this session's specialist review].
 - **C6**: `check-claude-md-length.sh:62-63`, `check-skill-length.sh:64-65` —
   `REPO_ROOT` is computed and tested for emptiness but never threaded into
   `git diff --cached`/`git show` (implicit cwd). Thread `-C "$REPO_ROOT"`.
@@ -350,9 +479,13 @@ into two sequenced `code-writer` dispatches on that basis rather than one:
   comment block, matching the siblings' phrasing, and to
   `docs/security-hardening.md:451-458`'s "**Known gaps.**" paragraph for
   this hook. Given the bare-`&` fragment-splitting gap above also applies
-  to `deny-pii-in-commits.sh` today, name both residuals — alias
+  to `deny-pii-in-commits.sh` today, name both residuals — persistent-alias
   resolution and bare-`&` fragment-splitting — together in this same
-  Known-gaps addition and pinning test, not just the alias one. D10
+  Known-gaps addition and pinning test, not just the alias one. Do not
+  list the inline git-config alias form (`-c alias.x=`,
+  `GIT_CONFIG_KEY_*`) among the accepted residuals: this dispatch closes
+  that one at the helper, so naming it here would disclose a gap that no
+  longer exists. D10
   (below) adds the test that pins this same accepted gap — land S13's
   documentation and D10's test together so the gap is both named and
   pinned, not one without the other.
@@ -410,8 +543,17 @@ S4, S6, and S7 below only *add* a previously-absent `--redact` flag — no
 existing caller passes it, so these are additive, not breaking. S15 is
 different: it *removes* an existing `--redact` flag and replaces it with
 `--no-redact` (matching `p_cost`'s shape), which breaks any caller
-currently invoking `audit-routing --redact` — see S15's own bullet for the
-back-compat fix this requires.
+currently invoking `audit-routing --redact` — that invocation exits with
+an argparse "unrecognized arguments" error on the next `git pull`, with no
+deprecation window. S15's bullet updates the docs, help text, and test
+helper; it deliberately ships **no** compatibility shim. Accepted because
+the flag was opt-in redaction and every in-repo caller is updated in the
+same commit, so the only breakage is a stow user's own ad-hoc alias, and
+the failure is loud and immediate rather than silent — a shim that
+accepted `--redact` as a no-op would instead leave that user believing
+they had opted into something. Record the break as a `CHANGELOG.md`
+Migration note (see the "CHANGELOG entries" section) so the user
+learns of it from the changelog, not from the traceback.
 
 - **S4** (`judgment-pair`): `cmd_judgment_pair:1834-1996`. No `--redact` in
   its argparse block (`p_jp:10463-10493`). Add the flag using the
@@ -468,9 +610,11 @@ back-compat fix this requires.
   (`TypeError`) if the param is renamed without updating them; update
   every call site to the new signature in the same commit, matching this
   phase's own citation-drift discipline already applied to
-  `transcript-analysis.py` itself. Add a regression test asserting
-  `audit-routing` with no flags now redacts by default, guarding the flip
-  itself (not just the new opt-out path).
+  `transcript-analysis.py` itself. Add two regression tests, not one:
+  `audit-routing` with no flags now redacts by default (guarding the flip),
+  and `audit-routing --no-redact` on a single root actually disables
+  redaction (guarding the opt-out path, which nothing else in this phase
+  exercises).
 - **I1** (`read-scope`): `_read_scope_report:4226-4287` uses
   `_root_index_for_path` (`scope.py:615`, scan-order) instead of
   `_redaction_ordinals` (`scope.py:180`, resolved-path-sorted) at `:4284`;
@@ -483,7 +627,26 @@ back-compat fix this requires.
   `context-distribution:3305-3319`, `edit-format:3717-3727`,
   `rearm-backtest:9731-9738`, `plan-boundary:9981-9991`. Extract shared
   `_apply_no_redact_multi_root_refusal(args, scan_roots, subcommand_name)`
-  helper; call from all 8 sites — collapses ~96 duplicated lines.
+  helper; call from all 8 sites — collapses ~96 duplicated lines. The
+  helper must **return the resolved `redact: bool`**, not be void:
+  `context-composition:5128,5132`, `cache-efficiency:5450,5454`, and
+  `cache-rebuild:5648-5658` all read a local `redact` after the block this
+  extraction removes [verified: this session's specialist review], so a
+  void helper either forces those 3 sites to recompute
+  `redact = not bool(getattr(args, "no_redact", False))` themselves —
+  contradicting the ~96-line collapse — or leaves a `NameError` if the
+  implementer deletes the assignment assuming full replacement.
+  Centralizing 8 (soon 9) independent refusal sites into one function also
+  makes that function a single point of failure for a leak-refusal
+  control, so test it directly rather than only through call sites: add a
+  dedicated allow/deny unit-test pair against
+  `_apply_no_redact_multi_root_refusal` itself (single-root allows;
+  multi-root with `--no-redact` refuses). Two of the 8 sites have **no
+  multi-root-refusal test today** — `context-composition` and
+  `rearm-backtest` [verified: this session's specialist review; the other
+  6 have `test_no_redact_refused_with_multi_root` or an equivalently-named
+  class] — so add per-site refusal tests for those two as well, or the
+  extraction can silently regress their refusal with nothing catching it.
 - Test coverage: add a `--redact`-default fixture local to each changed
   subcommand's existing test class in
   `claude/.claude/scripts/tests/test_transcript_analysis.py`.
@@ -587,10 +750,16 @@ Phase 3's citation-drift note.
   shape, at the cost of this one tradeoff. The stronger driver for this
   fix is correctness, not just consistency: `_merge_assistant_run`'s own
   docstring states `output_tokens` "ascends within the run, only reaching
-  its billed value on the last record" — meaning the current pre-fix
-  streaming code prices every raw assistant line's own `usage`
-  independently, which is very likely a real dollar-overcounting bug for
-  multi-block turns, not merely a shape-consistency nit.
+  its billed value on the last record", and that `input_tokens` and the
+  `cache_*` classes are *identical* — not delta — across every record in a
+  run [verified: this session's specialist review]. The pre-fix streaming
+  code prices every raw assistant line's own `usage` independently, so a
+  multi-block turn is overcounted twice over: the ascending output
+  component, and — the larger driver, since cache/context tokens dominate
+  spend per this repo's own `docs/cost-levers-considered.md` — the
+  identical input/cache-read/cache-write tokens re-billed once per
+  physical record. This is a real dollar-overcounting bug, not a
+  shape-consistency nit; materialize-then-dedup fixes both components.
 - Test: `TestSubagentMixDollars`,
   `claude/.claude/scripts/tests/test_transcript_analysis.py:987-1264` (7
   tests, zero requestId-sharing fixtures) — add one, mirroring the existing
@@ -615,9 +784,9 @@ Phase 3's citation-drift note.
   test pair for this new exception, mirroring the existing
   `test_code_review_over_default_under_override_allows`/`_denies` pattern
   in `test_check_skill_length.py`.
-- **C15's own target file also has zero headroom** (new — found by this
-  plan's own Opus-anchored review, the same conflict SC7/A4-A5 resolves
-  for `review-permissions/SKILL.md`; see A9): C15 below adds a sentence to
+- **C15's own target file also has zero headroom** (not in the source
+  report; the same conflict SC7/A4-A5 resolves for
+  `review-permissions/SKILL.md` — see A9): C15 below adds a sentence to
   `plugins/skill-management/skills/skill-review/SKILL.md`, which is also
   at exactly 200 lines (`wc -l` = 200) with zero headroom. Extend the same
   `limit_for()` 500-line exception added above to this file too, in the
@@ -648,9 +817,16 @@ Phase 3's citation-drift note.
   covers S12's `permissions.deny`/`defaultMode` addition.
 - **C15**: `plugins/skill-management/skills/skill-review/SKILL.md:79-81` and
   checklist item `:153-154` — add a sentence noting `check-skill-length.sh`'s
-  `limit_for()` grants `code-review/SKILL.md`, `plan-review/SKILL.md`,
-  `plan-review/ROUTING.md` (and, after this phase, `review-permissions/SKILL.md`)
-  a 500-line cap instead of 200/300.
+  `limit_for()` grants a cap above this skill's own 200/300 target to a
+  named set of files. Enumerate that set completely, against
+  `check-skill-length.sh:68-77` at dispatch time rather than from this
+  plan: it is `code-review/SKILL.md`, `plan-review/SKILL.md`,
+  `plan-review/ROUTING.md` at 500; `pr-description/SKILL.md` at **210** — a
+  fourth entry, easily missed because it is not part of the 500 group; and,
+  after this phase, both `review-permissions/SKILL.md` and this file itself
+  (`skill-review/SKILL.md`, per A9) at 500. A sentence that lists only the
+  500 group would ship a fresh docs-accuracy defect inside the phase whose
+  own job is closing them.
 - **C16**: `agent-review/SKILL.md` item 16 (`:152`, checks 2 classes:
   tool-verb + bias-anchor) is missing 2 classes that
   `skill-review/SKILL.md` item 12 (`:187-188`) already checks:
@@ -746,8 +922,8 @@ revert also removes this phase's own added content.
 
 ### Phase 8 — Instruction-surface (S11, S19, S20, D6, C14, C24, SC6)
 
-- **Length-cap headroom check** (do this first in this phase — new,
-  found by this plan's own Opus-anchored review): root `CLAUDE.md` is 182
+- **Length-cap headroom check** (do this first in this phase; not in the
+  source report): root `CLAUDE.md` is 182
   lines against `check-claude-md-length.sh`'s hook-enforced 200-line cap
   ([verified: this session, `wc -l`] — re-verify at dispatch time, since
   Phase 7's C17/I4 fix also touches this file's Commands block, though as
@@ -803,8 +979,13 @@ revert also removes this phase's own added content.
 - **C24**: `docs/rules-references.md:1` — title "References — rules" reads
   generic/plural but the 130-line file is GH-Actions-only;
   `dockerfile-conventions.md:11`, `sql-ddl-conventions.md:13-15` cite
-  sources inline instead of pointing here. Either rename the title or
-  expand the file and redirect those inline citations to it.
+  sources inline instead of pointing here. **Rename the title** to name its
+  actual scope (GitHub Actions workflow references), and leave the two
+  inline citations where they are. Expanding the file and redirecting them
+  is the larger option, but it converts a title-accuracy fix into a
+  docs-restructure spanning three files for no reader benefit this finding
+  identifies — and the inline citations are correct where they sit, per
+  CLAUDE.md's "place prose where its reader and altitude match."
 - **SC6** (informational, no code fix): `claude/.claude/CLAUDE.md` is now
   150 lines (cap 200 per `check-claude-md-length.sh:69,89`) — headroom is
   50 lines, not the report's 59. Note the current state in this phase's PR
@@ -838,15 +1019,30 @@ revert also removes this phase's own added content.
   landing the full `"S"` ruleset as written would either force ~2,000
   non-test findings into one non-PR-sized diff or break CI for every
   subsequent PR, including this phase's own commit. Split: **(a)** add
-  `"S"` to `pyproject.toml:6`'s select list, plus one
-  `[tool.ruff.lint.per-file-ignores]` entry silencing `S101` on test-glob
-  paths (closes 100% of that class with no per-line judgment needed), plus
-  a second, repo-wide `ignore =` entry for the deferred non-test codes
-  (`S603,S607,S108,S105,S103,S311`) — without this second entry, this
+  `"S"` to `pyproject.toml:6`'s select list, an `S101` ignore on test-glob
+  paths (closes 100% of that class with no per-line judgment needed), and a
+  repo-wide `ignore =` entry for the deferred non-test codes
+  (`S603,S607,S108,S105,S103,S311`). Three constraints on how those two
+  ignore entries are written:
+
+  - Add the `S101` glob as a new **row inside the existing**
+    `[tool.ruff.lint.per-file-ignores]` table (`pyproject.toml:12`, already
+    populated), not as a second table header. TOML forbids a repeated table
+    header, and `[tool.pytest.ini_options]` lives in the same file, so a
+    duplicate breaks pytest collection as well as ruff [verified: this
+    session's specialist review].
+  - Give the `ignore =` entry a one-line comment naming what was deferred
+    and pointing at this plan's Out-of-Scope entry. CLAUDE.md's
+    suppression-rationale rule is not satisfied by a rationale that lives
+    only in a plan file.
+  - Scope `S103` narrowly if practical — see the closing note on this
+    bullet.
+
+  Both ignore entries land in this phase: without the repo-wide one, this
   phase's own commit leaves the 2,041 residual findings unsuppressed and
   breaks the CI Lint gate it is meant to fix, contradicting this plan's
-  own Verification claim of no unexpected CI failure. Both ignore entries
-  land in this phase. **(b)** the remaining ~100-file `S603`/`S607`/
+  own Verification claim of no unexpected CI failure. **(b)** the
+  remaining ~100-file `S603`/`S607`/
   `S108`/`S105`/`S103`/`S311` triage (each needing a judgment call between
   a real fix and replacing the blanket ignore with a per-line
   `# noqa: S... — <rationale>` per CLAUDE.md's suppression-rationale rule,
@@ -854,7 +1050,16 @@ revert also removes this phase's own added content.
   phase** — see Out of Scope. This means Phase 9 lands the ruleset fully
   enabled but with the non-test codes globally suppressed rather than
   individually triaged; (b) is what narrows that suppression down to real
-  fixes and named exceptions over time.
+  fixes and named exceptions over time. One consequence to state rather
+  than discover later: `S103` is bad-file-permissions — the exact construct
+  class Phase 4's S16 hardens (`os.chmod(tmp_name, 0o600)` on the PR-cost
+  ledger). Suppressing it repo-wide gives that fix zero forward regression
+  protection: a later edit reintroducing loose ledger permissions passes
+  lint. Prefer scoping `S103` to a `per-file-ignores` row that excludes
+  `transcript-analysis.py`; if its residual `S103` count there makes that
+  impractical, record the exception in the Out-of-Scope entry so whoever
+  picks up (b) knows `S103` is the one deferred code with a same-plan fix
+  behind it.
 - **I5** (Very Low, informational, no fix needed): `dependabot.yml:7` limit
   is 3; exactly 2 actions are pinned repo-wide. Note only.
 - **D1**: `evals/test_measure_subagent_model_resolution.py` (876 lines) has
@@ -937,22 +1142,37 @@ noqas.
   `_lib_resolve_claude_pid` and `marker.sh`'s `clear-stale:361`. No format
   change needed to markers themselves — the marker write path
   (`marker.sh:63-72`) already only ever writes a bare PID, and every stored
-  PID has a `$CONFIG_DIR/sessions/<pid>` entry to check against. Third
+  PID has a `$CONFIG_DIR/sessions/<pid>` entry to check against. Add a
+  boundary-condition regression test for the new helper directly (live PID,
+  dead PID, and a recycled PID whose recorded start time does not match),
+  independent of any caller — matching the dedicated-test instruction
+  Phase 1's C7 and Phase 4's S17 both carry for structurally identical
+  extractions. A PID-liveness bug that misjudges a live session as dead
+  silently clears a live gate marker, and no caller's existing suite
+  asserts that boundary. Third
   migration target: `nudge-handoff-near-context-cap.sh:348-388`
   independently implements the identical idiom (same
   `$CONFIG_DIR/sessions/<pid>` 2-line format, same `TZ=UTC LC_ALL=C ps -o
   lstart=` comparison) — [verified: this session's specialist review].
   Migrate it to the new helper too, so this plan's SC1/S14
   idiom-unification thesis (Phase 1) doesn't leave a third copy of the
-  exact pattern it exists to close standing in a different phase.
+  exact pattern it exists to close standing in a different phase. The two
+  sites' invocation shape differs, though, and the difference is
+  documented as load-bearing at one of them: `_lib.sh:857` runs
+  `TZ=UTC LC_ALL=C _lib_capped ps ...` (bare prefix) while
+  `nudge-handoff-near-context-cap.sh:382` runs
+  `_lib_capped env TZ=UTC LC_ALL=C ps ...`, with a comment stating the
+  `env` indirection exists because `timeout` execs a leading `VAR=val` as
+  the program name and exits 127 [verified: this session's specialist
+  review]. Before standardizing all 3 callers on one form, confirm
+  empirically — run both, compare output and exit status — rather than by
+  inspection; adopt the `env` form if they diverge.
 - **C18**: `plugins/lovable-cloud/skills/lovable-cloud-migration-sync/SKILL.md:3-8`
-  still has TRIGGER prose plus `disable-model-invocation: true`. Corrected
-  count — [verified: this session's specialist review]: only 2 skills
-  repo-wide carry that flag, `pr-description-claude-config/SKILL.md` and
-  this one; the other 2 skill names an earlier draft of this plan cited
-  (`plan-review-claude-config`, `code-review-claude-config`) do not exist
-  as files anywhere in the repo. The underlying fix stands on its own
-  logic regardless of the count: `pr-description-claude-config/SKILL.md`
+  still has TRIGGER prose plus `disable-model-invocation: true`. Only 2
+  skills repo-wide carry that flag — [verified: this session's specialist
+  review] — `pr-description-claude-config/SKILL.md` and this one. The fix
+  stands on its own logic regardless of the count:
+  `pr-description-claude-config/SKILL.md`
   correctly omits TRIGGER prose given `disable-model-invocation: true`
   makes auto-dispatch routing moot, and this skill should match. Strip the
   TRIGGER/DO NOT TRIGGER lines from its description.
@@ -1035,11 +1255,25 @@ noqas.
 - **D15**: `test_require_stow_reminder.py` — every `--title` usage supplies
   a fixed literal; none places the marker string inside `--title`. Add one
   test with the marker in `--title`, no `--body` marker, asserting allow.
-- **SC2 + shared-helper extraction**: 4 confirmed exact-duplicate 30-day
-  eviction sweeps: `nudge-error-mode-analysis.sh:151,176`,
+- **SC2 + shared-helper extraction**: 4 near-duplicate 30-day eviction
+  sweeps: `nudge-error-mode-analysis.sh:151,176`,
   `nudge-handoff-near-context-cap.sh:549`, `nudge-worktree-anchor.sh:167`,
-  `advance-past-commit-stall.sh:204`. Extract a shared
-  `_lib_evict_stale_state_files DIR [-type f]` helper in `_lib.sh`.
+  `advance-past-commit-stall.sh:204`. These are **not** behaviorally
+  identical, and the extraction must not flatten the difference
+  [verified: this session's specialist review]: the first two run
+  `find "$DIR" -maxdepth 1 -mtime +30 -delete` with no `-type f` and no
+  directory guard, while the last two add `-type f` *and* a preceding
+  `[ -d "$DIR" ] && [ ! -L "$DIR" ]` symlink guard. A single
+  `_lib_evict_stale_state_files DIR [-type f]` signature would either drop
+  the symlink guard from the two sites that have it — reopening a
+  symlink-follow foot-gun in a `-delete` sweep — or silently narrow the
+  other two sites to files-only.
+
+  Give the helper the type restriction and the symlink/directory guard as
+  two independent explicit parameters, and state per call site which
+  behavior it keeps. Where a site gains a protection it lacked (the symlink
+  guard for the first two), call that out in the PR description as
+  deliberate hardening rather than letting it ride as a refactor.
   `review-ledger.sh:_sweep_stale_ledger_files:73-92` implements a fifth,
   related sweep (same `-mtime +30 -delete` shape, per its own comment) but
   is deliberately excluded from this extraction — [verified: this
@@ -1048,7 +1282,12 @@ noqas.
   deleting unconditionally, so forcing it into
   `_lib_evict_stale_state_files DIR [-type f]`'s narrower signature would
   either lose that behavior or bloat the shared helper for one caller —
-  see Out of Scope.
+  see Out of Scope. Add a boundary-condition regression test for
+  `_lib_evict_stale_state_files` directly (a 29-day-old file survives, a
+  31-day-old file is deleted, a symlinked `DIR` is refused under the
+  guard), independent of any caller — same rationale as C10's above: an
+  off-by-one at the 30-day boundary propagates to all 4 callers with
+  nothing but incidental per-caller assertions behind it.
 - **SC3**: `cleanup-merged-branches.sh:767` — `git fetch --prune` runs
   inside the per-branch loop (`:705-793`). Hoist a single fetch before the
   loop; adjust auto-pruned-detection to use the one batch fetch's output.
@@ -1134,12 +1373,33 @@ phase's diff landing first.
   not actually being reused by code Phase 5 adds nearby) that per-phase
   verification, scoped to each phase's own diff, cannot see.
 
+**Run every `pytest` command above as the two passes CI uses**, not as one
+invocation: `-m "not timing"` under the default `-n auto`, then
+`-m timing -n0` serially. `pyproject.toml`'s own marker documentation
+states timing-marked tests must run serially to avoid parallel-load
+flakiness, and 21 such tests span 10 files including
+`claude/.claude/hooks/tests/test_deny_pii_in_commits.py`, `test_lib.py`
+(Phase 1's own targets) and `test_transcript_analysis.py` (Phases 3-5)
+[verified: this session's specialist review]. A single unsplit local run
+can pass where CI fails, or fail on a wall-clock assertion CI would not
+reproduce.
+
 Every phase also runs `/code-review` before its commit (repo-wide gate,
-hook-enforced via `require-code-review.sh`) and, since this repo carries
-`.claude/worktree-required`, each phase's `code-writer` dispatch operates
-inside this plan's own worktree (`.claude/worktrees/discovery-audit-remediation-plan`)
-— no `isolation: worktree` per-phase, since these are PR-bound implementation
-dispatches per `CLAUDE.md`'s Agent Briefing.
+hook-enforced via `require-code-review.sh`), which is also what dispatches
+`/skill-review` and `/agent-review` per
+`.claude/rules/review-pipeline-dispatch.md`. Two phases stage files that
+make `/skill-review` a hard commit gate rather than a dispatcher courtesy —
+`require-skill-review.sh` denies any commit staging
+`claude/.claude/skills/**/SKILL.md` or `plugins/*/skills/**/SKILL.md`:
+Phase 3 (S15 edits `transcript-analysis/SKILL.md` and
+`transcript-narrative/SKILL.md`) and Phase 10 (C18 edits
+`plugins/lovable-cloud/skills/lovable-cloud-migration-sync/SKILL.md`).
+Treat it as a blocker in those two phases the way plugin version bumps are
+treated elsewhere in this plan, not as something `/code-review` will
+happen to cover. Phase 7's C14 and Phase 10's C25 edit agent files
+(`staff-data-engineer.md`, `staff-analytics-engineer.md`, `code-writer.md`,
+`Explore.md`), where `/agent-review` is dispatcher-invoked and not
+hook-enforced.
 
 ## Out of scope
 
@@ -1154,10 +1414,9 @@ dispatches per `CLAUDE.md`'s Agent Briefing.
   `S30`, `I3`, `SC8`, each tagged "### N/A — reviewed and confirmed sound"
   in `findings.md` — are not remediated (by definition: each was reviewed
   and found to need no code change). [verified: this session, `awk`-based
-  section-header mapping against `findings.md`; this same check caught
-  that `S24` (Low) and `D5`/`D6`/`D7` (Medium) were *not* N/A-tagged and
-  had been dropped from an earlier draft of this plan's bucketing — they
-  are folded into Phases 6-9 above.]
+  section-header mapping against `findings.md`. `S24` (Low) and
+  `D5`/`D6`/`D7` (Medium) are *not* N/A-tagged despite reading that way at
+  a glance — they are actionable and are placed in Phases 6-9 above.]
 - `C13`'s aside about a `python3` version-floor mismatch between
   `install.sh` (3.11) and another script's stated 3.10+ — the finding
   itself only requires fixing `docs/scripts.md`'s wrong claim about
