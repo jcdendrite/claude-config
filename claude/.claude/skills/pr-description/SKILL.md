@@ -154,6 +154,7 @@ Flag and fix:
   content (deployment order, feature names, step numbers) still match —
   a removed guard or deleted structure must be gone from the body too.
 - **External-state claims.** **Content-claim verification** covers files in this repo; this covers state outside it — most often a follow-up ticket said to be pending, or promised as `will create`. Re-check each claim at its own source, then rewrite it to its current truth value; carry an identifier across only where the body already names that tracker — never invent a fresh reference for a claim the body didn't already make. Whether CI is *wired up* is such a claim; whether CI is *passing* is not — that is stripped under **Reviewer-action items Claude can answer itself**.
+- **Uncited numbers and causal claims.** A cost figure, latency delta, or "fixes X because Y" claim surviving into the body must name the code, config, or query it came from — verified once in some other artifact isn't verified here.
 - `TBD` / `pending` / "to be updated" markers still in the body.
 - Files in the diff absent from the body.
 - **Missing or duplicated attribution trailer.** Older bodies may carry the trailer only at the bottom — add it as the first line too. Never end up with more than one copy at either position.
