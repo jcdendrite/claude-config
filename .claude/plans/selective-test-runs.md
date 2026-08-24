@@ -157,6 +157,9 @@ push, so the local run doesn't need to be exhaustive to remain safe.
       `plugins/lovable-cloud/lib/` also adds `claude/.claude/hooks/tests/`
       — `test_shellcheck.py` lints every tracked shell script in the repo,
       not only `claude/.claude/hooks/`.
+    - A change to `claude/.claude/skills/handoff/SKILL.md` also adds
+      `claude/.claude/scripts/tests/` — `test_check_handoff.py` reads that
+      exact file by path.
   - Global triggers (any changed file among these → run the full suite,
     no domain narrowing): `claude/.claude/tests/helpers.py` (imported by
     hooks/, scripts/, skills/, and plugins/lovable-cloud/ test dirs),

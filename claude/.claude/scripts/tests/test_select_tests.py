@@ -127,6 +127,61 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
+    def test_handoff_skill_md_change_also_selects_scripts_tests(self):
+        """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads
+        HANDOFF_SKILL_MD's exact file by path, not by import. Without this
+        cross-domain exception, the skills domain rule claims the path first
+        and test_check_handoff.py goes unrun."""
+        result = _mod.select_pytest_targets([_mod.HANDOFF_SKILL_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_skill_management_hooks_and_skills_change_is_unmatched_and_falls_open(self):
+        """No DOMAIN_RULES entry matches plugins/ broadly, only
+        LOVABLE_CLOUD_DIR is scoped that way.
+
+        So a hooks/*.sh or SKILL.md change under a non-lovable-cloud plugin
+        falls open to the full suite rather than silently under-selecting.
+        This locks in that safety net for skill-management specifically.
+        """
+        result = _mod.select_pytest_targets(["plugins/skill-management/hooks/require-skill-review.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+        result = _mod.select_pytest_targets(["plugins/skill-management/skills/skill-review/SKILL.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_npm_semver_hooks_and_skills_change_is_unmatched_and_falls_open(self):
+        """Same safety net as skill-management, for npm-semver."""
+        result = _mod.select_pytest_targets(["plugins/npm-semver/hooks/require-npm-version-bump.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+        result = _mod.select_pytest_targets(["plugins/npm-semver/skills/npm-semver/SKILL.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_plugin_semver_hooks_and_skills_change_is_unmatched_and_falls_open(self):
+        """Same safety net as skill-management, for plugin-semver."""
+        result = _mod.select_pytest_targets(["plugins/plugin-semver/hooks/require-plugin-version-bump.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+        result = _mod.select_pytest_targets(["plugins/plugin-semver/skills/plugin-semver/SKILL.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_claude_hook_review_skills_change_is_unmatched_and_falls_open(self):
+        """Same safety net as skill-management, for claude-hook-review.
+
+        This plugin has no hooks/ directory of its own, only skills/, so
+        only the SKILL.md case applies.
+        """
+        result = _mod.select_pytest_targets(["plugins/claude-hook-review/skills/claude-hook-review/SKILL.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
     def test_multi_domain_change_unions_both_target_sets(self):
         result = _mod.select_pytest_targets([
             "claude/.claude/scripts/mark-terminal.py",
@@ -295,10 +350,12 @@ class TestComputeChangedPathsGitSmoke:
 
     def test_modified_tracked_file_is_included(self, tmp_path):
         """An uncommitted modification to an already-tracked, already-pushed
-        file must show up in the computed changed-set -- distinct from the
-        untracked-file case below, this exercises `git diff --name-only
-        HEAD`'s tracked-modification path rather than `git ls-files
-        --others`'s untracked-file path."""
+        file must show up in the computed changed-set.
+
+        Exercises `git diff --name-only HEAD`'s tracked-modification path,
+        distinct from `test_working_tree_dirty_file_is_included` below,
+        which exercises `git ls-files --others`'s untracked-file path.
+        """
         local, _bare = _make_repo_with_remote(tmp_path)
         hooks_dir = local / "claude" / ".claude" / "hooks"
         hooks_dir.mkdir(parents=True)
@@ -336,9 +393,9 @@ class TestComputeChangedPathsGitSmoke:
         left as an unverified comment claim."""
         local, _bare = _make_repo_with_remote(tmp_path)
         # Pinned explicitly rather than inherited, matching _init_repo's own
-        # --initial-branch=main precedent -- this test's assertion depends
-        # on core.quotePath's *default* value, not whatever the executing
-        # machine's ambient git config happens to set.
+        # --initial-branch=main precedent.
+        # This test's assertion depends on core.quotePath's *default* value,
+        # not whatever the executing machine's ambient git config sets.
         subprocess.run(["git", "config", "core.quotePath", "true"], cwd=local, check=True)
         scripts_dir = local / "claude" / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
@@ -349,6 +406,25 @@ class TestComputeChangedPathsGitSmoke:
 
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
+
+    def test_deleted_tracked_file_is_included(self, tmp_path):
+        """A deleted-but-committed-then-deleted-again path must still show
+        up in the computed changed-set. `git diff --name-only` reports
+        deletions the same way it reports modifications."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        hooks_dir = local / "claude" / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        tracked_file = hooks_dir / "removed-hook.sh"
+        tracked_file.write_text("#!/usr/bin/env bash\n")
+        subprocess.run(["git", "add", "claude/.claude/hooks/removed-hook.sh"], cwd=local, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add hook"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=local, check=True)
+
+        tracked_file.unlink()
+
+        changed = _mod.compute_changed_paths(local)
+
+        assert "claude/.claude/hooks/removed-hook.sh" in changed
 
     def test_merge_base_lookup_failure_raises_for_caller_to_fall_open(self, tmp_path):
         """No origin remote configured at all (so origin/main can't
@@ -378,6 +454,19 @@ class TestResolveRepoRoot:
 
         assert result == tmp_path
 
+    def test_returns_git_rev_parse_stdout_when_it_succeeds(self, tmp_path):
+        """Direct unit test of the success branch, distinct from the
+        module-level _REPO_ROOT dogfood call above, which exercises the
+        same branch only indirectly against a real git checkout."""
+        toplevel = tmp_path / "some-repo-root"
+
+        def fake_run(cmd, **kwargs):
+            return _FakeCompletedProcess(stdout=f"{toplevel}\n")
+
+        result = _mod.resolve_repo_root(cwd=tmp_path, run=fake_run)
+
+        assert result == toplevel
+
 
 class TestRunGitFailureModes:
     """_run_git's own exception-to-None mapping, exercised via the run= DI
@@ -402,15 +491,17 @@ class TestRunGitFailureModes:
 
 class TestComputeChangedPathsFailureModes:
     """compute_changed_paths' GitDiffUnavailable branches for the dirty-diff
-    and untracked-list calls, exercised via the run= DI seam -- distinct
-    from TestComputeChangedPathsGitSmoke's real-git fixtures, which cover
-    the merge-base lookup failure but not these two calls."""
+    and untracked-list calls, exercised via the run= DI seam.
+
+    TestComputeChangedPathsGitSmoke's real-git fixtures cover the
+    merge-base lookup failure but not these two calls.
+    """
 
     def test_dirty_diff_failure_raises_git_diff_unavailable(self, tmp_path):
         def fake_run(cmd, **kwargs):
-            if cmd[1] == "merge-base":
+            if "merge-base" in cmd:
                 return _FakeCompletedProcess(stdout="deadbeef\n")
-            if cmd[1] == "diff" and cmd[3] == "HEAD":
+            if "diff" in cmd and "HEAD" in cmd:
                 return _FakeCompletedProcess(returncode=1)
             return _FakeCompletedProcess(stdout="")
 
@@ -419,9 +510,9 @@ class TestComputeChangedPathsFailureModes:
 
     def test_untracked_list_failure_raises_git_diff_unavailable(self, tmp_path):
         def fake_run(cmd, **kwargs):
-            if cmd[1] == "merge-base":
+            if "merge-base" in cmd:
                 return _FakeCompletedProcess(stdout="deadbeef\n")
-            if cmd[1] == "ls-files":
+            if "ls-files" in cmd:
                 return _FakeCompletedProcess(returncode=1)
             return _FakeCompletedProcess(stdout="")
 

@@ -12,8 +12,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
-# Hang-detection backstop, not a measured worst case — sized between
-# post-crash-sessions.py's 5.0s and 25.0s timeouts.
+# Hang-detection backstop, not a measured worst case.
+# Sized between post-crash-sessions.py's 5.0s and 25.0s timeouts.
 _GIT_TIMEOUT_SECONDS = 15.0
 
 # --- Domain rule table -------------------------------------------------
@@ -54,10 +54,16 @@ SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 # enough to otherwise claim this path ahead of the unmatched-path fallback.
 LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.json"
 
-# Mirrors CI's own collectible pytest scope (see pyproject.toml's pythonpath
-# and .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
-# plugins/lovable-cloud/ is the only plugins/ subtree with a tests/ directory.
-FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "plugins/lovable-cloud/")
+# check-handoff.py hardcodes this path and test_check_handoff.py reads it
+# directly by path, not by import — the same undeclared-dependency shape as
+# TRANSCRIPT_ANALYSIS_TEST_GLOB and LOVABLE_CLOUD_PLUGIN_MANIFEST.
+HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
+
+# Matches CI's own collectible pytest scope verbatim (see
+# .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
+# Targeting plugins/ instead of enumerating individual plugin subtrees means
+# a new plugin gaining a tests/ directory is covered automatically.
+FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "plugins/")
 
 # Each path below forces a full-suite run rather than a domain selection:
 # - claude/.claude/tests/helpers.py is imported by every domain's own test dir
@@ -110,22 +116,28 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (predicate, target paths added when it matches) — a cross-domain exception.
 # Nothing here checks completeness against real cross-domain file reads in
 # the test suite. When a test starts reading a file outside its own
-# domain-rule tree by path or subprocess — as TRANSCRIPT_ANALYSIS_TEST_GLOB
-# and LOVABLE_CLOUD_PLUGIN_MANIFEST both needed — audit this table by hand
-# and add the matching entry.
+# domain-rule tree by path or subprocess, audit this table by hand and add
+# the matching entry.
 #
-# test_hook_alignment.py and test_lib.py each glob plugins/*/hooks/*.sh,
-# folding plugins/lovable-cloud/hooks/ into HOOKS_TESTS_DIR's checks.
-# test_skills.py globs plugins/*/skills/*/SKILL.md, plugins/*/skills/**/
-# REFERENCES.md, plugins/*/agents/*.md, and plugins/*/skills/*/evals/
-# *-cases.json, folding plugins/lovable-cloud/skills/ and
-# plugins/lovable-cloud/agents/ into SKILLS_TESTS_DIR's checks.
-# test_shellcheck.py lints every tracked shell script in the repo, folding
-# plugins/lovable-cloud/scripts/ and plugins/lovable-cloud/lib/ into
-# HOOKS_TESTS_DIR's checks too.
+# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB shells into hook
+# scripts and reads SKILL.md files by path.
+# _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
+# validator scripts and eval runner it exercises.
+# LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
+# globs every plugin's plugin.json by path.
+# _is_lovable_cloud_hooks_change: test_hook_alignment.py and test_lib.py
+# (HOOKS_TESTS_DIR) glob plugins/*/hooks/*.sh.
+# _is_lovable_cloud_skills_or_agents_change: test_skills.py (SKILLS_TESTS_DIR)
+# globs plugins/*/skills/*/SKILL.md and plugins/*/agents/*.md.
+# _is_lovable_cloud_shell_script_change: test_shellcheck.py (HOOKS_TESTS_DIR)
+# lints every tracked shell script in the repo, not only claude/.claude/hooks/.
+# HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) reads this exact
+# file by path.
 # lovable-cloud is the only plugin whose own DOMAIN_RULES entry is broad
 # enough to otherwise claim these paths ahead of the cross-plugin scans that
 # actually read them.
+# See TestSelectPytestTargets' unmatched-path cases for the other plugins,
+# which rely on no DOMAIN_RULES entry matching them at all.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -133,6 +145,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_lovable_cloud_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_lovable_cloud_skills_or_agents_change, (SKILLS_TESTS_DIR,)),
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
 )
 
 
