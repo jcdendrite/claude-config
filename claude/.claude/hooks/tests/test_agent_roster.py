@@ -86,9 +86,9 @@ NON_REVIEWER_MODELS = {
 # dispatches span a difficulty range rather than uniformly hard work
 # (see CLAUDE.md "Model & Effort Routing" and design-decisions.md §24).
 # plan-architect also sits outside CANARY_AGENTS but gets "xhigh", not "high"
-# like code-writer: /plan-review does run downstream, but it reviews the plan
+# like code-writer. /plan-review does run downstream, but it reviews the plan
 # document's plausibility, not executable behavior the way /code-review's test
-# suite backstops code-writer's diffs — a strategically wrong but well-written
+# suite backstops code-writer's diffs. A strategically wrong but well-written
 # design can still read as plausible and clear that review (design-decisions.md §24, §30).
 EXPECTED_EFFORT = {
     "Explore.md": "low",
