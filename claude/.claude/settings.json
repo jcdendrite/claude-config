@@ -67,6 +67,8 @@
     ]
   },
   "model": "sonnet",
+  "disableArtifact": true,
+  "disableWorkflows": true,
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
