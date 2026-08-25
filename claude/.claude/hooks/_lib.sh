@@ -99,7 +99,10 @@ _lib_realpath_m() {
 # it whole on every fire. Used by nudge-handoff-near-context-cap.sh (see
 # docs/handoff-nudge.md "What the hook does") and nudge-long-turn-subagent.sh.
 # Known limitation: on a scan timeout in the slow path below, this returns
-# OFFSET unchanged rather than partial progress.
+# OFFSET unchanged rather than partial progress. Total absence of `tail`
+# from PATH makes the fast path above silently and permanently freeze the
+# offset at CURRENT_SIZE, indistinguishable from the file genuinely ending
+# in a newline.
 _lib_advance_offset_past_complete_lines() {
   local transcript_path="$1" offset="$2" current_size="$3"
   if [ "$current_size" -le "$offset" ] 2>/dev/null; then

@@ -22,6 +22,18 @@
 #
 # Fail-open everywhere: any unexpected error (missing jq, missing _lib.sh,
 # malformed input) exits 0 with no stdout.
+#
+# Known gaps:
+# - A stalled or hung dispatch producing zero new turns is NOT detected --
+#   this nudge only fires on turn *count* crossing the threshold, never on a
+#   dispatch stalling without advancing turns. See
+#   .claude/plans/prevent-runaway-subagent-cost.md and
+#   docs/design-decisions.md §32 for the fuller rationale.
+# - Registered system-wide on every subagent dispatch, unlike
+#   nudge-handoff-near-context-cap.sh's main-session-only registration. This
+#   widens the pre-existing `_lib_capped_for` timeout-absent exposure
+#   (docs/handoff-nudge.md, docs/commit-stall-block.md) to every subagent
+#   dispatch.
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
@@ -121,9 +133,9 @@ HOOK_EVENT=""
 ) 2>/dev/null || true
 [ -z "$SESSION_ID" ] && exit 0
 
-# Only registered under PostToolBatch; an unrecognized value degrades to that
-# label rather than an unlabeled misfire, mirroring
-# nudge-handoff-near-context-cap.sh's own fallback treatment of this same
+# Only registered under PostToolBatch. An unrecognized HOOK_EVENT value
+# degrades to that label rather than surfacing as an unlabeled misfire -- the
+# same fallback nudge-handoff-near-context-cap.sh uses for this same
 # untrusted jq-extracted field.
 case "$HOOK_EVENT" in
   PostToolBatch) ;;
@@ -154,16 +166,17 @@ NUDGE_LOG="$CONFIG_DIR/.long-turn-nudge.log"
 mkdir -p "$MARKER_DIR" 2>/dev/null || true
 
 # Already fired: this dispatch already got its one nudge, so every later
-# fire is pure counter upkeep with no scan or re-emit.
+# fire exits here immediately with no counter upkeep, scan, or re-emit.
+# FIRED_MARKER is a directory (see the mkdir claim below), so -e, not -f.
 FIRED_MARKER="${MARKER_DIR}/${SESSION_ID}"
-if [ -f "$FIRED_MARKER" ]; then
+if [ -e "$FIRED_MARKER" ]; then
   exit 0
 fi
 
-# Sampled cadence: append one byte per fire (O_APPEND is atomic for a write
-# this small, same technique nudge-handoff-near-context-cap.sh's own
-# IGNORED_MARKER uses) and only run the scan/threshold check on every
-# SAMPLE_CADENCE'th fire. Every other fire exits here having done only this
+# Sampled cadence: each fire appends one byte, and the scan/threshold check
+# runs only on every SAMPLE_CADENCE'th fire. O_APPEND is atomic for a write
+# this small, the same technique nudge-handoff-near-context-cap.sh's own
+# IGNORED_MARKER uses. Every other fire exits here having done only this
 # cheap append -- no transcript read at all.
 resolve_sample_cadence
 INVOCATION_MARKER="${MARKER_DIR}/${SESSION_ID}-invocations"
@@ -176,7 +189,7 @@ case "$INVOCATION_COUNT" in ''|*[!0-9]*) exit 0 ;; esac
 # entries here. Runs only on this sampled fire, not every fire, so the
 # sweep's own directory listing doesn't undercut the cheap-fire framing
 # above.
-find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
+_lib_capped_for 2 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 
 SCAN_STATE_FILE="${MARKER_DIR}/${SESSION_ID}-scan"
 _scan_turn_count_cached "$TRANSCRIPT_PATH" "$SCAN_STATE_FILE" || exit 0
@@ -186,20 +199,24 @@ if [ "$TURN_COUNT" -lt "$THRESHOLD" ] 2>/dev/null; then
   exit 0
 fi
 
-# Fire: build the nudge JSON first and only write the marker/log if it
-# actually produced output, so a jq failure never burns this dispatch's one
-# shot silently.
+# Build the nudge JSON before taking the claim: a jq failure never touches
+# FIRED_MARKER, so a later fire still gets to retry -- no rollback needed.
 # shellcheck disable=SC2016 # single-quoted on purpose: $turns/$threshold are jq --argjson bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" --argjson turns "$TURN_COUNT" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
     additionalContext: ("This subagent dispatch has reached " + ($turns|tostring) + " turns, past this repo'\''s measured outlier threshold (" + ($threshold|tostring) + " turns; see docs/design-decisions.md for the corpus basis). If the task is not close to done, consider stopping now and reporting back to the parent/orchestrator instead of continuing indefinitely -- a runaway dispatch is far cheaper to catch here than after many more turns. If genuinely close to done, ignore this and finish.")
   }
-}' 2>/dev/null) && [ -n "$OUTPUT" ] && {
-  printf 'nudged session=%s turns=%s threshold=%s event=%s\n' \
-    "$SESSION_ID" "$TURN_COUNT" "$THRESHOLD" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
-  touch "$FIRED_MARKER" 2>/dev/null || true
-  printf '%s' "$OUTPUT"
-}
+}' 2>/dev/null) && [ -n "$OUTPUT" ] || exit 0
+
+# Atomic claim: mkdir is atomic across concurrent processes. Two
+# near-simultaneous fires can both build OUTPUT before either claims; only
+# one of them can win this mkdir, so the loser discards its OUTPUT and exits
+# without emitting a duplicate nudge.
+mkdir "$FIRED_MARKER" 2>/dev/null || exit 0
+
+printf 'nudged session=%s turns=%s threshold=%s event=%s\n' \
+  "$SESSION_ID" "$TURN_COUNT" "$THRESHOLD" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
+printf '%s' "$OUTPUT"
 
 exit 0

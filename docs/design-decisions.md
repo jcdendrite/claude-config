@@ -400,7 +400,7 @@ That left one real hazard inside `/code-review` itself: step 3 invokes `/code-re
 
 ## 32. Subagent turn-count nudge threshold, and a renewed rejection of a hard per-dispatch cap (2026-08-24)
 
-`nudge-long-turn-subagent.sh` (`claude/.claude/hooks/`) nudges — informational only, never blocking — when a subagent dispatch's own turn count crosses a measured outlier threshold. The threshold, 340, was chosen from a corpus scan of every `subagents/*.jsonl` transcript across this machine's personal-account corpus (4,058 dispatches with recorded turns): p50 = 28 turns, p90 = 82, p95 = 136, p99 = 339, max = 4,178 (`.claude/plans/prevent-runaway-subagent-cost.md`'s M3 bullet). 340 sits just above that measured p99, so the hook nudges only the same roughly-1%-outlier tail the corpus scan identified, not ordinary long-running work. The incident that motivated this mechanism — a single `general-purpose` dispatch that ran 2,524 turns over 20+ hours, re-dispatching a full specialist panel from scratch on every interruption instead of resuming, and costing roughly $301 of a $480 branch total before ever reaching a commit — would have crossed this threshold after roughly 13% of its eventual turn count.
+`nudge-long-turn-subagent.sh` (`claude/.claude/hooks/`) nudges — informational only, never blocking — when a subagent dispatch's own turn count crosses a measured outlier threshold. The threshold, 340, was chosen from a corpus scan of every `subagents/*.jsonl` transcript across this machine's personal-account corpus (4,058 dispatches with recorded turns): p50 = 28 turns, p90 = 82, p95 = 136, p99 = 339, max = 4,178 (`.claude/plans/prevent-runaway-subagent-cost.md`'s M3 bullet). 340 sits just above that measured p99, so the hook nudges only the same roughly-1%-outlier tail the corpus scan identified, not ordinary long-running work. The incident that motivated this mechanism (see `.claude/plans/prevent-runaway-subagent-cost.md`'s Context section for the full narrative) would have crossed this threshold after roughly 13% of its eventual turn count.
 
 The hook checks and fires on a sampled cadence (every 10th `PostToolBatch` fire, `LONG_TURN_NUDGE_SAMPLE_CADENCE`) rather than every one, and tracks the running turn total incrementally via a small per-dispatch state file rather than a full-transcript rescan on every fire — both chosen to bound the added jq/tail overhead across every subagent dispatch system-wide, not just this one. It fires at most once per dispatch (no re-arm, no escalation ladder): unlike `nudge-handoff-near-context-cap.sh`'s hard-block-after-N-ignored-re-arms design, a turn-count nudge is a coarse "check this is still on track" signal a human or orchestrator acts on once, not a per-turn budget to keep re-litigating.
 
@@ -408,7 +408,7 @@ A hard per-dispatch turn or time cap — killing a dispatch outright at some cei
 
 ### Sources
 
-- `.claude/plans/prevent-runaway-subagent-cost.md` — full plan, corpus measurement, and the M3 mechanism this hook implements.
+- `.claude/plans/prevent-runaway-subagent-cost.md` — full plan, corpus measurement, and the turn-count-nudge mechanism this hook implements.
 - §10 — `check-runner`'s `maxTurns: 20` charter-scoping rationale.
 - §11 — `code-writer`'s deliberate absence of a turn cap.
 - `docs/case-studies/check-runner.md` — the Retirement section's follow-on measurement.

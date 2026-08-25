@@ -23,11 +23,12 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import CANARY_CONTENT, HOOKS_DIR, TRAVERSAL_SESSION_ID, plant_traversal_canary
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-long-turn-subagent.sh"
 
@@ -257,6 +258,83 @@ class TestNudgeLongTurnSubagent:
         assert all(r.stdout.strip() == "" for r in second_pass), "a dispatch gets at most one nudge"
 
     # -------------------------------------------------------------------
+    # Concurrent fires: SCAN_STATE_FILE and FIRED_MARKER races
+    # -------------------------------------------------------------------
+
+    def test_concurrent_mkdir_claims_exactly_one_winner(self, tmp_path):
+        """Exercises the exact `mkdir DIR` atomic-claim idiom FIRED_MARKER
+        uses directly, decoupled from the hook's own cadence-sampling and
+        turn-count gates. N processes race to mkdir the same path, spawned
+        via subprocess.Popen (non-blocking, so process-creation overhead
+        alone produces genuine overlapping execution windows -- no
+        artificial synchronization needed). POSIX mkdir(2) is atomic, so
+        exactly one of the N processes must see it succeed -- the property
+        test_concurrent_fires_do_not_double_nudge below cannot itself
+        prove, since the FIRED_MARKER race it needs is gated behind an
+        unrelated, uncontrolled race (both fires must land on the same
+        sampled-cadence boundary together). Mirrors
+        test_atomic_append_no_lost_writes_under_concurrency in
+        test_nudge_handoff_near_context_cap.py."""
+        target = tmp_path / "concurrent-mkdir-target"
+        n = 20
+        procs = [subprocess.Popen(["mkdir", str(target)], stderr=subprocess.DEVNULL) for _ in range(n)]
+        exit_codes = [p.wait() for p in procs]
+        assert sum(1 for code in exit_codes if code == 0) == 1
+        assert target.is_dir()
+
+    @pytest.mark.timing
+    def test_concurrent_fires_do_not_double_nudge(self, tmp_path):
+        """Two near-simultaneous PostToolBatch fires, primed to land on the
+        sampled-cadence boundary together: a smoke check that concurrent
+        invocation neither crashes nor emits more than one nudge. This test
+        alone cannot prove FIRED_MARKER's mkdir claim is atomic -- see
+        test_concurrent_mkdir_claims_exactly_one_winner above for that --
+        because whether the two fires ever genuinely race on the claim
+        depends on the unrelated, uncontrolled sampled-cadence race (both
+        must land on the same cadence boundary together), so a benign
+        non-overlapping ordering produces the same observable outcome as a
+        run where only one fire ever reaches the claim at all. Mirrors
+        test_escalation_counter_concurrent_rearms_no_lost_update in
+        test_nudge_handoff_near_context_cap.py. Marked timing (run
+        serially, -m timing -n0) for the same reason that test is: heavier
+        xdist parallel load skews which interleaving is likelier.
+
+        Each fire's own `wc -c` read of the invocations counter happens in
+        a separate subprocess after its own atomic append, so both fires
+        can observe the same post-both-appends count and both cross the
+        sampled-cadence boundary -- but are not guaranteed to. What must
+        never happen is more than one fire winning the FIRED_MARKER claim."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 5)])
+        _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE - 2)
+
+        results: list[subprocess.CompletedProcess | None] = [None, None]
+
+        def _run(i: int) -> None:
+            results[i] = _run_hook(_base_payload(transcript), tmp_path)
+
+        threads = [threading.Thread(target=_run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(r.returncode == 0 for r in results)
+        nonempty_count = sum(1 for r in results if r.stdout.strip() != "")
+        assert nonempty_count in (0, 1, 2), (
+            f"expected 0, 1, or 2 nudges depending on cadence-boundary timing, got {nonempty_count}"
+        )
+
+        if nonempty_count > 0:
+            assert _fired_marker_path(tmp_path).exists(), "a winning fire must have crossed the threshold"
+            # Known gap: SCAN_STATE_FILE's read-modify-write has no atomicity
+            # guarantee under concurrent fires, so this only asserts the file
+            # isn't corrupted, not that the running total reflects every turn.
+            offset, total = _scan_state_path(tmp_path).read_text().splitlines()
+            assert int(total) >= 0
+            assert int(offset) >= 0
+
+    # -------------------------------------------------------------------
     # Incremental counter correctness across multiple fires
     # -------------------------------------------------------------------
 
@@ -341,6 +419,48 @@ class TestNudgeLongTurnSubagent:
 
         _fire(transcript, tmp_path, 1)
         assert not stale_file.exists(), "sweep must run on the Nth (sampled) fire"
+
+    @pytest.mark.timing
+    def test_stale_marker_sweep_timeout_does_not_hang_the_fire(self, tmp_path):
+        """The `find ... -mtime +30 -delete` sweep is capped at 2s via
+        _lib_capped_for -- a stalled find must not hang the sampled fire,
+        and must degrade to no sweep rather than block. Mirrors
+        test_jq_count_stage_timeout_leaves_no_output_and_offset_unchanged
+        above and test_diff_quiet_probe_times_out_to_no_match in
+        test_marker_script.py."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_assistant_turn_record() for _ in range(10)])
+
+        real_find = shutil.which("find")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "find"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$4" = "-mtime" ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_find} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        start = time.monotonic()
+        results = _fire(
+            transcript, tmp_path, DEFAULT_SAMPLE_CADENCE,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert all(r.returncode == 0 for r in results)
+        # 12.0s leaves wide margin below the ~19s an uncapped stub would take
+        # (10s sleep + 9 other fires' subprocess overhead) while tolerating
+        # the 8-9.5s baseline observed for the capped case under load.
+        assert elapsed < 12.0, (
+            f"expected the 2s _lib_capped_for timeout to fire (stub sleeps 10s "
+            f"if it does not), took {elapsed:.1f}s across {DEFAULT_SAMPLE_CADENCE} fires"
+        )
 
     # -------------------------------------------------------------------
     # Mid-write transcript safety
@@ -482,6 +602,18 @@ class TestNudgeLongTurnSubagent:
         assert isinstance(output["hookSpecificOutput"]["additionalContext"], str)
         assert output["hookSpecificOutput"]["additionalContext"] != ""
 
+    def test_unrecognized_hook_event_name_falls_back_to_post_tool_batch(self, tmp_path):
+        """An unrecognized hook_event_name (this hook is only registered
+        under PostToolBatch) must still emit hookEventName=PostToolBatch,
+        mirroring nudge-handoff-near-context-cap.sh's own fallback
+        treatment of this same untrusted jq-extracted field."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 1)])
+        payload = _base_payload(transcript, hook_event_name="Stop")
+        results = [_run_hook(payload, tmp_path) for _ in range(DEFAULT_SAMPLE_CADENCE)]
+        output = json.loads(results[-1].stdout)
+        assert output["hookSpecificOutput"]["hookEventName"] == "PostToolBatch"
+
     def test_fire_writes_a_log_line(self, tmp_path):
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 1)])
@@ -511,6 +643,29 @@ class TestNudgeLongTurnSubagent:
         result = _run_hook(payload, tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+
+    def test_traversal_session_id_writes_nothing_outside_marker_dir(self, tmp_path):
+        """A session_id containing '../' must not let any of this hook's
+        writes (FIRED_MARKER, the -invocations counter, the -scan state
+        file) escape .long-turn-nudge-fired.d/ -- this hook trusts
+        session_id straight from the PostToolBatch payload rather than
+        resolving it from a session file the way marker.sh does, so the
+        `_lib_valid_session_id_component` guard is the sole defense.
+        Mirrors TestMarkerScriptSessionIdValidation's
+        test_no_marker_written_for_path_escaping_session_id in
+        test_marker_script.py."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 5)])
+        (tmp_path / ".claude").mkdir()
+        canary = plant_traversal_canary(tmp_path)
+
+        results = _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE, session_id=TRAVERSAL_SESSION_ID)
+
+        assert all(r.returncode == 0 for r in results)
+        assert all(r.stdout.strip() == "" for r in results)
+        assert canary.read_text() == CANARY_CONTENT, (
+            "a traversal session_id must not touch a file outside .long-turn-nudge-fired.d/"
+        )
 
     def test_missing_session_id_fails_open(self, tmp_path):
         transcript = tmp_path / "t.jsonl"

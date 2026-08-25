@@ -241,9 +241,9 @@ _resolve_code_review_check_max_age_seconds() {
 # GLOB_PREFIX that holds EXPECTED_VALUE as a whole line and is younger than
 # MAX_AGE_SECONDS, and returns 0. Prints nothing and returns 1 when no such
 # file exists. Called only after _lib_marker_value_present has already
-# confirmed at least one hash match -- that single-grep call stays the cheap
-# common-case check for "no hash match at all"; this loop narrows that match
-# set to non-stale files and only runs once a hash match exists.
+# confirmed at least one hash match. That single-grep call stays the cheap
+# common-case check for "no hash match at all". This loop only runs once a
+# hash match exists, and narrows that match set down to non-stale files.
 _code_review_marker_fresh_age() {
   local markers_dir="$1" expected_value="$2" glob_prefix="$3" max_age_seconds="$4"
   local nullglob_was_set=0
@@ -255,10 +255,10 @@ _code_review_marker_fresh_age() {
   local now candidate mtime age best_age=""
   now=$(date +%s)
   # A failed or non-numeric `now` must not fall through to the arithmetic
-  # below: an empty $now makes `age = -mtime`, a large negative number that
-  # trivially passes the `-lt max_age_seconds` check -- fail-closed here the
-  # same way the staged-diff hash a few lines above the `check` case block
-  # treats an empty/failed value as no-match.
+  # below. An empty $now makes `age = -mtime`, a large negative number that
+  # trivially passes the `-lt max_age_seconds` check. Fail closed here the
+  # same way the `check code-review` arm further below treats an
+  # empty/failed staged-diff hash as no-match.
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
   for candidate in "${candidates[@]}"; do
     [ -f "$candidate" ] || continue
@@ -585,17 +585,14 @@ case "$SUBCOMMAND" in
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         # An empty staged diff never counts as a match. `/code-review` is
         # also invoked with nothing staged from inside `ready-for-review`'s
-        # step 3 (which reviews the cumulative PR diff, not the staged one)
-        # -- matching an empty diff there against an unrelated marker some
+        # step 3, which reviews the cumulative PR diff, not the staged one.
+        # Matching an empty diff there against an unrelated marker some
         # earlier empty-diff review left behind would silently skip that
         # cumulative review.
         #
-        # Capped, unlike the `write code-review` arm's own git calls: `check`
-        # runs on every `/code-review` invocation (Step 0.1), not only on a
-        # completed review, so a stalled `git diff` here would stall the
-        # short-circuit meant to save time on every single call, not just an
-        # occasional write. A capped timeout that fires degrades to no-match
-        # either way below, never to a false match.
+        # Capped unlike `write code-review`'s git calls, since `check` runs
+        # on every `/code-review` invocation rather than only on a completed
+        # review; a timeout here degrades to no-match, never a false match.
         if _lib_capped git -C "$REPO_ROOT" diff --cached --quiet; then
           printf 'no-match\n'
           exit 1
@@ -608,7 +605,7 @@ case "$SUBCOMMAND" in
         # this is the short-circuit /code-review consults before skipping
         # its specialist panel, so failing open here would silently skip a
         # real review. A hash match older than CODE_REVIEW_CHECK_MAX_AGE_SECONDS
-        # reads as no-match too -- see docs/design-decisions.md for why this
+        # reads as no-match too. See docs/design-decisions.md for why this
         # age bound applies only here, not to the write/commit-gate side.
         if [ -n "$MARKER_VALUE" ] && _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH."; then
           _resolve_code_review_check_max_age_seconds

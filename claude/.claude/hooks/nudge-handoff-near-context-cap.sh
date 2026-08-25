@@ -512,7 +512,7 @@ MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 # DRIFT_MARKER/-ignored — see docs/handoff-nudge.md "Known limitations" for
 # the resulting marker-directory growth shape.
 mkdir -p "$MARKER_DIR" 2>/dev/null || true
-find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
+_lib_capped_for 2 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 
 read_latest_usage_cached "$TRANSCRIPT_PATH" "$SESSION_ID" "$MARKER_DIR" || exit 0
 
