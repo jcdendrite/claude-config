@@ -514,7 +514,7 @@ For a faster local dev loop, `select-tests.py` runs pytest against just the test
 .venv/bin/python3 claude/.claude/scripts/select-tests.py
 ```
 
-Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is an additional, opt-in convenience, not a replacement for the full-run command above — CI always runs the whole suite regardless.
+Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push.
 
 ## Acknowledgments
 
