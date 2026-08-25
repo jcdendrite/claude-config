@@ -20,6 +20,10 @@ Before reviewing, determine which files were changed (from context, git diff, or
 
 Apply the **Base checklist** always. Apply each **Domain checklist** only when at least one changed file matches that domain.
 
+## Step 0.1 — Short-circuit already-reviewed diff
+
+Run `~/.claude/scripts/marker.sh check code-review`. Exit 0 means the staged diff's hash matches a clean code-review marker written within the freshness bound; its stdout carries `match age_seconds=<N>` — report "the staged diff already matches a clean code-review marker written <age> ago — skipping" (substituting a human-readable age for `<age>`) and stop, skipping every step below. Any other exit means proceed to Step 0.5.
+
 ## Step 0.5 — Load project-specific layer
 
 If a project-specific layer exists for this skill, load it now. Glob for `.claude/skills/code-review-*/SKILL.md` from the repo root (resolved via `git rev-parse --show-toplevel`); if exactly one matches, read it with the Read tool and merge its checklist into the items below. If multiple match, list them and stop — that's a config error in the project, not something this review resolves. If none match, proceed without a layer.

@@ -30,11 +30,16 @@ Subcommands:
              historical, or absent. Takes no skill argument. Evicts a
              stale (dead-PID) active-bypass marker for this session as a
              side effect of classifying it.
+  check      Report whether a completion marker already matches the
+             current state, without writing anything. Exit 0 and print
+             "match" if it does, exit 1 and print "no-match" if it
+             doesn't.
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
   activate    plan-review | ready-for-review | respond-pr | memory-skill
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill
+  check       code-review
 EOF
 }
 
@@ -209,6 +214,70 @@ _status_report_active_bypass() {
   fi
 }
 
+# _marker_mtime_epoch TARGET
+# Prints TARGET's mtime as a Unix epoch, GNU stat first then BSD/macOS stat --
+# same probe order as ask-new-dependency-disclosure.sh's _file_size (not
+# shared via _lib.sh; that hook's comment names this as the canonical form).
+_marker_mtime_epoch() {
+  local target="$1"
+  stat -c%Y -- "$target" 2>/dev/null || stat -f%m -- "$target" 2>/dev/null
+}
+
+# _resolve_code_review_check_max_age_seconds
+# Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
+# deliberately conservative, ungrounded choice (docs/design-decisions.md
+# §33). Malformed override (empty, zero, non-digit, zero-padded, or 9+
+# digits) falls back to the default -- same guard shape as
+# nudge-long-turn-subagent.sh's resolve_threshold.
+_resolve_code_review_check_max_age_seconds() {
+  case "${CODE_REVIEW_CHECK_MAX_AGE_SECONDS:-}" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) CODE_REVIEW_CHECK_MAX_AGE_SECONDS=86400 ;;
+    *) ;;
+  esac
+}
+
+# _code_review_marker_fresh_age MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX MAX_AGE_SECONDS
+# Prints the age in seconds of the freshest file in MARKERS_DIR matching
+# GLOB_PREFIX that holds EXPECTED_VALUE as a whole line and is younger than
+# MAX_AGE_SECONDS, and returns 0. Prints nothing and returns 1 when no such
+# file exists. Called only after _lib_marker_value_present has already
+# confirmed at least one hash match -- that single-grep call stays the cheap
+# common-case check for "no hash match at all"; this loop narrows that match
+# set to non-stale files and only runs once a hash match exists.
+_code_review_marker_fresh_age() {
+  local markers_dir="$1" expected_value="$2" glob_prefix="$3" max_age_seconds="$4"
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local -a candidates=("$markers_dir/$glob_prefix"*)
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+
+  local now candidate mtime age best_age=""
+  now=$(date +%s)
+  # A failed or non-numeric `now` must not fall through to the arithmetic
+  # below: an empty $now makes `age = -mtime`, a large negative number that
+  # trivially passes the `-lt max_age_seconds` check -- fail-closed here the
+  # same way the staged-diff hash a few lines above the `check` case block
+  # treats an empty/failed value as no-match.
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  for candidate in "${candidates[@]}"; do
+    [ -f "$candidate" ] || continue
+    grep -qFx -e "$expected_value" -- "$candidate" 2>/dev/null || continue
+    mtime=$(_marker_mtime_epoch "$candidate")
+    [ -n "$mtime" ] || continue
+    age=$(( now - mtime ))
+    # Clamp a future-mtime marker (clock skew, restore tooling) to 0 rather
+    # than reporting a negative age, which would otherwise pass the
+    # freshness check unconditionally.
+    [ "$age" -lt 0 ] && age=0
+    if [ "$age" -lt "$max_age_seconds" ] && { [ -z "$best_age" ] || [ "$age" -lt "$best_age" ]; }; then
+      best_age="$age"
+    fi
+  done
+  [ -n "$best_age" ] || return 1
+  printf '%s' "$best_age"
+}
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -235,7 +304,7 @@ ARG2="${2:-}"
 
 # Validate arg count per subcommand.
 case "$SUBCOMMAND" in
-  write|activate|deactivate)
+  write|activate|deactivate|check)
     if [ -z "$ARG2" ]; then
       usage
       exit 2
@@ -509,5 +578,52 @@ case "$SUBCOMMAND" in
     _status_report_active_bypass ready-for-review ".ready-for-review-active.d" "$SESSION_ID"
     _status_report_active_bypass respond-pr ".respond-pr-active.d" "$SESSION_ID"
     _status_report_active_bypass memory-skill ".memory-skill-active.d" "$SESSION_ID"
+    ;;
+  check)
+    case "$SKILL" in
+      code-review)
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        # An empty staged diff never counts as a match. `/code-review` is
+        # also invoked with nothing staged from inside `ready-for-review`'s
+        # step 3 (which reviews the cumulative PR diff, not the staged one)
+        # -- matching an empty diff there against an unrelated marker some
+        # earlier empty-diff review left behind would silently skip that
+        # cumulative review.
+        #
+        # Capped, unlike the `write code-review` arm's own git calls: `check`
+        # runs on every `/code-review` invocation (Step 0.1), not only on a
+        # completed review, so a stalled `git diff` here would stall the
+        # short-circuit meant to save time on every single call, not just an
+        # occasional write. A capped timeout that fires degrades to no-match
+        # either way below, never to a false match.
+        if _lib_capped git -C "$REPO_ROOT" diff --cached --quiet; then
+          printf 'no-match\n'
+          exit 1
+        fi
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # Same hash recipe as the `write code-review` arm. Read-only: no
+        # SESSION_ID needed since this never writes.
+        MARKER_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
+        # A hash that can't be computed must read as no-match, not match --
+        # this is the short-circuit /code-review consults before skipping
+        # its specialist panel, so failing open here would silently skip a
+        # real review. A hash match older than CODE_REVIEW_CHECK_MAX_AGE_SECONDS
+        # reads as no-match too -- see docs/design-decisions.md for why this
+        # age bound applies only here, not to the write/commit-gate side.
+        if [ -n "$MARKER_VALUE" ] && _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH."; then
+          _resolve_code_review_check_max_age_seconds
+          if FRESH_AGE=$(_code_review_marker_fresh_age "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH." "$CODE_REVIEW_CHECK_MAX_AGE_SECONDS"); then
+            printf 'match age_seconds=%s\n' "$FRESH_AGE"
+            exit 0
+          fi
+        fi
+        printf 'no-match\n'
+        exit 1
+        ;;
+      *)
+        printf "marker.sh: 'check %s' is not valid. 'check' supports: code-review\n" "$SKILL" >&2
+        exit 2
+        ;;
+    esac
     ;;
 esac

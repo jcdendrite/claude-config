@@ -21,7 +21,7 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
-# The 16 single-command tilde-form shapes the hook accepts — single source of
+# The 17 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -42,12 +42,13 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh clear-stale --dry-run",
     "~/.claude/scripts/marker.sh resolve-session-id",
     "~/.claude/scripts/marker.sh status",
+    "~/.claude/scripts/marker.sh check code-review",
 ]
 
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 16 single-command shapes, each must be allowed       #
+    # Valid shapes — 17 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -377,6 +378,17 @@ class TestEnforceMarkerScriptShape:
     def test_memory_skill_underscore_denied(self):
         """Underscore form (memory_skill) is not in the allowlist."""
         cmd = "~/.claude/scripts/marker.sh activate memory_skill"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_check_mismatched_skill_denied(self):
+        """check only supports code-review -- a different skill must be
+        denied, mirroring test_mismatched_subcommand_skill_pair_denied above."""
+        cmd = "~/.claude/scripts/marker.sh check plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_check_missing_skill_argument_denied(self):
+        """check requires a skill argument -- bare `check` must be denied."""
+        cmd = "~/.claude/scripts/marker.sh check"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     # ------------------------------------------------------------------ #
@@ -754,6 +766,28 @@ class TestGateReleaseAuthority:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(f"{MARKER} status", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    def test_check_allowed_for_main_session(self):
+        """check is a pure read that releases no gate, same as status."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} check code-review"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_check_allowed_for_restricted_subagent(self, agent_type):
+        """Same as the main-session case, for a restricted subagent -- check
+        is allowed for every agent type, not just ones with review authority."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} check code-review", agent_type=agent_type),
             )
             == "allow"
         )

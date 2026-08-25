@@ -67,7 +67,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 16 single-command shapes, the marker.sh write chain to git
+# match one of the 17 single-command shapes, the marker.sh write chain to git
 # commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
 # (any op/target combination) — equivalent to running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
@@ -573,7 +573,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status)'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status|check[[:space:]]+code-review)'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -613,7 +613,7 @@ fi
 # Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
-# individually allowlisted (the 14 shapes in permissions.allow) or harmless
+# individually allowlisted (the 15 shapes in permissions.allow) or harmless
 # (clear-stale only evicts dead-PID bypass markers). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
@@ -649,6 +649,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh clear-stale --dry-run
   ~/.claude/scripts/marker.sh resolve-session-id
   ~/.claude/scripts/marker.sh status
+  ~/.claude/scripts/marker.sh check code-review
 
 Chains of valid marker.sh operations joined by && are permitted. Chaining to
 any other command (except the blessed 'git commit' tail), or using ||/;,
