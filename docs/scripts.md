@@ -91,6 +91,13 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   claude-auto "summarize open PRs"  # positional prompt passes through
   ```
 
+- **`claude-enable-tool.sh`** — launches Claude Code with one tool re-enabled for the session, via CLI-scope `--settings`. Takes `artifact` or `workflow` as its first argument and maps it to `{"disableArtifact": false}`/`{"disableWorkflows": false}` respectively; any other token exits non-zero. Refuses to launch (non-zero exit, no `claude` invocation) if a caller-supplied `--settings`/`--settings=*` appears before a literal `--`, since it can't be merged with the script's own JSON automatically — the message names the merged-by-hand form as the escape hatch. Scanning stops at a literal `--`, since everything after it is positional text rather than a flag to inspect. `claude-workflow` and `claude-artifact` are thin `~/.local/bin` wrappers over this script.
+
+  ```bash
+  claude-workflow                       # Workflow enabled, Artifact still off
+  claude-artifact "draft an artifact"   # Artifact enabled, prompt passes through
+  ```
+
 - **`update-claude-config-plugins.sh`** — checks which `@claude-config` marketplace plugins installed in the current project are behind the marketplace's latest version, and interactively offers to update each one. Refreshes the marketplace first (`claude plugin marketplace update`) so the diff is against the live catalog. Scoped to `@claude-config` plugins only: they carry real semver in `plugin.json` (enforced by the `plugin-semver` plugin), making version comparison clean. Run from the consumer repo's root; project-scope entries from other repos are excluded unless `--all-projects` is passed, which sweeps project-scope installs across every repo on the machine instead — `claude plugin list --json` already tags each entry with its own `projectPath`, so no filesystem walk is needed. Because the `claude` CLI has no cwd-override flag, applying an out-of-repo update requires literally `cd`-ing into that entry's project root first; a repo directory that's been deleted or renamed since install, or an update that fails, is warned to stderr and skipped rather than aborting the sweep, with a nonzero exit at the end if anything was skipped or failed.
 
   ```bash

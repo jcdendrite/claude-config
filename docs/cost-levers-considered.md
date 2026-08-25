@@ -294,3 +294,9 @@ Breakdown for the global-file row above:
 - The "Ground every choice" category-6 bullet's ticket-prose coverage was kept rather than deleted, since no other skill picks up that surface.
 
 Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales with rebuild magnitude (byte count), not frequency — see "Context cost root cause" above.
+
+## From `disable-artifact-workflow-default.md` — "Disable Artifact/Workflow by default, with per-session opt-back-in" (2026-08-25)
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Default `disableArtifact`/`disableWorkflows` to `true` in the shared `claude/.claude/settings.json`, paired with a per-session CLI-scope opt-back-in (`claude-workflow`, `claude-artifact`) | Accepted, shipped | Pre-committed go/no-go gate required a ≥5,000-token Tools drop; measured drop was 16k tokens (23.8k → 7.8k) — see [`design-decisions.md` §31](design-decisions.md). |
