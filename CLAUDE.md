@@ -15,8 +15,10 @@ govern any contribution (human or agent).
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
 ```
 
-Agents: run `select-tests.py`, not the full suite, for local iteration —
-`/ready-for-review` and CI still run the full suite regardless.
+Agents: run `select-tests.py`, not the full suite — including in
+`/ready-for-review`. Running the full suite per agent doesn't scale
+when many agents run in parallel on one machine. CI runs the full
+suite on every push.
 
 See README.md's Tests section for `select-tests.py`'s domain-mapping
 mechanism, ShellCheck flag sourcing, `pytest-xdist` debugging flags, and
