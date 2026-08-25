@@ -129,6 +129,28 @@ class TestCallerSettingsIsRefused:
     def test_equals_form_before_double_dash_refuses(self, tmp_path: Path) -> None:
         _run(["workflow", '--settings={"foo": true}'], tmp_path, expect_launch=False)
 
+    def test_settings_after_another_flag_before_double_dash_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards against a scan that only inspects the first remaining
+        argument instead of the full argv up to `--`."""
+        _run(
+            ["workflow", "--verbose", "--settings", '{"foo": true}'],
+            tmp_path,
+            expect_launch=False,
+        )
+
+    def test_equals_form_after_another_flag_before_double_dash_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards against a scan that handles the equals form only at the
+        first remaining argument, or only in part of the argv loop."""
+        _run(
+            ["workflow", "--verbose", '--settings={"foo": true}'],
+            tmp_path,
+            expect_launch=False,
+        )
+
     def test_refusal_message_names_the_merged_by_hand_escape_hatch(
         self, tmp_path: Path
     ) -> None:
@@ -146,6 +168,17 @@ class TestCallerSettingsIsRefused:
         `--settings` there is not a caller flag to refuse on."""
         argv = _run(["workflow", "--", "--settings"], tmp_path)
         assert argv[-2:] == ["--", "--settings"], (
+            f"trailing positional args were altered: {argv}"
+        )
+
+    def test_equals_form_after_a_double_dash_is_positional_and_not_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Same guarantee as its bare-form sibling above, for the equals
+        form: a literal `--settings=...` after `--` is positional text, not
+        a caller flag to refuse on."""
+        argv = _run(["workflow", "--", '--settings={"foo": true}'], tmp_path)
+        assert argv[-2:] == ["--", '--settings={"foo": true}'], (
             f"trailing positional args were altered: {argv}"
         )
 
