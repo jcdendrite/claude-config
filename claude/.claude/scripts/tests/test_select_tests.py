@@ -32,23 +32,36 @@ _REPO_ROOT = _mod.resolve_repo_root(cwd=Path(__file__).parent)
 
 class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
-        result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB}
+
+    def test_hooks_dir_shell_script_change_also_selects_scripts_tests(self):
+        """test_no_bash4_constructs.py (SCRIPTS_TESTS_DIR) recursively globs
+        claude/.claude/ for *.sh files, picking up claude/.claude/hooks/.
+        Without this cross-domain exception, that check goes unrun on a
+        hooks-dir shell script change."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR,
+        }
 
     def test_scripts_change_selects_scripts_tests_only(self):
         result = _mod.select_pytest_targets(["claude/.claude/scripts/mark-terminal.py"])
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SCRIPTS_TESTS_DIR,)
 
-    def test_scripts_dir_shell_script_change_also_selects_hooks_tests(self):
+    def test_scripts_dir_shell_script_change_also_selects_hooks_and_skills_tests(self):
         """test_shellcheck.py (HOOKS_TESTS_DIR) lints every tracked shell
-        script in the repo, including claude/.claude/scripts/*.sh. Without
-        this cross-domain exception, SCRIPTS_DIR's domain rule claims the
-        path first and that lint check goes unrun."""
+        script in the repo, including claude/.claude/scripts/*.sh.
+        test_skills.py's test_scripts_are_executable (SKILLS_TESTS_DIR) also
+        globs SCRIPTS_DIR/*.sh for an executable-bit check. Without these
+        cross-domain exceptions, SCRIPTS_DIR's domain rule claims the path
+        first and both checks go unrun."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/new-migration.sh"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_scripts_dir_nested_shell_script_change_also_selects_hooks_tests(self):
         """_is_under matches any depth under SCRIPTS_DIR, not just top-level --
@@ -56,7 +69,7 @@ class TestSelectPytestTargets:
         in HOOKS_TESTS_DIR the same as a top-level one."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/lib/helper.sh"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_scripts_dir_extensionless_change_also_selects_hooks_tests(self):
         """test_shellcheck.py's own discovery (KNOWN_EXTENSIONLESS_SHELL_FILES)
@@ -65,7 +78,7 @@ class TestSelectPytestTargets:
         HOOKS_TESTS_DIR the same as a .sh-suffixed one."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/new-helper"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_sibling_directory_sharing_scripts_dir_prefix_does_not_match(self):
         """claude/.claude/scripts-other/ shares SCRIPTS_DIR's string prefix
@@ -122,13 +135,16 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
-    def test_lovable_cloud_agents_change_also_selects_skills_tests(self):
+    def test_lovable_cloud_agents_change_also_selects_skills_and_hooks_tests(self):
         """test_skills.py globs plugins/*/agents/*.md into SKILLS_TESTS_DIR's
-        checks. plugins/lovable-cloud/agents/ doesn't exist on disk today,
-        but the rule must hold the moment it's added."""
+        checks. test_agent_roster.py (HOOKS_TESTS_DIR) globs the same path
+        for a cross-scope agent-name-collision check. plugins/lovable-cloud/agents/
+        doesn't exist on disk today, but both rules must hold the moment it's added."""
         result = _mod.select_pytest_targets(["plugins/lovable-cloud/agents/reviewer.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.LOVABLE_CLOUD_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+        }
 
     def test_lovable_cloud_scripts_shell_file_change_also_selects_hooks_tests(self):
         """test_shellcheck.py lints every tracked shell script in the repo,
@@ -153,14 +169,29 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_handoff_skill_md_change_also_selects_scripts_tests(self):
-        """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads
-        HANDOFF_SKILL_MD's exact file by path, not by import. Without this
-        cross-domain exception, the skills domain rule claims the path first
-        and test_check_handoff.py goes unrun."""
+    def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
+        """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's
+        exact file by path, not by import.
+        test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR)
+        also reads it by path, asserting hook-named tokens are a subset of
+        its §3.5 list. Without these cross-domain exceptions, the skills
+        domain rule claims the path first and both checks go unrun."""
         result = _mod.select_pytest_targets([_mod.HANDOFF_SKILL_MD])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+        }
+
+    def test_code_review_skill_md_change_also_selects_hooks_tests(self):
+        """test_reconciliation_block_consistency.py (HOOKS_TESTS_DIR) reads
+        CODE_REVIEW_SKILL_MD's exact file by path to diff its Reconciliation
+        block against plan-review/ROUTING.md. Without this cross-domain
+        exception, the skills domain rule claims the path first and that
+        check goes unrun."""
+        result = _mod.select_pytest_targets([_mod.CODE_REVIEW_SKILL_MD])
+        assert result.is_full_suite is False
+        assert _mod.HOOKS_TESTS_DIR in result.target_paths
 
     def test_skill_management_hooks_and_skills_change_is_unmatched_and_falls_open(self):
         """Only LOVABLE_CLOUD_DIR is broadly scoped under plugins/, so a
@@ -373,8 +404,8 @@ class TestComputeChangedPathsGitSmoke:
 
     def test_modified_tracked_file_is_included(self, tmp_path):
         """An uncommitted modification to an already-tracked, already-pushed
-        file must appear in the changed-set — exercises `git diff
-        --name-only HEAD`'s tracked-modification path, distinct from
+        file must appear in the changed-set. This exercises `git diff
+        --name-only HEAD`'s tracked-modification path, the sibling case to
         `test_working_tree_dirty_file_is_included`'s untracked-file path."""
         local, _bare = _make_repo_with_remote(tmp_path)
         hooks_dir = local / "claude" / ".claude" / "hooks"

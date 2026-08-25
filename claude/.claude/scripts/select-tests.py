@@ -61,6 +61,10 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # LOVABLE_CLOUD_PLUGIN_MANIFEST.
 HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
 
+# test_reconciliation_block_consistency.py reads this exact file by path to
+# diff its Reconciliation block against plan-review/ROUTING.md.
+CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
+
 # Matches CI's own collectible pytest scope verbatim (see
 # .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
 # Targeting plugins/ instead of enumerating individual plugin subtrees means
@@ -108,7 +112,16 @@ def _is_lovable_cloud_shell_script_change(path: str) -> bool:
 
 
 def _is_scripts_dir_shell_script_change(path: str) -> bool:
+    # Misses a wrongly-extensioned or dotfile shell script under SCRIPTS_DIR.
     return _is_under(path, SCRIPTS_DIR) and (path.endswith(".sh") or "." not in Path(path).name)
+
+
+# test_no_bash4_constructs.py's rglob("*.sh") is suffix-only.
+# Unlike test_shellcheck.py's shebang-based discovery, it never matches an
+# extensionless script, so this predicate omits the extensionless branch
+# _is_scripts_dir_shell_script_change has.
+def _is_hooks_dir_shell_script_change(path: str) -> bool:
+    return _is_under(path, HOOKS_DIR) and path.endswith(".sh")
 
 
 # (predicate, target paths added when it matches) — a plain domain rule.
@@ -139,12 +152,21 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # lints every tracked shell script in the repo, not only claude/.claude/hooks/.
 # _is_scripts_dir_shell_script_change: same test_shellcheck.py dependency as
 # above, for a shell script under claude/.claude/scripts/ rather than
-# plugins/lovable-cloud/scripts/ or /lib/. Matches a .sh suffix or no
-# extension at all, mirroring test_shellcheck.py's own shebang-based
-# discovery of extensionless shell scripts (its
-# KNOWN_EXTENSIONLESS_SHELL_FILES) rather than requiring .sh literally.
-# HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) reads this exact
-# file by path.
+# plugins/lovable-cloud/scripts/ or /lib/.
+# test_skills.py's test_scripts_are_executable (SKILLS_TESTS_DIR) globs
+# SCRIPTS_DIR for a .sh executable-bit check, non-recursively; the
+# corresponding exception below over-selects for a nested SCRIPTS_DIR script
+# that glob wouldn't catch, since over-selection is the safe direction.
+# CODE_REVIEW_SKILL_MD: test_reconciliation_block_consistency.py
+# (HOOKS_TESTS_DIR) reads this exact file by path.
+# HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
+# test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
+# read this exact file by path.
+# LOVABLE_CLOUD_AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) globs
+# plugins/*/agents/*.md for a cross-scope agent-name-collision check.
+# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py
+# (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
+# picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
 # lovable-cloud is the only plugin whose own DOMAIN_RULES entry is broad
 # enough to otherwise claim these paths ahead of the cross-plugin scans that
 # actually read them.
@@ -157,8 +179,11 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_lovable_cloud_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_lovable_cloud_skills_or_agents_change, (SKILLS_TESTS_DIR,)),
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
-    (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR,)),
-    (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == CODE_REVIEW_SKILL_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
+    (lambda p: _is_under(p, LOVABLE_CLOUD_AGENTS_DIR), (HOOKS_TESTS_DIR,)),
+    (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
 )
 
 
