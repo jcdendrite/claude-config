@@ -275,21 +275,6 @@ rm -f -- "$untracked_entries_file"
 stow -v "${stow_ignore_args[@]}" -t "$HOME" claude
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — end
 
-# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
-# markers below and runs them under an isolated $HOME. Keep both markers on
-# their own line, wrapping the whole block.
-# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start
-# Record this checkout's location so relocate-claude-config can find it
-# later without depending on a live ~/.claude symlink (which its own repair
-# mode may need to work around). Single-line, idempotent overwrite.
-printf '%s\n' "$REPO_DIR" > "$HOME/.claude-config-source"
-
-# Real file copy (not stow) — relocate-claude-config's whole purpose is to
-# keep working when the exact symlink chain it repairs has already failed,
-# so it cannot itself be a stow-managed symlink into this checkout.
-install -m 755 -- "$REPO_DIR/claude/.claude/scripts/relocate-claude-config.sh" "$HOME/.local/bin/relocate-claude-config"
-# INSTALL_TEST_FIXTURE: repo-relocation-manifest — end
-
 # Harden ~/.claude and ~/.claude.json against other local accounts. $HOME is
 # commonly 755 (set once at account creation, not by umask), and under the
 # widespread umask 0002 anything created beneath it lands group-writable —
@@ -309,7 +294,11 @@ install -m 755 -- "$REPO_DIR/claude/.claude/scripts/relocate-claude-config.sh" "
 # chmod is skipped when ~/.claude is a symlink: chmod dereferences, so a
 # tree-folded ~/.claude left by an earlier install would narrow this
 # checkout's own directory rather than a private one. Failures only warn, so
-# hardening never blocks the plugin registration below.
+# hardening never blocks the render step below.
+#
+# Runs before the render step so hardening still applies even when render
+# aborts (a hard, unguarded failure). Hardening is unrelated to settings
+# rendering.
 #
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
@@ -324,6 +313,37 @@ if [ -f "$HOME/.claude.json" ]; then
   chmod 600 "$HOME/.claude.json" || echo "[install] warning: could not chmod 600 ~/.claude.json" >&2
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them after a real stow, to pin invocation order and
+# CLAUDE_CONFIG_DIR resolution against a pre-migration $HOME. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: render-settings-invoke — start
+# Render $HOME/.claude/settings.json from the just-stowed settings.base.json
+# (plus any settings.overlay.json already present). CLAUDE_CONFIG_DIR is
+# pinned to $HOME/.claude here regardless of the invoking shell's own value,
+# since the stow above always targets $HOME.
+#
+# Deliberately not warn-and-continue like the rest of this script: settings.json
+# carries the security hard-floor deny rules and hook registrations, so a
+# broken render must abort rather than leave those silently unenforced.
+CLAUDE_CONFIG_DIR="$HOME/.claude" "$REPO_DIR/claude/.claude/scripts/render-settings.sh"
+# INSTALL_TEST_FIXTURE: render-settings-invoke — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start
+# Record this checkout's location so relocate-claude-config can find it
+# later without depending on a live ~/.claude symlink (which its own repair
+# mode may need to work around). Single-line, idempotent overwrite.
+printf '%s\n' "$REPO_DIR" > "$HOME/.claude-config-source"
+
+# Real file copy (not stow) — relocate-claude-config's whole purpose is to
+# keep working when the exact symlink chain it repairs has already failed,
+# so it cannot itself be a stow-managed symlink into this checkout.
+install -m 755 -- "$REPO_DIR/claude/.claude/scripts/relocate-claude-config.sh" "$HOME/.local/bin/relocate-claude-config"
+# INSTALL_TEST_FIXTURE: repo-relocation-manifest — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
@@ -752,10 +772,11 @@ _file_has_active_reference() {
   [ -f "$file" ] && grep -v '^[[:space:]]*#' -- "$file" 2>/dev/null | grep -Fq -- "$needle"
 }
 
-# Shared by every failure branch below: undoes the just-written append,
-# preferring the pre-append backup over a bare rm so a first-run failure
-# (no backup exists yet) doesn't leave a half-written rc file behind either.
-_undo_local_bin_append() {
+# Shared by every failure branch in _ensure_rc_block below: undoes the
+# just-written append, preferring the pre-append backup over a bare rm so a
+# first-run failure (no backup exists yet) doesn't leave a half-written rc
+# file behind either.
+_undo_rc_append() {
   local rc_file="$1" backup="$2" message="$3"
   if [ -n "$backup" ]; then
     mv -- "$backup" "$rc_file"
@@ -766,84 +787,126 @@ _undo_local_bin_append() {
   fi
 }
 
+# Shared rc-mutation safety net for every caller that appends a marked block
+# to a shell startup file: $1=shell_name, $2=needle (idempotency substring),
+# $3=description (used only in log/warning text), $4=hint_line (the single
+# line shown when a symlinked rc file can't be written through), $5=
+# block_content (the full BEGIN/END-wrapped text to append, including its
+# own leading/trailing newlines). Currently called by ensure_local_bin_on_path
+# and ensure_settings_render_check.
+#
+# A symlinked rc file is managed via its .local-suffixed companion when that
+# companion is already sourced, or left untouched with a warning otherwise.
+# Backs up before writing, validates $shell_name -n syntax after, and
+# restores from backup (or removes a newly-created file with no backup) if
+# either step fails.
+_ensure_rc_block() {
+  local shell_name="$1" needle="$2" description="$3" hint_line="$4" block_content="$5"
+  local rc_file resolved companion backup
+
+  rc_file="$HOME/.${shell_name}rc"
+
+  if [ -L "$rc_file" ]; then
+    # BSD readlink -f (macOS) can print a partial path to stdout AND exit
+    # non-zero for a dangling symlink, unlike GNU readlink — check the exit
+    # status of the assignment itself rather than trusting a non-empty
+    # capture, so a dangling link falls back to the symlink's own path
+    # instead of keeping BSD's partial garbage.
+    if ! resolved="$(readlink -f -- "$rc_file" 2>/dev/null)"; then
+      resolved="$rc_file"
+    fi
+    companion="${rc_file}.local"
+    # Direct-match checked before the companion heuristic: a resolved
+    # target that already has $needle needs nothing further, regardless of
+    # whether it also happens to mention the companion's basename (e.g. in
+    # a comment).
+    if _file_has_active_reference "$resolved" "$needle"; then
+      echo "  ✓ $HOME/.${shell_name}rc already has $description (via $resolved)"
+      return 0
+    elif [ ! -L "$companion" ] && _file_has_active_reference "$resolved" "$(basename "$companion")"; then
+      rc_file="$companion"
+      echo "  → managing $description in $companion (sourced by $HOME/.${shell_name}rc)"
+    else
+      echo "[install] warning: $HOME/.${shell_name}rc is a symlink to $resolved — not writing $description through it. Add '$hint_line' to whichever file manages your $shell_name startup, then restart your shell." >&2
+      return 0
+    fi
+  fi
+
+  if _file_has_active_reference "$rc_file" "$needle"; then
+    echo "  ✓ $rc_file already has $description"
+    return 0
+  fi
+
+  command -v "$shell_name" >/dev/null 2>&1 || return 0
+
+  backup=""
+  if [ -f "$rc_file" ]; then
+    backup="${rc_file}.bak.$(date +%Y%m%d%H%M%S)"
+    if ! cp -- "$rc_file" "$backup"; then
+      echo "[install] warning: could not back up $rc_file; skipping $description for it" >&2
+      return 0
+    fi
+  fi
+
+  # Negating a redirected `{ }` group directly (`if ! { ...; } >> file`)
+  # does not propagate the group's own redirect-open failure on bash —
+  # verified on both macOS system bash 3.2 and bash 5.3. Using the
+  # un-negated group as the if-condition itself detects the failure
+  # correctly and is still exempt from `set -e` as an if-condition.
+  if { printf '%s' "$block_content"; } >> "$rc_file"; then
+    :
+  else
+    _undo_rc_append "$rc_file" "$backup" "could not append to $rc_file"
+    return 0
+  fi
+
+  if ! "$shell_name" -n "$rc_file" 2>/dev/null; then
+    _undo_rc_append "$rc_file" "$backup" "appending to $rc_file produced invalid $shell_name syntax"
+    return 0
+  fi
+  if [ -n "$backup" ]; then
+    rm -f -- "$backup"
+  fi
+}
+
 ensure_local_bin_on_path() {
   # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
   # unexpanded here so it is evaluated when the rc file is later sourced, not
   # when install.sh runs.
   local export_line='export PATH="$HOME/.local/bin:$PATH"'
-  local shell_name rc_file resolved companion backup
+  local block_content shell_name
+
+  printf -v block_content '\n# BEGIN claude-config: ensure ~/.local/bin on PATH\n%s\n# END claude-config: ensure ~/.local/bin on PATH\n' "$export_line"
 
   for shell_name in zsh bash; do
-    rc_file="$HOME/.${shell_name}rc"
-
-    if [ -L "$rc_file" ]; then
-      # BSD readlink -f (macOS) can print a partial path to stdout AND exit
-      # non-zero for a dangling symlink, unlike GNU readlink — check the exit
-      # status of the assignment itself rather than trusting a non-empty
-      # capture, so a dangling link falls back to the symlink's own path
-      # instead of keeping BSD's partial garbage.
-      if ! resolved="$(readlink -f -- "$rc_file" 2>/dev/null)"; then
-        resolved="$rc_file"
-      fi
-      companion="${rc_file}.local"
-      # Direct-match checked before the companion heuristic: a resolved
-      # target that already has ~/.local/bin needs nothing further,
-      # regardless of whether it also happens to mention the companion's
-      # basename (e.g. in a comment).
-      if _file_has_active_reference "$resolved" '.local/bin'; then
-        echo "  ✓ $HOME/.${shell_name}rc already has ~/.local/bin on PATH (via $resolved)"
-        continue
-      elif [ ! -L "$companion" ] && _file_has_active_reference "$resolved" "$(basename "$companion")"; then
-        rc_file="$companion"
-        echo "  → managing ~/.local/bin PATH setup in $companion (sourced by $HOME/.${shell_name}rc)"
-      else
-        echo "[install] warning: $HOME/.${shell_name}rc is a symlink to $resolved — not writing PATH setup through it. Add '$export_line' to whichever file manages your $shell_name startup, then restart your shell." >&2
-        continue
-      fi
-    fi
-
-    if _file_has_active_reference "$rc_file" '.local/bin'; then
-      echo "  ✓ $rc_file already has ~/.local/bin on PATH"
-      continue
-    fi
-
-    command -v "$shell_name" >/dev/null 2>&1 || continue
-
-    backup=""
-    if [ -f "$rc_file" ]; then
-      backup="${rc_file}.bak.$(date +%Y%m%d%H%M%S)"
-      if ! cp -- "$rc_file" "$backup"; then
-        echo "[install] warning: could not back up $rc_file; skipping PATH setup for it" >&2
-        continue
-      fi
-    fi
-
-    # Negating a redirected `{ }` group directly (`if ! { ...; } >> file`)
-    # does not propagate the group's own redirect-open failure on bash —
-    # verified on both macOS system bash 3.2 and bash 5.3. Using the
-    # un-negated group as the if-condition itself detects the failure
-    # correctly and is still exempt from `set -e` as an if-condition.
-    if {
-      printf '\n# BEGIN claude-config: ensure ~/.local/bin on PATH\n'
-      printf '%s\n' "$export_line"
-      printf '# END claude-config: ensure ~/.local/bin on PATH\n'
-    } >> "$rc_file"; then
-      :
-    else
-      _undo_local_bin_append "$rc_file" "$backup" "could not append to $rc_file"
-      continue
-    fi
-
-    if ! "$shell_name" -n "$rc_file" 2>/dev/null; then
-      _undo_local_bin_append "$rc_file" "$backup" "appending to $rc_file produced invalid $shell_name syntax"
-      continue
-    fi
-    if [ -n "$backup" ]; then
-      rm -f -- "$backup"
-    fi
+    # shellcheck disable=SC2088 # single-quoted deliberately -- '~/.local/bin
+    # on PATH' is display text for log messages, not a path to expand.
+    _ensure_rc_block "$shell_name" '.local/bin' '~/.local/bin on PATH' "$export_line" "$block_content"
   done
 }
 # INSTALL_TEST_FIXTURE: local-bin-path — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: settings-render-check-rc — start
+# Reuses _ensure_rc_block (defined in the local-bin-path block above) so
+# this rc-file mutation gets the same backup/syntax-check/undo safety net as
+# the ~/.local/bin PATH export.
+ensure_settings_render_check() {
+  # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
+  # unexpanded here so it resolves at each new shell's own startup, not once
+  # at install time.
+  local check_invocation='[ -x "$HOME/.claude/scripts/check-settings-render.sh" ] && "$HOME/.claude/scripts/check-settings-render.sh"'
+  local block_content shell_name
+
+  printf -v block_content '\n# BEGIN claude-config: check settings.json render\n%s\n# END claude-config: check settings.json render\n' "$check_invocation"
+
+  for shell_name in zsh bash; do
+    _ensure_rc_block "$shell_name" 'check-settings-render.sh' 'the settings.json render check' "$check_invocation" "$block_content"
+  done
+}
+# INSTALL_TEST_FIXTURE: settings-render-check-rc — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
@@ -899,6 +962,7 @@ check_private_projects_file
 check_output_preferences_file
 check_transcript_config_dirs
 ensure_local_bin_on_path
+ensure_settings_render_check
 
 if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
   echo ""

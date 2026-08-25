@@ -150,7 +150,7 @@ def _settings_skill_overrides() -> dict[str, str]:
     Returns the override map keyed by skill name. Skills absent from the map
     default to "on" (fully model-invokable with description in budget).
     """
-    settings_path = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
+    settings_path = Path(__file__).resolve().parents[4] / "claude/.claude/settings.base.json"
     settings = json.loads(settings_path.read_text())
     return settings.get("skillOverrides", {})
 
@@ -1683,7 +1683,7 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
     appear as a | `/<name>` | table row so its rationale is visible to contributors.
     """
     repo_root = Path(__file__).resolve().parents[4]
-    settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
+    settings = json.loads((repo_root / "claude/.claude/settings.base.json").read_text())
     docs_text = (repo_root / "docs/skills.md").read_text()
     for skill_name, state in settings.get("skillOverrides", {}).items():
         if state == "on":
@@ -1721,7 +1721,7 @@ def test_destructive_cleanup_forms_require_ask_not_allow() -> None:
     """Destructive cleanup invocations must be in permissions.ask, absent
     from permissions.allow. --dry-run siblings must stay in permissions.allow."""
     repo_root = Path(__file__).resolve().parents[4]
-    settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
+    settings = json.loads((repo_root / "claude/.claude/settings.base.json").read_text())
     permissions = settings.get("permissions", {})
     allow = permissions.get("allow", [])
     ask = permissions.get("ask", [])

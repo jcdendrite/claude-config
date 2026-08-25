@@ -106,6 +106,8 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 **Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
 
+**Migration notes (delete once obsolete):** As of the `settings.base.json` split, `settings.json` is generated — produced by `render-settings.sh` from `settings.base.json`. If your local `~/.claude/settings.json` is a stale symlink pointing at the tracked `claude/.claude/settings.json` path, a session-local write (theme, tui, model, and similar) that opens the dangling symlink with `O_CREAT` recreates a regular file back inside the tracked checkout at that path. This repo's `.gitignore` entry for that path keeps such a file out of ordinary `git add`/`commit` flows, but it can still confuse a local checkout. Re-run `install.sh` to replace the stale symlink with a fresh render; delete a stray `claude/.claude/settings.json` if one turns up in your checkout in the meantime. `install.sh` also wires `check-settings-render.sh` into `~/.bashrc`/`~/.zshrc`, so a still-dangling or missing `settings.json` prints a stderr warning on every new shell until this is fixed.
+
 ## What this installs
 
 ```
@@ -241,7 +243,13 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
 - **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and settings.json conventions.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra and SQL/DDL conventions that apply across every repo the user opens, not just this one.
-- **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model; the escalation path for Opus planning is `plan-architect`, dispatched automatically by `/plan-it` Step 5 (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+- **`settings.base.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)).
+  - Configured with **sonnet** as the default model; the escalation path for Opus planning is `plan-architect`, dispatched automatically by `/plan-it` Step 5 (Model & Effort Routing section of `CLAUDE.md`).
+  - Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+  - `settings.json` — the file Claude Code actually reads — is generated, not hand-edited.
+  - `claude/.claude/scripts/render-settings.sh` merges `settings.base.json` with an optional, untracked `settings.overlay.json` and writes the result; `install.sh` runs this automatically.
+  - In-app settings writes (`claude auto-mode reset`, UI toggles) land in that generated file and are silently discarded on the next render — expected behavior, not a bug.
+  - `theme` and `tui` are the one exception: the render reads them back from the file's current contents first, so those two survive.
 
 ### Scripts
 
@@ -432,9 +440,9 @@ The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying con
 [Auto mode](https://code.claude.com/docs/en/permission-modes) replaces per-action permission prompts with a background classifier that evaluates each tool call before it runs, blocking anything irreversible, destructive, or targeted outside your environment. This repo adds two things on top of the stock feature:
 
 - **`claude-auto` wrapper** — resolves a model mismatch, not a plan restriction, for whoever's session model resolves to `opusplan` (Opus in plan mode, Sonnet during execution) — this repo's own default, `sonnet`, is already a valid auto-mode session model. Auto mode anchors a session to one concrete model for its entire lifetime, so `opusplan` itself isn't a valid session model for it. The wrapper starts a session directly in auto mode, taking the same `--model` flag as `claude` and falling back to Sonnet when you don't name one ([full precedence](docs/auto-mode.md)).
-- **Hard-floor `permissions.deny` rules** — `settings.json` ships deny rules that run *before* the classifier and cannot be overridden by any `autoMode.allow` entry, hard-blocking `sudo` and well-known secret-file reads. These apply in every permission mode, not just auto mode.
+- **Hard-floor `permissions.deny` rules** — `settings.base.json` ships deny rules, rendered into the `settings.json` the classifier reads by `render-settings.sh`, that run *before* the classifier and cannot be overridden by any `autoMode.allow` entry, hard-blocking `sudo` and well-known secret-file reads. These apply in every permission mode, not just auto mode.
 
-For plan and model requirements, activation, the full hard-floor deny table, the `settings.local.json` `autoMode.environment` schema, and tuning commands, see [`docs/auto-mode.md`](docs/auto-mode.md).
+For plan and model requirements, activation, the full hard-floor deny table, the `settings.overlay.json` `autoMode.environment` schema, and tuning commands, see [`docs/auto-mode.md`](docs/auto-mode.md).
 
 ### Output preferences
 

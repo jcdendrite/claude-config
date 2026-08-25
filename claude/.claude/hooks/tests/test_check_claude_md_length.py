@@ -18,7 +18,7 @@ from helpers import (
 CHECK_CLAUDE_MD_LENGTH_HOOK = HOOKS_DIR / "check-claude-md-length.sh"
 CLAUDE_MD_PATH = "claude/.claude/CLAUDE.md"
 
-SETTINGS_PATH = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
+SETTINGS_PATH = Path(__file__).resolve().parents[4] / "claude/.claude/settings.base.json"
 
 
 def make_lines(n: int, prefix: str = "line") -> str:

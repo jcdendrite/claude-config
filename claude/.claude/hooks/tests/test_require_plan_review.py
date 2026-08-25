@@ -1211,13 +1211,13 @@ class TestRequirePlanReviewExitPlanMode:
 
 
 def test_settings_exitplanmode_matcher_exists_and_isolated():
-    """settings.json has ExitPlanMode in its own matcher block, not in Edit|Write|MultiEdit.
+    """settings.base.json has ExitPlanMode in its own matcher block, not in Edit|Write|MultiEdit.
 
     ExitPlanMode must be isolated from the Edit|Write|MultiEdit block because
     that block also runs ask-review-permissions.sh and
     require-worktree-for-file-writes.sh, which must not fire on ExitPlanMode.
     """
-    settings_path = CLAUDE_DIR / "settings.json"
+    settings_path = CLAUDE_DIR / "settings.base.json"
     settings = json.loads(settings_path.read_text())
     pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
 

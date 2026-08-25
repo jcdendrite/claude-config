@@ -21,12 +21,12 @@ from helpers import (
 )
 
 CONSUME_HOOK = HOOKS_DIR / "consume-durable-continuity-file-on-read.sh"
-_SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
+_SETTINGS_PATH = HOOKS_DIR.parent / "settings.base.json"
 
 
 def _registered_post_tool_use_event_name() -> str:
     """The hookEventName this hook's emission must claim, derived from
-    settings.json rather than hardcoded — a divergence between the emitted
+    settings.base.json rather than hardcoded — a divergence between the emitted
     and registered event name silently drops hookSpecificOutput.additionalContext,
     per CLAUDE.md's discriminator-literal rule."""
     settings = json.loads(_SETTINGS_PATH.read_text())
