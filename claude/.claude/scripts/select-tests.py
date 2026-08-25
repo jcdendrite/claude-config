@@ -107,6 +107,10 @@ def _is_lovable_cloud_shell_script_change(path: str) -> bool:
     return _is_under(path, LOVABLE_CLOUD_SCRIPTS_DIR) or _is_under(path, LOVABLE_CLOUD_LIB_DIR)
 
 
+def _is_scripts_dir_shell_script_change(path: str) -> bool:
+    return _is_under(path, SCRIPTS_DIR) and (path.endswith(".sh") or "." not in Path(path).name)
+
+
 # (predicate, target paths added when it matches) — a plain domain rule.
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
@@ -133,6 +137,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # globs plugins/*/skills/*/SKILL.md and plugins/*/agents/*.md.
 # _is_lovable_cloud_shell_script_change: test_shellcheck.py (HOOKS_TESTS_DIR)
 # lints every tracked shell script in the repo, not only claude/.claude/hooks/.
+# _is_scripts_dir_shell_script_change: same test_shellcheck.py dependency as
+# above, for a shell script under claude/.claude/scripts/ rather than
+# plugins/lovable-cloud/scripts/ or /lib/. Matches a .sh suffix or no
+# extension at all, mirroring test_shellcheck.py's own shebang-based
+# discovery of extensionless shell scripts (its
+# KNOWN_EXTENSIONLESS_SHELL_FILES) rather than requiring .sh literally.
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) reads this exact
 # file by path.
 # lovable-cloud is the only plugin whose own DOMAIN_RULES entry is broad
@@ -147,6 +157,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_lovable_cloud_hooks_change, (HOOKS_TESTS_DIR,)),
     (_is_lovable_cloud_skills_or_agents_change, (SKILLS_TESTS_DIR,)),
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
+    (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
 )
 

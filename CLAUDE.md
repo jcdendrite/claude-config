@@ -9,14 +9,18 @@ govern any contribution (human or agent).
 ```bash
 ./install.sh                                                 # first-time setup (stow + plugin registration)
 ./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
-.venv/bin/pytest claude/.claude/                             # test suite (hooks + skills)
+.venv/bin/python3 claude/.claude/scripts/select-tests.py     # test suite, scoped to the domains your changes touch
+.venv/bin/pytest claude/.claude/                             # full test suite (hooks + skills)
 .venv/bin/ruff check claude/.claude/                         # lint (Python)
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
 ```
 
-See README.md's Tests section for ShellCheck flag sourcing,
-`pytest-xdist` debugging flags, and the worktree-relative `.venv`
-paths.
+Agents: run `select-tests.py`, not the full suite, for local iteration —
+`/ready-for-review` and CI still run the full suite regardless.
+
+See README.md's Tests section for `select-tests.py`'s domain-mapping
+mechanism, ShellCheck flag sourcing, `pytest-xdist` debugging flags, and
+the worktree-relative `.venv` paths.
 
 ## Working in this repo
 

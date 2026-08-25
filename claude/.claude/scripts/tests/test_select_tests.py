@@ -41,6 +41,32 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SCRIPTS_TESTS_DIR,)
 
+    def test_scripts_dir_shell_script_change_also_selects_hooks_tests(self):
+        """test_shellcheck.py (HOOKS_TESTS_DIR) lints every tracked shell
+        script in the repo, including claude/.claude/scripts/*.sh. Without
+        this cross-domain exception, SCRIPTS_DIR's domain rule claims the
+        path first and that lint check goes unrun."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/new-migration.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
+    def test_scripts_dir_nested_shell_script_change_also_selects_hooks_tests(self):
+        """_is_under matches any depth under SCRIPTS_DIR, not just top-level --
+        a shell script in a scripts subdirectory (e.g. lib/) must still pull
+        in HOOKS_TESTS_DIR the same as a top-level one."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/lib/helper.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
+    def test_scripts_dir_extensionless_change_also_selects_hooks_tests(self):
+        """test_shellcheck.py's own discovery (KNOWN_EXTENSIONLESS_SHELL_FILES)
+        finds shell scripts by shebang, not just by .sh suffix -- an
+        extensionless script under claude/.claude/scripts/ must select
+        HOOKS_TESTS_DIR the same as a .sh-suffixed one."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/new-helper"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
     def test_sibling_directory_sharing_scripts_dir_prefix_does_not_match(self):
         """claude/.claude/scripts-other/ shares SCRIPTS_DIR's string prefix
         but is a distinct sibling directory -- _is_under's directory-boundary
