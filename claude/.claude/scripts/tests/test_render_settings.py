@@ -97,6 +97,23 @@ class TestOverlayMerge:
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered == {"enabled": True, "otherKey": "base-value"}
 
+    def test_explicit_overlay_argument_naming_nonexistent_file_renders_base_only(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the current behavior for a typo'd/stale explicit $1: silent
+        base-only render, identical to the no-overlay-configured case -- not
+        a loud failure."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        missing_overlay = tmp_path / "does-not-exist.json"
+
+        result = _run_script(str(missing_overlay), config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered == {"otherKey": "base-value"}
+
     def test_overlay_autoMode_without_enabled_key_survives_unmodified(self, tmp_path: Path) -> None:
         """An absent `enabled` key must not trigger the strip -- pins the
         `null == false` branch of the strip condition, distinct from the
@@ -235,6 +252,79 @@ class TestOverlayValidation:
         assert "sk-should-never-appear" not in result.stderr
         assert not (config_dir / "settings.json").exists()
 
+    @pytest.mark.parametrize("bad_enabled", ["false", 0, None])
+    def test_non_boolean_enabled_is_rejected(self, tmp_path: Path, bad_enabled: object) -> None:
+        """jq's == is type-strict, so a string/number enabled would otherwise
+        silently fail to strip autoMode -- pins the reject-outright fix
+        instead of a silent fail-open."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"enabled": bad_enabled})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "not a JSON boolean" in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+
+class TestOverlayChmodHardening:
+    """The overlay chmod runs before the validation checks below it, so
+    rejection must not skip the hardening -- see render-settings.sh."""
+
+    def test_overlay_is_chmod_600_after_a_successful_render(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        overlay = config_dir / "settings.overlay.json"
+        _write_json(overlay, {"enabled": True})
+        overlay.chmod(0o644)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert (overlay.stat().st_mode & 0o777) == 0o600
+
+    def test_overlay_is_chmod_600_when_malformed_json_is_rejected(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        overlay = config_dir / "settings.overlay.json"
+        overlay.write_text("{not valid json")
+        overlay.chmod(0o644)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert (overlay.stat().st_mode & 0o777) == 0o600
+
+    def test_overlay_is_chmod_600_when_disallowed_key_is_rejected(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        overlay = config_dir / "settings.overlay.json"
+        _write_json(overlay, {"enabled": True, "notAllowed": "x"})
+        overlay.chmod(0o644)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert (overlay.stat().st_mode & 0o777) == 0o600
+
+    def test_overlay_is_chmod_600_when_non_boolean_enabled_is_rejected(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        overlay = config_dir / "settings.overlay.json"
+        _write_json(overlay, {"enabled": "false"})
+        overlay.chmod(0o644)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert (overlay.stat().st_mode & 0o777) == 0o600
+
 
 class TestBaseValidation:
     def test_base_valid_json_but_not_object_is_rejected(self, tmp_path: Path) -> None:
@@ -265,6 +355,157 @@ class TestIdempotency:
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         _write_json(config_dir / "settings.overlay.json", {"enabled": True})
+
+        first = _run_script(config_dir=config_dir)
+        assert first.returncode == 0, first.stderr
+        first_hash = _sha256(config_dir / "settings.json")
+
+        second = _run_script(config_dir=config_dir)
+        assert second.returncode == 0, second.stderr
+        second_hash = _sha256(config_dir / "settings.json")
+
+        assert first_hash == second_hash
+
+
+class TestThemeTuiPreservation:
+    """theme/tui are written directly into the live settings.json by
+    Claude Code's /theme and /tui commands, not by base or overlay, so a
+    render must carry forward the target's pre-existing values instead of
+    discarding them."""
+
+    def test_prior_target_theme_and_tui_survive_the_render(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(
+            config_dir / "settings.json",
+            {"theme": "dark", "tui": True, "otherKey": "stale-value"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered == {"otherKey": "base-value", "theme": "dark", "tui": True}
+
+    def test_prior_target_theme_and_tui_are_not_overridden_by_unrelated_base_changes(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "new-base-value"})
+        _write_json(
+            config_dir / "settings.json",
+            {"theme": "light", "tui": False, "otherKey": "old-base-value"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["theme"] == "light"
+        assert rendered["tui"] is False
+        assert rendered["otherKey"] == "new-base-value"
+
+    def test_no_prior_target_renders_without_theme_or_tui_keys(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert "theme" not in rendered
+        assert "tui" not in rendered
+
+    def test_prior_target_without_theme_or_tui_keys_renders_without_them(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.json", {"otherKey": "stale-value"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert "theme" not in rendered
+        assert "tui" not in rendered
+
+    def test_prior_target_null_theme_is_omitted_while_tui_survives(self, tmp_path: Path) -> None:
+        """The strip-nulls step in the extraction jq applies per-key: a null
+        theme alongside a set tui must not cause tui to be dropped too."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(
+            config_dir / "settings.json",
+            {"theme": None, "tui": "fullscreen", "otherKey": "stale-value"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert "theme" not in rendered
+        assert rendered["tui"] == "fullscreen"
+
+    def test_prior_target_with_only_theme_set_renders_without_a_tui_key(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.json", {"theme": "solarized"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["theme"] == "solarized"
+        assert "tui" not in rendered
+
+    def test_malformed_prior_target_is_tolerated_not_treated_as_a_render_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """$target is this script's own prior output, not user-supplied
+        input -- a corrupted prior file must not block producing a good
+        new one."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        (config_dir / "settings.json").write_text("{not valid json")
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered == {"otherKey": "base-value"}
+
+    def test_dangling_symlink_prior_target_is_tolerated_and_replaced_with_a_regular_file(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        target.symlink_to(tmp_path / "does-not-exist.json")
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert not target.is_symlink()
+        rendered = json.loads(target.read_text())
+        assert rendered == {"otherKey": "base-value"}
+
+    def test_repeated_renders_with_unchanged_theme_and_tui_stay_byte_identical(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(
+            config_dir / "settings.json",
+            {"theme": "dark", "tui": True, "otherKey": "stale-value"},
+        )
 
         first = _run_script(config_dir=config_dir)
         assert first.returncode == 0, first.stderr

@@ -4,16 +4,13 @@
 # has machine-local or session-scoped keys staged relative to main — see
 # GUARDED_KEYS_JSON below for the guarded set.
 #
-# Purpose: every guarded key holds one machine's own state, and several are
-# written into the user settings file by Claude Code rather than by hand —
-# model and effortLevel from /config, skipAutoPermissionPrompt when it
-# records the permission-prompt preference. Committing any of them ships one
-# engineer's local state as the shipped config for every user. This hook
-# catches that class of accidental commit and surfaces it before git runs.
+# Purpose: blocks committing machine-local or session-scoped state as the
+# shipped config for every user — see GUARDED_KEYS_JSON below for why each
+# key is guarded.
 #
 # Defense-in-depth: the hook filters its own input by tool name AND checks
-# whether settings.json is actually staged — do not rely solely on the
-# settings.json `if` condition in settings.json.
+# whether settings.base.json is actually staged — do not rely solely on the
+# settings.base.json `if` condition in settings.base.json.
 #
 # Exit codes:
 #   0      — allow (no opinion)

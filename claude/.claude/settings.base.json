@@ -460,7 +460,5 @@
         "repo": "anthropics/claude-plugins-official"
       }
     }
-  },
-  "theme": "dark",
-  "tui": "fullscreen"
+  }
 }

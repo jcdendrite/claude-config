@@ -78,11 +78,10 @@ above still applies regardless of how auto mode is activated.
 
 ## Hard-floor deny rules
 
-`settings.base.json` in this repo ships a `permissions.deny` list —
-`render-settings.sh` merges it into the `settings.json` the classifier
-actually reads — that runs *before* the classifier and cannot be overridden
-by any `autoMode.allow` entry. These close gaps the classifier's default
-block list doesn't cover:
+`settings.base.json` in this repo ships a `permissions.deny` list, rendered
+into `settings.json` by `render-settings.sh`. That rendered list runs
+*before* the classifier and cannot be overridden by any `autoMode.allow`
+entry. These close gaps the classifier's default block list doesn't cover:
 
 | Rule | What it closes |
 |---|---|
@@ -103,9 +102,9 @@ can't express — see the "network-install guard" section in
 These rules apply in all permission modes, not only auto mode.
 
 Both the deny list and the hook registrations above live in the same
-`settings.base.json`, and `render-settings.sh` merges them into `settings.json`
-together — a missing or failed render loses both protections at once, not
-just one.
+`settings.base.json`, and `render-settings.sh` merges them into
+`settings.json` together. A missing or failed render therefore loses both
+protections at once, not just one.
 
 ## What to put in `settings.overlay.json`
 
