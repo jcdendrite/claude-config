@@ -4,7 +4,7 @@ description: >
   Dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
   first exploratory read; 2nd/3rd Bash toward same question; delegating
-  implementation.
+  implementation; delegating a multi-step gate/review loop.
   DO NOT TRIGGER when: single-artifact targeted lookup (one file or
   value, not a multi-site sweep); comprehension read feeding your own
   writing/review/design; Edit/Write sequences where scope or content
@@ -173,3 +173,20 @@ diagnostics, log correlation, verbose `git diff` / state-survey bursts.
 Dispatch the objective — not the commands — to `general-purpose` with
 an explicit `model: sonnet` (a no-op when the parent is already
 Sonnet; keeps the dispatched work off Opus when the parent is not).
+
+### Exception: gate/review loops stay orchestrator-driven
+
+A "review → commit → push → ready-for-review, repeat until clean"
+sequence — or any open-ended, multi-step, loop-until-converged gate
+sequence — never goes to one subagent as an internal loop, no matter
+how well it otherwise fits "everything else" above. Drive it from the
+orchestrating session itself, or split it into separate bounded
+per-step dispatches the orchestrator sequences between, so an
+interruption's blast radius stays scoped to one step and each step's
+result stays visible in the orchestrator's own conversation.
+
+This does not conflict with per-phase `code-writer` dispatch above:
+dispatching one plan phase's bounded implementation work is not a gate
+loop, even across several phases dispatched in sequence — each phase
+dispatch returns to the parent, which reviews it before the next one
+goes out.

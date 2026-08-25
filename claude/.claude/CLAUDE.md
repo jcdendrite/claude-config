@@ -88,6 +88,7 @@
   `~/.claude/scripts/`. For an ad-hoc orchestrator Bash call no script pre-covers, keep it
   to one double-quoted statement with no nested `$(...)` and no `$CLAUDE_CONFIG_DIR` reference —
   the same discipline, applied by hand where no script exists yet.
+- A "review → commit → push → ready-for-review, repeat until clean" gate loop is never delegated as one subagent's internal loop — see `subagent-delegation` for that call.
 
 ## Model & Effort Routing
 
