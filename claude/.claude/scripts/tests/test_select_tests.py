@@ -164,6 +164,16 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
+    def test_skill_management_scripts_shell_script_change_falls_open(self):
+        """Scoped to .py files only, so a .sh file here (none exists today)
+        must fall open to the full suite rather than be claimed by this
+        narrow exception ahead of test_shellcheck.py's repo-wide sweep. This
+        mirrors the fall-open safety net every other plugin's scripts/
+        directory already gets."""
+        result = _mod.select_pytest_targets(["plugins/skill-management/scripts/new-hook.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
     def test_skill_evals_runner_change_selects_skills_tests(self):
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
@@ -283,6 +293,31 @@ class TestSelectPytestTargets:
         assert result.reason == "empty-diff"
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
+    def test_agents_dir_change_also_selects_hooks_and_skills_tests(self):
+        """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
+        (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
+        by import. Without this cross-domain exception, a change under
+        claude/.claude/agents/ falls open to the full suite instead of
+        selecting the two domains that actually depend on it."""
+        result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_rules_dir_change_also_selects_skills_tests(self):
+        """test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs
+        claude/.claude/rules/*.md by path, not by import."""
+        result = _mod.select_pytest_targets(["claude/.claude/rules/shell-script-conventions.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR}
+
+    def test_github_actions_workflows_rule_md_change_also_selects_hooks_tests(self):
+        """test_ci_path_filter.py (HOOKS_TESTS_DIR) reads this exact file by
+        path, not by import -- a sibling rule file under the same directory
+        does not need HOOKS_TESTS_DIR, only this one does."""
+        result = _mod.select_pytest_targets([_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
 
 class TestBuildPytestArgv:
     def test_plain_directory_targets_pass_through_unchanged(self):
@@ -383,6 +418,28 @@ class TestRuleTablePathFidelity:
 
     def test_lovable_cloud_plugin_manifest_path_exists_on_disk(self):
         assert (_REPO_ROOT / _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST).is_file()
+
+    def test_every_real_top_level_claude_dir_is_mapped_or_allowlisted(self):
+        """Existing tests above validate declared table entries -- that a
+        target exists, that a glob matches something. None of them validate
+        completeness against the real tree: a new top-level directory under
+        claude/.claude/ could sit unmapped indefinitely with no test catching
+        it. Catches only an unnamed directory, not a misregistered one --
+        MAPPED_TOP_LEVEL_DIRS membership is not cross-checked against any
+        real DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS predicate."""
+        claude_claude_dir = _REPO_ROOT / "claude" / ".claude"
+        real_dirs = {
+            d.name for d in claude_claude_dir.iterdir()
+            if d.is_dir() and d.name != "worktrees"  # gitignored, not a tracked domain
+        }
+        known = _mod.MAPPED_TOP_LEVEL_DIRS | _mod.DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
+        unmapped = real_dirs - known
+        assert not unmapped, (
+            f"claude/.claude/{sorted(unmapped)} exist on disk but are named in "
+            "neither MAPPED_TOP_LEVEL_DIRS nor DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS "
+            "-- audit whether any test reads into this directory by path or "
+            "subprocess and add the corresponding table entry"
+        )
 
 
 class TestComputeChangedPathsGitSmoke:

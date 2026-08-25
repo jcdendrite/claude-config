@@ -29,6 +29,8 @@ SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
 SKILLS_DIR = "claude/.claude/skills"
 SKILLS_TESTS_DIR = "claude/.claude/skills/tests"
+AGENTS_DIR = "claude/.claude/agents"
+RULES_DIR = "claude/.claude/rules"
 LOVABLE_CLOUD_DIR = "plugins/lovable-cloud"
 LOVABLE_CLOUD_TESTS_DIR = "plugins/lovable-cloud/tests"
 LOVABLE_CLOUD_HOOKS_DIR = "plugins/lovable-cloud/hooks"
@@ -65,6 +67,27 @@ HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
 # diff its Reconciliation block against plan-review/ROUTING.md.
 CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
 
+# test_ci_path_filter.py reads this exact file by path.
+GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
+
+# Directory names directly under claude/.claude/ that DOMAIN_RULES or
+# CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
+# TestRuleTablePathFidelity's exhaustiveness check: a real top-level
+# directory absent from both this set and DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
+# means some test's cross-domain file-path or subprocess read into it was
+# never audited into this table.
+MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
+    Path(HOOKS_DIR).name,
+    Path(SCRIPTS_DIR).name,
+    Path(SKILLS_DIR).name,
+    Path(AGENTS_DIR).name,
+    Path(RULES_DIR).name,
+})
+
+# claude/.claude/tests/ reads no file outside the paths GLOBAL_TRIGGER_PATHS
+# already covers, so it needs no CROSS_DOMAIN_EXCEPTIONS entry.
+DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({"tests"})
+
 # Matches CI's own collectible pytest scope verbatim (see
 # .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
 # Targeting plugins/ instead of enumerating individual plugin subtrees means
@@ -96,7 +119,15 @@ def _is_hooks_or_skills_change(path: str) -> bool:
 
 
 def _is_skill_management_or_evals_change(path: str) -> bool:
-    return _is_under(path, SKILL_MANAGEMENT_SCRIPTS_DIR) or path == SKILL_EVALS_RUNNER
+    # Scoped to .py files, matching SKILL_EVALS_RUNNER's own precision.
+    # A directory-wide match would foreclose the unmatched-path fallback
+    # that protects every other plugin's scripts/ directory once this one
+    # gains a non-.py file (e.g. a shell script) needing its own check.
+    # Misses a wrongly-extensioned or dotfile Python script under this
+    # directory, same trade-off as _is_scripts_dir_shell_script_change below.
+    return (
+        _is_under(path, SKILL_MANAGEMENT_SCRIPTS_DIR) and path.endswith(".py")
+    ) or path == SKILL_EVALS_RUNNER
 
 
 def _is_lovable_cloud_hooks_change(path: str) -> bool:
@@ -172,6 +203,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # actually read them.
 # See TestSelectPytestTargets' unmatched-path cases for the other plugins,
 # which rely on no DOMAIN_RULES entry matching them at all.
+# AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
+# (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
+# RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs
+# claude/.claude/rules/*.md by path.
+# GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
+# reads this exact file by path.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -184,6 +221,9 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, LOVABLE_CLOUD_AGENTS_DIR), (HOOKS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
 )
 
 

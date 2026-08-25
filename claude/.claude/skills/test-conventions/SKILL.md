@@ -61,7 +61,7 @@ Use the narrowest double that covers the test's intent. Prefer stubs for unit te
 - **External HTTP APIs:** Intercept by URL pattern or use a fake HTTP server
 - **Env vars / config:** Set and restore in setup/teardown blocks
 - **Time:** Inject timestamps as parameters rather than relying on the system clock
-- **Cross-domain reach via subprocess call or direct file-path read:** When a test reaches outside its own domain this way instead of via an import, that edge is invisible to import-based or directory-based test-selection tooling. Declare it explicitly in whatever mechanism the codebase uses to map changed files to affected tests (a rule table, CI path filter, or similar)
+- **Cross-domain reach via subprocess call or direct file-path read:** Declare the edge explicitly in whatever mechanism the codebase uses to map changed files to affected tests (a rule table, CI path filter, or similar). Import- or directory-based selection tooling can't see it
 
 ## 4. Test isolation
 

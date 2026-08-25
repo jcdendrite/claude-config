@@ -44,9 +44,10 @@ The **Fragile Test** smell includes the **Overspecified Software** root cause: *
 
 ## Declaring a non-import cross-domain test dependency explicitly
 
-Grounds the "Test double seams by dependency type" bullet on declaring a
-subprocess-call or file-path-read edge that reaches outside a test's own
-domain, for tooling that maps domains to tests by import or directory.
+Grounds the "Test double seams by dependency type" bullet's rule on
+declaring a subprocess-call or file-path-read edge that reaches outside a
+test's own domain. Applies to tooling that maps domains to tests by import
+or directory.
 
 **Nx devkit reference — `ImplicitDependency`**
 URL: https://nx.dev/docs/reference/devkit/ImplicitDependency
