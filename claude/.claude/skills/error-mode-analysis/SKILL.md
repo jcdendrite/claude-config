@@ -92,7 +92,7 @@ Two things this scrub relies on that are easy to get backwards:
 
 ## Step 6 — Artifact B skeleton
 
-Write Artifact B fresh from the bucket taxonomy built in Step 4 — do not produce it by redacting a copy of Artifact A. A document authored clean from the taxonomy never contains the private span to begin with; a redaction pass that misses one span leaks it.
+Derive Artifact B by scrubbing a working copy of Artifact A into the skeleton below, preserving verbatim quotes, per-session evidence, and each bucket's priority reasoning. Keep that working copy outside any git repo (or under a path `.gitignore` covers) until it has been scrubbed and diffed line by line per the checklist above, then delete it — the copy is not Artifact B until that gate passes. Every error mode identified in Step 4 must appear in Artifact B; do not silently drop a finding for brevity.
 
 ```markdown
 # [De-identified] Delivery error-mode lessons
