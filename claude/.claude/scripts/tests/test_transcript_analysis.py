@@ -478,6 +478,37 @@ class TestParseSinceNdArg:
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
 
 
+class TestParseAbsoluteWindowArgs:
+    """The shared inclusive-day absolute --since/--until DATE parser extracted
+    from cmd_user_input/cmd_review_trace/cmd_judgment_pair/cmd_subagent_mix's
+    identical six-line conversion."""
+
+    def test_default_attrs_parse_since_and_until_as_inclusive_day_bounds(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since="2026-05-01", until="2026-05-03"), "review-trace",
+        )
+        assert since_ts == _mod._parse_ts("2026-05-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-05-03T00:00:00Z") + 86400
+
+    def test_absent_since_and_until_returns_none_for_both(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since=None, until=None), "review-trace",
+        )
+        assert since_ts is None
+        assert until_ts is None
+
+    def test_parameterized_attrs_read_subagent_mix_since_date_until_date(self):
+        """cmd_subagent_mix's own dest names (since_date/until_date) resolve
+        through the same helper as the default since/until attrs -- the
+        parameterized call cmd_subagent_mix's own call site uses."""
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since_date="2026-07-01", until_date="2026-07-02"), "subagent-mix",
+            since_attr="since_date", until_attr="until_date",
+        )
+        assert since_ts == _mod._parse_ts("2026-07-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-07-02T00:00:00Z") + 86400
+
+
 # ---------------------------------------------------------------------------
 # fail-seq regexes
 # ---------------------------------------------------------------------------
@@ -2297,13 +2328,7 @@ def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | N
     """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
     boundary conversion, so a test calling _review_trace_session_events directly
     passes boundaries in the same form the CLI itself would compute."""
-    since_ts = _mod._parse_ts(f"{since}T00:00:00Z") if since else None
-    until_epoch = None
-    if until:
-        day_start = _mod._parse_ts(f"{until}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
-    return since_ts, until_epoch
+    return _mod._parse_absolute_window_args(argparse.Namespace(since=since, until=until), "review-trace")
 
 
 class TestDropDenialCommandFlagValues:

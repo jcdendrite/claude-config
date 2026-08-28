@@ -139,6 +139,7 @@ from transcript_analysis.scope import (
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
+    _parse_absolute_window_args,
     _parse_since_nd_arg,
     _projects_glob,
     _redaction_ordinals,
@@ -525,14 +526,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
     out_path: str | None = getattr(args, "out", None) or None
     redact: bool = bool(getattr(args, "redact", False))
 
-    since_str: str | None = getattr(args, "since", None) or None
-    until_str: str | None = getattr(args, "until", None) or None
-    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    until_epoch: float | None = None
-    if until_str:
-        day_start = _parse_ts(f"{until_str}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
+    since_ts, until_epoch = _parse_absolute_window_args(args, "user-input")
 
     redact_map: dict[str, str] = _build_redact_map() if redact else {}
     session_redact_map: dict[str, str] = {}
@@ -1754,16 +1748,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "review-trace", roots=roots)
 
-    since_str: str | None = getattr(args, "since", None) or None
-    until_str: str | None = getattr(args, "until", None) or None
-    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    # Inclusive-day boundary: compute start of the *next* day and compare with strict <.
-    # Adding 86400 seconds covers the entire until-day at any sub-second precision.
-    until_epoch: float | None = None
-    if until_str:
-        day_start = _parse_ts(f"{until_str}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
+    since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
 
     if deny_summary:
         # Ahead of the scan, matching the default arm below: a crash partway
@@ -1862,14 +1847,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "judgment-pair", roots=roots)
 
-    since_str: str | None = getattr(args, "since", None) or None
-    until_str: str | None = getattr(args, "until", None) or None
-    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    until_epoch: float | None = None
-    if until_str:
-        day_start = _parse_ts(f"{until_str}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
+    since_ts, until_epoch = _parse_absolute_window_args(args, "judgment-pair")
 
     skills_arg: str = getattr(args, "skills", None) or ",".join(REVIEW_SKILLS)
     skill_set: set[str] = {s for s in skills_arg.split(",") if s}
@@ -2291,14 +2269,9 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     # assistant record (see _dispatch_usage_summary) -- independent of
     # since_ts above, which keeps its existing dispatch-level scope over
     # every other column in this table.
-    since_date_str: str | None = getattr(args, "since_date", None) or None
-    until_date_str: str | None = getattr(args, "until_date", None) or None
-    dollar_since_ts: float | None = _parse_ts(f"{since_date_str}T00:00:00Z") if since_date_str else None
-    dollar_until_ts: float | None = None
-    if until_date_str:
-        day_start = _parse_ts(f"{until_date_str}T00:00:00Z")
-        if day_start is not None:
-            dollar_until_ts = day_start + 86400
+    dollar_since_ts, dollar_until_ts = _parse_absolute_window_args(
+        args, "subagent-mix", since_attr="since_date", until_attr="until_date"
+    )
 
     # Read once, matching cost's own "never read the clock inside the
     # per-record loop" rationale -- kept as a plain wall-clock read here
@@ -10411,6 +10384,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_reviewer_yield.add_argument(
         "--since", metavar="Nd",
         help="Limit to dispatches with timestamp in the last N days (e.g. 35d).",
+    )
+    p_reviewer_yield.add_argument(
+        "--until", metavar="DATE", type=_iso_date,
+        help=(
+            "Inclusive end date (YYYY-MM-DD). Bounds dispatch detection (table 1) only —"
+            " the cited-path edit-overlap table (table 2) is not date-windowed."
+        ),
     )
     p_reviewer_yield.add_argument(
         "--redact", action="store_true",
