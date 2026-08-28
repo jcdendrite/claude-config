@@ -92,7 +92,7 @@ Two things this scrub relies on that are easy to get backwards:
 
 ## Step 6 — Artifact B skeleton
 
-Write Artifact B fresh from the bucket taxonomy built in Step 4 — do not produce it by redacting a copy of Artifact A. A document authored clean from the taxonomy never contains the private span to begin with; a redaction pass that misses one span leaks it.
+Derive Artifact B by scrubbing a working copy of Artifact A into the skeleton below, preserving verbatim quotes, per-session evidence, and each bucket assignment's priority reasoning — a document authored fresh from the taxonomy alone loses these. The copy is not Artifact B until it has been scrubbed and diffed line by line per the checklist above: a missed span in the copy is exactly the leak that authoring fresh from the taxonomy avoided, so that diff is the gate, not a formality. Every error mode identified in Step 4 must appear in Artifact B — do not silently drop a finding for brevity, since a finding dropped this way is a silently lost lesson.
 
 ```markdown
 # [De-identified] Delivery error-mode lessons

@@ -9,6 +9,20 @@ enforcement. For the high-level three-tier overview, see the
 
 ## The three scans
 
+Each gated operation's scan target reaches beyond the content a reviewer
+would think to check. For `git commit`, the target is the staged diff's
+added lines plus the commit message (an inline `-m` value or a `-F`/`--file`
+path's contents), plus the invoking Bash command's own text — the last of
+these only when the staged diff is non-empty. For `gh pr create`/`gh pr edit`
+and a mutating `gh api` call, the target is the command's own text plus any
+referenced-file contents: `--body-file`/`--template` (or `-F`/`-T`) for
+`gh pr`, `--input` or a `-f`/`-F key=@path` field value for `gh api`.
+Because the command's own
+text is in scope, a `cd`-into-a-home-rooted-path prefix chained into the same
+Bash call as the gated command self-matches the home-rooted-path detector
+below even when the diff and message are clean — run the `cd` as its own
+earlier call and issue the gated command alone.
+
 `deny-private-project-refs.sh` runs three scans, in order:
 
 1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens

@@ -172,7 +172,7 @@ flowchart LR
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
-| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
+| `nudge-handoff-near-context-cap.sh` | — (PostToolBatch + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
@@ -258,7 +258,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
-Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one.
+Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one. Run that remedy from the interactive session before dispatching into the worktree, after confirming the pid is dead with `ps -p <pid>` — a subagent that hits the stale lock cannot clear it itself, since approving a mutating git command needs a human the background dispatch does not have.
 
 #### Activating enforcement on a repo
 
