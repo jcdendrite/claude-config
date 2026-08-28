@@ -170,8 +170,8 @@ _lib_emit_deny() {
 # note is not the fail-closed case _lib_emit_deny protects against.
 # permissionDecision is the exact lowercase literal "allow" -- the harness
 # is case-sensitive here the same way it is for _lib_emit_deny's "deny".
-# Caller contract matches _lib_emit_deny's: this function prints the JSON
-# envelope (or nothing, on the degrade path) and returns; the caller still
+# Caller contract matches _lib_emit_deny's. This function prints the JSON
+# envelope (or nothing, on the degrade path) and returns. The caller still
 # issues its own `exit 0` afterward, exactly as every _lib_emit_deny call
 # site already does for the deny path.
 _lib_emit_allow_with_context() {
@@ -952,12 +952,17 @@ _lib_worktree_lock_pid() {
 }
 
 # _lib_worktree_lock_absent WORKTREE_GIT_DIR
-# Returns 0 (true) iff WORKTREE_GIT_DIR/locked does not exist yet. Every
-# _lib_worktree_collision_guard call site runs this immediately before
-# calling the guard: if the guard then allows, its own O_EXCL write inside
-# that call is the only way the combination "was absent, now allows" can
-# happen (a pre-existing foreign lock always denies, never allows), so the
-# caller then knows this call is the reason the worktree is now locked.
+# Returns 0 (true) iff WORKTREE_GIT_DIR/locked does not exist yet.
+# Every _lib_worktree_collision_guard call site runs this immediately
+# before calling the guard.
+# A pre-existing foreign lock always denies, never allows.
+# If the guard then allows, its own O_EXCL write inside that call is the
+# only way the combination "was absent, now allows" happens for a foreign
+# session. A same-session parallel call can also produce that combination,
+# via the guard's self-lock-recognition fast path. See the hook callers'
+# known-gaps notes on the same-session double-message race.
+# So for the foreign-session case, the caller then knows this call is the
+# reason the worktree is now locked.
 _lib_worktree_lock_absent() {
   local worktree_git_dir="$1"
   [ ! -e "$worktree_git_dir/locked" ]

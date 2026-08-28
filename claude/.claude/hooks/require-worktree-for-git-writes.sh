@@ -107,7 +107,7 @@
 #     window against the guard's own O_EXCL write. A foreign session
 #     winning that race is still caught by the guard's own re-read and
 #     self-recognition check (session_id/pid match), which denies the call
-#     outright — so this window costs a wasted pre-check, not an incorrect
+#     outright. So this window costs a wasted pre-check, not an incorrect
 #     message, under the same cooperative, single-developer-machine threat
 #     model as the rest of this list.
 #   - The opposite-direction race also exists: if the lock file is present
@@ -124,17 +124,19 @@
 #     substance stays true either way, just possibly reported twice
 #     instead of once.
 #   - That pre-check is a bash builtin `[ -e ... ]` (a single `stat(2)`),
-#     not wrapped in `_lib_capped` — matching this file's `cd`-builtin
-#     precedent above, where wrapping a builtin needs an extra `bash -c`
-#     layer this file doesn't otherwise pay for. A stalled network-mounted
+#     not wrapped in `_lib_capped`. Capping it would add a `timeout`+`test`
+#     subprocess spawn to the fast path's steady-state case (an
+#     already-self-locked worktree), and the fast path must stay
+#     subprocess-free on that steady-state case. A stalled network-mounted
 #     worktree path hangs this stat the same way it hangs `cd`.
 #   - The slow path defers its note to a single emit after the record loop
 #     (see FRESH_LOCK_CONTEXT below), folded into a later deny's reason
-#     instead of dropped when one occurs, so a real acquisition is always
-#     reported somewhere. A command chaining fresh-lock writes into two
-#     DIFFERENT worktrees still reports only the later one on an eventual
-#     allow, though — FRESH_LOCK_CONTEXT is overwritten per record, not
-#     accumulated across worktrees.
+#     instead of dropped when one occurs. So a single fresh acquisition
+#     isn't dropped by an unrelated later deny in the same command. A
+#     command chaining fresh-lock writes into two DIFFERENT worktrees still
+#     reports only the later one on an eventual allow, though —
+#     FRESH_LOCK_CONTEXT is overwritten per record, not accumulated across
+#     worktrees.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
@@ -289,7 +291,7 @@ resolvable=true
 # Set by the write-allow branch below when its collision-guard call is the
 # one that freshly acquired the worktree lock. Deferred to a single emit
 # after the loop, not printed inline: a later record in this same command
-# can still deny, and interleaving an allow-context payload with a deny
+# can still deny. Interleaving an allow-context payload with a deny
 # payload on stdout would produce two concatenated JSON documents instead
 # of one parseable envelope.
 FRESH_LOCK_CONTEXT=""

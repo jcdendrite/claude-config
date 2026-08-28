@@ -1171,9 +1171,9 @@ exec "{real_git}" "$@"
         way to know in advance that the caller only intends a read. The
         "reads are always allowed" invariant this fix restores is about the
         allow/deny decision, not about the guard's own lock-acquisition
-        side effect, which this diff does not change. That side effect is
-        no longer un-signaled, though: the same hook call's allow now
-        carries an additionalContext note explaining the reacquisition."""
+        side effect, which this diff does not change. The same hook call's
+        allow carries an additionalContext note explaining the
+        reacquisition."""
         _, worktree = opted_in_with_worktree
         assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
 
@@ -1192,7 +1192,7 @@ exec "{real_git}" "$@"
         informational note fires only when THIS call is the one that
         acquired the lock, not on every self-lock allow. Companion to
         test_self_lock_reentry_is_idempotent, which pins the lock-state
-        side effect; this pins the new messaging behavior."""
+        side effect. This test pins the messaging behavior."""
         _, worktree = opted_in_with_worktree
         assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree) == "allow"
 
@@ -1238,9 +1238,12 @@ exec "{real_git}" "$@"
             == "allow"
         )
 
-        context = run_hook_context(
-            WORKTREE_HOOK, bash_input(f"cd {worktree} && git commit -m bar"), cwd=opted_in_repo
-        )
+        second_write = bash_input(f"cd {worktree} && git commit -m bar")
+        # Neither a silent allow nor a deny carries additionalContext.
+        # run_hook_context alone can't distinguish the two, so pin the
+        # decision explicitly.
+        assert run_hook(WORKTREE_HOOK, second_write, cwd=opted_in_repo) == "allow"
+        context = run_hook_context(WORKTREE_HOOK, second_write, cwd=opted_in_repo)
         assert context is None, (
             "self-lock reentry via the slow path must allow silently, with no additionalContext"
         )
@@ -1312,4 +1315,29 @@ exec "{real_git}" "$@"
         )
         assert _worktree_lock_reason(worktree_two) is not None, (
             "worktree_two's own guard call is expected to lock it"
+        )
+
+    def test_slow_path_two_chained_writes_same_worktree_emits_one_document(
+        self, isolated_home, opted_in_with_worktree
+    ):
+        """The common real-world shape: two chained write records both
+        targeting the SAME worktree (e.g. `git add . && git commit`) must
+        still emit exactly one JSON document, and the fresh-lock note must
+        name that worktree. The two-DIFFERENT-worktrees case above is the
+        rarer collapse. This is the everyday one."""
+        opted_in_repo, worktree = opted_in_with_worktree
+        assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
+
+        # run_hook_context's own json.loads(result.stdout) call would raise
+        # if stdout held two concatenated JSON documents instead of one.
+        context = run_hook_context(
+            WORKTREE_HOOK,
+            bash_input(f"git -C {worktree} add . && git -C {worktree} commit -m x"),
+            cwd=opted_in_repo,
+        )
+        assert context is not None, "expected exactly one allow-with-context payload"
+        assert str(worktree) in context
+
+        assert _worktree_lock_reason(worktree) is not None, (
+            "the first record's guard call is expected to lock the worktree"
         )

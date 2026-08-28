@@ -464,7 +464,7 @@ class TestWorktreeCollisionGuard:
         informational note fires only when THIS call is the one that
         acquired the lock, not on every self-lock allow. Companion to
         test_self_lock_reentry_is_idempotent, which pins the lock-state
-        side effect; this pins the new messaging behavior."""
+        side effect. This test pins the messaging behavior."""
         _, worktree = opted_in_with_worktree
         assert run_hook(FILE_WRITES_HOOK, edit_input(str(worktree / "file.txt"))) == "allow"
 
