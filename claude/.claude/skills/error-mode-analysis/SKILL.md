@@ -30,6 +30,8 @@ Invoke `transcript-narrative` and `transcript-analysis` by name — do not resta
 
 `user-input --corrections-only` pulls verbatim FOLLOWUP/EXPLICIT_CORRECTION prompts for Step 4's Human-unique and Cross-session process buckets, skipping a manual transcript re-read.
 
+`user-input --corrections-only`/`struggle`'s task-notification false-flag caveat (`transcript-analysis`'s own Caveats section) applies here: verify each flagged turn is inside an actual human message before counting it toward Step 4's buckets.
+
 ## Step 3 — Collect PR review comments
 
 A distinct second source, not a subset of the transcript. Human PR reviewers comment on the PR itself; those exchanges never appear in the session transcript unless the AI was asked to read them. Fetch all three comment kinds in one read-only GraphQL round trip rather than three separate paginated REST calls:
