@@ -788,10 +788,11 @@ def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -
 # --- _lib_active_bypass_marker_live ---------------------------------------
 #
 # The four bypass-shaped gates (require-{memory-skill,plan-review,
-# ready-for-review,respond-pr}.sh) share this helper, so the liveness,
+# ready-for-review,respond-pr}.sh), plus nudge-handoff-near-context-cap.sh's
+# hard-block suppression, share this helper, so the liveness,
 # orphan-eviction, and traversal properties are pinned once here rather than
-# four times over. Each hook's own test file still asserts the disposition its
-# gate produces when the helper returns false, which is what differs by gate.
+# five times over. Each caller's own test file still asserts the disposition
+# it produces when the helper returns false, which is what differs by caller.
 
 _MARKER_DIR_NAME = ".test-skill-active.d"
 

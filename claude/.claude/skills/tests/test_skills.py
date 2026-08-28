@@ -2428,6 +2428,8 @@ _MARKER_TRIPLE_SITES = [
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh activate memory-skill"),
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh deactivate memory-skill"),
     ("code-review", "~/.claude/scripts/marker.sh write code-review"),
+    ("handoff", "~/.claude/scripts/marker.sh activate handoff"),
+    ("handoff", "~/.claude/scripts/marker.sh deactivate handoff"),
 ]
 
 
