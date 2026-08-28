@@ -13,6 +13,7 @@ from helpers import (
     edit_input,
     multiedit_input,
     run_hook,
+    run_hook_context,
     run_hook_reason,
     write_input,
 )
@@ -438,4 +439,36 @@ class TestWorktreeCollisionGuard:
         assert "git worktree unlock" in reason
         assert _worktree_lock_reason(worktree) is not None, (
             "hook must not auto-evict an unparseable-reason lock"
+        )
+
+    def test_fresh_acquire_via_write_carries_context(self, isolated_home, opted_in_with_worktree):
+        """A write into a virgin (never-locked) worktree that freshly
+        acquires the lock carries an additionalContext note explaining the
+        reacquisition, alongside the allow."""
+        _, worktree = opted_in_with_worktree
+        assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
+        path = str(worktree / "file.txt")
+
+        context = run_hook_context(FILE_WRITES_HOOK, edit_input(path))
+        assert context is not None, "expected an allow-with-context payload"
+        assert str(worktree) in context
+        assert "git worktree unlock" in context
+
+        assert _worktree_lock_reason(worktree) is not None, (
+            "the guard's own call is expected to lock the worktree"
+        )
+
+    def test_self_lock_reentry_allows_silently_with_no_context(self, isolated_home, opted_in_with_worktree):
+        """A second write in the same session recognizes its own
+        already-held lock and allows with no additionalContext -- the
+        informational note fires only when THIS call is the one that
+        acquired the lock, not on every self-lock allow. Companion to
+        test_self_lock_reentry_is_idempotent, which pins the lock-state
+        side effect; this pins the new messaging behavior."""
+        _, worktree = opted_in_with_worktree
+        assert run_hook(FILE_WRITES_HOOK, edit_input(str(worktree / "file.txt"))) == "allow"
+
+        context = run_hook_context(FILE_WRITES_HOOK, write_input(str(worktree / "other.txt")))
+        assert context is None, (
+            "self-lock reentry must allow silently, with no additionalContext"
         )
