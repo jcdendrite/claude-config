@@ -5,15 +5,12 @@
 # the threshold's measurement basis and rationale.
 #
 # Adapted from nudge-handoff-near-context-cap.sh, with three differences:
-# Inverted polarity -- fires only when AGENT_TYPE identifies a subagent
-# dispatch, the opposite of that hook's main-session-only gate.
-# Incremental counting -- turn count is tracked per dispatch via a small
-# state file (offset + running total) instead of a full-transcript `jq -s`
-# pass on every fire, reusing the mid-write-safety offset helper
-# (_lib_advance_offset_past_complete_lines, shared via _lib.sh).
-# Sampled cadence -- the incremental scan and threshold check run only on
-# every LONG_TURN_NUDGE_SAMPLE_CADENCE'th fire (docs/design-decisions.md
-# §32). Every other fire only appends one byte to a counter file.
+# - Inverted polarity: subagent-only, not main-session-only -- see the
+#   AGENT_TYPE gate below.
+# - Incremental per-dispatch turn counting instead of a full-transcript
+#   scan -- see _scan_turn_count_cached below.
+# - A sampled cadence instead of scanning every fire -- see the
+#   invocation-counter section below.
 #
 # Never blocks: exits 0 on every path. It never suppresses the tool call it
 # observes. Output is purely advisory JSON on stdout. It fires at most once
@@ -29,11 +26,46 @@
 #   dispatch stalling without advancing turns. See
 #   .claude/plans/prevent-runaway-subagent-cost.md and
 #   docs/design-decisions.md §32 for the fuller rationale.
-# - Registered system-wide on every subagent dispatch, unlike
-#   nudge-handoff-near-context-cap.sh's main-session-only registration. This
+# - Registered system-wide on every subagent dispatch. This is unlike
+#   nudge-handoff-near-context-cap.sh's main-session-only registration. That
 #   widens the pre-existing `_lib_capped_for` timeout-absent exposure
 #   (docs/handoff-nudge.md, docs/commit-stall-block.md) to every subagent
 #   dispatch.
+# - A record whose own line exceeds MAX_SCAN_WINDOW_BYTES force-advances the
+#   offset past it, undercounting that record's turn (see
+#   _scan_turn_count_cached for the resync mechanics).
+# - A jq timeout driven by content rather than backlog size retries the
+#   identical window forever (2s _lib_capped_for cap on every retry).
+# - MAX_SCAN_WINDOW_BYTES / SAMPLE_CADENCE (200,000 bytes) is the average
+#   per-fire transcript-growth rate above which a dispatch permanently
+#   outpaces the scan. A single sampled fire's own catch-up capacity is the
+#   full MAX_SCAN_WINDOW_BYTES, since only one fire in SAMPLE_CADENCE
+#   actually scans. This rate isn't validated against real transcript
+#   growth, so TURN_COUNT can end up chronically undercounted with no
+#   visible signal.
+# - A losing fire during lock contention contributes nothing at all to
+#   that fire's scan, not a partial scan.
+# - This stacks with the backlog-vs-window-size undercounting risk above
+#   under a burst of same-session fires.
+# - A same-session fire killed (SIGKILL, not any trappable signal) while
+#   holding _scan_turn_count_cached's scan lock:
+#   - Leaks the lock directory; only the periodic MARKER_DIR sweep
+#     reclaims it, up to 30 days.
+#   - The likely root cause is an unwrapped mkdir/rmdir/mktemp hang hitting
+#     a harness execution timeout -- see docs/hooks.md's known-limitations
+#     entry for this hook.
+#   - Every later sampled fire for that dispatch fails to scan while the
+#     lock is leaked, blinding the nudge for the rest of the dispatch.
+#   - In practice that's far under the 30-day reclaim window, since a
+#     dispatch rarely runs anywhere near that long.
+#   - The same leak also happens if a trappable signal lands in the single
+#     statement between mkdir "$lock_dir" succeeding and LOCK_DIR being
+#     assigned, since the EXIT trap closes over LOCK_DIR while it's still
+#     empty at that instant.
+# - mkdir -p "$MARKER_DIR" is unwrapped the same way. Unlike the scan-lock
+#   scenario above, it runs on every fire rather than only a sampled scan
+#   fire, so this hang risk spans the dispatch's entire remaining
+#   lifetime.
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
@@ -62,56 +94,155 @@ resolve_sample_cadence() {
   esac
 }
 
+# Bounds a single scan attempt's tail|jq -s window, so a retry after a
+# timed-out jq -s call re-reads a fixed-size slice instead of one that grows
+# with however much backlog piled up across the skipped sampling fires.
+# Default 2000000; see docs/design-decisions.md §32 for the parsing-speed
+# basis (not validated against catch-up rate -- see Known gaps above).
+# LONG_TURN_NUDGE_MAX_SCAN_WINDOW_BYTES overrides it; same malformed-value
+# guard as resolve_threshold above.
+resolve_max_scan_window_bytes() {
+  case "$LONG_TURN_NUDGE_MAX_SCAN_WINDOW_BYTES" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) MAX_SCAN_WINDOW_BYTES=2000000 ;;
+    *) MAX_SCAN_WINDOW_BYTES=$LONG_TURN_NUDGE_MAX_SCAN_WINDOW_BYTES ;;
+  esac
+}
+
+# WINDOW_FILE/LOCK_DIR are script-scope (not local) so this EXIT trap can
+# still reach them after an abnormal exit mid-scan, since a trap
+# referencing a local sees it already unset.
+WINDOW_FILE=""
+LOCK_DIR=""
+trap 'rm -f "$WINDOW_FILE"; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
 # _scan_turn_count_cached TRANSCRIPT SCAN_STATE_FILE
-# Sets TURN_COUNT to the dispatch's running total of assistant turns (a
-# transcript record carrying a usage block -- the same shape
-# nudge-handoff-near-context-cap.sh's own usage-block filter selects on).
-# - Scans only the slice appended since SCAN_STATE_FILE's stored offset, via
-#   _lib_advance_offset_past_complete_lines, so a fire that catches the
-#   transcript mid-write undercounts by at most the partial trailing line.
-# - The first scan for a dispatch (no stored offset yet) reads the whole
-#   transcript-so-far once -- a one-time cost, not a per-fire one.
-# - A read failure (missing wc/tail/jq, unreadable file) returns 1 and
-#   leaves TURN_COUNT at the last-known total.
-# - A jq failure on the appended slice (timeout, missing binary) leaves the
-#   stored offset unchanged, so the same bytes are rescanned next fire
-#   instead of being counted as advanced-past-but-uncounted.
+# Sets TURN_COUNT to the dispatch's running total of assistant turns -- a
+# transcript record carrying a usage block. This is the same shape
+# nudge-handoff-near-context-cap.sh's own usage-block filter selects on.
+# - Scans only the slice appended since SCAN_STATE_FILE's stored offset,
+#   capped at MAX_SCAN_WINDOW_BYTES per attempt, so a backlog accumulated
+#   across skipped sampling fires is read incrementally across several
+#   sampled fires rather than in one unbounded tail|jq -s call.
+# - Reuses _lib_advance_offset_past_complete_lines against a temp-file copy
+#   of the bounded window. Materializing to a temp file is required because
+#   the helper's fast path checks the transcript's true last byte, not the
+#   window's boundary. A fire that catches the transcript mid-write, or
+#   whose window cuts off mid-line, undercounts by at most that trailing
+#   incomplete line.
+# - The first scan for a dispatch (no stored offset yet) is subject to the
+#   same per-attempt window cap as every later scan, not a one-time
+#   unbounded read.
+# - A same-session fire holds an exclusive lock (SCAN_STATE_FILE.lock) for
+#   its whole read-scan-write sequence, so two concurrent fires can never
+#   interleave their reads and writes. The loser's non-blocking mkdir fails
+#   immediately, contributing nothing to this fire. The next sampled fire
+#   that acquires the lock picks up where the winner left off.
+# - A read failure (missing wc/tail/jq, unreadable file) or a failed lock
+#   acquisition returns 1 and leaves TURN_COUNT at the last-known total.
+# - A jq failure on the windowed slice (timeout, missing binary) leaves the
+#   stored offset unchanged, so the next sampled fire retries the same
+#   bounded window rather than a larger one.
+# - A missing mktemp is treated as a jq failure: the offset and total are
+#   written back unchanged and the function still returns 0.
+# - A full window with no trailing newline and more transcript beyond it
+#   means one record's own line exceeds the window; the offset
+#   force-advances past it rather than freezing.
+# - SCAN_STATE_FILE's third line marks that state so the next scan treats
+#   its leading bytes as a stale record's tail, resyncing at the next
+#   newline instead of feeding the fragment to jq.
+# - Only that one record's turn is undercounted; nothing after it is.
 _scan_turn_count_cached() {
   local transcript_path="$1" scan_state_file="$2"
-  local stored_offset="" stored_total=""
+  local lock_dir="${scan_state_file}.lock"
+  mkdir "$lock_dir" 2>/dev/null || return 1
+  LOCK_DIR="$lock_dir"
+
+  local stored_offset="" stored_total="" stored_misaligned=""
   if [ -f "$scan_state_file" ]; then
-    { IFS= read -r stored_offset; IFS= read -r stored_total; } < "$scan_state_file" 2>/dev/null || true
+    { IFS= read -r stored_offset; IFS= read -r stored_total; IFS= read -r stored_misaligned; } \
+      < "$scan_state_file" 2>/dev/null || true
   fi
   case "$stored_offset" in ''|*[!0-9]*) stored_offset=0 ;; esac
   case "$stored_total" in ''|*[!0-9]*) stored_total=0 ;; esac
+  case "$stored_misaligned" in 1) stored_misaligned=1 ;; *) stored_misaligned=0 ;; esac
   TURN_COUNT="$stored_total"
 
   local current_size
   current_size=$(_lib_capped_for 2 wc -c < "$transcript_path" 2>/dev/null | tr -d '[:space:]')
-  case "$current_size" in ''|*[!0-9]*) return 1 ;; esac
+  case "$current_size" in
+    ''|*[!0-9]*)
+      rmdir "$lock_dir" 2>/dev/null
+      LOCK_DIR=""
+      return 1
+      ;;
+  esac
 
-  local scan_from="$stored_offset"
+  local scan_from="$stored_offset" misaligned="$stored_misaligned"
   if [ "$scan_from" -gt "$current_size" ] 2>/dev/null; then
     scan_from=0
     stored_total=0
+    misaligned=0
   fi
 
-  local new_turns=0 jq_ok=1
-  if [ "$current_size" -gt "$scan_from" ] 2>/dev/null; then
-    new_turns=$(_lib_capped_for 2 tail -c +$((scan_from + 1)) "$transcript_path" 2>/dev/null \
-      | _lib_capped_for 2 jq -s '[.[] | select(.message? and .message.usage)] | length' 2>/dev/null)
-    case "$new_turns" in ''|*[!0-9]*) new_turns=0; jq_ok=0 ;; esac
+  local scan_window_end="$current_size"
+  if [ $(( current_size - scan_from )) -gt "$MAX_SCAN_WINDOW_BYTES" ] 2>/dev/null; then
+    scan_window_end=$(( scan_from + MAX_SCAN_WINDOW_BYTES ))
   fi
 
-  local new_offset="$scan_from"
-  if [ "$jq_ok" -eq 1 ]; then
-    new_offset=$(_lib_advance_offset_past_complete_lines "$transcript_path" "$scan_from" "$current_size")
-    case "$new_offset" in ''|*[!0-9]*) new_offset="$scan_from" ;; esac
+  local new_turns=0 jq_ok=1 new_offset="$scan_from" new_misaligned="$misaligned"
+  if [ "$scan_window_end" -gt "$scan_from" ] 2>/dev/null; then
+    WINDOW_FILE=$(mktemp -t long-turn-nudge-scan.XXXXXX 2>/dev/null) || WINDOW_FILE=""  # GNU mktemp requires the XXXXXX suffix to substitute; BSD's mktemp accepts the same template (appending its own suffix regardless of content).
+    if [ -n "$WINDOW_FILE" ]; then
+      _lib_capped_for 2 tail -c +$((scan_from + 1)) "$transcript_path" 2>/dev/null \
+        | head -c "$(( scan_window_end - scan_from ))" > "$WINDOW_FILE" 2>/dev/null
+      local window_size
+      window_size=$(_lib_capped_for 2 wc -c < "$WINDOW_FILE" 2>/dev/null | tr -d '[:space:]')
+      case "$window_size" in ''|*[!0-9]*) window_size=0 ;; esac
+      local window_offset=0
+      window_offset=$(_lib_advance_offset_past_complete_lines "$WINDOW_FILE" 0 "$window_size")
+      case "$window_offset" in ''|*[!0-9]*) window_offset=0 ;; esac
+
+      if [ "$window_offset" -eq 0 ] 2>/dev/null; then
+        # No newline in a full window with more transcript remaining means
+        # an oversized record's own line. The legitimate mid-write case is
+        # distinguishable because it would instead hit a short read at
+        # current_size. Force-advance past this window rather than
+        # re-reading it forever.
+        if [ "$window_size" -eq "$(( scan_window_end - scan_from ))" ] 2>/dev/null \
+          && [ "$scan_window_end" -lt "$current_size" ] 2>/dev/null; then
+          new_offset="$scan_window_end"
+          new_misaligned=1
+        fi
+      elif [ "$misaligned" -eq 1 ] 2>/dev/null; then
+        # This window's first line is the tail of a record already skipped
+        # as oversized -- resync past it without counting it. The rest of
+        # this window is picked up fresh on the next sampled fire.
+        local first_line_bytes
+        first_line_bytes=$(_lib_capped_for 2 head -1 "$WINDOW_FILE" 2>/dev/null | wc -c | tr -d '[:space:]')
+        case "$first_line_bytes" in ''|*[!0-9]*) first_line_bytes=0 ;; esac
+        if [ "$first_line_bytes" -gt 0 ] 2>/dev/null; then
+          new_offset=$(( scan_from + first_line_bytes ))
+          new_misaligned=0
+        fi
+      else
+        new_turns=$(head -c "$window_offset" "$WINDOW_FILE" 2>/dev/null \
+          | _lib_capped_for 2 jq -s '[.[] | select(.message? and .message.usage)] | length' 2>/dev/null)
+        case "$new_turns" in ''|*[!0-9]*) new_turns=0; jq_ok=0 ;; esac
+        if [ "$jq_ok" -eq 1 ]; then
+          new_offset=$(( scan_from + window_offset ))
+        fi
+      fi
+      rm -f "$WINDOW_FILE" 2>/dev/null
+      WINDOW_FILE=""
+    fi
   fi
 
   TURN_COUNT=$(( stored_total + new_turns ))
   mkdir -p "$(dirname "$scan_state_file")" 2>/dev/null || true
-  printf '%s\n%s\n' "$new_offset" "$TURN_COUNT" > "$scan_state_file" 2>/dev/null || true
+
+  printf '%s\n%s\n%s\n' "$new_offset" "$TURN_COUNT" "$new_misaligned" > "$scan_state_file" 2>/dev/null || true
+  rmdir "$lock_dir" 2>/dev/null
+  LOCK_DIR=""
   return 0
 }
 
@@ -142,8 +273,8 @@ case "$HOOK_EVENT" in
   *) HOOK_EVENT="PostToolBatch" ;;
 esac
 
-# SESSION_ID feeds every marker/state-file path below as a path component
-# ("../" would escape MARKER_DIR); fail the same way an empty id already does.
+# SESSION_ID feeds every marker/state-file path below as a path component.
+# "../" would escape MARKER_DIR, so fail the same way an empty id already does.
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
 # No config dir means nowhere to write the counter, scan-state, or fired
@@ -173,11 +304,8 @@ if [ -e "$FIRED_MARKER" ]; then
   exit 0
 fi
 
-# Sampled cadence: each fire appends one byte, and the scan/threshold check
-# runs only on every SAMPLE_CADENCE'th fire. O_APPEND is atomic for a write
-# this small, the same technique nudge-handoff-near-context-cap.sh's own
-# IGNORED_MARKER uses. Every other fire exits here having done only this
-# cheap append -- no transcript read at all.
+# O_APPEND is atomic for a write this small, the same technique
+# nudge-handoff-near-context-cap.sh's own IGNORED_MARKER uses.
 resolve_sample_cadence
 INVOCATION_MARKER="${MARKER_DIR}/${SESSION_ID}-invocations"
 printf '.' >> "$INVOCATION_MARKER" 2>/dev/null || true
@@ -191,6 +319,7 @@ case "$INVOCATION_COUNT" in ''|*[!0-9]*) exit 0 ;; esac
 # above.
 _lib_capped_for 2 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 
+resolve_max_scan_window_bytes
 SCAN_STATE_FILE="${MARKER_DIR}/${SESSION_ID}-scan"
 _scan_turn_count_cached "$TRANSCRIPT_PATH" "$SCAN_STATE_FILE" || exit 0
 
@@ -209,10 +338,9 @@ OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson thr
   }
 }' 2>/dev/null) && [ -n "$OUTPUT" ] || exit 0
 
-# Atomic claim: mkdir is atomic across concurrent processes. Two
-# near-simultaneous fires can both build OUTPUT before either claims; only
-# one of them can win this mkdir, so the loser discards its OUTPUT and exits
-# without emitting a duplicate nudge.
+# Atomic claim: mkdir is atomic, so only one of two near-simultaneous fires
+# that both built OUTPUT can claim FIRED_MARKER. The loser discards its
+# already-built OUTPUT and exits without emitting a duplicate nudge.
 mkdir "$FIRED_MARKER" 2>/dev/null || exit 0
 
 printf 'nudged session=%s turns=%s threshold=%s event=%s\n' \
