@@ -1,7 +1,7 @@
 #!/bin/bash
 # hook-class: batch-gate
 # PostToolBatch hook: nudges when a subagent dispatch's own turn count
-# crosses a measured outlier threshold. See docs/design-decisions.md §32 for
+# crosses a measured outlier threshold. See docs/design-decisions.md §33 for
 # the threshold's measurement basis and rationale.
 #
 # Adapted from nudge-handoff-near-context-cap.sh, with three differences:
@@ -25,7 +25,7 @@
 #   this nudge only fires on turn *count* crossing the threshold, never on a
 #   dispatch stalling without advancing turns. See
 #   .claude/plans/prevent-runaway-subagent-cost.md and
-#   docs/design-decisions.md §32 for the fuller rationale.
+#   docs/design-decisions.md §33 for the fuller rationale.
 # - Registered system-wide on every subagent dispatch. This is unlike
 #   nudge-handoff-near-context-cap.sh's main-session-only registration. That
 #   widens the pre-existing `_lib_capped_for` timeout-absent exposure
@@ -73,7 +73,7 @@ fi
 
 CONFIG_DIR=$(_lib_config_dir) || CONFIG_DIR=""
 
-# Default 340; see docs/design-decisions.md §32 for the corpus basis.
+# Default 340; see docs/design-decisions.md §33 for the corpus basis.
 # LONG_TURN_NUDGE_THRESHOLD overrides it; a malformed value (empty, zero,
 # non-digit, zero-padded, or 9+ digits) falls back to the default rather
 # than degrading toward 0/unset/negative, which would fire on every dispatch.
@@ -84,7 +84,7 @@ resolve_threshold() {
   esac
 }
 
-# Default 10; see docs/design-decisions.md §32 for the corpus basis.
+# Default 10; see docs/design-decisions.md §33 for the corpus basis.
 # LONG_TURN_NUDGE_SAMPLE_CADENCE overrides it; same malformed-value guard as
 # resolve_threshold above (a degraded cadence toward 0 would divide by zero).
 resolve_sample_cadence() {
@@ -97,7 +97,7 @@ resolve_sample_cadence() {
 # Bounds a single scan attempt's tail|jq -s window, so a retry after a
 # timed-out jq -s call re-reads a fixed-size slice instead of one that grows
 # with however much backlog piled up across the skipped sampling fires.
-# Default 2000000; see docs/design-decisions.md §32 for the parsing-speed
+# Default 2000000; see docs/design-decisions.md §33 for the parsing-speed
 # basis (not validated against catch-up rate -- see Known gaps above).
 # LONG_TURN_NUDGE_MAX_SCAN_WINDOW_BYTES overrides it; same malformed-value
 # guard as resolve_threshold above.

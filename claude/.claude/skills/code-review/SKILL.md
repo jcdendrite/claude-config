@@ -409,7 +409,15 @@ This writes the hash of the currently staged diff into `<config-dir>/code-review
 
 Run the command standalone, or chained only as `marker.sh write code-review && git commit …` — the invocation-shape gate denies every other chain tail. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
-For a multi-line message use `git commit -F <file>` (not `-m` with a heredoc or command substitution, which the invocation-shape gate rejects), and keep that file outside any UUID-shaped path — e.g. not the session scratchpad — since the redaction gate's long-hex-identifier check denies a `-F` argument pointing there.
+**Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the gates, which resolve the argument statically and fail closed on it.
+
+Never author the message any of these ways:
+
+- **A shell heredoc.** An unquoted `<<EOF` parses embedded backticks and `$(...)` as shell substitution before either gate ever sees the content — use the `Write` tool instead.
+- **`-F` pointed at `-`, `/dev/stdin`, `/dev/fd/*`, or any other pseudo-file.** Both the PII gate and the redaction gate read the `-F` file before git runs; neither can read the stdin of a process that hasn't started, so a pseudo-file source is denied outright rather than scanned.
+- **`-m "$(cat …)"` command substitution.** The gates scan only the literal command string, so the real message would reach the commit unscanned.
+
+Keep the file out of `$HOME` and out of any UUID-shaped or 32-plus-hex-character path — e.g. not the session scratchpad. The redaction gate scans the commit command string itself. Its home-rooted-path and long-hex-identifier detectors both match on the `-F` argument.
 
 **Do NOT write the marker if:**
 

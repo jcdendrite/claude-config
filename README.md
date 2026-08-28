@@ -30,6 +30,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
   - [Auto mode](#auto-mode)
   - [Output preferences](#output-preferences)
   - [Machine-specific overrides](#machine-specific-overrides)
+  - [Artifact and Workflow disabled by default](#artifact-and-workflow-disabled-by-default)
 - [Context management](#context-management)
 - [Tests](#tests)
 - [Acknowledgments](#acknowledgments)
@@ -171,7 +172,7 @@ flowchart LR
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
-| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
+| `nudge-handoff-near-context-cap.sh` | — (PostToolBatch + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
@@ -257,7 +258,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
-Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one.
+Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one. Run that remedy from the interactive session before dispatching into the worktree, after confirming the pid is dead with `ps -p <pid>`. A subagent that hits the stale lock cannot clear it itself — approving a mutating git command needs a human the background dispatch does not have.
 
 #### Activating enforcement on a repo
 
@@ -455,11 +456,16 @@ To customize response tone, formatting, and communication style, create `<config
 
 ### Machine-specific overrides
 
-Personal permission overrides belong in a repository's own `.claude/settings.local.json` (untracked, gitignored automatically) — Claude Code scopes this file to the repository root, not the user's home directory, so there is no single file that covers every repo on the machine at once. For a preference that should apply everywhere, use an environment variable exported from your shell profile instead (see the next section for an example).
+Personal permission overrides belong in a repository's own `.claude/settings.local.json` (untracked, gitignored automatically) — Claude Code scopes this file to the repository root, not the user's home directory, so there is no single file that covers every repo on the machine at once. For a preference that should apply everywhere, use an environment variable exported from your shell profile instead — see the `ANTHROPIC_MODEL`/`CLAUDE_CODE_EFFORT_LEVEL` example in [Configuration files](#configuration-files) above. This does not apply to `disableArtifact`/`disableWorkflows`, which are a shared repo-wide default rather than a personal preference — see the next section for how to override those two specifically.
 
-### Context budget: disabling Artifact/Workflow
+### Artifact and Workflow disabled by default
 
-The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt — roughly 7,200 tokens combined (schema size is measured; the actual reclaim from disabling is not yet independently confirmed — see [`docs/design-decisions.md` §28](docs/design-decisions.md)). Both have a documented disable setting with an environment-variable equivalent, `CLAUDE_CODE_DISABLE_ARTIFACT=1` / `CLAUDE_CODE_DISABLE_WORKFLOWS=1`. This repo doesn't set either — publishing Artifacts and running multi-agent Workflows are legitimate for many stow consumers, so it isn't a default this shared config should impose. If you don't use one or both tools, export the corresponding variable from your own shell profile to reclaim that budget across every repo on the machine.
+The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt, so `settings.json` sets `disableArtifact`/`disableWorkflows` to `true` by default; see [`docs/design-decisions.md` §31](docs/design-decisions.md) for the measurement. Two commands re-enable one tool for a single session, taking CLI-scope precedence over the shared default:
+
+- **`claude-workflow`** — starts a session with the `Workflow` tool enabled (Artifact stays off). Takes the same flags and positional prompt as `claude`.
+- **`claude-artifact`** — same, for the `Artifact` tool.
+
+To flip the default itself rather than opting back in per session, set `disableWorkflows: false` (or `disableArtifact: false`) in a repository's own `.claude/settings.json` or `.claude/settings.local.json` — both outrank the User-scope default this repo ships.
 
 ## Context management
 
@@ -514,7 +520,7 @@ For a faster local dev loop, `select-tests.py` runs pytest against just the test
 .venv/bin/python3 claude/.claude/scripts/select-tests.py
 ```
 
-Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is an additional, opt-in convenience, not a replacement for the full-run command above — CI always runs the whole suite regardless.
+Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push.
 
 ## Acknowledgments
 
