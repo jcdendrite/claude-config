@@ -102,6 +102,41 @@
 #     the collision guard's git-subprocess calls plus a python3 spawn
 #     versus a single call; only the already-rare, already-blocked deny
 #     path pays this, not the common allow path.
+#   - The fresh-lock-acquisition `additionalContext` note's own pre-check
+#     (was the lock file present before this call) has a narrow TOCTOU
+#     window against the guard's own O_EXCL write. A foreign session
+#     winning that race is still caught by the guard's own re-read and
+#     self-recognition check (session_id/pid match), which denies the call
+#     outright. So this window costs a wasted pre-check, not an incorrect
+#     message, under the same cooperative, single-developer-machine threat
+#     model as the rest of this list.
+#   - The opposite-direction race also exists: if the lock file is present
+#     at this pre-check (WAS_UNLOCKED=false) but a genuinely concurrent
+#     `git worktree unlock` clears it before the guard's own read, the
+#     guard performs a real fresh acquisition that gets no message, since
+#     the outer pre-check already latched WAS_UNLOCKED=false. Narrower than
+#     the same-session double-message case below — it needs a genuine
+#     sub-guard-duration race, not just ordinary inter-call latency.
+#   - Two near-simultaneous calls from the SAME session (e.g. two parallel
+#     subagents sharing this worktree) can both see "unlocked" before
+#     either write lands, firing the note twice for one real acquisition.
+#     Low stakes: both calls belong to the same session, and the note's
+#     substance stays true either way, just possibly reported twice
+#     instead of once.
+#   - That pre-check is a bash builtin `[ -e ... ]` (a single `stat(2)`),
+#     not wrapped in `_lib_capped`. Capping it would add a `timeout`+`test`
+#     subprocess spawn to the fast path's steady-state case (an
+#     already-self-locked worktree), and the fast path must stay
+#     subprocess-free on that steady-state case. A stalled network-mounted
+#     worktree path hangs this stat the same way it hangs `cd`.
+#   - The slow path defers its note to a single emit after the record loop
+#     (see FRESH_LOCK_CONTEXT below), folded into a later deny's reason
+#     instead of dropped when one occurs. So a single fresh acquisition
+#     isn't dropped by an unrelated later deny in the same command. A
+#     command chaining fresh-lock writes into two DIFFERENT worktrees still
+#     reports only the later one on an eventual allow, though —
+#     FRESH_LOCK_CONTEXT is overwritten per record, not accumulated across
+#     worktrees.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
@@ -199,7 +234,13 @@ if $SESSION_IS_WORKTREE; then
      && [[ "$COMMAND" != *'-C'* ]] \
      && [[ "$COMMAND" != *'('* ]] \
      && [[ "$COMMAND" != *'`'* ]]; then
+    # See _lib_worktree_lock_absent (_lib.sh) for the pre-check contract.
+    WAS_UNLOCKED=false
+    _lib_worktree_lock_absent "$SESSION_GIT_DIR_ABS" && WAS_UNLOCKED=true
     if _lib_worktree_collision_guard "$CWD" "$REPO_GIT_COMMON_DIR" >/dev/null; then
+      if $WAS_UNLOCKED; then
+        _lib_emit_allow_with_context "Running this git command re-acquired the worktree lock for $CWD, since worktree discipline allows only one live session per linked worktree at a time. If this was unintended, run 'git worktree unlock $CWD' again."
+      fi
       exit 0
     fi
     # Collision guard denied. It alone can't tell read from write -- that
@@ -247,11 +288,32 @@ ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 running_cwd="$CWD"
 resolvable=true
 
+# Set by the write-allow branch below when its collision-guard call is the
+# one that freshly acquired the worktree lock. Deferred to a single emit
+# after the loop, not printed inline: a later record in this same command
+# can still deny. Interleaving an allow-context payload with a deny
+# payload on stdout would produce two concatenated JSON documents instead
+# of one parseable envelope.
+FRESH_LOCK_CONTEXT=""
+
+# Wraps emit_deny for every call site inside the loop below: a deny here
+# exits before the post-loop FRESH_LOCK_CONTEXT emit ever runs, so an
+# earlier record's real lock acquisition would otherwise be dropped
+# silently. Folds it into the deny reason instead, leaving the reason text
+# byte-for-byte unchanged when FRESH_LOCK_CONTEXT is still empty.
+emit_deny_folding_fresh_lock_context() {
+  local reason="$1"
+  if [ -n "$FRESH_LOCK_CONTEXT" ]; then
+    reason="$reason $FRESH_LOCK_CONTEXT"
+  fi
+  emit_deny "$reason"
+}
+
 while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
   [ -z "$rec_type" ] && continue
   case "$rec_type" in
     SENTINEL)
-      emit_deny "Blocked by worktree-enforcement hook: $field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree."
+      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: $field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree."
       exit 0
       ;;
     CD)
@@ -296,7 +358,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       # whatever `running_cwd` currently holds), an unresolved cd earlier
       # in this command, or an unresolved/ambiguous `-C`.
       if [ "$in_group" = "1" ] || [ "$op" = "||" ] || [ "$op" = "&" ] || [ "$c_status" = "UNRESOLVED" ] || ! $resolvable; then
-        emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd — or spawn an agent with isolation: worktree."
+        emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd — or spawn an agent with isolation: worktree."
         exit 0
       fi
 
@@ -307,7 +369,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         LITERAL)
           resolved_c=$(cd "$running_cwd" 2>/dev/null && cd "$c_path" 2>/dev/null && pwd -P 2>/dev/null)
           if [ -z "$resolved_c" ]; then
-            emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+            emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
             exit 0
           fi
           effective_cwd="$resolved_c"
@@ -318,7 +380,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
           # deny rather than silently treat it as NONE (which would
           # discard a real -C target and judge the write against the
           # wrong cwd).
-          emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' carries an unrecognized -C status ('$c_status') that this hook does not know how to judge safely. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
+          emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' carries an unrecognized -C status ('$c_status') that this hook does not know how to judge safely. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
           exit 0
           ;;
       esac
@@ -332,21 +394,27 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         read -r eff_common_dir
       } < <(cd "$effective_cwd" 2>/dev/null && _lib_capped git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
       if [ -z "$eff_git_dir" ] || [ -z "$eff_common_dir" ] || [ "$eff_common_dir" != "$REPO_GIT_COMMON_DIR" ]; then
-        emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+        emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
         exit 0
       fi
 
       if [ "$eff_git_dir" != "$eff_common_dir" ]; then
         # Linked worktree of this repo — check for a same-worktree
         # collision with another live session before allowing.
+        # See _lib_worktree_lock_absent (_lib.sh) for the pre-check contract.
+        WAS_UNLOCKED=false
+        _lib_worktree_lock_absent "$eff_git_dir" && WAS_UNLOCKED=true
         COLLISION_REASON=$(_lib_worktree_collision_guard "$effective_cwd" "$REPO_GIT_COMMON_DIR") || {
-          emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+          emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
           exit 0
         }
+        if $WAS_UNLOCKED; then
+          FRESH_LOCK_CONTEXT="Running 'git $subcmd' re-acquired the worktree lock for $effective_cwd, since worktree discipline allows only one live session per linked worktree at a time. If this was unintended, run 'git worktree unlock $effective_cwd' again."
+        fi
         continue
       fi
 
-      emit_deny "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
+      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
       exit 0
       ;;
     *)
@@ -354,10 +422,13 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       # kind this hook doesn't know how to judge, or the wire format got
       # corrupted in transit. Deny rather than silently skip the record:
       # an unjudged record could represent a real git write.
-      emit_deny "Blocked by worktree-enforcement hook: received an unrecognized record type ('$rec_type') from the command parser. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
+      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: received an unrecognized record type ('$rec_type') from the command parser. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
       exit 0
       ;;
   esac
 done <<< "$RECORDS"
 
+if [ -n "$FRESH_LOCK_CONTEXT" ]; then
+  _lib_emit_allow_with_context "$FRESH_LOCK_CONTEXT"
+fi
 exit 0

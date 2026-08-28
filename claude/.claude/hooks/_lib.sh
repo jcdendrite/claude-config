@@ -160,6 +160,29 @@ _lib_emit_deny() {
     "$reason_json"
 }
 
+# Emits a PreToolUse allow decision carrying an informational
+# additionalContext note, for a caller that wants to explain a side effect
+# of its own allow rather than silently permitting it. Mirrors
+# _lib_emit_deny's jq-encode-or-degrade shape above, but degrades to a
+# silent allow — no stdout — rather than _lib_emit_deny's hard block.
+# A parse failure here resolves to no decision on stdout, which the
+# harness already reads as the allow this caller wants, so losing the
+# note is not the fail-closed case _lib_emit_deny protects against.
+# permissionDecision is the exact lowercase literal "allow" -- the harness
+# is case-sensitive here the same way it is for _lib_emit_deny's "deny".
+# Caller contract matches _lib_emit_deny's. This function prints the JSON
+# envelope (or nothing, on the degrade path) and returns. The caller still
+# issues its own `exit 0` afterward, exactly as every _lib_emit_deny call
+# site already does for the deny path.
+_lib_emit_allow_with_context() {
+  local context="$1"
+  local context_json
+  context_json=$(printf '%s' "$context" | _lib_jq -Rs . 2>/dev/null)
+  [ -z "$context_json" ] && return 0
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":%s}}\n' \
+    "$context_json"
+}
+
 # Reads stdin into INPUT (global), extracts TOOL_NAME and COMMAND (globals)
 # via a single _lib_jq call using ASCII Unit Separator (0x1f) as delimiter.
 # The single call surfaces a structural-type error when .tool_input is non-object
@@ -926,6 +949,23 @@ _lib_worktree_lock_pid() {
   fi
   printf '%s %s' "$pid" "$session_id"
   return 0
+}
+
+# _lib_worktree_lock_absent WORKTREE_GIT_DIR
+# Returns 0 (true) iff WORKTREE_GIT_DIR/locked does not exist yet.
+# Every _lib_worktree_collision_guard call site runs this immediately
+# before calling the guard.
+# A pre-existing foreign lock always denies, never allows.
+# If the guard then allows, its own O_EXCL write inside that call is the
+# only way the combination "was absent, now allows" happens for a foreign
+# session. A same-session parallel call can also produce that combination,
+# via the guard's self-lock-recognition fast path. See the hook callers'
+# known-gaps notes on the same-session double-message race.
+# So for the foreign-session case, the caller then knows this call is the
+# reason the worktree is now locked.
+_lib_worktree_lock_absent() {
+  local worktree_git_dir="$1"
+  [ ! -e "$worktree_git_dir/locked" ]
 }
 
 # _lib_worktree_collision_guard TARGET_PATH REPO_GIT_COMMON_DIR
