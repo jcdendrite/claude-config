@@ -397,8 +397,7 @@ class TestHelpers:
         assert _mod._strip_task_notifications(text) == text
 
     def test_strip_does_not_weld_words_across_envelope_boundary(self):
-        """Regression pin: single-space substitution keeps 'try' and 'again' apart, so a
-        future revert to .sub("", text) (empty-string substitution) fails this test."""
+        """Single-space substitution keeps 'try' and 'again' separated across a stripped envelope boundary."""
         text = "...try <task-notification>still failing</task-notification>again..."
         result = _mod._strip_task_notifications(text)
         assert "try again" not in result
@@ -409,15 +408,18 @@ class TestHelpers:
         assert _mod._strip_task_notifications(text) == text
 
     def test_strip_task_notifications_nested_self_quoting_stops_at_first_closer(self):
-        """A <summary> that itself quotes a full envelope: the non-greedy match stops at
-        the first </task-notification> (the quoted example's own closer), leaving the
-        outer envelope's closing tags dangling in the remainder rather than being stripped."""
+        """A <summary> that itself quotes a full envelope: the non-greedy match stops at the
+        first </task-notification>, the quoted example's own closer. The outer envelope's
+        closing tags are left dangling in the remainder rather than being stripped."""
         text = (
             "<task-notification><summary>Sample record: "
             "<task-notification><summary>inner</summary></task-notification>"
             "</summary></task-notification>"
         )
         assert _mod._strip_task_notifications(text) == " </summary></task-notification>"
+
+    def test_strip_task_notifications_empty_string_unchanged(self):
+        assert _mod._strip_task_notifications("") == ""
 
     def test_strip_task_notifications_case_sensitive_uppercase_unchanged(self):
         """Case-sensitive match is deliberate: an uppercase-tagged string is left in
@@ -10273,9 +10275,9 @@ class TestCmdUserInput:
 
     def test_task_notification_not_explicit_correction_but_text_displayed_verbatim(self, fake_projects, capsys):
         """A forwarded <task-notification> whose <summary> contains a struggle phrase is
-        not classified EXPLICIT_CORRECTION (subagent prose, not human input), but the
-        ~~~text block still renders the full unstripped envelope — display and scoring
-        are separate copies of the same string."""
+        not classified EXPLICIT_CORRECTION, since it's subagent prose rather than human
+        input. The ~~~text block still renders the full unstripped envelope. Display and
+        scoring are separate copies of the same string."""
         envelope = (
             "<task-notification><status>completed</status>"
             "<summary>Background command still failing, incorrect output</summary>"
@@ -10291,6 +10293,26 @@ class TestCmdUserInput:
         out = capsys.readouterr().out
         assert "EXPLICIT_CORRECTION" not in out
         assert f"~~~text\n{envelope}\n~~~" in out
+
+    def test_task_notification_followup_leaves_fresh_prompt_and_followup_counts_unchanged(self, fake_projects, capsys):
+        """A task-notification record still counts as one fresh prompt and one followup,
+        same as any other non-matching FOLLOWUP. The phrase-matching exclusion affects
+        only EXPLICIT_CORRECTION classification, not the fresh-prompt/followup tally."""
+        envelope = (
+            "<task-notification><status>completed</status>"
+            "<summary>Background command still failing, incorrect output</summary>"
+            "</task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(envelope, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "- Fresh prompts: 2" in out
+        assert "- Followups (quiet redirects): 1" in out
 
     def test_task_notification_mixed_turn_still_explicit_correction_on_outside_phrase(self, fake_projects, capsys):
         """A struggle phrase outside the envelope in the same turn still classifies
@@ -12660,8 +12682,7 @@ class TestFrictionCount:
 
     def test_unterminated_envelope_with_embedded_phrase_still_counts(self, fake_projects, capsys):
         """A struggle phrase inside an envelope missing its closing tag still counts: the
-        unterminated opener is left in place rather than swallowing the rest of the turn.
-        This is an existing false positive, not a new false negative."""
+        unterminated opener is left in place rather than swallowing the rest of the turn."""
         path = fake_projects / "sess.jsonl"
         _write_jsonl(path, [
             _asst("claude-sonnet-4-6", branch="feat"),
