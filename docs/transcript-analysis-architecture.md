@@ -52,8 +52,9 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 
 ### `render.py`
 
-Small display-formatting helpers with no state of their own: model-family labels (`_fam`),
-markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`. Self-contained.
+Small display-formatting and text-normalization helpers with no state of their own: model-family
+labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
+`_strip_task_notifications`. Self-contained.
 
 ### `cost.py`
 

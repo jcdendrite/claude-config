@@ -105,6 +105,7 @@ from transcript_analysis.render import (
     _recent_assistant_text,
     _recent_tool_trail,
     _sanitize_table_cell,
+    _strip_task_notifications,
 )
 from transcript_analysis.reviewer_yield import (
     # The seven names below are read only via _mod.<name> from test files (unit-testing a
@@ -394,7 +395,7 @@ def cmd_struggle(args: argparse.Namespace) -> None:
             if rtype == "assistant":
                 last_fam[branch] = _fam(msg.get("model", ""))
             elif rtype in ("user", "human"):
-                text = _content_text(msg.get("content", "")).lower()
+                text = _strip_task_notifications(_content_text(msg.get("content", ""))).lower()
                 if any(phrase in text for phrase in STRUGGLE_PHRASES):
                     branch_data[branch][last_fam.get(branch, "unknown")] += 1
 
@@ -465,11 +466,13 @@ def _classify_prompt(text: str, is_initial: bool) -> tuple[str, str]:
     """Classify a fresh prompt as INITIAL, FOLLOWUP, or EXPLICIT_CORRECTION.
 
     Returns (classification, matched_phrase). matched_phrase is non-empty only
-    for EXPLICIT_CORRECTION.
+    for EXPLICIT_CORRECTION. Phrase-matching runs on text with any forwarded
+    `<task-notification>` envelope stripped, so a STRUGGLE_PHRASES entry inside
+    one does not register.
     """
     if is_initial:
         return "INITIAL", ""
-    lowered = text.lower()
+    lowered = _strip_task_notifications(text).lower()
     for phrase in STRUGGLE_PHRASES:
         if phrase in lowered:
             return "EXPLICIT_CORRECTION", phrase
@@ -8974,7 +8977,7 @@ def _friction_struggle_turn_events(records: list[dict]) -> int:
         if rec.get("type") not in ("user", "human"):
             continue
         msg = rec.get("message") or {}
-        text = _content_text(msg.get("content", "")).lower()
+        text = _strip_task_notifications(_content_text(msg.get("content", ""))).lower()
         if any(phrase in text for phrase in STRUGGLE_PHRASES):
             count += 1
     return count

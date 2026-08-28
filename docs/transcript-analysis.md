@@ -121,6 +121,8 @@ another-branch                     0       2      0      0        0
 
 Each cell is the count of signal phrases ("no, that's wrong", "stop doing", "you misunderstood", etc.) in user turns that follow an assistant turn from that model family.
 
+Text inside a `<task-notification>` envelope is excluded from matching, because it's the harness's forwarded summary of a finished background task or subagent, not user input.
+
 **When to reach for it.** A/B model comparison: run on two branches worked with different models to see if one generated more correction prompts. One or two branches per model is directional, not controlled.
 
 ---
