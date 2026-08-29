@@ -16395,6 +16395,42 @@ class TestGhDiscoverMergedPrsPagination:
         assert limit_value > 30  # gh pr list's own truncating default
 
 
+class TestGhDiscoverClosedUnmergedPrBranches:
+    """_gh_discover_closed_unmerged_pr_branches: same gh pr list call shape
+    as _gh_discover_merged_prs, --state closed instead of --state merged --
+    workstream-cost's own sibling discovery call."""
+
+    def test_passes_state_closed_and_explicit_limit(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        argv = captured["cmd"]
+        assert argv[argv.index("--state") + 1] == "closed"
+        assert "--limit" in argv
+        assert int(argv[argv.index("--limit") + 1]) == _mod._PR_COST_GH_PR_LIST_LIMIT
+
+    def test_returns_headref_name_set_from_closed_prs(self, monkeypatch):
+        """Returns a set of branch names (headRefName), not the raw PR dict
+        list _gh_discover_merged_prs returns -- workstream-cost only needs
+        set membership for its merged/closed-unmerged/no-match classification."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2, "headRefName": "abandoned-b"},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a", "abandoned-b"}
+
+
 class TestAppendPrCostLedgerRow:
     def test_duplicate_key_without_force_raises(self):
         existing_row = _sample_pr_cost_row()

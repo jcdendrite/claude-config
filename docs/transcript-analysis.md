@@ -842,6 +842,26 @@ Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call
 
 ---
 
+## workstream-cost
+
+**Purpose.** Per-branch session count and continuation "startup burn" -- an approximation of handoff overhead from session/branch shape alone (no signal connects an outgoing session to the continuation session a handoff produces, so this measures shape, not a literal handoff count). Read-only, corpus-wide, no `gh` calls by default.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
+- `--check-pr-status` -- additionally classify every branch as merged / closed-unmerged / no PR match at all via `gh`, pinned to this invocation's own repo identity the same way `pr-cost` pins one (`_resolve_pinned_gh_repo`, from `git remote get-url origin`). Requires `gh`.
+
+**Default (pure-transcript) mode.**
+- Groups sessions by attributed branch (carry-forward via `_attributed_branch`/`_session_branch_index`, so `worktree-agent-*` dispatches roll up to the real branch).
+- Orders each branch's sessions by first-turn timestamp, not iteration order (`iter_sessions` yields file-path sort order).
+- Prints branch count, mean/median sessions per branch, and startup-burn dollars as a share of total branch dollars.
+- Startup burn = each non-first session's first 5 main-thread turns' summed dollars (5 is `_RAMP_CURVE_TURN_INDEX_BUCKETS`'s own early-turns boundary), never padded when a session has fewer than 5 turns.
+
+**`--check-pr-status`.** Additionally lists every branch with no PR match at all (neither merged nor closed-unmerged) by its last local-activity age in days, oldest first -- a *candidate* abandoned branch, reported as a raw age value rather than a hard classification, since a branch with no PR match may simply not be finished yet. Prints no branch name in either mode.
+
+**When to reach for it.** Run the default mode alongside `pr-cost`/`cost-trend` to see whether a cost change coincided with a shift in session/branch shape (more sessions per branch, more startup burn) rather than a genuine reduction in total spend. Run `--check-pr-status` to spot old branches with local activity and no PR at all.
+
+---
+
 ## handoff-ratio
 
 **Purpose.** Per-week ratio of explicit `/handoff` invocations versus auto-compaction events.
