@@ -400,6 +400,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if selection.is_full_suite:
         print(f"select-tests: running the full suite ({selection.reason})", file=sys.stderr)
+    elif not selection.target_paths:
+        print(f"select-tests: nothing to run ({selection.reason})", file=sys.stderr)
+        return 0
     else:
         print(f"select-tests: running {', '.join(selection.target_paths)}", file=sys.stderr)
 

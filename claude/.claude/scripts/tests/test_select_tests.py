@@ -715,6 +715,47 @@ class TestMainComposition:
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
 
+    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch):
+        """A domain-selected-but-empty target set (e.g. a .claude/plans/
+        change) must short-circuit before run_pytest, not fall through to
+        a bare `pytest` invocation that recursively collects the whole repo."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main([])
+
+        assert exit_code == 0
+
+    def test_empty_target_selection_with_passthrough_args_still_skips_run_pytest(
+        self, monkeypatch,
+    ):
+        """Pins the empty-target short circuit against a future edit that
+        relocates it below build_pytest_argv, which would reintroduce
+        whole-repo collection specifically when passthrough args are
+        non-empty."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main(["-k", "foo"])
+
+        assert exit_code == 0
+
     def test_argv_none_falls_back_to_sys_argv(self, monkeypatch):
         """main()'s real entry point (`sys.exit(main())` under
         `__main__`) always calls it with argv=None; this pins that branch
