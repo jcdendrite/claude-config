@@ -413,3 +413,15 @@ A second, distinct property is equally unverified against the real CLI. `claude-
 
 - `docs/design-decisions.md` §28 — the prior decision this entry reverses, including the schema-size figures and the citations to the Claude Code settings reference and settings JSON Schema.
 - `.claude/plans/disable-artifact-workflow-default.md` — full assumption ledger, the go/no-go measurement, and Verification step 2's falsification test.
+
+## 32. Worktree-lock fast path: reads stop reacquiring the lock (2026-08-28)
+
+`require-worktree-for-git-writes.sh`'s fast path calls `_lib_worktree_collision_guard` only when the worktree's lock is already present, closing a gap where the guard's own "unlocked" diagnosis acquired the lock as a side effect of a read — even though the read-only allowlist already allows reads through with no guard call at all on the full-parsing path. An absent lock now falls through to full parsing, where a read is allowed unconditionally and a write re-runs the guard. Acquisition is a write-only side effect on both paths.
+
+This moves the guard's contention tiebreak from first-reader to first-writer: previously a read-only session could claim a worktree and deny a later writer, because the guard ran (and could acquire) on every command regardless of read/write. Afterward, the first *write* — a git write via this hook, or a file write via `require-worktree-for-file-writes.sh`'s identical guard call — is what claims the worktree. This is the correct direction for a guard whose stated purpose is preventing two sessions from writing into one worktree; a read-only session was never the invariant it needed to protect.
+
+Two tradeoffs are accepted rather than closed. First, a `||`- or `&`-chained git write (e.g. `git fetch || git commit -m x`) is allowed today by the fast path's exclusion list (`cd`, `-C`, `(`, backtick — none of which match `||`/`&`), but denies after this change until the lock is acquired: the absent-lock case now routes through the slow path's `||`/`&` write-cwd-ambiguity deny, which cannot distinguish a genuinely relocation-risky chain from a bare read-then-write chain with no `cd` at all. The deny names its own remedy and the window self-heals on the first lock acquisition from any source. Relaxing that deny for a no-`cd` chain is deferred to a separate change, since it loosens a security-relevant gate in the permissive direction and deserves its own review. Second, a python3-less machine can no longer complete a *first* git operation — read or write — against a freshly created (never-locked) worktree through the fast path at all, since the fast path's guard call is now reached only once a lock already exists. Given that python3 is already a hard precondition for every other path through this hook, this narrows an existing carve-out rather than removing a guarantee the hook otherwise made.
+
+### Sources
+
+- `.claude/plans/worktree-lock-conditional-reacquire.md` — full assumption ledger, the over-powered-primitive check (a bash-side read/write pre-filter and a non-acquiring "peek" guard mode were both rejected), and the behavioral test matrix.
