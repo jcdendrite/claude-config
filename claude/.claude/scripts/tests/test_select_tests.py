@@ -318,6 +318,46 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
+    def test_plans_dir_change_selects_no_tests(self):
+        """No test reads any file under .claude/plans/ by path or
+        subprocess, so a plan change is covered without pulling in the
+        full-suite fallback."""
+        result = _mod.select_pytest_targets([".claude/plans/some-plan.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_plans_dir_sibling_directory_sharing_prefix_does_not_match(self):
+        """.claude/plans-archive/ shares PLANS_DIR's string prefix but is a
+        distinct sibling directory. _is_under's directory-boundary check
+        (path == directory or startswith directory + "/") must not treat it
+        as under .claude/plans."""
+        result = _mod.select_pytest_targets([".claude/plans-archive/x.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_changelog_md_change_selects_no_tests(self):
+        """test_ci_path_filter.py is the only test that references
+        CHANGELOG.md. It matches it as a static CI ignore-paths allowlist
+        entry and never reads its content."""
+        result = _mod.select_pytest_targets([_mod.CHANGELOG_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_transcript_analysis_doc_md_change_selects_no_tests(self):
+        """No test reads docs/transcript-analysis.md's content by path.
+        Every existing reference is a source-code comment citing the doc for
+        human readers."""
+        result = _mod.select_pytest_targets([_mod.TRANSCRIPT_ANALYSIS_DOC_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_transcript_analysis_architecture_doc_md_change_selects_scripts_tests(self):
+        """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
+        reads this exact file's content by path to pin its module list."""
+        result = _mod.select_pytest_targets([_mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SCRIPTS_TESTS_DIR,)
+
 
 class TestBuildPytestArgv:
     def test_plain_directory_targets_pass_through_unchanged(self):

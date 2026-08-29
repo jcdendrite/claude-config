@@ -70,6 +70,20 @@ CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
 # test_ci_path_filter.py reads this exact file by path.
 GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
 
+# No test reads any file under this directory by path or subprocess.
+PLANS_DIR = ".claude/plans"
+
+# test_ci_path_filter.py's only reference to this literal string is a static
+# CI ignore-paths allowlist entry, independent of the file's content.
+CHANGELOG_MD = "CHANGELOG.md"
+
+# test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR) reads
+# this exact file by path.
+TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
+
+# No test reads this file's content by path.
+TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
@@ -161,6 +175,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, SCRIPTS_DIR), (SCRIPTS_TESTS_DIR,)),
     (_is_skill_md_change, (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
+    (lambda p: _is_under(p, PLANS_DIR), ()),
+    (lambda p: p == CHANGELOG_MD, ()),
+    (lambda p: p == TRANSCRIPT_ANALYSIS_DOC_MD, ()),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -209,6 +226,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # claude/.claude/rules/*.md by path.
 # GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
 # reads this exact file by path.
+# TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
+# (SCRIPTS_TESTS_DIR) reads this exact file by path.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -224,6 +243,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
 )
 
 
