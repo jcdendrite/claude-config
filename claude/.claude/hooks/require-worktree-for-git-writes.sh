@@ -104,8 +104,8 @@
 #     versus a single call. Only the already-rare, already-blocked deny
 #     path pays this, not the common allow path.
 #   - An absent-lock command falls through to full parsing (python3 spawn)
-#     for as long as the lock stays absent; for a write this adds to, not
-#     replaces, the guard's own acquisition cost.
+#     for as long as the lock stays absent. For a write, this cost adds to
+#     the guard's own acquisition cost rather than replacing it.
 #   - The fresh-lock-acquisition `additionalContext` note's own pre-check
 #     has a narrow TOCTOU window against the guard's own O_EXCL write. A
 #     foreign session winning that race is still denied by the guard's own
@@ -121,17 +121,18 @@
 #   - Two near-simultaneous calls from the SAME session (e.g. two parallel
 #     subagents sharing this worktree) can both see "unlocked" before
 #     either write lands, firing the note twice for one real acquisition.
-#     This now applies to the slow path's own pre-check here and to
-#     require-worktree-for-file-writes.sh's identical-shaped pre-check, not
-#     to the fast path above, which no longer runs a pre-check or emits a
-#     note at all. Low stakes: both calls belong to the same session, and
-#     the note's substance stays true either way, just possibly reported
-#     twice instead of once.
+#     This now applies to the slow path's own pre-check and to
+#     require-worktree-for-file-writes.sh's identical-shaped pre-check. It
+#     no longer applies to the fast path above, which no longer runs a
+#     pre-check or emits a note at all. Low stakes: both calls belong to
+#     the same session, and the note's substance stays true either way,
+#     just possibly reported twice instead of once.
 #   - That pre-check is a bash builtin `[ -e ... ]` (a single `stat(2)`),
 #     not wrapped in `_lib_capped`, because capping it would add a
 #     `timeout`+`test` subprocess spawn to the fast path's steady-state
 #     case (an already-self-locked worktree), which must stay
-#     subprocess-free.
+#     subprocess-free. A stalled network-mounted worktree path hangs this
+#     stat the same way it hangs `cd`.
 #   - The slow path defers its note to a single emit after the record loop
 #     (see FRESH_LOCK_CONTEXT below), folded into a later deny's reason
 #     instead of dropped when one occurs. So a single fresh acquisition
@@ -144,15 +145,16 @@
 #     x`) from a worktree whose lock is absent now denies via the slow
 #     path's `||`/`&` write-cwd-ambiguity check, even though the identical
 #     command allows once this session holds the lock. The deny names its
-#     own remedy, and the window self-heals on the first lock acquisition
-#     from any source — a plain git write here or a file write via
+#     own remedy. The window self-heals on the first lock acquisition from
+#     any source — a plain git write here, or a file write via
 #     require-worktree-for-file-writes.sh.
-#   - A python3-less machine denies a FIRST git operation (read or write)
-#     against a freshly created (never-locked) worktree outright: neither
-#     the fast path (guard reached only once a lock exists) nor the parser
-#     fallthrough (needs python3 itself) can complete it. No workaround
-#     short of installing python3 or pre-acquiring the lock from a
-#     python3-capable machine.
+#   - This applies to a machine currently lacking python3, attempting a
+#     first-ever git operation against a worktree with no existing lock.
+#     Neither the fast path nor the parser fallthrough can complete it, so
+#     the operation denies. The fast path's guard is reached only once a
+#     lock exists. The parser fallthrough itself requires python3. A
+#     session that already holds the lock is unaffected: the fast path's
+#     guard doesn't need python3 once the lock exists.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
