@@ -98,7 +98,7 @@ def _strip_task_notifications(text: str) -> str:
     the subagent's own prose about its own findings, not human input.
     """
     # Replaced with a space, not "", so a removed span can't weld the words on either side into a phrase nobody wrote.
-    # An unterminated or self-nested envelope is left partially or fully in place rather than swallowing the rest of the turn.
+    # An unterminated or self-quoting envelope is left partially or fully in place rather than swallowing the rest of the turn.
     return _TASK_NOTIFICATION_RE.sub(" ", text)
 
 

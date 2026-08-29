@@ -407,16 +407,39 @@ class TestHelpers:
         text = "<task-notification><summary>no closing tag here"
         assert _mod._strip_task_notifications(text) == text
 
+    def test_strip_task_notifications_unterminated_opener_preserves_trailing_turn_content(self):
+        text = "<task-notification><summary>no closing tag here" + "\nuser: please retry the deploy"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_orphan_closer_with_no_opener_left_in_place(self):
+        text = "no opener here</task-notification>"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_orphan_closer_adjacent_to_real_envelope(self):
+        """A match requires the opener literal first, so the stray closer with no preceding
+        opener is inert. Only the well-formed envelope after it is stripped to a single space."""
+        text = "stray</task-notification> then <task-notification><summary>real</summary></task-notification> after"
+        assert _mod._strip_task_notifications(text) == "stray</task-notification> then   after"
+
     def test_strip_task_notifications_nested_self_quoting_stops_at_first_closer(self):
-        """A <summary> that itself quotes a full envelope: the non-greedy match stops at the
-        first </task-notification>, the quoted example's own closer. The outer envelope's
-        closing tags are left dangling in the remainder rather than being stripped."""
+        """A `<summary>` field quotes a full envelope inline. The non-greedy match stops at the
+        first `</task-notification>` (the inner envelope's own closer), leaving the outer envelope's
+        closing tags dangling in the remainder."""
         text = (
             "<task-notification><summary>Sample record: "
             "<task-notification><summary>inner</summary></task-notification>"
             "</summary></task-notification>"
         )
         assert _mod._strip_task_notifications(text) == " </summary></task-notification>"
+
+    def test_strip_task_notifications_preserves_non_ascii_text_around_envelope(self):
+        text = (
+            "café 🎉 —before "
+            "<task-notification><summary>結果: café</summary></task-notification>"
+            " after— 北京 😀"
+        )
+        result = _mod._strip_task_notifications(text)
+        assert result == "café 🎉 —before   after— 北京 😀"
 
     def test_strip_task_notifications_empty_string_unchanged(self):
         assert _mod._strip_task_notifications("") == ""

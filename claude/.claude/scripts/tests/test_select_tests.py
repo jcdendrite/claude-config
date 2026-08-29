@@ -327,10 +327,10 @@ class TestSelectPytestTargets:
         assert result.target_paths == ()
 
     def test_plans_dir_sibling_directory_sharing_prefix_does_not_match(self):
-        """.claude/plans-archive/ shares PLANS_DIR's string prefix but is a
-        distinct sibling directory. _is_under's directory-boundary check
-        (path == directory or startswith directory + "/") must not treat it
-        as under .claude/plans."""
+        """_is_under's directory-boundary check requires an exact match or a
+        `directory + "/"` prefix. .claude/plans-archive/ shares PLANS_DIR's
+        string prefix but is a distinct sibling directory, so it must not
+        match."""
         result = _mod.select_pytest_targets([".claude/plans-archive/x.md"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
