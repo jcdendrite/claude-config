@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,23 @@ from helpers import (
 
 HOOK_PATH = HOOKS_DIR / "require-memory-skill.sh"
 AI_MEMORY_SKILL = SKILLS_DIR / "ai-instruction-and-memory-files" / "SKILL.md"
+
+# Forces _lib_realpath_m's manual fallback branch by shadowing both native
+# `realpath -m` and `grealpath` on PATH -- mirrors test_lib.py's
+# _FORCED_FALLBACK_REALPATH_SHIM, prepended rather than substituted for PATH
+# so jq/git/sha256sum/timeout stay resolvable for the rest of the hook.
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+_FORCED_FALLBACK_GREALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    exit 1
+""")
 
 
 @pytest.fixture
@@ -163,6 +181,109 @@ class TestRequireMemorySkill:
             edit_input(str(existing_via_symlink)), "sess-symlinked-projects-allow"
         )
         assert run_hook(HOOK_PATH, payload) == "allow"
+
+    def test_memory_md_dangling_symlink_denies_under_forced_realpath_fallback(
+        self, isolated_home, memory_tree, tmp_path
+    ):
+        """A MEMORY.md path that is itself an undereferenceable dangling
+        symlink must still be gated when _lib_realpath_m's manual fallback
+        fails to resolve it (neither native `realpath -m` nor `grealpath`
+        on PATH) -- mirrors require-plan-review.sh's
+        test_symlinked_plan_file_denies_under_forced_realpath_fallback.
+        Before REAL_PATH_STATUS was checked, an empty REAL_PATH matched
+        neither classification pattern and the write fell through to a
+        silent allow."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        memory_md = memory_tree / "MEMORY.md"
+        memory_md.unlink()
+        memory_md.symlink_to(tmp_path / "outside" / "nonexistent-target")
+
+        payload = _memory_input(write_input(str(memory_md)), "sess-dangling-symlink-fallback")
+        assert (
+            run_hook(
+                HOOK_PATH,
+                payload,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_dangling_symlink_outside_memory_tree_allows_under_forced_realpath_fallback(
+        self, isolated_home, tmp_path
+    ):
+        """A dangling-symlink write target with no relationship to the
+        memory tree must not be swept into IS_CANDIDATE=1 just because
+        _lib_realpath_m's fallback also fails to resolve it. Reproduces the
+        false positive fixed alongside
+        test_memory_md_dangling_symlink_denies_under_forced_realpath_fallback:
+        before the reclassification was scoped to a raw path already shaped
+        like a memory-tree target, ANY dangling-symlink write under the
+        forced-fallback environment (no native `realpath -m`, no
+        `grealpath` -- the ordinary path on stock macOS) was denied with the
+        memory-skill message, regardless of target."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        unrelated_dir = tmp_path / "probe_project_dir"
+        unrelated_dir.mkdir()
+        unrelated_symlink = unrelated_dir / "unrelated-file.py"
+        unrelated_symlink.symlink_to(tmp_path / "outside" / "nonexistent-target")
+
+        payload = _memory_input(
+            write_input(str(unrelated_symlink)), "sess-unrelated-dangling-symlink"
+        )
+        assert (
+            run_hook(
+                HOOK_PATH,
+                payload,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
+
+    def test_memory_md_dangling_symlink_allows_with_active_marker_under_forced_realpath_fallback(
+        self, isolated_home, memory_tree, tmp_path
+    ):
+        """Allow-side companion to
+        test_memory_md_dangling_symlink_denies_under_forced_realpath_fallback:
+        the same dangling-symlink MEMORY.md target, reclassified as
+        IS_CANDIDATE=1 via the resolution-failure branch, must still allow
+        through when the active-bypass marker is live -- the legitimate
+        in-progress memory-write session this fail-closed branch must not
+        also block."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        memory_md = memory_tree / "MEMORY.md"
+        memory_md.unlink()
+        memory_md.symlink_to(tmp_path / "outside" / "nonexistent-target")
+
+        sid = "sess-dangling-symlink-fallback-active-marker"
+        _write_active_marker(isolated_home, sid)
+
+        payload = _memory_input(write_input(str(memory_md)), sid)
+        assert (
+            run_hook(
+                HOOK_PATH,
+                payload,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
 
     def test_memory_md_edit_blocked_under_claude_config_dir(self, isolated_home, tmp_path):
         """CLAUDE_CONFIG_DIR-set: a MEMORY.md write under

@@ -1227,6 +1227,23 @@ class TestLibRealpathM:
             f"got stdout={result.stdout!r} rc={result.returncode}"
         )
 
+    def test_forced_fallback_fails_closed_on_dangling_symlink(self, tmp_path: Path) -> None:
+        """A dangling symlink's own leaf is `[ -e ]`-false, so the fallback's
+        ancestor walk would otherwise skip past it and reattach its name as
+        a literal, unresolved suffix component -- letting a same-prefix
+        boundary check (require-plan-review.sh's plan-file and
+        agent-reviews/ exemptions) treat the symlink's own path as if it
+        resolved inside the boundary, when its real target does not. Fails
+        closed (empty output, exit 1) instead."""
+        symlink_path = tmp_path / "plans" / "evil.md"
+        symlink_path.parent.mkdir(parents=True)
+        symlink_path.symlink_to(tmp_path / "outside" / "target.py")
+        result = _run_realpath_m(str(symlink_path), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0 or not result.stdout.strip(), (
+            f"expected fail-closed (empty/nonzero) for a dangling symlink, "
+            f"got stdout={result.stdout!r} rc={result.returncode}"
+        )
+
     def test_forced_fallback_no_double_slash_when_ancestor_is_root(self, tmp_path: Path) -> None:
         """Required regression test: when the nearest existing ancestor is
         `/` itself, the reattached suffix must not produce a doubled
