@@ -318,6 +318,46 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
+    def test_plans_dir_change_selects_no_tests(self):
+        """No test reads any file under .claude/plans/ by path or
+        subprocess, so a plan change is covered without pulling in the
+        full-suite fallback."""
+        result = _mod.select_pytest_targets([".claude/plans/some-plan.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_plans_dir_sibling_directory_sharing_prefix_does_not_match(self):
+        """_is_under's directory-boundary check requires an exact match or a
+        `directory + "/"` prefix. .claude/plans-archive/ shares PLANS_DIR's
+        string prefix but is a distinct sibling directory, so it must not
+        match."""
+        result = _mod.select_pytest_targets([".claude/plans-archive/x.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_changelog_md_change_selects_no_tests(self):
+        """test_ci_path_filter.py is the only test that references
+        CHANGELOG.md. It matches it as a static CI ignore-paths allowlist
+        entry and never reads its content."""
+        result = _mod.select_pytest_targets([_mod.CHANGELOG_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_transcript_analysis_doc_md_change_selects_no_tests(self):
+        """No test reads docs/transcript-analysis.md's content by path.
+        Every existing reference is a source-code comment citing the doc for
+        human readers."""
+        result = _mod.select_pytest_targets([_mod.TRANSCRIPT_ANALYSIS_DOC_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_transcript_analysis_architecture_doc_md_change_selects_scripts_tests(self):
+        """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
+        reads this exact file's content by path to pin its module list."""
+        result = _mod.select_pytest_targets([_mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SCRIPTS_TESTS_DIR,)
+
 
 class TestBuildPytestArgv:
     def test_plain_directory_targets_pass_through_unchanged(self):
@@ -674,6 +714,47 @@ class TestMainComposition:
         assert recorded["pytest_argv"] == [_mod.SCRIPTS_TESTS_DIR, "-k", "foo"]
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
+
+    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch):
+        """A domain-selected-but-empty target set (e.g. a .claude/plans/
+        change) must short-circuit before run_pytest, not fall through to
+        a bare `pytest` invocation that recursively collects the whole repo."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main([])
+
+        assert exit_code == 0
+
+    def test_empty_target_selection_with_passthrough_args_still_skips_run_pytest(
+        self, monkeypatch,
+    ):
+        """Pins the empty-target short circuit against a future edit that
+        relocates it below build_pytest_argv, which would reintroduce
+        whole-repo collection specifically when passthrough args are
+        non-empty."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main(["-k", "foo"])
+
+        assert exit_code == 0
 
     def test_argv_none_falls_back_to_sys_argv(self, monkeypatch):
         """main()'s real entry point (`sys.exit(main())` under
