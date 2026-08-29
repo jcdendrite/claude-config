@@ -1219,6 +1219,9 @@ exec "{real_git}" "$@"
         )
         assert reason is not None
         assert "python3" in reason
+        assert _worktree_lock_reason(worktree) is None, (
+            "a denied read must not acquire the worktree lock"
+        )
 
     def test_self_lock_reentry_allows_silently_with_no_context(self, isolated_home, opted_in_with_worktree):
         """A second write in the same session recognizes its own
@@ -1475,3 +1478,6 @@ exec "{real_git}" "$@"
         )
 
         assert run_hook(WORKTREE_HOOK, chained_command, cwd=worktree) == "allow"
+        assert run_hook_context(WORKTREE_HOOK, chained_command, cwd=worktree) is None, (
+            "self-lock reentry via the fast path must allow silently, with no additionalContext"
+        )

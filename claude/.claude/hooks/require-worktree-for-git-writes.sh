@@ -103,18 +103,9 @@
 #     the collision guard's git-subprocess calls plus a python3 spawn
 #     versus a single call. Only the already-rare, already-blocked deny
 #     path pays this, not the common allow path.
-#   - A fast-path command against an absent lock also falls through to
-#     full parsing, spawning python3 on every fast-path-eligible command
-#     for as long as the lock stays absent — the full duration of a
-#     read-only session, not just its first command. For a read, this
-#     replaces the guard's absent-lock acquisition attempt outright: the
-#     parser exempts read subcommands from any guard call at all. For a
-#     write against an absent lock, this is a net cost increase, not a
-#     decrease: the python3 parse is now paid in addition to the same
-#     guard-acquisition call graph the write already paid before this
-#     change. Direct trace of _lib_worktree_collision_guard's absent-lock
-#     acquisition path counts five git invocations, one ps call, and one
-#     bash -c lock write.
+#   - An absent-lock command falls through to full parsing (python3 spawn)
+#     for as long as the lock stays absent; for a write this adds to, not
+#     replaces, the guard's own acquisition cost.
 #   - The fresh-lock-acquisition `additionalContext` note's own pre-check
 #     has a narrow TOCTOU window against the guard's own O_EXCL write. A
 #     foreign session winning that race is still denied by the guard's own
@@ -156,10 +147,12 @@
 #     own remedy, and the window self-heals on the first lock acquisition
 #     from any source — a plain git write here or a file write via
 #     require-worktree-for-file-writes.sh.
-#   - A python3-less machine can no longer complete a FIRST git operation
-#     — read or write — against a freshly created (never-locked) worktree
-#     through the fast path at all, since the fast path's guard call is
-#     now reached only once a lock already exists.
+#   - A python3-less machine denies a FIRST git operation (read or write)
+#     against a freshly created (never-locked) worktree outright: neither
+#     the fast path (guard reached only once a lock exists) nor the parser
+#     fallthrough (needs python3 itself) can complete it. No workaround
+#     short of installing python3 or pre-acquiring the lock from a
+#     python3-capable machine.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
