@@ -31,7 +31,7 @@ A handoff resets context, and the fresh session re-pays for what this one alread
 ~/.claude/scripts/marker.sh activate handoff
 ```
 
-Now that a handoff is warranted, run this: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session for the rest of the write. Failure is non-fatal; continue the handoff regardless. If the block fires anyway, see "If the hard block fires again" below.
+Now that a handoff is warranted, run this: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session for the rest of the write. Failure is non-fatal; continue the handoff regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below.
 
 ## Before writing: collect in-flight background dispatches
 
@@ -137,18 +137,17 @@ delete the file. Can be aliased for convenience.
 
 ## You may drop
 
-Successful tool output already acted on, exploratory dead-ends that didn't inform the final approach, and verbatim file contents already on disk (paths suffice).
+- Successful tool output already acted on.
+- Exploratory dead-ends that didn't inform the final approach.
+- Verbatim file contents already on disk (paths suffice).
 
 ## Slug naming
 
 The slug names the task, not the date. Examples: `respond-pr-skill-edge-case-handoff.md`, `claude-md-redaction-handoff.md`. Never use `<task>-handoff.md` literally.
 
-Reference files by path; do not inline contents. Aim for the smallest set of
-high-signal tokens that fully capture state — not a line budget. If the file runs
-past ~500 lines, that is a signal to check for content recoverable from disk
-(inlined diffs, tool output, file bodies) and cut that — not a mandate to cut
-continuity. Never drop a populated section or a load-bearing claim to hit a line
-count; completeness of state beats brevity here.
+Reference files by path; do not inline contents. Aim for the smallest set of high-signal tokens that fully capture state — not a line budget.
+If the file runs past ~500 lines, that is a signal to check for content recoverable from disk (inlined diffs, tool output, file bodies) and cut that — not a mandate to cut continuity.
+Never drop a populated section or a load-bearing claim to hit a line count; completeness of state beats brevity here.
 
 ## Pre-write checklist
 
