@@ -13,6 +13,9 @@
 # PostToolBatch's own exit-2 loop-stop, not a JSON envelope, and only fires
 # on that event: exit 2 on Stop forces continuation instead of blocking it,
 # so a Stop-registered re-arm falls through to the advisory path instead.
+# A live `/handoff` active-bypass marker for this session keeps a qualifying
+# re-arm on the advisory path too, so a hard block can't truncate the
+# skill's own multi-turn write.
 #
 # Kill-switch: touching ~/.claude/.handoff-nudge-disabled suppresses all
 # nudges globally, including the hard block above (useful when running
@@ -604,7 +607,8 @@ if [ -f "$IGNORED_MARKER" ]; then
   case "$IGNORED_COUNT" in ''|*[!0-9]*) IGNORED_COUNT=0 ;; esac
 fi
 
-if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null && [ "$HOOK_EVENT" = "PostToolBatch" ]; then
+if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null && [ "$HOOK_EVENT" = "PostToolBatch" ] \
+  && ! _lib_active_bypass_marker_live ".handoff-active.d" "$SESSION_ID"; then
   # Hard block: PostToolBatch's own exit-2 contract stops the agentic loop
   # before the next model call, with no JSON envelope. Guarded to
   # PostToolBatch only — on Stop, exit 2 forces the conversation to

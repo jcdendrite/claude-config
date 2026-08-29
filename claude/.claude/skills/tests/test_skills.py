@@ -1140,9 +1140,9 @@ class TestHandoffCollectStepPinsLoadBearingClauses:
     def test_collect_step_treats_a_repeat_hard_block_as_expected(self):
         body = _skill_file("handoff").read_text()
         assert (
-            "it is expected, not a new problem: it means this session is "
-            "still past its threshold while already following the block's "
-            "own remediation"
+            "that's expected, not a new problem — it just means the "
+            "session is still past its threshold while following the "
+            "block's own remediation"
             in body
         )
 
@@ -2428,6 +2428,8 @@ _MARKER_TRIPLE_SITES = [
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh activate memory-skill"),
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh deactivate memory-skill"),
     ("code-review", "~/.claude/scripts/marker.sh write code-review"),
+    ("handoff", "~/.claude/scripts/marker.sh activate handoff"),
+    ("handoff", "~/.claude/scripts/marker.sh deactivate handoff"),
 ]
 
 

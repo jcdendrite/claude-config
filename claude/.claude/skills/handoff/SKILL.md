@@ -24,6 +24,15 @@ A handoff resets context, and the fresh session re-pays for what this one alread
 
 `docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
 
+## Before writing: activate the handoff bypass marker
+
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh activate handoff
+```
+
+Now that a handoff is warranted, run this: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session for the rest of the write. Failure is non-fatal; continue the handoff regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below.
+
 ## Before writing: collect in-flight background dispatches
 
 Call `ListAgents` before drafting. For each row still `running` under "Subagents" that this session spawned, do not draft yet. If `ListAgents` errors or is unavailable, skip straight to recording every not-yet-returned dispatch as stranded in §2.5 — do not block on it.
@@ -32,7 +41,7 @@ A dispatch still running when you check does not require staying in this turn: t
 
 This step applies only to `/handoff` run in a main interactive session — a subagent never reaches it as remediation for its own hard block, since the nudge hook's subagent gate exits before any escalation logic runs.
 
-If the hard block fires again before or during this wait, that also just ends the current turn (the same mechanism) — it is expected, not a new problem: it means this session is still past its threshold while already following the block's own remediation. Resume the collect step on the next turn exactly as described above.
+If the hard block fires again during this wait, that's expected, not a new problem — it just means the session is still past its threshold while following the block's own remediation. It ends the current turn the same way. Resume the collect step on the next turn.
 
 ## Verify the handoff file with Bash, never Read
 
@@ -110,7 +119,7 @@ Header line: working directory + current git branch. Derive both from the worktr
 
 ## §5 Gates / markers
 
-Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
+Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill, handoff) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
 
 A live marker whose reconciliation flag fired means finished work is one incidental edit away from a full re-review on resume; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
 
@@ -128,20 +137,17 @@ delete the file. Can be aliased for convenience.
 
 ## You may drop
 
-- Successful tool output already acted on
-- Exploratory dead-ends that didn't inform the final approach
-- Verbatim file contents already on disk (paths suffice)
+- Successful tool output already acted on.
+- Exploratory dead-ends that didn't inform the final approach.
+- Verbatim file contents already on disk (paths suffice).
 
 ## Slug naming
 
 The slug names the task, not the date. Examples: `respond-pr-skill-edge-case-handoff.md`, `claude-md-redaction-handoff.md`. Never use `<task>-handoff.md` literally.
 
-Reference files by path; do not inline contents. Aim for the smallest set of
-high-signal tokens that fully capture state — not a line budget. If the file runs
-past ~500 lines, that is a signal to check for content recoverable from disk
-(inlined diffs, tool output, file bodies) and cut that — not a mandate to cut
-continuity. Never drop a populated section or a load-bearing claim to hit a line
-count; completeness of state beats brevity here.
+Reference files by path; do not inline contents. Aim for the smallest set of high-signal tokens that fully capture state — not a line budget.
+If the file runs past ~500 lines, that is a signal to check for content recoverable from disk (inlined diffs, tool output, file bodies) and cut that — not a mandate to cut continuity.
+Never drop a populated section or a load-bearing claim to hit a line count; completeness of state beats brevity here.
 
 ## Pre-write checklist
 
@@ -182,3 +188,12 @@ Best-effort: silently skips the log append and marker removal if this session's 
 resolved — a conversion metric and a defense-in-depth reset, not a gate. Recipes across this repo
 route through a dedicated script like this one instead of an inline multi-statement Bash call;
 see `docs/worktree-bash-guard.md` for why.
+
+## After writing: deactivate the handoff bypass marker
+
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh deactivate handoff
+```
+
+Run this after `handoff-record-conversion.sh` above. If the session halts before reaching this step, the marker is evicted once the session's process ends — the hook checks PID liveness on each gate hit.

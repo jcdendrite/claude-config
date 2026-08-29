@@ -13,6 +13,8 @@
       "Bash(~/.claude/scripts/marker.sh deactivate respond-pr)",
       "Bash(~/.claude/scripts/marker.sh activate memory-skill)",
       "Bash(~/.claude/scripts/marker.sh deactivate memory-skill)",
+      "Bash(~/.claude/scripts/marker.sh activate handoff)",
+      "Bash(~/.claude/scripts/marker.sh deactivate handoff)",
       "Bash(~/.claude/scripts/marker.sh resolve-session-id)",
       "Bash(~/.claude/scripts/marker.sh status)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
