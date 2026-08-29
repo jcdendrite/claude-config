@@ -512,7 +512,12 @@ The `.venv` lives only in the main worktree root. Linked worktrees live at `.cla
 
 The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
 
-`-n auto` resolves to the machine's logical CPU count. Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment to cap it for every run in that shell. pytest-xdist checks it ahead of its own core-count detection. It applies to both `.venv/bin/pytest claude/.claude/` and `select-tests.py`. Or pass `-n <N>` on the command line for a single run. `select-tests.py` forwards it through to pytest. When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value. Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
+`-n auto` resolves to the machine's logical CPU count. To cap it:
+
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/` and `select-tests.py`.
+- Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
+- When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
+- Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 
