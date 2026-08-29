@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,29 @@ def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
         env={**os.environ, **(env_overrides or {})},
     )
     return result.stdout.strip()
+
+
+def _active_plan_files(repo: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_active_plan_files against `repo`, returning
+    the raw CompletedProcess so callers can assert on exit status and stdout
+    together."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_files "$1"', "_active_plan_files", str(repo)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def _is_repo_plan_file(repo_root: Path, abs_path: Path) -> bool:
+    """Shell out to the real _lib_is_repo_plan_file."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_is_repo_plan_file "$1" "$2"',
+         "_is_repo_plan_file", str(repo_root), str(abs_path)],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def _find_case_insensitive_collation_locale() -> str | None:
@@ -105,6 +129,54 @@ class TestMarkerLibRepoHash:
         ).stdout.strip()
         assert from_lib == from_inline, (
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
+        )
+
+
+class TestLibActivePlanFiles:
+    def test_git_enumeration_failure_fails_closed(self, tmp_path):
+        """A failed `git ls-files` call must exit 1 with .claude/plans/
+        itself named on stdout, not silently report an empty (clean) active
+        set -- this function now backs both _lib_active_plan_hash and
+        require-plan-review.sh's fast-path guard, so an undetected fail-open
+        regression here would disarm both call sites at once. Mirrors
+        test_failed_worktree_enumeration_fails_closed in
+        test_require_plan_review.py, which pins the same fail-closed
+        direction for a sibling git call."""
+        repo = tmp_path / "enum-failure-repo"
+        _init_repo(repo)
+        # A HEAD commit routes _lib_active_plan_files through its `git diff`
+        # branch rather than its no-HEAD `git ls-files` fallback, so the stub
+        # below exercises the `ls-files --others` (untracked-plans) call in
+        # isolation rather than also tripping the fallback's own guard.
+        (repo / "README.md").write_text("seed\n")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "active-plan.md").write_text("# active\n")
+
+        real_git = shutil.which("git")
+        assert real_git, "test host must have a real git binary on PATH"
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "ls-files" ]; then exit 1; fi\n'
+            "done\n"
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        result = _active_plan_files(
+            repo, env_overrides={"PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}"}
+        )
+        assert result.returncode == 1, (
+            f"expected exit 1 on a failed git enumeration, got {result.returncode}"
+        )
+        assert result.stdout.strip() == str(plans_dir), (
+            f"stdout must name .claude/plans/ on enumeration failure, got {result.stdout!r}"
         )
 
 
@@ -313,3 +385,73 @@ class TestLibActivePlanHash:
         second = _active_plan_hash(repo)
         assert first != ""
         assert first == second
+
+
+class TestLibIsRepoPlanFile:
+    """A relational drift test. _lib_is_repo_plan_file's contract is
+    that it agrees with _lib_active_plan_hash on exactly the file set the
+    hash covers -- an agreement property asserted only in a comment is one
+    edit from being false."""
+
+    def test_agrees_with_active_plan_hash_on_covered_file_set(self, tmp_path):
+        repo = tmp_path / "drift-repo"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        (plans_dir / "sub").mkdir(parents=True)
+        candidates = {
+            "a.md": plans_dir / "a.md",
+            "b.txt": plans_dir / "b.txt",
+            "c.rst": plans_dir / "c.rst",
+            "sub/d.md": plans_dir / "sub" / "d.md",
+        }
+        for name, path in candidates.items():
+            path.write_text(f"# {name}\n")
+
+        baseline_hash = _active_plan_hash(repo)
+
+        for name, path in candidates.items():
+            content = path.read_text()
+            path.unlink()
+            hash_without_file = _active_plan_hash(repo)
+            path.write_text(content)
+
+            hash_changed = hash_without_file != baseline_hash
+            predicate_result = _is_repo_plan_file(repo, path)
+            assert predicate_result == hash_changed, (
+                f"_lib_is_repo_plan_file disagreed with _lib_active_plan_hash "
+                f"for {name}: predicate={predicate_result} "
+                f"hash_changed={hash_changed}"
+            )
+
+    def test_inactive_on_wrong_arity(self, tmp_path: Path) -> None:
+        """Extra/missing positional so $1 stays bound under set -u -- mirrors
+        _lib_autonomous_shipping_active's test_inactive_on_wrong_arity in
+        test_lib.py, which this function's own arity-guard comment says it
+        copies the shape of. The extra-argument case uses a REPO_ROOT/ABS_PATH
+        pair that would otherwise satisfy the function's own match (a real
+        plan file directly under REPO_ROOT/.claude/plans), so the guard is
+        the only thing standing between an extra, ignored argument and a
+        false positive -- isolating the `[ "$#" -eq 2 ] || return 1` guard
+        itself rather than a coincidental mismatch on placeholder args."""
+        repo = tmp_path / "arity-repo"
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan_file = plans_dir / "a.md"
+        plan_file.write_text("# plan\n")
+
+        for args in ([str(repo)], [str(repo), str(plan_file), "unexpected-extra-arg"]):
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'set -u; . "{LIB_SH}"; _lib_is_repo_plan_file "$@"',
+                    "bash",
+                    *args,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0, (
+                f"_lib_is_repo_plan_file with {len(args)} args must return non-zero, "
+                f"got {result.returncode}"
+            )

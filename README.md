@@ -126,7 +126,7 @@ Linear pipeline: plan-it → plan-review → code → code-review → commit →
 ```mermaid
 flowchart LR
     A[/plan-it/] --> B[/plan-review/]
-    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists"| EPM([ExitPlanMode / present to user])
+    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists\n(exempt: writes to the plan file itself)"| EPM([ExitPlanMode / present to user])
     EPM --> C([Write code])
     C --> D[/code-review/]
     D -->|"require-code-review.sh\ngates git commit"| E([git commit])
@@ -155,7 +155,7 @@ flowchart LR
 
 | Hook | Gates | Cleared by |
 |---|---|---|
-| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` marker covering the current plan set |
+| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |

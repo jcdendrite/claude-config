@@ -93,7 +93,7 @@ Active-bypass markers from sessions that crash before cleanup evict themselves a
 
 For three gates, the gating condition is removable via Bash without destroying work:
 
-**`require-plan-review.sh`** blocks Write/Edit when an uncommitted or modified plan file exists in `.claude/plans/` and no completion marker holds that plan set's hash. Committed, unmodified plan files are treated as historical and do not arm the gate.
+**`require-plan-review.sh`** blocks Write/Edit when an uncommitted or modified plan file exists in `.claude/plans/` and no completion marker holds that plan set's hash. Committed, unmodified plan files are treated as historical and do not arm the gate. A Write/Edit/MultiEdit whose own target is one of those plan files is exempt, so authoring the plan itself is never what trips the gate.
 
 ```bash
 # Option 1: remove the plan file to clear the gate. Copy the content first
