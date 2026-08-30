@@ -20,6 +20,17 @@ Agents: run `select-tests.py`, not the full suite — including in
 when many agents run in parallel on one machine. CI runs the full
 suite on every push.
 
+Two cases still legitimately need a full-suite run by hand:
+
+1. `select-tests.py` itself selected the full suite for this diff — you
+   don't need to run it by hand, `select-tests.py` already widens on its
+   own.
+2. `/pr-description` needs a whole-repo Test Plan accuracy claim, where a
+   scoped pass would overstate what was verified.
+
+Anything else — including a path `select-tests.py` cannot map — is a bug
+in its rule table, not a licence to widen the run by hand.
+
 See README.md's Tests section for `select-tests.py`'s domain-mapping
 mechanism, ShellCheck flag sourcing, `pytest-xdist` debugging flags, and
 the worktree-relative `.venv` paths.

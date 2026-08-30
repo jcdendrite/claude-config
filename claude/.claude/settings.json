@@ -20,9 +20,7 @@
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
-      "Bash(cleanup-idle-open-pr-worktrees --dry-run)",
-      "Bash(pytest claude/.claude/)",
-      "Bash(ruff check claude/.claude/)"
+      "Bash(cleanup-idle-open-pr-worktrees --dry-run)"
     ],
     "ask": [
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
