@@ -312,3 +312,9 @@ Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Default `disableArtifact`/`disableWorkflows` to `true` in the shared `claude/.claude/settings.json`, paired with a per-session CLI-scope opt-back-in (`claude-workflow`, `claude-artifact`) | Accepted, shipped | Pre-committed go/no-go gate required a ≥5,000-token Tools drop; measured drop was 16k tokens (23.8k → 7.8k) — see [`design-decisions.md` §31](design-decisions.md). |
+
+## From `skill-fidelity-reviewer-yield-gap.md` — "skill-fidelity-reviewer zero-finding cited-path edit rate: correct the record" (2026-08-30)
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Demoting `skill-fidelity-reviewer` from auto-dispatch, or refining its trigger prose, on the strength of its zero-finding-bucket cited-path edit rate | Rejected | The two agents' cited-path populations aren't comparable — this agent cites the specifications it checked, not the branch's diff — so the rate is a citation-genre artifact, not a reviewer-value signal; see [`design-decisions.md` §33](design-decisions.md). |
