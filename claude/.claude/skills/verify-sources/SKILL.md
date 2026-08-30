@@ -33,7 +33,10 @@ When research will inform a code or design decision:
    first-party vendor / standards-body docs or reference, the
    project CHANGELOG / release notes / migration guide, the RFC
    or spec, the source code itself when behavior is in dispute, or
-   an official maintainer announcement. Read enough of the
+   an official maintainer announcement. A peer-reviewed paper is
+   first-tier; a preprint is not — arXiv and similar carry no peer
+   review, so cite one as a preprint and say so. Confirm a
+   paper's venue before citing it in a durable doc. Read enough of the
    surrounding section to know what the claim is *scoped to* —
    which version, which configuration, which API surface, which
    migration path. **Star count and citation count are not

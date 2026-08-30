@@ -97,6 +97,28 @@ re-enter the worktree before running *any* other command or
 dispatching subagents — a read-only lookup counts too, since it's the
 `cd` that breaks the anchor described above.
 
+## Crossing to a different branch mid-session
+
+When the engineer has uncommitted work in the main checkout and the
+next task is on another branch, add a worktree rather than `git
+checkout` / `git switch` / `git stash` in place:
+
+- Stashed work in progress is fragile and easily left unpopped.
+- A linked worktree leaves the main checkout untouched.
+- Stashes and refs are shared across worktrees, so an earlier stash
+  still pops from inside the new one.
+
+When more than one session may be running against this repo, use a
+worktree even when the destination branch matches current HEAD, and
+state branch and PR facts from the remote (`git fetch`, then
+`origin/<branch>` or `gh pr view`) rather than from a local worktree
+snapshot that can be captured between a sibling's commit and its
+cleanup. Each of these signals a sibling session:
+
+- An unexpected `git worktree list` entry.
+- A main-checkout HEAD you did not check out.
+- An unfamiliar recent commit on a remote branch.
+
 ## Plan files go on the implementation branch
 
 If this branch is for work that has an associated plan file
