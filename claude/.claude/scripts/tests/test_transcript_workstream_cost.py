@@ -384,6 +384,25 @@ class TestPrintWorkstreamSessionStats:
             "Startup-burn dollars: $5.00 of $8.00 total branch dollars (62.5%)\n"
         )
 
+    def test_renders_sanely_when_a_branch_has_zero_total_dollars(self, capsys):
+        """A branch whose every turn used an unrecognized/synthetic model
+        (all-unpriced-turns) can reach this function with total_dollars ==
+        0.0. Mixed in with a normal, priced branch, the aggregate summary
+        must still render rather than raise -- e.g. if _pct_of's
+        divide-by-zero guard were ever refactored away from this call site."""
+        # session_counts = [1, 3] -> mean 2.00, median 2.00.
+        # total_dollars = 0.00 + 5.00 = 5.00; startup_burn_dollars = 0 + 2.00 = 2.00; 2/5 = 40.0%.
+        workstream = {
+            "branch-zero": {"session_count": 1, "total_dollars": 0.0, "startup_burn_dollars": 0.0},
+            "branch-a": {"session_count": 3, "total_dollars": 5.00, "startup_burn_dollars": 2.00},
+        }
+        _mod._print_workstream_session_stats(workstream)
+        out = capsys.readouterr().out
+        assert out == (
+            "Sessions per branch -- mean: 2.00, median: 2.00\n"
+            "Startup-burn dollars: $2.00 of $5.00 total branch dollars (40.0%)\n"
+        )
+
 
 class TestCmdWorkstreamCostDefaultMode:
     def test_prints_branch_count_from_corpus_scan(self, fake_projects, capsys):
@@ -442,6 +461,11 @@ class TestCmdWorkstreamCostCheckPrStatus:
         section = out.split(header, 1)[1]
         age_lines = [ln for ln in section.splitlines() if ln.strip() and ln.strip() != "(none)"]
         assert len(age_lines) == 1  # only no-match-branch has no PR match at all
+        # No-PR-match listing prints ages only, never branch names -- a real
+        # data-exposure control since a branch name can carry sensitive content.
+        assert "no-match-branch" not in out
+        assert "merged-branch" not in out
+        assert "closed-branch" not in out
 
     def test_auth_preflight_failure_exits_1_with_stderr_message(
         self, fake_projects, capsys, monkeypatch,
@@ -472,6 +496,33 @@ class TestCmdWorkstreamCostCheckPrStatus:
         assert not any(c[:3] == ["gh", "repo", "view"] for c in call_log)
         assert not any(c[:3] == ["gh", "pr", "list"] for c in call_log)
 
+    def test_no_match_ages_sorted_oldest_first_with_multiple_branches(
+        self, fake_projects, capsys, monkeypatch,
+    ):
+        """Two no-match branches at distinct last-activity timestamps -- the
+        printed listing sorts oldest (largest age) first, per its own
+        header. A single-branch fixture can't distinguish a correct sort
+        from a dropped or flipped `reverse=True`; this one can, since the
+        older branch's age must print before the newer branch's."""
+        _write_jsonl(fake_projects / "no-match-old-sess.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="no-match-old-branch", ts="2020-01-01T00:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "no-match-new-sess.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="no-match-new-branch", ts="2023-01-01T00:00:00.000Z"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_workstream_cost_subprocess_run())
+
+        _mod.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        out = capsys.readouterr().out
+
+        header = "Branches with no PR match at all (merged or closed-unmerged), by last-activity age (days), oldest first:"
+        section = out.split(header, 1)[1]
+        age_lines = [ln.strip() for ln in section.splitlines() if ln.strip() and ln.strip() != "(none)"]
+        ages = [float(ln) for ln in age_lines]
+        assert len(ages) == 2
+        assert ages == sorted(ages, reverse=True)
+        assert ages[0] > ages[1]  # 2020 branch (older) prints before the 2023 branch (newer)
+
     def test_branch_with_only_unparseable_timestamps_omitted_from_no_match_listing(
         self, fake_projects, capsys, monkeypatch,
     ):
@@ -493,3 +544,5 @@ class TestCmdWorkstreamCostCheckPrStatus:
         section = out.split(header, 1)[1]
         age_lines = [ln for ln in section.splitlines() if ln.strip() and ln.strip() != "(none)"]
         assert age_lines == []
+        # No-PR-match listing prints ages only, never branch names.
+        assert "unparseable-branch" not in out
