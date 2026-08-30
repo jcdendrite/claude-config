@@ -712,6 +712,15 @@ class TestRequireWorktreeForGitWrites:
         assert reason is not None
         assert "python3" in reason
 
+    def test_run_hook_payload_returns_deny_stand_in_on_exit_2(self, tmp_path):
+        """run_hook_payload returns {"permissionDecision": "deny"} as a
+        stand-in on any exit-2/empty-stdout subprocess, not a real
+        deny-JSON parse."""
+        script = tmp_path / "exit_2.sh"
+        script.write_text("#!/bin/bash\nexit 2\n")
+        script.chmod(0o755)
+        assert run_hook_payload(script, {}) == {"permissionDecision": "deny"}
+
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
         (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate
@@ -1189,7 +1198,8 @@ exec "{real_git}" "$@"
             "a read must never carry an additionalContext reacquisition note"
         )
         # run_hook_context alone can't distinguish a silent allow from a
-        # deny (see lines 1242-1244), so pin the decision explicitly.
+        # deny (see test_slow_path_self_lock_reentry_allows_silently_with_no_context),
+        # so pin the decision explicitly.
         assert run_hook(WORKTREE_HOOK, command, cwd=worktree) == "allow"
         assert _worktree_lock_reason(worktree) is None, (
             "a read must never acquire the worktree lock as a side effect"
@@ -1198,21 +1208,35 @@ exec "{real_git}" "$@"
     def test_python3_absent_denies_read_against_never_locked_worktree(
         self, isolated_home, opted_in_with_worktree, tmp_path
     ):
-        """Fail-closed companion to test_python3_absent_denies. Pins this
-        hook's header "Known gaps" entry on python3-less machines. A plain
-        read against a freshly created (never-locked) worktree cannot
-        complete through the fast path. The fast path's guard call needs no
-        python3. It is reached only once a lock already exists. PATH is
-        stubbed with only the tools the fast-path-then-deny code path
-        invokes before the python3 check. See test_python3_absent_denies
-        for why this set and not sha256sum/awk. The pre-check itself is a
-        bash builtin `[ -e ... ]` and needs no additional binary."""
+        """A read against a never-locked worktree must never invoke the
+        collision guard. See test_python3_absent_denies for the PATH-stub
+        rationale."""
         _, worktree = opted_in_with_worktree
         assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
 
+        real_git = shutil.which("git")
+        assert real_git is not None, "git must be on PATH to build the wrapper"
+        fake_bin = tmp_path / "_fake_bin"
+        fake_bin.mkdir()
+        counter_file = tmp_path / "_guard_entry_count"
+        counter_file.write_text("0")
+        wrapper = fake_bin / "git"
+        # Matches every -C <worktree> call, not only the guard's final `worktree list --porcelain`
+        # one, since the guard's earlier root/git-common-dir calls also match and would otherwise
+        # go uncounted.
+        wrapper.write_text(f"""#!/bin/bash
+if [ "$1" = "-C" ] && [ "$2" = "{worktree}" ]; then
+  count=$(cat "{counter_file}")
+  count=$((count + 1))
+  printf '%s' "$count" > "{counter_file}"
+fi
+exec "{real_git}" "$@"
+""")
+        wrapper.chmod(0o755)
+
         stub_bin = tmp_path / "_stub_bin"
         stub_bin.mkdir()
-        for tool in ("cat", "dirname", "git", "jq", "timeout"):
+        for tool in ("cat", "dirname", "jq", "timeout"):
             real_path = shutil.which(tool)
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
@@ -1223,10 +1247,13 @@ exec "{real_git}" "$@"
             bash_input("git status"),
             cwd=worktree,
             home=isolated_home,
-            extra_env={"PATH": str(stub_bin)},
+            extra_env={"PATH": f"{fake_bin}:{stub_bin}"},
         )
         assert reason is not None
         assert "python3" in reason
+        assert int(counter_file.read_text()) == 0, (
+            "the guard must never be invoked when the lock is absent"
+        )
         assert _worktree_lock_reason(worktree) is None, (
             "a denied read must not acquire the worktree lock"
         )
