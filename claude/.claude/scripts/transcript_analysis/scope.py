@@ -693,10 +693,10 @@ def _parse_absolute_window_args(
     here: this helper has no malformed-value error path of its own to label.
     That relies on argparse's own type=_iso_date having already validated
     whichever attr the caller both declares that way on its own
-    argparse.add_argument and actually consumes from this function's return
-    -- true for every caller except cmd_reviewer_yield, whose --since is the
-    untyped Nd-relative flag _parse_since_nd_arg parses separately and whose
-    call discards this function's since_ts half of the return entirely.
+    argparse.add_argument and actually consumes from this function's return.
+    cmd_reviewer_yield is the one exception: its --since is the untyped
+    Nd-relative flag _parse_since_nd_arg parses separately, and its call
+    discards this function's since_ts half of the return entirely.
     Both bounds default to None when their flag is absent.
     """
     since_str: str | None = getattr(args, since_attr, None) or None

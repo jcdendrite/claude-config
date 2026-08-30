@@ -16463,6 +16463,20 @@ class TestGhDiscoverClosedUnmergedPrBranches:
         assert exc_info.value.code == 1
         assert "gh pr list (closed) failed" in capsys.readouterr().err
 
+    def test_malformed_json_stdout_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A successful gh call (returncode 0) whose stdout is not valid
+        JSON aborts via sys.exit(1) rather than raising JSONDecodeError
+        uncaught or returning a partial/empty set silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {"returncode": 0, "stdout": "not json", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "unparseable JSON" in capsys.readouterr().err
+
 
 class TestAppendPrCostLedgerRow:
     def test_duplicate_key_without_force_raises(self):

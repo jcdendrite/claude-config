@@ -170,6 +170,36 @@ class TestComputeWorkstreamDollars:
         assert agg["total_dollars"] == pytest.approx(3.00)
         assert agg["startup_burn_dollars"] == pytest.approx(0.0)
 
+    def test_non_first_session_unpriced_turn_consumes_slot_without_adding_dollars(self, fake_projects):
+        """An unmodeled-model turn inside a non-first session's first-N-turns
+        window consumes one of until_first_n_turns' slots like any other
+        main-thread turn with a usage block, but contributes $0 since
+        pricing._price_turn returns dollars_by_class=None for it. A later
+        priced turn that the unpriced turn's slot-consumption pushes past the
+        default until_first_n_turns=5 window is excluded entirely, proving
+        the slot really is consumed rather than skipped."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-01T10:00:00.000Z"),
+        ])  # $1.00, first session by time
+        _write_jsonl(fake_projects / "sess-2.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-02T10:00:00.000Z"),  # $1.00, slot 1
+            _priced("<synthetic>", input=1_000_000, branch="feature-z", ts="2026-08-02T10:01:00.000Z"),  # unpriced, slot 2
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-z", ts="2026-08-02T10:02:00.000Z"),  # $2.00, slot 3
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-02T10:03:00.000Z"),  # $1.00, slot 4
+            _priced("claude-sonnet-5", input=500_000, branch="feature-z", ts="2026-08-02T10:04:00.000Z"),  # $1.00, slot 5
+            # window now full -- 6th turn below is excluded, contributing $5.00 to
+            # total_dollars but nothing to startup_burn_dollars.
+            _priced("claude-sonnet-5", input=2_500_000, branch="feature-z", ts="2026-08-02T10:05:00.000Z"),  # $5.00
+        ])
+
+        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-z"]
+        assert agg["session_count"] == 2
+        assert agg["total_dollars"] == pytest.approx(11.00)  # 1.00 + (1.00 + 0 + 2.00 + 1.00 + 1.00 + 5.00)
+        # 1.00 + 2.00 + 1.00 + 1.00: the unpriced turn contributes $0 and the
+        # 6th turn is excluded by the window it filled a slot in.
+        assert agg["startup_burn_dollars"] == pytest.approx(5.00)
+
     def test_empty_corpus_returns_empty_dict(self, fake_projects):
         """No session files at all -- no branch to report, not a KeyError
         or a spurious zero-valued entry."""
@@ -412,6 +442,35 @@ class TestCmdWorkstreamCostCheckPrStatus:
         section = out.split(header, 1)[1]
         age_lines = [ln for ln in section.splitlines() if ln.strip() and ln.strip() != "(none)"]
         assert len(age_lines) == 1  # only no-match-branch has no PR match at all
+
+    def test_auth_preflight_failure_exits_1_with_stderr_message(
+        self, fake_projects, capsys, monkeypatch,
+    ):
+        """--check-pr-status aborts via sys.exit(1) with a stderr message
+        when _gh_auth_preflight_ok reports the gh CLI isn't authenticated,
+        confirmed here by asserting no `gh repo view` or `gh pr list` call
+        is in the captured call log -- discovery never starts."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z"),
+        ])
+        call_log: list[list[str]] = []
+        fake_run = _fake_workstream_cost_subprocess_run()
+
+        def logging_fake_run(cmd, *args, **kwargs):
+            call_log.append(cmd)
+            return fake_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", logging_fake_run)
+        monkeypatch.setattr(_mod, "_gh_auth_preflight_ok", lambda hostname: False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "gh auth login" in err
+        assert not any(c[:3] == ["gh", "repo", "view"] for c in call_log)
+        assert not any(c[:3] == ["gh", "pr", "list"] for c in call_log)
 
     def test_branch_with_only_unparseable_timestamps_omitted_from_no_match_listing(
         self, fake_projects, capsys, monkeypatch,

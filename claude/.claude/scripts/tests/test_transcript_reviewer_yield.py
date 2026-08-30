@@ -519,6 +519,28 @@ class TestReviewerYield:
         out = capsys.readouterr().out
         assert "No reviewer-agent dispatches found." in out
 
+    def test_until_flag_adds_title_suffix_and_table_two_caveat(self, fake_projects, capsys):
+        """--until appends ", through <until>" to table 1's title and prints a
+        caveat under table 2's heading noting table 2 is not --until-bounded;
+        neither appears when --until is absent."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-06-10T00:00:00.000Z", content=[_agent_use("e1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-e1", "e1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 1 issue. Details."}])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
+        until_out = capsys.readouterr().out
+        assert ", through 2026-06-15" in until_out
+        assert "does not bound this table" in until_out
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        unbounded_out = capsys.readouterr().out
+        assert ", through" not in unbounded_out
+        assert "does not bound this table" not in unbounded_out
+
     def test_edit_after_until_boundary_still_counts_toward_active_and_edited(self, fake_projects, capsys):
         """--until bounds table 1's dispatch-detection loop only. A cited
         dispatch inside the --until window whose parent Edit lands after the
