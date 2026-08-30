@@ -420,11 +420,12 @@ The fast path calls `_lib_worktree_collision_guard` only when the lock is alread
 
 The guard's contention tiebreak is first-write-wins: the first *write* — a git write via this hook, or a file write via `require-worktree-for-file-writes.sh`'s identical guard call — is what claims the worktree. This is the correct direction for a guard whose stated purpose is preventing two sessions from writing into one worktree. A read-only session was never the invariant it needed to protect.
 
-Three tradeoffs are accepted rather than closed.
+Two tradeoffs are accepted rather than closed.
 
 - The fast path's exclusion list (`cd`, `-C`, `(`, backtick) doesn't cover `||`/`&`. A `||`/`&`-chained git write such as `git fetch || git commit -m x` denies when the lock is absent, via the slow path's `||`/`&` write-cwd-ambiguity check. That check cannot distinguish a relocation-risky chain from a bare read-then-write chain with no `cd`. The deny names its own remedy and the window self-heals on the first lock acquisition from any source. Relaxing that deny for a no-`cd` chain is deferred to a separate change, since it loosens a security-relevant gate in the permissive direction and deserves its own review.
-- A python3-less machine's first-ever git operation against a never-locked worktree — read or write — cannot complete through the fast path, because the fast path's guard call is only reached once a lock already exists. It falls through to full parsing instead, which requires python3. The fast path's no-python3 requirement holds only when this session already holds the worktree's lock.
-- A python3-less write against an already foreign-locked worktree gets a misleading deny reason. The fast path's guard call discards the guard's own reason and checks only its exit code, so a foreign-lock denial falls through to the python3 precondition check, which denies citing python3 instead of naming the foreign-lock holder. The write is still correctly denied either way; only the stated reason is wrong. `test_python3_absent_against_foreign_lock_gives_misleading_reason` pins this behavior.
+- The fast path's python3-free exit now requires an already-held lock, narrower than before:
+  - A never-locked worktree's first git operation, read or write, falls through to full parsing.
+  - A foreign-locked worktree's python3-less write denies citing python3 rather than the true foreign-lock holder, because the fast path checks only the guard's exit code, not its reason. `test_python3_absent_against_foreign_lock_gives_misleading_reason` pins this case.
 
 ### Sources
 
