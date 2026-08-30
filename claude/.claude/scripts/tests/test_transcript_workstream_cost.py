@@ -147,11 +147,53 @@ class TestComputeWorkstreamDollars:
         assert agg["session_count"] == 1
         assert agg["total_dollars"] == pytest.approx(3.00)
 
+    def test_non_first_session_that_is_subagent_only_contributes_zero_startup_burn(self, fake_projects):
+        """A non-first session whose only records are sidechain (subagent)
+        turns has zero main-thread turns of its own, so
+        _first_main_thread_turns_dollars_by_branch's isSidechain exclusion
+        means it contributes nothing to startup burn. The session's subagent
+        dollars are still priced and counted toward the branch's
+        total_dollars."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-k", ts="2026-08-01T10:00:00.000Z"),
+        ])  # $1.00, first session by time
+        subagent_rec = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-k", ts="2026-08-02T10:00:00.000Z",
+        )  # $2.00
+        subagent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess-2.jsonl", [])  # readable-but-empty main file
+        _write_subagent_jsonl(fake_projects, "sess-2", "agent-1", [subagent_rec])
+
+        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-k"]
+        assert agg["session_count"] == 2
+        assert agg["total_dollars"] == pytest.approx(3.00)
+        assert agg["startup_burn_dollars"] == pytest.approx(0.0)
+
     def test_empty_corpus_returns_empty_dict(self, fake_projects):
         """No session files at all -- no branch to report, not a KeyError
         or a spurious zero-valued entry."""
         workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
         assert workstream == {}
+
+    def test_unbranched_session_excluded_from_workstream_result_entirely(self, fake_projects):
+        """A record with no gitBranch key at all accumulates into
+        _compute_pr_cost_branch_totals's separate unbranched_totals bucket,
+        which _compute_workstream_dollars's result loop never surfaces since
+        it iterates only branch_totals. The fixture also includes a real
+        branch to confirm its own totals are unaffected."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-x", ts="2026-08-01T10:00:00.000Z"),
+        ])  # $2.00
+        unbranched_rec = _priced("claude-sonnet-5", input=500_000, ts="2026-08-01T11:00:00.000Z")  # $1.00
+        del unbranched_rec["gitBranch"]
+        _write_jsonl(fake_projects / "sess-2.jsonl", [unbranched_rec])
+
+        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        assert "" not in workstream
+        assert None not in workstream
+        assert set(workstream) == {"feature-x"}
+        assert workstream["feature-x"]["total_dollars"] == pytest.approx(2.00)
 
     def test_startup_burn_never_exceeds_total_dollars_across_multi_session_branches(self, fake_projects):
         """Sanity invariant, pinned as a merge gate: for every branch,

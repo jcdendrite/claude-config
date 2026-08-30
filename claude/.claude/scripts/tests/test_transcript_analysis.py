@@ -16430,6 +16430,39 @@ class TestGhDiscoverClosedUnmergedPrBranches:
         result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
         assert result == {"abandoned-a", "abandoned-b"}
 
+    def test_entry_with_no_headref_name_filtered_out_of_result(self, monkeypatch):
+        """An entry with no headRefName key (or an empty one) is dropped
+        from the returned set -- mirrors the `if pr.get("headRefName")`
+        truthy filter guarding each entry."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2},
+            {"number": 3, "headRefName": ""},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a"}
+
+    def test_gh_call_failure_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A failed gh pr list (closed) call aborts the whole run via
+        _pr_cost_abort_on_gh_failure. Discovery has no per-row granularity
+        to degrade into, so it does not return a partial or empty set
+        silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "not logged into any GitHub hosts\n",
+            })()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "gh pr list (closed) failed" in capsys.readouterr().err
+
 
 class TestAppendPrCostLedgerRow:
     def test_duplicate_key_without_force_raises(self):

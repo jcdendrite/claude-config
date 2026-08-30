@@ -288,7 +288,7 @@ Full empirical record: [`case-studies/handoff-threshold-impact.md`](case-studies
 | Does the nudge's mechanism-engagement gate (share of session dollars spent past the fire threshold) actually improve under the lower cap? | Yes, robustly | 89.5%→58.3% before/after (machine-wide); direction holds at every cap tested from 100,000 to 360,000, no sign flip |
 | Does cost per shipped PR improve? | No clean win — a real, non-dominant cost shift | Median flat ($30.79→$31.63, claude-config-only), but mean +24% and upper quartile +60% ($56.04→$89.55); does not trigger the study's own pre-registered overhead-dominance rule |
 | Does review quality decline under the new cap? | No | Reviewer-spawn intensity per branch rose, 8.72→9.95 (claude-config-only) — more scrutiny, not less |
-| Does handoff/continuation overhead explain the Tier 1 cost shift? | Yes — grows monotonically across the transition | Startup-burn share of branch dollars: 1.7%→2.4%→3.4% across before/excluded/after (machine-wide) |
+| Does handoff/continuation overhead explain the rise in cost per shipped PR? | Yes — grows monotonically across the transition | Startup-burn share of branch dollars: 1.7%→2.4%→3.4% across before/excluded/after (machine-wide) |
 | Was the earlier 1.25x–4x session-share risk (`absolute-token-handoff-threshold.md`) ever measured for this specific 360,000→150,000 drop? | Yes, this study measured it | 1.69x (53.1%→89.7%), each window at its own real governing cap |
 
 ## From `trim-global-claude-md.md` — "Trim and reorganize both CLAUDE.md files"

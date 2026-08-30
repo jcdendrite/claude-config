@@ -50,7 +50,7 @@ The transition window's share (83.2%) sits between the before and after figures,
 
 The after era's share is lower than the before era's at every cap tested — the direction is not sensitive to the specific cap value, only its magnitude is. (Session counts here differ slightly from the table above because this recomputation re-scanned the live corpus a session later than the earlier capture; same-day drift, not a discrepancy.)
 
-**Hard blocks are new, not just more frequent.** Joining `.handoff-nudge.log` lines (which carry no timestamp field) against each session's own first-record timestamp, machine-wide across all six accounts' logs (one account's log file does not exist — no nudge activity recorded there):
+**Hard blocks are new, not just more frequent.** Joining `.handoff-nudge.log` lines (which carry no timestamp field) against each session's own first-record timestamp, machine-wide across all configured accounts' logs (where present):
 
 | Era | Nudged lines | `action=block` | `handoff` conversions |
 |---|---|---|---|
@@ -131,7 +131,7 @@ The Known-limitations section's session-share risk bullet cited the 1.25x–4x f
 
 - **`claude/.claude/scripts/transcript-analysis.py`** — `spend-over-threshold` (Tier 0), `pr-cost --record` (Tier 1), `review-trace` (Tier 2), `reviewer-yield --until` (Tier 2, added by this study's plan), `workstream-cost` (Tier 3, added by this study's plan) subcommands. All aggregate figures above come from these subcommands or from direct calls to the same internal functions they call (`_extract_rearm_session_turns`, `_compute_workstream_dollars`), documented inline in this study's own capture scripts.
 - **Transcript corpus** — this machine's six configured Claude Code accounts' local session history, 2026-07-22 (oldest surviving transcript) through 2026-08-29 (capture date). Machine-wide figures are aggregated across all six; no per-account, per-repo, or per-container figure is published (this study's own publication-scope rule).
-- **`~/.claude/.handoff-nudge.log`** (and the equivalent per-account log for five of the six accounts — one account has none) — `nudged`/`handoff` line counts, joined to session first-timestamps for era attribution since the log itself carries no timestamp field.
+- **`~/.claude/.handoff-nudge.log`** (and the equivalent per-account log where present) — `nudged`/`handoff` line counts, joined to session first-timestamps for era attribution since the log itself carries no timestamp field.
 - **`.claude/plans/handoff-threshold-impact-analysis.md`** — this study's own plan, including the pre-registered decision rule and statistical-framing commitments quoted above.
 - **[`cost-levers-considered.md`](../cost-levers-considered.md)**, "handoff-nudge-cap-recalibration.md" entry — the original retune this study evaluates.
 - **`docs/handoff-nudge.md`** — the nudge's own documentation, including the Known-limitations bullet this study updates.
