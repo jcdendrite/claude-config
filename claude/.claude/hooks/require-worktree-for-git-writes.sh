@@ -10,11 +10,12 @@
 # race — e.g. one session's `git reset --hard` silently wipes another's
 # uncommitted edits. Working in linked worktrees (`git worktree add`)
 # isolates each session's state — but only if each session gets its own
-# worktree. A write that resolves into a linked worktree also passes through
-# `_lib_worktree_collision_guard` (see _lib.sh), which denies when a
-# *different* live session already holds that same worktree path, closing
-# the gap where two sessions independently anchor into the identical
-# worktree with no isolation between them at all.
+# worktree. A git command that resolves into a linked worktree passes
+# through `_lib_worktree_collision_guard` (see _lib.sh) whenever that
+# worktree's lock is already held, denying when a *different* live session
+# holds it. Only a write can cause the guard to freshly acquire the lock,
+# closing the gap where two sessions independently anchor into the
+# identical worktree with no isolation between them at all.
 #
 # Threat model: this is a developer-machine guardrail against *accidental*
 # main-tree writes, not an adversarial boundary — the agent is cooperative,
@@ -100,35 +101,36 @@
 #   - A fast-path collision denial falls through to full parsing rather
 #     than denying directly, so a denied write now costs roughly double
 #     the collision guard's git-subprocess calls plus a python3 spawn
-#     versus a single call; only the already-rare, already-blocked deny
+#     versus a single call. Only the already-rare, already-blocked deny
 #     path pays this, not the common allow path.
+#   - An absent-lock command falls through to full parsing (python3 spawn)
+#     for as long as the lock stays absent. For a write, this cost adds to
+#     the guard's own acquisition cost rather than replacing it.
 #   - The fresh-lock-acquisition `additionalContext` note's own pre-check
-#     (was the lock file present before this call) has a narrow TOCTOU
-#     window against the guard's own O_EXCL write. A foreign session
-#     winning that race is still caught by the guard's own re-read and
-#     self-recognition check (session_id/pid match), which denies the call
-#     outright. So this window costs a wasted pre-check, not an incorrect
-#     message, under the same cooperative, single-developer-machine threat
-#     model as the rest of this list.
-#   - The opposite-direction race also exists: if the lock file is present
-#     at this pre-check (WAS_UNLOCKED=false) but a genuinely concurrent
-#     `git worktree unlock` clears it before the guard's own read, the
-#     guard performs a real fresh acquisition that gets no message, since
-#     the outer pre-check already latched WAS_UNLOCKED=false. Narrower than
-#     the same-session double-message case below — it needs a genuine
-#     sub-guard-duration race, not just ordinary inter-call latency.
+#     has a narrow TOCTOU window against the guard's own O_EXCL write. A
+#     foreign session winning that race is still denied by the guard's own
+#     session_id/pid re-check, so the cost is a wasted pre-check, not a
+#     wrong message. On the fast path, this pre-check gates whether the
+#     guard runs at all.
+#   - The opposite-direction race also exists: a concurrent
+#     `git worktree unlock` between the pre-check and the guard's own read
+#     causes a real fresh acquisition that gets no message. On the fast
+#     path this race is the only route to an unmessaged fresh acquisition,
+#     since the guard is reached only when the lock is already present.
 #   - Two near-simultaneous calls from the SAME session (e.g. two parallel
 #     subagents sharing this worktree) can both see "unlocked" before
 #     either write lands, firing the note twice for one real acquisition.
-#     Low stakes: both calls belong to the same session, and the note's
-#     substance stays true either way, just possibly reported twice
-#     instead of once.
+#     This applies to the slow path's own pre-check and to
+#     require-worktree-for-file-writes.sh's identical-shaped pre-check; the
+#     fast path above runs no pre-check and emits no note. Low stakes: both
+#     calls belong to the same session, and the note's substance stays true
+#     either way, just possibly reported twice instead of once.
 #   - That pre-check is a bash builtin `[ -e ... ]` (a single `stat(2)`),
-#     not wrapped in `_lib_capped`. Capping it would add a `timeout`+`test`
-#     subprocess spawn to the fast path's steady-state case (an
-#     already-self-locked worktree), and the fast path must stay
-#     subprocess-free on that steady-state case. A stalled network-mounted
-#     worktree path hangs this stat the same way it hangs `cd`.
+#     not wrapped in `_lib_capped`, because capping it would add a
+#     `timeout`+`test` subprocess spawn to the fast path's steady-state
+#     case (an already-self-locked worktree), which must stay
+#     subprocess-free. A stalled network-mounted worktree path hangs this
+#     stat the same way it hangs `cd`.
 #   - The slow path defers its note to a single emit after the record loop
 #     (see FRESH_LOCK_CONTEXT below), folded into a later deny's reason
 #     instead of dropped when one occurs. So a single fresh acquisition
@@ -137,6 +139,15 @@
 #     reports only the later one on an eventual allow, though —
 #     FRESH_LOCK_CONTEXT is overwritten per record, not accumulated across
 #     worktrees.
+#   - A `||`/`&`-chained git write from a worktree with an absent lock
+#     denies until this session's first lock acquisition — see
+#     docs/design-decisions.md §32.
+#   - A python3-less machine cannot complete a first git operation, read or
+#     write, against a never-locked worktree — see
+#     docs/design-decisions.md §32.
+#   - A python3-less write against an already foreign-locked worktree
+#     denies citing python3 rather than the true foreign-lock holder — see
+#     docs/design-decisions.md §32.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
@@ -228,25 +239,25 @@ fi
 # check is a deliberately conservative over-approximation — it may route a
 # command with no real relocation risk (e.g. `-C` mentioned only in a
 # comment string) to the parser too, which just costs a python3 spawn, not
-# a false allow.
+# a false allow. The collision guard below is called only when this
+# worktree's lock is already present. When the lock is absent, the guard
+# call is skipped and the command falls through to full parsing, where a
+# read is allowed with no guard call at all and only a write record
+# re-runs the guard.
 if $SESSION_IS_WORKTREE; then
   if ! [[ "$COMMAND" =~ (^|[^[:alnum:]_])cd([^[:alnum:]_]|$) ]] \
      && [[ "$COMMAND" != *'-C'* ]] \
      && [[ "$COMMAND" != *'('* ]] \
      && [[ "$COMMAND" != *'`'* ]]; then
     # See _lib_worktree_lock_absent (_lib.sh) for the pre-check contract.
-    WAS_UNLOCKED=false
-    _lib_worktree_lock_absent "$SESSION_GIT_DIR_ABS" && WAS_UNLOCKED=true
-    if _lib_worktree_collision_guard "$CWD" "$REPO_GIT_COMMON_DIR" >/dev/null; then
-      if $WAS_UNLOCKED; then
-        _lib_emit_allow_with_context "Running this git command re-acquired the worktree lock for $CWD, since worktree discipline allows only one live session per linked worktree at a time. If this was unintended, run 'git worktree unlock $CWD' again."
-      fi
-      exit 0
+    if ! _lib_worktree_lock_absent "$SESSION_GIT_DIR_ABS"; then
+      _lib_worktree_collision_guard "$CWD" "$REPO_GIT_COMMON_DIR" >/dev/null && exit 0
     fi
-    # Collision guard denied. It alone can't tell read from write -- that
-    # needs the git subcommand -- so a fast-path denial is provisional:
-    # fall through to full parsing, which re-runs the guard only for an
-    # actual write record (ALLOWED_RE below skips it for reads).
+    # Collision guard denied, or the lock is absent and acquisition is
+    # deferred to the slow path. Neither branch can tell read from write
+    # without the git subcommand, so this falls through to full parsing.
+    # ALLOWED_RE there re-runs the guard only for an actual write record,
+    # exempting reads.
   fi
 fi
 
@@ -256,7 +267,7 @@ fi
 # properly.
 PARSER="$(dirname "$0")/parse-git-command.py"
 if ! command -v python3 >/dev/null 2>&1; then
-  emit_deny "Blocked by worktree-enforcement hook: python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree with no active lock contention, where the fast path above does not require python3."
+  emit_deny "Blocked by worktree-enforcement hook: python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree whose lock this session already holds, where the fast path above does not require python3."
   exit 0
 fi
 
