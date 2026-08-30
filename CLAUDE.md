@@ -25,7 +25,8 @@ Two cases still legitimately need a full-suite run by hand:
 1. `select-tests.py` itself selected the full suite for this diff — you
    don't need to run it by hand, `select-tests.py` already widens on its
    own.
-2. `/pr-description` needs a whole-repo Test Plan accuracy claim, where a
+2. Something in this PR — a plan's Verification step, or `/pr-description`'s
+   own accuracy check — genuinely calls for a whole-repo claim, where a
    scoped pass would overstate what was verified.
 
 Anything else — including a path `select-tests.py` cannot map — is a bug
