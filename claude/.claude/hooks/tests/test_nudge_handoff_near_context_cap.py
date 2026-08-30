@@ -10,7 +10,7 @@ at 150000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
 escalating token bands past the first fire — a marker file holds the
 triggering estimate and gates subsequent turns until the estimate advances
 HANDOFF_NUDGE_REARM_SPACING (default 80000) past it. Past
-HANDOFF_NUDGE_BLOCK_AFTER (default 1) ignored re-arms in one session, a
+HANDOFF_NUDGE_BLOCK_AFTER (default 4) ignored re-arms in one session, a
 further re-arm hard-blocks (stderr + exit 2) instead of emitting the
 advisory JSON -- but only on PostToolBatch; on Stop, exit 2 would force the
 conversation to continue, so that registration falls through to the
@@ -65,7 +65,7 @@ HOOK_EVENT_NAMES = ["PostToolBatch", "Stop"]
 
 # HANDOFF_NUDGE_BLOCK_AFTER's shipped default -- the escalation ladder hard-
 # blocks once a session's ignored-re-arm count reaches this value.
-DEFAULT_BLOCK_AFTER = 1
+DEFAULT_BLOCK_AFTER = 4
 
 # Must exceed 2 -- some ladder tests deliberately drive ignored_count to 2
 # (see test_escalation_counter_concurrent_rearms_no_lost_update); 5 is
@@ -1293,10 +1293,10 @@ class TestNudgeHandoffNearContextCap:
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_block_after_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
-        """A malformed override must fall back to the shipped default (1), not
+        """A malformed override must fall back to the shipped default (4), not
         degrade toward 0 -- checked on this session's first-ever crossing, where a
         degraded BLOCK_AFTER=0 would hard-block immediately (0 >= 0) but a correct
-        fallback stays advisory (0 >= 1 is false)."""
+        fallback stays advisory (0 >= 4 is false)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
@@ -1309,10 +1309,11 @@ class TestNudgeHandoffNearContextCap:
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_block_after_malformed_override_positive_control_blocks_at_default(self, tmp_path, malformed_value):
-        """At the shipped default (1), range(DEFAULT_BLOCK_AFTER - 1) is range(0),
-        so this test's own contribution is the post-loop call, which drives the
-        real re-arm and asserts the default actually hard-blocks there (the sibling
-        test only checks the fallback isn't degraded to 0)."""
+        """At the shipped default (4), range(DEFAULT_BLOCK_AFTER - 1) is range(3):
+        the loop drives three advisory re-arms, and this test's own contribution
+        is the post-loop call, which drives the fourth re-arm and asserts the
+        default actually hard-blocks there (the sibling test only checks the
+        fallback isn't degraded to 0)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
