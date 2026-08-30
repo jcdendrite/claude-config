@@ -2349,7 +2349,52 @@ def test_scope_rule_anchors_present() -> None:
     )
 
 
+def test_scope_exempt_row_nested_within_outer_rule() -> None:
+    """SCOPE_EXEMPT_ROW must be textually nested inside
+    SCOPE_RULE:code-review-staged-diff-only's start/end pair, not merely
+    present somewhere in the file alongside it — the design (see the
+    SCOPE_RULE region's own prose) is that the exempt row's match-narrowing
+    carve-out lives inside the outer rule, not as an unrelated sibling anchor.
+    """
+    skill_md_path = _skill_file("code-review")
+    text = skill_md_path.read_text()
+
+    outer_start = text.find("<!-- SCOPE_RULE:code-review-staged-diff-only start -->")
+    outer_end = text.find("<!-- SCOPE_RULE:code-review-staged-diff-only end -->")
+    exempt_start = text.find("<!-- SCOPE_EXEMPT_ROW start -->")
+    assert -1 not in (outer_start, outer_end, exempt_start), (
+        f"{skill_md_path}: one of the SCOPE_RULE/SCOPE_EXEMPT_ROW start/end anchors is missing"
+    )
+    assert outer_start < exempt_start < outer_end, (
+        f"{skill_md_path}: SCOPE_EXEMPT_ROW (offset {exempt_start}) is not nested inside "
+        f"SCOPE_RULE:code-review-staged-diff-only (offsets {outer_start}-{outer_end})"
+    )
+
+
 _CAUSAL_REACH_KEYWORDS = ("causes", "activates", "newly reaches")
+
+# Keyword presence alone would pass a reword that keeps all three verbs but
+# flips the clause from mandatory ("stays in scope") to advisory ("may
+# optionally be flagged") — the modal-verb and disqualifier checks below
+# catch that flip.
+_MANDATORY_MODAL_TOKENS = ("stays", "is", "remains")
+# Word-boundary regex, not a bare substring check — "is" as a raw substring
+# would match inside unrelated words ("this", "responsibility") and pass
+# almost any sentence regardless of actual modality.
+_MANDATORY_MODAL_RE = re.compile(
+    r"\b(?:" + "|".join(_MANDATORY_MODAL_TOKENS) + r")\b"
+)
+_ADVISORY_DISQUALIFIER_RE = re.compile(
+    r"may optionally|at\s+\S+'?s?\s+discretion|if\s+\S+\s+chooses", re.IGNORECASE
+)
+
+
+# Naive sentence-boundary regex that already mis-splits on abbreviations
+# like `(e.g.` elsewhere in the SCOPE_RULE region it parses. A future edit
+# adding a parenthetical inside the isolated causal-reach sentence could
+# corrupt this check.
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
 
 def test_scope_rule_region_states_causal_reach() -> None:
@@ -2362,6 +2407,10 @@ def test_scope_rule_region_states_causal_reach() -> None:
     legitimate reword (a copy-edit pass, a clause reorder) does not
     false-fail this test — see test_disposition_rule_anchors_present's
     docstring for the same discipline applied to DISPOSITION_RULE anchors.
+    The mandatory-modal and advisory-disqualifier checks below are a narrow
+    tripwire for one anticipated reword shape (a discretionary softening),
+    not general grammatical-mood detection. Expect the disqualifier list
+    to need broadening as new phrasings surface.
     """
     skill_md_path = _skill_file("code-review")
     region = _extract_scope_anchor_region(skill_md_path, "SCOPE_RULE:code-review-staged-diff-only")
@@ -2371,9 +2420,34 @@ def test_scope_rule_region_states_causal_reach() -> None:
         f"states the causal-reach guarantee — missing keyword(s) {missing!r}"
     )
 
+    causal_reach_sentence = next(
+        (s for s in _sentences(region) if any(kw in s for kw in _CAUSAL_REACH_KEYWORDS)),
+        None,
+    )
+    assert causal_reach_sentence is not None, (
+        f"{skill_md_path}: could not isolate the sentence containing the "
+        "causal-reach keywords for modal-verb checking"
+    )
+    assert _MANDATORY_MODAL_RE.search(causal_reach_sentence), (
+        f"{skill_md_path}: causal-reach sentence {causal_reach_sentence!r} has no "
+        f"mandatory modal verb {_MANDATORY_MODAL_TOKENS!r} — it may have been "
+        "reworded from mandatory to advisory"
+    )
+    advisory_match = _ADVISORY_DISQUALIFIER_RE.search(causal_reach_sentence)
+    assert advisory_match is None, (
+        f"{skill_md_path}: causal-reach sentence contains advisory phrasing "
+        f"{advisory_match.group()!r} — the clause must stay mandatory, not discretionary"
+    )
+
 
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
-    """Left-column shorthand of every data row in the Change-type table."""
+    """Left-column shorthand of every data row in the Change-type table.
+
+    Truncates a left-column cell at its first embedded `|`. Not exercised
+    by any current Change-type row, but a future row using pipe-containing
+    inline-code shorthand would silently truncate here instead of failing
+    structurally.
+    """
     lines = skill_md_path.read_text().splitlines()
     header_index = next(
         (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
@@ -2387,6 +2461,25 @@ def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
             break
         rows.append(line.split("|")[1].strip())
     return rows
+
+
+class TestChangeTypeTableLeftColumns:
+    """Direct coverage for _change_type_table_left_columns's `line.split("|")`
+    parse, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
+    """
+
+    def test_embedded_pipe_in_left_column_truncates(self, tmp_path: Path) -> None:
+        """A left-column cell containing inline code with an embedded `|`
+        (`` `a | b` ``) truncates at that first `|` — this documents the
+        helper's current split-based behavior rather than changing it.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "| Change type | Spawn / invoke |\n"
+            "|-------------|----------------|\n"
+            "| Uses inline code `a | b` in shorthand | `some-reviewer` |\n"
+        )
+        assert _change_type_table_left_columns(path) == ["Uses inline code `a"]
 
 
 def test_scope_exempt_row_resolves_to_real_change_type_row() -> None:
@@ -2467,11 +2560,10 @@ _READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
 
 def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
     """Structural regression for SCOPE_RULE:ready-for-review-cumulative-unnarrowed's
-    premise. Step 3 must always dispatch via pr-diff-against-base.sh and must
+    premise. Step 3 must always dispatch via `pr-diff-against-base.sh`. It must
     never contain a `git diff --cached` invocation, so the diff it hands
-    `/code-review` can never satisfy "the diff under review is the
-    currently-staged diff" — the narrowing precondition's staged-diff half.
-    A fixture-based structural check, not a live model call.
+    `/code-review` can never satisfy the narrowing precondition's staged-diff
+    half. A fixture-based structural check, not a live model call.
     """
     skill_md_path = _skill_file("ready-for-review")
     lines = skill_md_path.read_text().splitlines(keepends=True)
