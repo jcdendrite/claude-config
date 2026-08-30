@@ -198,13 +198,18 @@ def _scan_reviewer_transcripts(
     subagent transcript exactly once, keyed by its dispatch tool_use id.
 
     Walks assistant records regardless of isSidechain and regardless of any
-    --since/--until window — a reviewer dispatched from inside another
-    subagent, or one whose own dispatch record falls outside a --record
-    week boundary, still writes into this session's merged records, and its
-    writes must still reach _reviewer_write_tool_use_ids' exclusion set. A
-    dispatch id absent from dispatch_index has no resolvable subagent
-    transcript and is skipped — the same population the scoring loop below
-    already excludes entirely, not "unclassified".
+    --since/--until window. This is needed because a reviewer dispatched
+    from inside another subagent, or one whose own dispatch record falls
+    outside a --record week boundary, still writes into this session's
+    merged records, and those writes must still reach
+    _reviewer_write_tool_use_ids' exclusion set. A dispatch id absent from
+    dispatch_index has no resolvable subagent transcript and is skipped —
+    the same population the scoring loop below already excludes entirely,
+    not "unclassified". Because this scan ignores --since/--until, its cost
+    does not shrink under cost-ledger --record's narrower weekly window the
+    way the rest of the report's windowing implies: it still scans every
+    resolvable reviewer dispatch across the full corpus in scope, not just
+    the current week's.
     """
     scans: dict[str, _ReviewerTranscriptScan] = {}
     for rec in records:
@@ -235,7 +240,11 @@ def _reviewer_write_tool_use_ids(scans: dict[str, _ReviewerTranscriptScan]) -> f
     reviewer-typed subagent transcript in scans — the edit index's
     exclusion set. Uniform across self and sibling: a reviewer's own
     findings write and a sibling reviewer's both land here, since neither
-    reflects real fix work (see _index_session_edits)."""
+    reflects real fix work (see _index_session_edits). This excludes every
+    code-write recorded in scope, not only ones matching a dispatch's own
+    findings-file path. That breadth is safe only because no reviewer
+    agent's tool grant currently includes Edit — re-evaluate if that
+    changes."""
     ids: set[str] = set()
     for scan in scans.values():
         ids |= scan.code_write_tool_use_ids
@@ -552,11 +561,11 @@ def compute_reviewer_yield_data(
         subagent_spawns += pricing._count_subagent_spawns(records)
 
         tool_result_ts = _build_tool_result_ts_map(records, since_ts)
-        # Session-wide edit index: every code-write recorded inside a
-        # reviewer-typed subagent transcript (its own findings write, or a
-        # sibling reviewer's) is excluded below, so routine review
+        # Session-wide edit index: excludes every code-write recorded inside
+        # a reviewer-typed subagent transcript, so routine review
         # bookkeeping can't inflate Active for a dispatch with no real fix
-        # work behind it.
+        # work behind it. See cmd_reviewer_yield's docstring for which
+        # writes that covers.
         # Cost: measured at ~104s added wall-clock over a 6-root --since 30d run
         # (53.8s parent-only vs 157.7s subagent-inclusive; see docs/transcript-analysis.md).
         reviewer_scans = _scan_reviewer_transcripts(records, dispatch_index)
@@ -669,10 +678,12 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     Active ones, a cited path itself was among the edited paths). Rate =
     Edited / Active, so it cannot exceed 100%. Active/Edited count edits
     inside subagent transcripts too, not just parent-main-thread ones. A
-    reviewer agent's own writes — its own findings file and any sibling
-    reviewer's, keyed by the dispatch's subagent_type — are excluded from the
-    edit index, so routine review bookkeeping can't inflate Active for a
-    dispatch with no real fix work behind it. The unclassified
+    reviewer agent's own writes are excluded from the edit index, so
+    routine review bookkeeping can't inflate Active for a dispatch with no
+    real fix work behind it. Two write sources are excluded: a reviewer's
+    own findings-file write, and any sibling reviewer's write. Both are
+    identified by matching the dispatch's subagent_type against the
+    reviewer set, not by the write's own file path. The unclassified
     bucket is not scored (prints "excluded" for Cited/Active/Edited/Rate) —
     an unreadable subagent transcript lands there via its empty verdict text
     and is separately counted in the printed read-error line, never entered

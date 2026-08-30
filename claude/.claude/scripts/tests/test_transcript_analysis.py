@@ -7470,6 +7470,29 @@ class TestCostLedgerParserHostility:
         with pytest.raises(_mod._CostLedgerParseError, match="malformed note"):
             _mod._parse_cost_ledger_file_text(self._table(row))
 
+    def test_gap_sentinel_case_variant_rejected(self):
+        """A case-variant near-miss of the "insufficient" sentinel doesn't
+        silently match it -- it falls through to the trailing-'pp' check and
+        is rejected like any other malformed value."""
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | Insufficient |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected a trailing 'pp'"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_missing_trailing_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | 5.0 |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected a trailing 'pp'"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_non_finite_after_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | nanpp |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-finite reviewer_gap_pp"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_empty_prefix_before_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | pp |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-numeric reviewer_gap_pp"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
     def test_unresolved_merge_conflict_marker_rejected(self):
         text = (
             _mod._COST_LEDGER_HEADER_LINE + "\n"
@@ -7514,6 +7537,14 @@ class TestReviewerGapPPFloor:
     def test_findings_arm_under_floor_returns_insufficient_even_when_zero_arm_clears_it(self):
         agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=10, zero_edited=0)
         assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_above_floor(self):
+        agg2 = self._agg2(findings_active=20, findings_edited=10, zero_active=0, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) is None
+
+    def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_below_floor(self):
+        agg2 = self._agg2(findings_active=5, findings_edited=2, zero_active=0, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) is None
 
 
 class TestCostLedgerRecordParity:
