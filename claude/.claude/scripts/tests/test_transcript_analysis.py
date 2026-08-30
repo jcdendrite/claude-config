@@ -7234,7 +7234,7 @@ def _reviewer_dispatch_records(
     ]
     _write_subagent_dispatch(
         proj, session_id, f"agent-{tool_id}", tool_id,
-        [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": verdict_text}])],
+        [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": verdict_text}])],
         agent_type=subagent_type,
     )
     return records
@@ -7318,7 +7318,20 @@ class TestCostLedgerReadMode:
         )
         assert _mod._format_cost_ledger_read_row(row) == (
             "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
-            "        7      -3.2pp  rolled out F3 fix"
+            "        7       -3.2pp  rolled out F3 fix"
+        )
+
+    def test_format_read_row_renders_insufficient_sentinel_in_gap_column(self):
+        """The insufficient sentinel fills the widened 12-char GapPP column
+        as a single whitespace-delimited token, same as a numeric gap."""
+        row = _cost_ledger_row(
+            week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
+            ge200k_pct=12.3, denials=7, reviewer_gap_pp=_mod._REVIEWER_YIELD_INSUFFICIENT,
+            note="rolled out F3 fix",
+        )
+        assert _mod._format_cost_ledger_read_row(row) == (
+            "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
+            "        7 insufficient  rolled out F3 fix"
         )
 
     def test_read_mode_still_returns_union_with_two_declared_roots(
@@ -7369,6 +7382,16 @@ class TestCostLedgerSerializationRoundTrip:
         round-trip through the markdown line format unchanged."""
         row = _cost_ledger_row(usd=0.0, context_pct=0.0, opus_pct=0.0, ge200k_pct=0.0,
                                 denials=0, reviewer_gap_pp=None, note="")
+        line = _mod._format_cost_ledger_row(row)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
+        assert rows == [row]
+
+    def test_insufficient_gap_sentinel_round_trips(self):
+        """The below-floor insufficient sentinel round-trips through the
+        markdown line format unchanged, distinct from an unmeasured (None)
+        gap -- both are non-numeric, but only one has a nonzero Active
+        denominator on either side."""
+        row = _cost_ledger_row(reviewer_gap_pp=_mod._REVIEWER_YIELD_INSUFFICIENT)
         line = _mod._format_cost_ledger_row(row)
         _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
@@ -7461,6 +7484,38 @@ class TestCostLedgerParserHostility:
             _mod._parse_cost_ledger_file_text(text)
 
 
+class TestReviewerGapPPFloor:
+    """_reviewer_gap_pp's under-floor guard, exercised directly on
+    agg2-shaped dicts rather than through a corpus fixture."""
+
+    @staticmethod
+    def _agg2(*, findings_active: int, findings_edited: int, zero_active: int, zero_edited: int) -> dict:
+        return {
+            ("staff-backend-engineer", _mod._REVIEWER_VERDICT_FINDINGS_FOUND): {
+                "cited": findings_active, "active": findings_active, "edited": findings_edited,
+            },
+            ("staff-backend-engineer", _mod._REVIEWER_VERDICT_ZERO_FINDING): {
+                "cited": zero_active, "active": zero_active, "edited": zero_edited,
+            },
+        }
+
+    def test_both_arms_below_floor_returns_insufficient(self):
+        agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=9, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_both_arms_at_floor_returns_a_numeric_gap(self):
+        agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=10, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == pytest.approx(100.0)
+
+    def test_zero_finding_arm_under_floor_returns_insufficient_even_when_findings_arm_clears_it(self):
+        agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=9, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_findings_arm_under_floor_returns_insufficient_even_when_zero_arm_clears_it(self):
+        agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=10, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+
 class TestCostLedgerRecordParity:
     def test_record_row_matches_the_compute_functions_independently(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
@@ -7475,18 +7530,25 @@ class TestCostLedgerRecordParity:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
             _hook_deny("require-code-review", ts="2026-06-02T10:00:00.000Z"),
         ]
-        records += _reviewer_dispatch_records(
-            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
-            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
-        )
-        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
-                              content=[_edit_use("ef1", path="src/foo.py")]))
-        records += _reviewer_dispatch_records(
-            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
-            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
-        )
-        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
-                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        # Below _REVIEWER_YIELD_ACTIVE_FLOOR (10) dispatches per arm, reviewer_gap_pp
+        # reports "insufficient" instead of a numeric gap -- this fixture uses ten
+        # per arm to clear the floor.
+        for i in range(10):
+            records += _reviewer_dispatch_records(
+                proj, session_id, f"f{i}", "staff-backend-engineer",
+                f"Found 1 issue in src/foo{i}.py needing a fix",
+                dispatch_ts=f"2026-06-01T09:{i:02d}:00.000Z", result_ts=f"2026-06-01T09:{i:02d}:30.000Z",
+            )
+            records.append(_asst("claude-opus-4-7", ts=f"2026-06-01T09:{i:02d}:40.000Z",
+                                  content=[_edit_use(f"ef{i}", path=f"src/foo{i}.py")]))
+        for i in range(10):
+            records += _reviewer_dispatch_records(
+                proj, session_id, f"z{i}", "staff-backend-engineer",
+                f"Found 0 issues in src/other{i}.py after review",
+                dispatch_ts=f"2026-06-01T10:{i:02d}:00.000Z", result_ts=f"2026-06-01T10:{i:02d}:30.000Z",
+            )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T10:15:00.000Z",
+                              content=[_edit_use("ez-final", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
 
         _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
@@ -7523,10 +7585,42 @@ class TestCostLedgerRecordParity:
         assert row["denials"] == sum(deny_data["hook_counts"].values())
         assert row["denials"] == 1
 
-        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
         assert row["reviewer_gap_pp"] == pytest.approx(_mod._reviewer_gap_pp(reviewer_data["agg2"]))
         assert row["reviewer_gap_pp"] == pytest.approx(100.0)  # findings-found 100% edited vs. zero-finding 0%
+
+    def test_record_row_carries_insufficient_sentinel_under_the_active_floor(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """A week with fewer than _REVIEWER_YIELD_ACTIVE_FLOOR Active
+        dispatches on either arm records the "insufficient" sentinel, not a
+        percentage-point figure computed from an underpowered sample."""
+        proj = fake_projects
+        session_id = "sess-parity-small"
+        records = [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ]
+        records += _reviewer_dispatch_records(
+            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
+            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
+                              content=[_edit_use("ef1", path="src/foo.py")]))
+        records += _reviewer_dispatch_records(
+            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
+            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
+                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        capsys.readouterr()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert rows[0]["reviewer_gap_pp"] == _mod._REVIEWER_YIELD_INSUFFICIENT
 
     def test_denial_at_next_weeks_monday_boundary_excluded_from_this_weeks_row(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
