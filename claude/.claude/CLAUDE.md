@@ -28,7 +28,13 @@
 
 ## Working Style
 
-- Walk through your proposed approach and explain tradeoffs before writing code. When presenting options, evaluate them — state which you'd recommend and why, rather than listing choices without a judgment. Ordering matters as well as evaluation: open with the one sentence naming why it is a genuine decision (competing consumers, incompatible invariants, a false premise, two correct readings of one artifact), then the options; if that sentence cannot be written, pick the sensible default and say so instead of escalating.
+- Walk through your proposed approach and explain tradeoffs before writing code. When presenting options, evaluate them — state which you'd recommend and why, rather than listing choices without a judgment. Ordering matters as well as evaluation: open with the one sentence naming why it's a genuine decision, then the options. Genuine-decision shapes include:
+  - Competing consumers.
+  - Incompatible invariants.
+  - A false premise.
+  - Two correct readings of one artifact.
+
+  If that sentence cannot be written, pick the sensible default and say so instead of escalating.
 - Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do.
 - **Compounding defensive layers are a wrong-foundation tell.** Each new defensive layer closing a gap the prior layer created — or a review that starts citing its own prior findings — is a wrong-foundation signal; fix the foundation instead of adding another layer.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
@@ -108,13 +114,24 @@
 - Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install.
 - **Name every new package before it is fetched.** Name every new package's exact version and rationale before it's fetched — by install, manifest edit, or restore. For a manifest edit, get explicit confirmation first. For an install or restore, this is in addition to — not instead of — the installing-new-software prohibition: name the package before handing the command to the user via the `!` escape. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
-- Never publish the session owner's email address in a public repo — the `userEmail` context identifies the user to you, it is not contact copy for `SECURITY.md`, `CODE_OF_CONDUCT.md`, `README.md`, a commit message, or a PR body, and git history cannot retract it. Route security reports to GitHub private vulnerability reporting and other contact to a published business form; if a template genuinely demands a `mailto:`, propose a role mailbox and confirm before committing.
+- Never publish the session owner's email address in a public repo — git history cannot retract it. The `userEmail` context identifies the user to you; it is not contact copy for:
+  - `SECURITY.md`.
+  - `CODE_OF_CONDUCT.md`.
+  - `README.md`.
+  - A commit message or PR body.
+
+  Route security reports to GitHub private vulnerability reporting and other contact to a published business form. If a template genuinely demands a `mailto:`, propose a role mailbox and confirm before committing.
 - Never Read or `!`-cat files likely to hold secrets (`.env`, `.claude.json`, `credentials.json`, similar) — both reach your context the same way; when the user needs to inspect one, ask them to run the command in a separate terminal instead. The credential-path gate (SSH private key, `.netrc`, a cloud credential store, and similar) has no bypass:
   - Safe blocked command (e.g. `ssh-add`, `chmod`, `ssh -i`) — name it for the user to run via `!`.
   - Exposing command — ask them to run it in a separate terminal.
   Never route around the denial.
 - Apply the **principle of least privilege** when recommending or provisioning credentials, roles, or grants: default to the narrowest scope the operation actually needs, not the broadest one available. Account-wide secrets, root tokens, and admin scopes are never the default.
-- In destructive paths, discover the target instead of accepting it as input — when a script deletes, resets, or force-writes, ask first whether the target can be discovered from local state (git, filesystem, an API query); discovery removes the input-validation problem rather than defending it, since a supplied identifier still needs a grammar, a length cap, and often a paired hook. Fall back to a supplied identifier only when discovery is genuinely impossible.
+- In destructive paths, discover the target instead of accepting it as input — when a script deletes, resets, or force-writes, ask first whether the target can be discovered from local state:
+  - Git.
+  - The filesystem.
+  - An API query.
+
+  Discovery removes the input-validation problem rather than defending it — a supplied identifier still needs a grammar, a length cap, and often a paired hook. Fall back to a supplied identifier only when discovery is genuinely impossible.
 - Never write `<config-dir>/*-markers/*` by hand, regardless of account. Each review skill writes its own marker directory (`/code-review` → `code-review-markers/`, `/plan-review` → `plan-review-markers/`, etc.) when a review passes. Gates match on a marker's **content** — a hash of the exact state that was reviewed — not on the file's presence: once that state changes the stored hash stops matching and the gate denies until a fresh review is recorded, while a review still covering the current state keeps counting across sessions. The guarded operation varies by skill and is not always the commit. Every denial names both the operation it blocked and the review skill to run — run that skill; if it is harness-blocked, delegate it to a `general-purpose` subagent, which carries the `Skill` tool. `code-writer` and the reviewer agents cannot run review skills and are denied marker writes — when one hits a review gate, it reports the denial and the dispatching session resolves it. A general "ship it" instruction is not authorization to forge a marker.
 - If a skill's active-bypass gate refuses to release after the skill has finished, run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/marker.sh" clear-stale` to evict orphaned active markers from dead sessions.
 - After a compaction or session resume mid-review, trust the auto-injected review-narrative summary before re-litigating a `/code-review` finding; if none appears, run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/review-ledger.sh" show` to inspect the current session's ledger directly.

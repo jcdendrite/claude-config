@@ -171,11 +171,10 @@ If CLAUDE.md / AGENTS.md already covers a rule, the matching memory is
 pure load: the rule fires every session through the instruction file,
 the index line consumes one of the ~200 loaded lines, and any recall
 reads a topic file that restates content already in context. **Delete
-on contact.** Confirm the covering text before deleting — re-read the
-CLAUDE.md, skill, or hook line said to cover the rule and check it is
-still there, because a redirect can outlive the content it pointed at
-and deleting against a stale pointer drops the rule from every surface
-at once.
+on contact.** Confirm the covering text still exists before deleting —
+re-read the CLAUDE.md, skill, or hook line said to cover the rule. A
+redirect can outlive the content it pointed at, and deleting against a
+stale pointer drops the rule from every surface at once.
 
 Memory earns its keep when it captures what the repo *doesn't*: who
 the user is and how they prefer to collaborate, feedback calibration
