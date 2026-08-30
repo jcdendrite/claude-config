@@ -110,16 +110,22 @@ from transcript_analysis.render import (
 from transcript_analysis.reviewer_yield import (
     # The seven names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
-    # _index_subagent_dispatches, and the two _REVIEWER_VERDICT_* names below are also read
-    # bare by this file's own still-monolithic code (p_reviewer_yield.set_defaults,
-    # _review_trace_session_events, cmd_subagent_mix, and _reviewer_gap_pp respectively).
+    # _index_subagent_dispatches, the two _REVIEWER_VERDICT_* names, and
+    # _REVIEWER_YIELD_ACTIVE_FLOOR/_REVIEWER_YIELD_INSUFFICIENT.
+    # Also read bare by this file's own still-monolithic code:
+    #   cmd_reviewer_yield                                          -> p_reviewer_yield.set_defaults
+    #   _is_reviewer_subagent_type                                  -> _review_trace_session_events
+    #   _index_subagent_dispatches                                  -> cmd_subagent_mix
+    #   _REVIEWER_VERDICT_* / _REVIEWER_YIELD_ACTIVE_FLOOR / _REVIEWER_YIELD_INSUFFICIENT -> _reviewer_gap_pp
     _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
     _REVIEWER_VERDICT_FINDINGS_FOUND,
     _REVIEWER_VERDICT_ZERO_FINDING,
+    _REVIEWER_YIELD_ACTIVE_FLOOR,
+    _REVIEWER_YIELD_INSUFFICIENT,
     _build_tool_result_ts_map,  # noqa: F401
     _dispatch_self_reference_keys,  # noqa: F401
     _extract_cited_paths,  # noqa: F401
-    _index_parent_edits,  # noqa: F401
+    _index_session_edits,  # noqa: F401
     _index_subagent_dispatches,
     _is_reviewer_subagent_type,
     _normalize_cited_path,  # noqa: F401
@@ -6056,18 +6062,21 @@ def _parse_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     except ValueError:
         raise _CostLedgerParseError(f"line {line_no}: non-numeric denials {denials_s!r}") from None
 
-    reviewer_gap_pp: float | None = None
+    reviewer_gap_pp: float | str | None = None
     if gap_s:
-        if not gap_s.endswith("pp"):
+        if gap_s == _REVIEWER_YIELD_INSUFFICIENT:
+            reviewer_gap_pp = gap_s
+        elif not gap_s.endswith("pp"):
             raise _CostLedgerParseError(
                 f"line {line_no}: malformed reviewer_gap_pp {gap_s!r} (expected a trailing 'pp')"
             )
-        try:
-            reviewer_gap_pp = float(gap_s[:-2])
-        except ValueError:
-            raise _CostLedgerParseError(f"line {line_no}: non-numeric reviewer_gap_pp {gap_s!r}") from None
-        if math.isnan(reviewer_gap_pp) or math.isinf(reviewer_gap_pp):
-            raise _CostLedgerParseError(f"line {line_no}: non-finite reviewer_gap_pp {gap_s!r}")
+        else:
+            try:
+                reviewer_gap_pp = float(gap_s[:-2])
+            except ValueError:
+                raise _CostLedgerParseError(f"line {line_no}: non-numeric reviewer_gap_pp {gap_s!r}") from None
+            if math.isnan(reviewer_gap_pp) or math.isinf(reviewer_gap_pp):
+                raise _CostLedgerParseError(f"line {line_no}: non-finite reviewer_gap_pp {gap_s!r}")
 
     return {
         "week": week, "machine": machine, "rates": rates, "usd": usd,
@@ -6119,11 +6128,23 @@ def _parse_cost_ledger_file_text(text: str) -> tuple[str, list[dict]]:
     return preamble, rows
 
 
+def _format_reviewer_gap_cell(gap: float | str | None, *, unmeasured: str) -> str:
+    """Render reviewer_gap_pp for either the markdown-pipe or read-mode
+    format. unmeasured is the empty-denominator token -- "" for the
+    markdown file's empty cell, "unmeasured" for the read-mode fixed-width
+    line. A str value is always _REVIEWER_YIELD_INSUFFICIENT and passes
+    through unchanged."""
+    if gap is None:
+        return unmeasured
+    if isinstance(gap, str):
+        return gap
+    return f"{gap:+.1f}pp"
+
+
 def _format_cost_ledger_row(row: dict) -> str:
     """Render one row dict as its markdown table line -- the exact inverse
     of _parse_cost_ledger_row_cells."""
-    gap = row["reviewer_gap_pp"]
-    gap_s = "" if gap is None else f"{gap:+.1f}pp"
+    gap_s = _format_reviewer_gap_cell(row["reviewer_gap_pp"], unmeasured="")
     cells = [
         row["week"], row["machine"], row["rates"],
         f"{row['usd']:.2f}", f"{row['context_pct']:.1f}%", f"{row['opus_pct']:.1f}%",
@@ -6193,12 +6214,16 @@ def _write_cost_ledger_file(ledger_path: Path, preamble: str, rows: list[dict]) 
         raise
 
 
-def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | None:
+def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | str | None:
     """Percentage-point gap between the findings-found and zero-finding
     cited-path edit rates, aggregated across every reviewer agent type --
     cost-ledger's reviewer_gap_pp column. None (left empty in the row) when
     either side's Active denominator is zero, rather than dividing by zero
-    or silently substituting 0%.
+    or silently substituting 0%. _REVIEWER_YIELD_INSUFFICIENT when either
+    side's Active denominator is nonzero but below _REVIEWER_YIELD_ACTIVE_FLOOR
+    -- the same low-confidence signal reviewer-yield's own per-bucket rate
+    already reports, rather than an ordinary number with no distinguishing
+    signal.
     """
     findings_active = sum(
         v["active"] for (_stype, bucket), v in agg2.items() if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND
@@ -6214,12 +6239,14 @@ def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | Non
     )
     if findings_active == 0 or zero_active == 0:
         return None
+    if findings_active < _REVIEWER_YIELD_ACTIVE_FLOOR or zero_active < _REVIEWER_YIELD_ACTIVE_FLOOR:
+        return _REVIEWER_YIELD_INSUFFICIENT
     return 100 * (findings_edited / findings_active - zero_edited / zero_active)
 
 
 _COST_LEDGER_READ_HEADER = (
     f"{'Week':<10} {'Machine':<9} {'Rates':<11} {'$':>12} {'Context%':>9} "
-    f"{'Opus%':>7} {'>=200k%':>8} {'Denials':>8} {'GapPP':>11}  Note"
+    f"{'Opus%':>7} {'>=200k%':>8} {'Denials':>8} {'GapPP':>12}  Note"
 )
 
 
@@ -6229,13 +6256,12 @@ def _format_cost_ledger_read_row(row: dict) -> str:
     markdown-pipe format. Empty reviewer_gap_pp prints as the literal token
     "unmeasured" (never a blank cell) so every column stays a single
     whitespace-delimited token."""
-    gap = row["reviewer_gap_pp"]
-    gap_s = "unmeasured" if gap is None else f"{gap:+.1f}pp"
+    gap_s = _format_reviewer_gap_cell(row["reviewer_gap_pp"], unmeasured="unmeasured")
     note = row["note"] or "-"
     return (
         f"{row['week']:<10} {row['machine']:<9} {row['rates']:<11} {row['usd']:>12,.2f} "
         f"{row['context_pct']:>8.1f}% {row['opus_pct']:>6.1f}% {row['ge200k_pct']:>7.1f}% "
-        f"{row['denials']:>8} {gap_s:>11}  {note}"
+        f"{row['denials']:>8} {gap_s:>12}  {note}"
     )
 
 
@@ -6436,7 +6462,13 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     cost_session_iter, scope_label = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
     deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", roots=roots)
-    reviewer_session_iter, _scope_label3 = _resolve_project_scope(args, "cost-ledger", roots=roots)
+    # Deliberately duplicates cost_session_iter's identical full-corpus include_subagents=True
+    # scan; sharing one materialized pass would require restructuring
+    # _compute_cost_trend_data/_compute_reviewer_yield_data's calling convention, also used by
+    # other commands.
+    reviewer_session_iter, _scope_label3 = _resolve_project_scope(
+        args, "cost-ledger", include_subagents=True, roots=roots
+    )
     _print_resolved_scope("cost-ledger", scope_label, roots)
 
     cost_weeks, _unpriced_turns, _unpriced_tokens = _compute_cost_trend_data(cost_session_iter)
@@ -6474,6 +6506,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     reviewer_data = _compute_reviewer_yield_data(reviewer_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
     reviewer_gap_pp = _reviewer_gap_pp(reviewer_data["agg2"])
+    _warn_if_subagent_format_drift(reviewer_data["subagent_spawns"], reviewer_data["sidechain_turns"])
 
     new_row = {
         "week": week_str,
