@@ -155,6 +155,13 @@
 #     lock exists. The parser fallthrough itself requires python3. A
 #     session that already holds the lock is unaffected: the fast path's
 #     guard doesn't need python3 once the lock exists.
+#   - A python3-less write against an already foreign-locked worktree gets
+#     a misleading deny reason. The fast path's guard call discards the
+#     guard's own reason and checks only its exit code, so the denial
+#     falls through to the python3 precondition check above, which denies
+#     citing python3 instead of naming the foreign-lock holder. The write
+#     is still correctly denied either way; only the stated reason is
+#     wrong.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,

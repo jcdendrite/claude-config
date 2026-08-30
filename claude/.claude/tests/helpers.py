@@ -234,6 +234,50 @@ def run_hook_context(
     return payload["hookSpecificOutput"].get("additionalContext")
 
 
+def run_hook_payload(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> dict | None:
+    """Like `run_hook` but returns the full `hookSpecificOutput` dict. Used
+    by tests that need to assert on more than one field from a single
+    invocation -- e.g. both `permissionDecision` and `additionalContext` --
+    without a second, branch-diverging call.
+
+    Empty stdout is ambiguous, so the return value branches on the exit code:
+
+    - Exit 0: returns `None`. There is no `hookSpecificOutput` to return.
+    - Exit 2: returns `{"permissionDecision": "deny"}`. Exit 2 is itself the
+      PreToolUse block signal, delivered via stderr rather than a JSON
+      payload. A gate hook's jq-absent fallback takes exactly this path.
+      This dict is a minimal stand-in for a real deny payload, not a
+      shape-complete replica. It omits `hookEventName` and
+      `permissionDecisionReason`. Both appear on a real deny emitted by
+      `_lib_emit_deny`.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return {"permissionDecision": "deny"} if result.returncode == 2 else None
+    payload = json.loads(result.stdout)
+    return payload["hookSpecificOutput"]
+
+
 def run_hook_stop(
     hook: Path,
     tool_input: dict,

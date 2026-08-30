@@ -14,6 +14,7 @@ from helpers import (
     edit_input,
     run_hook,
     run_hook_context,
+    run_hook_payload,
     run_hook_reason,
 )
 
@@ -1033,9 +1034,18 @@ class TestWorktreeCollisionGuard:
         lock and allows; the lock's reason names this session's own
         resolved pid — the value _lib_resolve_claude_pid found by walking
         up from the hook's own PPID, which for a hook run as a subprocess
-        of this test is this test process itself."""
+        of this test is this test process itself. The fresh-acquisition
+        write also carries an additionalContext note naming the worktree
+        and the manual unlock remedy."""
         _, worktree = opted_in_with_worktree
-        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree) == "allow"
+        command = bash_input("git commit -m foo")
+        payload = run_hook_payload(WORKTREE_HOOK, command, cwd=worktree)
+        assert payload is not None, "expected an allow-with-context payload"
+        assert payload["permissionDecision"] == "allow"
+        context = payload.get("additionalContext")
+        assert context is not None
+        assert str(worktree) in context
+        assert "git worktree unlock" in context
         reason = _worktree_lock_reason(worktree)
         assert reason is not None
         assert f"pid {os.getpid()}" in reason
@@ -1164,11 +1174,10 @@ exec "{real_git}" "$@"
         assert run_hook(WORKTREE_HOOK, bash_input("git status"), cwd=worktree) == "allow"
 
     def test_read_in_freshly_unlocked_worktree_does_not_reacquire_lock(self, isolated_home, opted_in_with_worktree):
-        """A read never acquires the worktree lock, on either path: the fast
-        path now calls the collision guard only when the lock is already
-        present, so a read against a virgin (never-locked) worktree falls
-        through to full parsing instead, where the read allowlist allows it
-        with no guard call at all. Companion to
+        """A read never acquires the worktree lock, on either path. The fast
+        path calls the collision guard only when the lock is already
+        present, so an absent lock falls through to full parsing, where the
+        read allowlist allows it with no guard call at all. Companion to
         test_foreign_live_lock_still_allows_read_via_fast_path and
         test_foreign_dead_lock_still_allows_read_via_fast_path, which cover
         the present-lock case where the guard is still called for a read."""
@@ -1189,16 +1198,15 @@ exec "{real_git}" "$@"
     def test_python3_absent_denies_read_against_never_locked_worktree(
         self, isolated_home, opted_in_with_worktree, tmp_path
     ):
-        """Fail-closed companion to test_python3_absent_denies, pinning this
-        hook's header "Known gaps" entry on python3-less machines: a plain
-        read against a freshly created (never-locked) worktree can no
-        longer complete through the fast path at all, since the fast
-        path's guard call -- which needs no python3 -- is now reached only
-        once a lock already exists. PATH is stubbed with only the tools
-        the fast-path-then-deny code path invokes before the python3 check
-        (see test_python3_absent_denies for why this set and not
-        sha256sum/awk); the pre-check itself is a bash builtin `[ -e ... ]`
-        and needs no additional binary."""
+        """Fail-closed companion to test_python3_absent_denies. Pins this
+        hook's header "Known gaps" entry on python3-less machines. A plain
+        read against a freshly created (never-locked) worktree cannot
+        complete through the fast path. The fast path's guard call needs no
+        python3. It is reached only once a lock already exists. PATH is
+        stubbed with only the tools the fast-path-then-deny code path
+        invokes before the python3 check. See test_python3_absent_denies
+        for why this set and not sha256sum/awk. The pre-check itself is a
+        bash builtin `[ -e ... ]` and needs no additional binary."""
         _, worktree = opted_in_with_worktree
         assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
 
@@ -1222,6 +1230,73 @@ exec "{real_git}" "$@"
         assert _worktree_lock_reason(worktree) is None, (
             "a denied read must not acquire the worktree lock"
         )
+
+    def test_python3_absent_allows_write_when_lock_already_self_held(
+        self, isolated_home, opted_in_with_worktree, tmp_path
+    ):
+        """Escape hatch named by test_python3_absent_denies's own deny
+        message. Once this session already holds the worktree lock, a
+        plain (non-chained) git write allows through the fast path with no
+        python3 on PATH. The guard's self-lock read needs `ps`/`tr` for
+        session-identity resolution and `git` for a porcelain read/confirm.
+        It does not need the parser fallthrough."""
+        _, worktree = opted_in_with_worktree
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree) == "allow"
+        assert _worktree_lock_reason(worktree) is not None, (
+            "fixture's first write must self-lock the worktree"
+        )
+
+        stub_bin = tmp_path / "_stub_bin"
+        stub_bin.mkdir()
+        for tool in ("cat", "dirname", "git", "jq", "ps", "timeout", "tr"):
+            real_path = shutil.which(tool)
+            if not real_path:
+                pytest.skip(f"{tool} not found in PATH")
+            (stub_bin / tool).symlink_to(real_path)
+
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m bar"),
+                cwd=worktree,
+                home=isolated_home,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
+
+    def test_python3_absent_against_foreign_lock_gives_misleading_reason(
+        self, isolated_home, opted_in_with_worktree, live_pid, tmp_path
+    ):
+        """Pins this hook's header "Known gaps" entry on a python3-less
+        write against an already foreign-locked worktree. The fast path's
+        guard call discards the guard's own reason and checks only its exit
+        code, so a foreign-lock deny with no python3 on PATH surfaces the
+        python3 precondition message instead of the true foreign-lock
+        reason. This pins that current, misleading message -- not correct
+        behavior."""
+        _, worktree = opted_in_with_worktree
+        foreign_pid = live_pid
+        _lock_worktree(worktree, f"claude-code pid {foreign_pid}")
+
+        stub_bin = tmp_path / "_stub_bin"
+        stub_bin.mkdir()
+        for tool in ("cat", "dirname", "git", "jq", "ps", "timeout", "tr"):
+            real_path = shutil.which(tool)
+            if not real_path:
+                pytest.skip(f"{tool} not found in PATH")
+            (stub_bin / tool).symlink_to(real_path)
+
+        reason = run_hook_reason(
+            WORKTREE_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=worktree,
+            home=isolated_home,
+            extra_env={"PATH": str(stub_bin)},
+        )
+        assert reason is not None
+        assert "python3" in reason
+        assert str(foreign_pid) not in reason
 
     def test_self_lock_reentry_allows_silently_with_no_context(self, isolated_home, opted_in_with_worktree):
         """A second write in the same session recognizes its own
@@ -1383,10 +1458,10 @@ exec "{real_git}" "$@"
         self, isolated_home, opted_in_with_worktree
     ):
         """A compound read-only chain (`git status && git log`) contains
-        none of the fast path's relocation-hint tokens (cd, -C, (, `), so it
-        still reaches the fast path's branch condition -- pinning that the
-        absent-lock fallthrough covers a multi-record chain, not just a
-        single-record command, since neither record is a write."""
+        none of the fast path's relocation-hint tokens (cd, -C, (, backtick),
+        so it still reaches the fast path's branch condition. This pins that
+        the absent-lock fallthrough covers a multi-record chain, not just a
+        single-record command, since neither record here is a write."""
         _, worktree = opted_in_with_worktree
         assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
 
@@ -1402,9 +1477,9 @@ exec "{real_git}" "$@"
     ):
         """A read followed by a write in the same chained command
         (`git status && git commit`) still reaches the slow path's
-        write-allow branch and acquires the lock -- the absent-lock
+        write-allow branch and acquires the lock. The absent-lock
         fallthrough routes the whole command through full parsing, and the
-        write record (not the read) is what triggers acquisition."""
+        write record — not the read — is what triggers acquisition."""
         _, worktree = opted_in_with_worktree
         assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
 
@@ -1455,11 +1530,10 @@ exec "{real_git}" "$@"
         self, isolated_home, opted_in_with_worktree
     ):
         """`&`-chained companion to
-        test_or_chained_write_in_unlocked_worktree_denies_until_lock_held:
-        the hook's `||`/`&` write-cwd-ambiguity check treats both operators
-        identically (same boolean condition), so `git fetch & git commit -m
-        x` denies while the lock is absent and allows once a plain write
-        has acquired it."""
+        test_or_chained_write_in_unlocked_worktree_denies_until_lock_held.
+        The hook's `||`/`&` write-cwd-ambiguity check treats both operators
+        identically, so `git fetch & git commit -m x` denies while the lock
+        is absent and allows once a plain write has acquired it."""
         _, worktree = opted_in_with_worktree
         assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
 
