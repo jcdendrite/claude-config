@@ -102,7 +102,7 @@ Write the plan with these sections:
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
 3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths.
-4. **Verification** — how to test end-to-end
+4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
 5. **Out of scope** — only if scope creep was observed
 
 Effort sections optional; if present, describe review surface (file count, domain spread, risk concentration), never hours or days.

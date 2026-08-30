@@ -42,8 +42,8 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 
 ## 2. Verification (halt on fail)
 
-If the repo's CLAUDE.md has a Testing or Verification section, use those
-commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
+If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use
+those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
 test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
