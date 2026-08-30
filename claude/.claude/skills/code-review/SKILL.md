@@ -29,14 +29,19 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 Before forming any ripple judgment in Step 1 or the checklist, enumerate every row in the Change-type table (under *Ripple effect triage*) that matches the diff. Hold the list in working memory through the rest of the review — each row is an anchor the spawn decision must address. This step exists because the table is the institutional memory; the parent's first-pass judgment is not. Form judgment *against* the table, not in lieu of it. For compound diffs that match multiple rows, narrow the diff scope per spawn — pass each specialist only the file(s) within their lane, not the full diff, so their findings stay in-scope.
 
 <!-- SCOPE_RULE:code-review-staged-diff-only start -->
-When the diff under review is the currently-staged diff and `HEAD` is not the default branch (resolved via the same mechanism `require-ready-for-review.sh` uses: `git symbolic-ref --quiet refs/remotes/origin/HEAD`, falling back to checking `main`/`master`/`develop` as candidates only when that ref is unset), every spawned row's responsibility is bounded to that diff. A spawn's exhaustive-enumeration duty covers only the boundary. A defect outside the boundary that the change causes, activates, or newly reaches stays in scope for that spawn's flagging duty. The boundary is passed as file paths with added/modified line ranges, not a ref expression, because not every reviewer carries `Bash`. This boundary narrows active search effort only — it never suppresses disclosure of a defect a spawn already noticed during the full-file read required elsewhere in this skill. This narrows only speculative, undirected search for unrelated defects, not a matched Change-type row's own directed causal-reach instruction (e.g. "verify all consumers," "trace all auth paths"), which stays in scope regardless of the boundary. Checklist item 14's duty to always flag a pre-existing issue you notice is unconditional and unaffected by this rule. Every other context enumerates and is responsible for the full diff, unnarrowed:
+When the diff under review is the currently-staged diff and `HEAD` is not the default branch, every spawned row's responsibility is bounded to that diff. The default branch is resolved via the same mechanism `require-ready-for-review.sh` uses: `git symbolic-ref --quiet refs/remotes/origin/HEAD`, falling back to checking `main`/`master`/`develop` as candidates only when that ref is unset. A spawn's exhaustive-enumeration duty covers only the boundary. A defect outside the boundary that the change causes, activates, or newly reaches stays in scope for that spawn's flagging duty. The boundary is passed as file paths with added/modified line ranges, not a ref expression, because not every reviewer carries `Bash`. This narrows only speculative, undirected search for unrelated defects — it never suppresses disclosure of a defect a spawn already noticed during the full-file read required elsewhere in this skill. Two exceptions stay in scope regardless of the boundary:
+
+- A matched Change-type row's own directed causal-reach instruction (e.g. "verify all consumers," "trace all auth paths").
+- Checklist item 14's duty to always flag a pre-existing issue you notice, which is unconditional and unaffected by this rule.
+
+Every other context enumerates and is responsible for the full diff, unnarrowed:
 
 - The cumulative PR-vs-base pass.
 - A presentation-path review.
 - An ad-hoc review.
 - A commit to the default branch.
 
-These are illustrative examples of contexts that typically fail the test above, not a separate trigger-based rule — the discriminator is always whether the diff actually under review is exactly `git diff --cached` on a `HEAD` that is not the default branch, not which of these triggers fired.
+These are illustrative examples of contexts that typically fail the test above, not a separate trigger-based rule. The discriminator is always whether the diff actually under review is exactly `git diff --cached` on a `HEAD` that is not the default branch, not which of these triggers fired.
 
 The row <!-- SCOPE_EXEMPT_ROW start -->Adds or modifies a comment or durable-doc prose beyond a hygiene tweak (code comments, docstrings, `REFERENCES.md`, doc files, README sections, skill/agent bodies)<!-- SCOPE_EXEMPT_ROW end --> is additionally match-narrowed on top of this: it does not spawn at all when the boundary carries no comment/durable-doc prose.
 <!-- SCOPE_RULE:code-review-staged-diff-only end -->
@@ -222,7 +227,7 @@ Follow with a mandatory **Spawn decisions:** line. For every Change-type table r
 
 When no Change-type rows match the diff, write: *"Spawn decisions: no Change-type rows matched the diff."* This makes the absence affirmative, not silent. Empty rationale is the under-spawn failure mode this format closes; visible rationale is reviewable.
 
-The **Spawn decisions:** line also states whether the staged-diff responsibility boundary applied to this invocation, with a short tag: `scope: staged-diff (narrowed)` or `scope: cumulative diff (unnarrowed)` — not a restatement of the whole rule.
+The **Spawn decisions:** line also states whether the staged-diff responsibility boundary applied to this invocation, with a short tag naming the specific reason it did or didn't — e.g., `scope: staged-diff (narrowed)` when it applied, or `scope: cumulative diff (unnarrowed — RFR cumulative pass)` / `scope: cumulative diff (unnarrowed — default-branch guard)` when it didn't — not a restatement of the whole rule.
 
 **Project-layer scope:** the mandatory Spawn decisions format is base-skill-only. Project-layer skills (`code-review-*/SKILL.md`, loaded at Step 0.5) compose by extending checklists — they do not override the output format. A project layer that wants to add fields should do so via an additive section, not by replacing the base format.
 

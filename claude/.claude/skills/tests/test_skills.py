@@ -1531,7 +1531,7 @@ def test_disposition_rule_anchors_present() -> None:
     each file — extract_governing_rule() needs a name to look up.
 
     The found set is also compared against _EXPECTED_DISPOSITION_RULE_ANCHORS
-    exactly, not just "each found anchor is non-trivial" — a scan that only
+    exactly, not just "each found anchor is non-trivial." A scan that only
     validates names it finds passes vacuously if an entire anchor pair is
     deleted, since no name is left to fail the length check.
     """
@@ -2387,6 +2387,18 @@ _MANDATORY_MODAL_RE = re.compile(
 _ADVISORY_DISQUALIFIER_RE = re.compile(
     r"may optionally|at\s+\S+'?s?\s+discretion|if\s+\S+\s+chooses", re.IGNORECASE
 )
+# Catches a reword that keeps the mandatory modal ("is", "stays") but negates
+# it into an exception, e.g. "...is not automatically in scope... unless
+# separately raised" — _ADVISORY_DISQUALIFIER_RE's discretionary-softening
+# phrasings don't match that shape.
+# Known false-positive class: a legitimate strengthening reword that uses one
+# of these words as reinforcement rather than a carve-out (e.g. "...stays in
+# scope, not merely as a suggestion") also trips this regex, since the match
+# isn't bound to the negated clause. No current SKILL.md content hits this;
+# tighten the pattern if a real strengthening reword starts failing here.
+_NEGATION_DISQUALIFIER_RE = re.compile(
+    r"\bnot\b|\bno longer\b|\bunless\b", re.IGNORECASE
+)
 
 
 # Naive sentence-boundary regex that already mis-splits on abbreviations
@@ -2438,15 +2450,51 @@ def test_scope_rule_region_states_causal_reach() -> None:
         f"{skill_md_path}: causal-reach sentence contains advisory phrasing "
         f"{advisory_match.group()!r} — the clause must stay mandatory, not discretionary"
     )
+    negation_match = _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence)
+    assert negation_match is None, (
+        f"{skill_md_path}: causal-reach sentence contains negation phrasing "
+        f"{negation_match.group()!r} — the clause must stay affirmative, not carved "
+        "into an exception"
+    )
+
+
+class TestNegationDisqualifierMatchesBypassPhrasing:
+    """Direct coverage for _NEGATION_DISQUALIFIER_RE's match branch, mirroring
+    TestChangeTypeTableLeftColumns's literal-fixture pattern — real SKILL.md
+    content never triggers this regex, so its positive-match path needs a
+    dedicated fixture.
+    """
+
+    def test_negated_causal_reach_sentence_matches(self, tmp_path: Path) -> None:
+        """Pins the bypass this regex closes: a reworded clause that keeps
+        the mandatory modal and causal-reach keywords but negates them into
+        an exception ("is not ... unless ...").
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "<!-- SCOPE_RULE:code-review-staged-diff-only start -->\n"
+            "A change that causes, activates, or newly reaches new behavior "
+            "is not automatically in scope unless separately raised.\n"
+            "<!-- SCOPE_RULE:code-review-staged-diff-only end -->"
+        )
+        region = _extract_scope_anchor_region(path, "SCOPE_RULE:code-review-staged-diff-only")
+        causal_reach_sentence = next(
+            (s for s in _sentences(region) if any(kw in s for kw in _CAUSAL_REACH_KEYWORDS)),
+            None,
+        )
+        assert causal_reach_sentence is not None
+        assert _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence) is not None
 
 
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     """Left-column shorthand of every data row in the Change-type table.
 
     Truncates a left-column cell at its first embedded `|`. Not exercised
-    by any current Change-type row, but a future row using pipe-containing
-    inline-code shorthand would silently truncate here instead of failing
-    structurally.
+    by any current Change-type row. A future row using pipe-containing
+    inline-code shorthand would truncate here. At the current call sites
+    (`test_scope_exempt_row_resolves_to_real_change_type_row`,
+    `test_scope_exempt_row_excludes_security_controls_row`), a resulting
+    mismatch surfaces as a loud assertion failure, not silently.
     """
     lines = skill_md_path.read_text().splitlines()
     header_index = next(
