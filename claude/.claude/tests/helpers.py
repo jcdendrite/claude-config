@@ -249,13 +249,11 @@ def run_hook_payload(
     Empty stdout is ambiguous, so the return value branches on the exit code:
 
     - Exit 0: returns `None`. There is no `hookSpecificOutput` to return.
-    - Exit 2: returns `{"permissionDecision": "deny"}`. Exit 2 is itself the
-      PreToolUse block signal, delivered via stderr rather than a JSON
-      payload. A gate hook's jq-absent fallback takes exactly this path.
-      This dict is a minimal stand-in for a real deny payload, not a
-      shape-complete replica. It omits `hookEventName` and
-      `permissionDecisionReason`. Both appear on a real deny emitted by
-      `_lib_emit_deny`.
+    - Exit 2: returns `{"permissionDecision": "deny"}`, a minimal
+      stand-in for the PreToolUse block signal (e.g. a gate hook's
+      jq-absent fallback) that omits the `hookEventName`/
+      `permissionDecisionReason` fields a real `_lib_emit_deny` payload
+      carries.
 
     home: when set, overrides $HOME in the subprocess environment so the
     hook writes into an isolated temp directory rather than real ~/.claude.

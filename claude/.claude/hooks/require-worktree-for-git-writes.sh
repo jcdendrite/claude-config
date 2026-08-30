@@ -110,23 +110,21 @@
 #     has a narrow TOCTOU window against the guard's own O_EXCL write. A
 #     foreign session winning that race is still denied by the guard's own
 #     session_id/pid re-check, so the cost is a wasted pre-check, not a
-#     wrong message. On the fast path, this same pre-check now gates
-#     whether the guard runs at all.
+#     wrong message. On the fast path, this pre-check gates whether the
+#     guard runs at all.
 #   - The opposite-direction race also exists: a concurrent
 #     `git worktree unlock` between the pre-check and the guard's own read
 #     causes a real fresh acquisition that gets no message. On the fast
-#     path this race is now the only route to an unmessaged fresh
-#     acquisition here, since the guard is otherwise reached only when the
-#     lock is already present.
+#     path this race is the only route to an unmessaged fresh acquisition,
+#     since the guard is reached only when the lock is already present.
 #   - Two near-simultaneous calls from the SAME session (e.g. two parallel
 #     subagents sharing this worktree) can both see "unlocked" before
 #     either write lands, firing the note twice for one real acquisition.
-#     This now applies to the slow path's own pre-check and to
-#     require-worktree-for-file-writes.sh's identical-shaped pre-check. It
-#     no longer applies to the fast path above, which no longer runs a
-#     pre-check or emits a note at all. Low stakes: both calls belong to
-#     the same session, and the note's substance stays true either way,
-#     just possibly reported twice instead of once.
+#     This applies to the slow path's own pre-check and to
+#     require-worktree-for-file-writes.sh's identical-shaped pre-check; the
+#     fast path above runs no pre-check and emits no note. Low stakes: both
+#     calls belong to the same session, and the note's substance stays true
+#     either way, just possibly reported twice instead of once.
 #   - That pre-check is a bash builtin `[ -e ... ]` (a single `stat(2)`),
 #     not wrapped in `_lib_capped`, because capping it would add a
 #     `timeout`+`test` subprocess spawn to the fast path's steady-state
@@ -141,27 +139,15 @@
 #     reports only the later one on an eventual allow, though —
 #     FRESH_LOCK_CONTEXT is overwritten per record, not accumulated across
 #     worktrees.
-#   - A `||`- or `&`-chained git write (e.g. `git fetch || git commit -m
-#     x`) from a worktree whose lock is absent now denies via the slow
-#     path's `||`/`&` write-cwd-ambiguity check, even though the identical
-#     command allows once this session holds the lock. The deny names its
-#     own remedy. The window self-heals on the first lock acquisition from
-#     any source — a plain git write here, or a file write via
-#     require-worktree-for-file-writes.sh.
-#   - This applies to a machine currently lacking python3, attempting a
-#     first-ever git operation against a worktree with no existing lock.
-#     Neither the fast path nor the parser fallthrough can complete it, so
-#     the operation denies. The fast path's guard is reached only once a
-#     lock exists. The parser fallthrough itself requires python3. A
-#     session that already holds the lock is unaffected: the fast path's
-#     guard doesn't need python3 once the lock exists.
-#   - A python3-less write against an already foreign-locked worktree gets
-#     a misleading deny reason. The fast path's guard call discards the
-#     guard's own reason and checks only its exit code, so the denial
-#     falls through to the python3 precondition check above, which denies
-#     citing python3 instead of naming the foreign-lock holder. The write
-#     is still correctly denied either way; only the stated reason is
-#     wrong.
+#   - A `||`/`&`-chained git write from a worktree with an absent lock
+#     denies until this session's first lock acquisition — see
+#     docs/design-decisions.md §32.
+#   - A python3-less machine cannot complete a first git operation, read or
+#     write, against a never-locked worktree — see
+#     docs/design-decisions.md §32.
+#   - A python3-less write against an already foreign-locked worktree
+#     denies citing python3 rather than the true foreign-lock holder — see
+#     docs/design-decisions.md §32.
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
