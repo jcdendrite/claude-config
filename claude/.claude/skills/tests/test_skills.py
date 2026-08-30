@@ -516,6 +516,34 @@ class TestCodeWriterSelfReviewScope:
         assert "Never use `git diff HEAD`" in self._body()
 
 
+class TestMemoryStoreAuditGatePauseWiring:
+    """Pin the two riskiest instructions in memory-store-audit/SKILL.md: the
+    classifier dispatch by name (Step 2) and the per-item AskUserQuestion
+    pause immediately before the filing (Step 4) and quarantine (Step 6)
+    calls. Neither pause is hook-enforced, so this prose is the only
+    regression coverage standing between an LLM session and an unattended
+    `gh api` or quarantine-move call.
+    """
+
+    def _step_section(self, body: str, step_number: int) -> str:
+        pattern = rf"## Step {step_number} —.*?(?=\n## |\Z)"
+        match = re.search(pattern, body, re.DOTALL)
+        assert match, f"memory-store-audit/SKILL.md has no '## Step {step_number}' section"
+        return match.group(0)
+
+    def test_step_2_dispatches_memory_store_classifier_by_name(self):
+        body = _skill_body("memory-store-audit")
+        assert "memory-store-classifier" in self._step_section(body, 2)
+
+    def test_step_4_pauses_on_ask_user_question_before_filing(self):
+        body = _skill_body("memory-store-audit")
+        assert "AskUserQuestion" in self._step_section(body, 4)
+
+    def test_step_6_pauses_on_ask_user_question_before_quarantine(self):
+        body = _skill_body("memory-store-audit")
+        assert "AskUserQuestion" in self._step_section(body, 6)
+
+
 class TestSkillFidelityReviewerUndecidableDismissal:
     """Pin the decidability-keyed dismissal rule and its visible output slot.
 

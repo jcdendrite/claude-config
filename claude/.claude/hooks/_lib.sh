@@ -35,6 +35,8 @@ _lib_capped() {
 # exit status — see _lib_capped's usage note above, which applies here too.
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
+# See _lib_timeout_binary_available below for callers that must refuse
+# outright rather than fall through to the uncapped branch.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
@@ -45,6 +47,13 @@ _lib_capped_for() {
   else
     "$@"
   fi
+}
+
+# Reports whether _lib_capped_for will actually cap.
+# It runs the command uncapped when neither binary is on PATH, which a hook that blocks session start cannot accept.
+# Runs the same timeout(1)/gtimeout(1) probe _lib_capped_for uses, so the two stay in sync.
+_lib_timeout_binary_available() {
+  command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1
 }
 
 # Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
