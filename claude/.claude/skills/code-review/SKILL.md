@@ -28,6 +28,17 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 Before forming any ripple judgment in Step 1 or the checklist, enumerate every row in the Change-type table (under *Ripple effect triage*) that matches the diff. Hold the list in working memory through the rest of the review — each row is an anchor the spawn decision must address. This step exists because the table is the institutional memory; the parent's first-pass judgment is not. Form judgment *against* the table, not in lieu of it. For compound diffs that match multiple rows, narrow the diff scope per spawn — pass each specialist only the file(s) within their lane, not the full diff, so their findings stay in-scope.
 
+<!-- SCOPE_RULE:code-review-staged-diff-only start -->
+When the diff under review is the currently-staged diff and `HEAD` is not the default branch (a hardcoded `main`/`master`/`develop` list, not resolved mechanically via e.g. `git symbolic-ref refs/remotes/origin/HEAD` — a residual worth revisiting if a stow consumer's differently-named default branch surfaces as a real case), every spawned row's responsibility is bounded to that diff. A spawn's exhaustive-enumeration duty covers only the boundary. A defect outside the boundary that the change causes, activates, or newly reaches stays in scope for that spawn's flagging duty. The boundary is passed as file paths with added/modified line ranges, not a ref expression, because not every reviewer carries `Bash`. This boundary narrows active search effort only — it never suppresses disclosure of a defect a spawn already noticed during the full-file read required elsewhere in this skill. Checklist item 14's duty to always flag a pre-existing issue you notice is unconditional and unaffected by this rule. Every other context enumerates and is responsible for the full diff, unnarrowed:
+
+- The cumulative PR-vs-base pass.
+- A presentation-path review.
+- An ad-hoc review.
+- A commit to the default branch.
+
+The row <!-- SCOPE_EXEMPT_ROW start -->Adds or modifies a comment or durable-doc prose beyond a hygiene tweak (code comments, docstrings, `REFERENCES.md`, doc files, README sections, skill/agent bodies)<!-- SCOPE_EXEMPT_ROW end --> is additionally match-narrowed on top of this: it does not spawn at all when the boundary carries no comment/durable-doc prose.
+<!-- SCOPE_RULE:code-review-staged-diff-only end -->
+
 ## Step 1 — Implementation-fitness gate
 
 Before reviewing for gaps, answer: **is the implementation appropriately sized for what the change needed to accomplish?** Gap-finding on an over-elaborate change elaborates it further, and the checklist won't surface "the whole implementation is the wrong shape."
@@ -209,6 +220,8 @@ Follow with a mandatory **Spawn decisions:** line. For every Change-type table r
 
 When no Change-type rows match the diff, write: *"Spawn decisions: no Change-type rows matched the diff."* This makes the absence affirmative, not silent. Empty rationale is the under-spawn failure mode this format closes; visible rationale is reviewable.
 
+The **Spawn decisions:** line also states whether the staged-diff responsibility boundary applied to this invocation, with a short tag: `scope: staged-diff (narrowed)` or `scope: cumulative diff (unnarrowed)` — not a restatement of the whole rule.
+
 **Project-layer scope:** the mandatory Spawn decisions format is base-skill-only. Project-layer skills (`code-review-*/SKILL.md`, loaded at Step 0.5) compose by extending checklists — they do not override the output format. A project layer that wants to add fields should do so via an additive section, not by replacing the base format.
 
 For each finding, state:
@@ -260,7 +273,7 @@ The Change type column keys on what the change *does* for an operator or consume
 
 **Invalid skip rationales.** These look like the DEFER criteria below but apply to a different decision — the spawn-dispatch step, not the finding-disposition step. They are five instances of one class — no rationale asserting that non-specialist scrutiny substitutes for the dispatch is valid, whether or not it matches the wording below verbatim. Do not use any of them, or a paraphrase of one, to skip a matched row:
 
-- **"Prior reviewer covered this."** — Prior spawns covered prior diffs; the current `/code-review` runs against the current staged diff. If prior findings are still relevant, pass them to the new spawn as prior context — do not substitute for the spawn.
+- **"Prior reviewer covered this."** — Prior spawns covered prior diffs; the current `/code-review` runs against the current staged diff. If prior findings are still relevant, pass them to the new spawn as prior context — do not substitute for the spawn. The staged-diff responsibility boundary above changes what a spawned row is responsible for flagging, never whether it is spawned.
 - **"Self-review sufficient."** — The orchestrator's self-review supplements specialist depth — it does not replace it.
 - **"Verified inline."** — Inline orchestrator verification is the generalist read the spawn exists to escalate from, not a substitute for specialist scrutiny.
 - **"New helper, not a modification."** — `Modifies shared utilities` covers additions to and extensions of the shared module that introduce new caller dependencies — not only edits to existing utility files.
