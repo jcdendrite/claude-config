@@ -478,6 +478,37 @@ class TestParseSinceNdArg:
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
 
 
+class TestParseAbsoluteWindowArgs:
+    """The shared inclusive-day absolute --since/--until DATE parser extracted
+    from cmd_user_input/cmd_review_trace/cmd_judgment_pair/cmd_subagent_mix's
+    identical six-line conversion."""
+
+    def test_default_attrs_parse_since_and_until_as_inclusive_day_bounds(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since="2026-05-01", until="2026-05-03"), "review-trace",
+        )
+        assert since_ts == _mod._parse_ts("2026-05-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-05-03T00:00:00Z") + 86400
+
+    def test_absent_since_and_until_returns_none_for_both(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since=None, until=None), "review-trace",
+        )
+        assert since_ts is None
+        assert until_ts is None
+
+    def test_parameterized_attrs_read_subagent_mix_since_date_until_date(self):
+        """cmd_subagent_mix's own dest names (since_date/until_date) resolve
+        through the same helper as the default since/until attrs -- the
+        parameterized call cmd_subagent_mix's own call site uses."""
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since_date="2026-07-01", until_date="2026-07-02"), "subagent-mix",
+            since_attr="since_date", until_attr="until_date",
+        )
+        assert since_ts == _mod._parse_ts("2026-07-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-07-02T00:00:00Z") + 86400
+
+
 # ---------------------------------------------------------------------------
 # fail-seq regexes
 # ---------------------------------------------------------------------------
@@ -2297,13 +2328,7 @@ def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | N
     """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
     boundary conversion, so a test calling _review_trace_session_events directly
     passes boundaries in the same form the CLI itself would compute."""
-    since_ts = _mod._parse_ts(f"{since}T00:00:00Z") if since else None
-    until_epoch = None
-    if until:
-        day_start = _mod._parse_ts(f"{until}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
-    return since_ts, until_epoch
+    return _mod._parse_absolute_window_args(argparse.Namespace(since=since, until=until), "review-trace")
 
 
 class TestDropDenialCommandFlagValues:
@@ -16368,6 +16393,89 @@ class TestGhDiscoverMergedPrsPagination:
         limit_value = int(argv[argv.index("--limit") + 1])
         assert limit_value == _mod._PR_COST_GH_PR_LIST_LIMIT
         assert limit_value > 30  # gh pr list's own truncating default
+
+
+class TestGhDiscoverClosedUnmergedPrBranches:
+    """_gh_discover_closed_unmerged_pr_branches: same gh pr list call shape
+    as _gh_discover_merged_prs, --state closed instead of --state merged --
+    workstream-cost's own sibling discovery call."""
+
+    def test_passes_state_closed_and_explicit_limit(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        argv = captured["cmd"]
+        assert argv[argv.index("--state") + 1] == "closed"
+        assert "--limit" in argv
+        assert int(argv[argv.index("--limit") + 1]) == _mod._PR_COST_GH_PR_LIST_LIMIT
+
+    def test_returns_headref_name_set_from_closed_prs(self, monkeypatch):
+        """Returns a set of branch names (headRefName), not the raw PR dict
+        list _gh_discover_merged_prs returns -- workstream-cost only needs
+        set membership for its merged/closed-unmerged/no-match classification."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2, "headRefName": "abandoned-b"},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a", "abandoned-b"}
+
+    def test_entry_with_no_headref_name_filtered_out_of_result(self, monkeypatch):
+        """An entry with no headRefName key (or an empty one) is dropped
+        from the returned set -- mirrors the `if pr.get("headRefName")`
+        truthy filter guarding each entry."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2},
+            {"number": 3, "headRefName": ""},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a"}
+
+    def test_gh_call_failure_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A failed gh pr list (closed) call aborts the whole run via
+        _pr_cost_abort_on_gh_failure. Discovery has no per-row granularity
+        to degrade into, so it does not return a partial or empty set
+        silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "not logged into any GitHub hosts\n",
+            })()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "gh pr list (closed) failed" in capsys.readouterr().err
+
+    def test_malformed_json_stdout_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A successful gh call (returncode 0) whose stdout is not valid
+        JSON aborts via sys.exit(1) rather than raising JSONDecodeError
+        uncaught or returning a partial/empty set silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {"returncode": 0, "stdout": "not json", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "unparseable JSON" in capsys.readouterr().err
 
 
 class TestAppendPrCostLedgerRow:

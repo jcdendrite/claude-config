@@ -699,9 +699,19 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     Delegates its entire accumulation to compute_reviewer_yield_data instead
     of running its own pass over session_iter, so this report and
     cost-ledger's per-week reviewer_gap_pp can never drift apart.
+
+    --until DATE bounds the dispatch-detection loop behind table 1 only.
+    Table 2's own tool-result/edit indexes stay since_ts-only regardless of
+    --until (see compute_reviewer_yield_data's own docstring), so its heading
+    never shows the until bound and a run with --until set prints a caveat
+    line under table 2's heading instead.
     """
     since_ts, since_raw = scope._parse_since_nd_arg(args, "reviewer-yield")
     since_label = since_raw or ""
+    # reviewer-yield's own --since is the pre-existing relative Nd flag, parsed
+    # above via _parse_since_nd_arg -- this call's since-side return is unused.
+    _, until_ts = scope._parse_absolute_window_args(args, "reviewer-yield")
+    until_label = getattr(args, "until", None) or ""
 
     roots = scope.resolve_scan_roots(args)
     session_iter, scope_label = scope._resolve_project_scope(
@@ -709,7 +719,7 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     )
     scope.print_resolved_scope("reviewer-yield", scope_label, roots)
 
-    data = compute_reviewer_yield_data(session_iter, since_ts=since_ts)
+    data = compute_reviewer_yield_data(session_iter, since_ts=since_ts, until_ts=until_ts)
     agg = data["agg"]
     agg2 = data["agg2"]
     meta_read_errors = data["meta_read_errors"]
@@ -717,7 +727,8 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
     pricing._warn_if_subagent_format_drift(data["subagent_spawns"], data["sidechain_turns"])
 
     title_since = f"last {since_label}" if since_label else "all time"
-    print(f"\n## Reviewer-agent yield ({title_since})\n")
+    title_bounds = f"{title_since}, through {until_label}" if until_label else title_since
+    print(f"\n## Reviewer-agent yield ({title_bounds})\n")
 
     if not agg:
         print("No reviewer-agent dispatches found.")
@@ -740,6 +751,8 @@ def cmd_reviewer_yield(args: argparse.Namespace) -> None:
         print(f"\n  ({meta_read_errors:,} meta.json files failed to parse, excluded)")
 
     print(f"\n## Reviewer-agent cited-path edit overlap ({title_since})\n")
+    if until_label:
+        print(f"  (--until {until_label} does not bound this table -- its tool-result/edit indexes are since_ts-only.)")
     header2 = (
         f"{'AgentType':<28} {'Bucket':<15} {'Dispatches':>10} {'Cited':>6} {'Active':>6} {'Edited':>6} {'Rate':>12}"
     )

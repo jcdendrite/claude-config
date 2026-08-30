@@ -475,12 +475,14 @@ def _reviewer_yield_args(
     projects: str = "*",
     this_repo: bool = False,
     since: str | None = None,
+    until: str | None = None,
     redact: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
         "this_repo": this_repo,
         "since": since,
+        "until": until,
         "redact": redact,
     })()
 

@@ -29,7 +29,7 @@ from _config_dir import (
     declared_transcript_roots,
 )
 
-from transcript_analysis.corpus import iter_sessions, read_session_file
+from transcript_analysis.corpus import _parse_ts, iter_sessions, read_session_file
 
 PROJECTS_DIR = config_dir() / "projects"
 
@@ -676,3 +676,37 @@ def _parse_since_nd_arg(args: argparse.Namespace, subcommand: str) -> tuple[floa
             print(f"{subcommand}: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
             sys.exit(1)
     return since_ts, since_raw
+
+
+def _parse_absolute_window_args(
+    args: argparse.Namespace,
+    subcommand: str,
+    since_attr: str = "since",
+    until_attr: str = "until",
+) -> tuple[float | None, float | None]:
+    """Parse a pair of inclusive-day absolute --since/--until DATE flags into (since_ts, until_epoch).
+
+    since_attr/until_attr name the args.Namespace attributes to read, since
+    not every caller's argparse dest matches the "since"/"until" default
+    (e.g. cmd_subagent_mix's since_date/until_date). subcommand is accepted
+    for signature symmetry with _parse_since_nd_arg but is otherwise unused
+    here: this helper has no malformed-value error path of its own to label.
+    That relies on argparse's own type=_iso_date having already validated
+    whichever attr the caller both declares that way on its own
+    argparse.add_argument and actually consumes from this function's return.
+    cmd_reviewer_yield is the one exception: its --since is the untyped
+    Nd-relative flag _parse_since_nd_arg parses separately, and its call
+    discards this function's since_ts half of the return entirely.
+    Both bounds default to None when their flag is absent.
+    """
+    since_str: str | None = getattr(args, since_attr, None) or None
+    until_str: str | None = getattr(args, until_attr, None) or None
+    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
+    # Inclusive-day boundary: compute start of the *next* day and compare with strict <.
+    # Adding 86400 seconds covers the entire until-day at any sub-second precision.
+    until_epoch: float | None = None
+    if until_str:
+        day_start = _parse_ts(f"{until_str}T00:00:00Z")
+        if day_start is not None:
+            until_epoch = day_start + 86400
+    return since_ts, until_epoch

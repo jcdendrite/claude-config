@@ -232,6 +232,7 @@ Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/re
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit to dispatches with timestamp in the last N days (e.g. `30d`)
+- `--until DATE` — inclusive end date (`YYYY-MM-DD`), absolute rather than relative. Bounds dispatch detection (table 1) only. Table 2, the cited-path edit-overlap table, is not date-windowed — its paired tool-result/edit indexes are `since_ts`-only (see the second table's columns below). Combinable with `--since Nd`. Both bounds apply independently.
 - `--redact` — accepted for CLI parity with `cost`/`audit-routing`; a no-op in practice, since cited-path candidates are held only as sha256 digests and never surface as raw paths, so both tables stay aggregate-only by construction. This does not cover the pre-existing `--projects` scope-header line (shared by every subcommand — see the `cost` section's redaction notes above).
 
 **Sample output.**
@@ -255,7 +256,7 @@ staff-sdet                   zero-finding            30     30     30      7    
 
 **When to reach for it.** Judge whether a reviewer agent's dispatch volume is worth its cost. Verdict classification is best-effort: it recognizes the `**No X concerns**`, `Wrote findings to <path>. Found <N> issues.`, `**Approve with concerns**`, and `**Request changes**` contract shapes (case-insensitive, bold-optional, singular/plural-tolerant) documented in `claude/.claude/agents/*.md`. The bulleted `**Approve with concerns**`/`**Request changes**` verdicts land in `Found` alongside the numeric-count verdicts, but carry no derivable count of their own — `Findings` is therefore a lower bound on actual findings, not an exact total. A dispatch whose `subagents/*.meta.json` sidecar can't be resolved at all is excluded entirely, not counted as `Unclass`. A `subagents/*.meta.json` sidecar that exists but is unreadable (invalid JSON) or is missing `toolUseId` is a second, distinct exclusion path — also excluded entirely, and corpus-wide counted in a `(N meta.json files failed to parse, excluded)` line printed under the table.
 
-The second table's columns: `Cited` = dispatches yielding at least one extracted, path-normalized citation (excluding the dispatch's own findings-file target and any cited plan file, which would otherwise self-match a `/plan-review` dispatch against the plan the parent then edits). `Active` = of those, dispatches after which the session recorded any code edit at all — a null control for "was the session still working," not yet path-specific. `Edited` = of the `Active` ones, a *cited* path itself was among the edited paths — the real cited-path-overlap signal. `Rate` = `Edited ÷ Active`, so it cannot exceed 100%. `insufficient` in `Rate` means `Active` fell below 10 for that cell — too few qualifying dispatches to report a rate. `excluded` marks the `unclassified` bucket, which this table doesn't score at all. **`Active`/`Edited` count edits inside subagent transcripts too**, not just parent-main-thread ones. Reading every reviewer dispatch's subagent transcript twice — once via the corpus-wide merge, once to build the reviewer-write exclusion — costs ~104s of added wall-clock over a 6-root `--since 30d` run (53.8s parent-only vs 157.7s subagent-inclusive). A reviewer agent's own writes are excluded from the edit index, so routine review bookkeeping can't inflate `Active` (see `cmd_reviewer_yield`'s docstring for exactly which writes that covers).
+The second table's columns: `Cited` = dispatches yielding at least one extracted, path-normalized citation (excluding the dispatch's own findings-file target and any cited plan file, which would otherwise self-match a `/plan-review` dispatch against the plan the parent then edits). `Active` = of those, dispatches after which the session recorded any code edit at all — a null control for "was the session still working," not yet path-specific. `Edited` = of the `Active` ones, a *cited* path itself was among the edited paths — the real cited-path-overlap signal. `Rate` = `Edited ÷ Active`, so it cannot exceed 100%. `insufficient` in `Rate` means `Active` fell below 10 for that cell — too few qualifying dispatches to report a rate. `excluded` marks the `unclassified` bucket, which this table doesn't score at all. **`Active`/`Edited` count edits inside subagent transcripts too**, not just parent-main-thread ones. Reading every reviewer dispatch's subagent transcript twice — once via the corpus-wide merge, once to build the reviewer-write exclusion — costs ~104s of added wall-clock over a 6-root `--since 30d` run (53.8s parent-only vs 157.7s subagent-inclusive). A reviewer agent's own writes are excluded from the edit index, so routine review bookkeeping can't inflate `Active` (see `cmd_reviewer_yield`'s docstring for exactly which writes that covers). **`--until` never bounds this table.** `compute_reviewer_yield_data`'s paired tool-result and edit indexes are built `since_ts`-only. A run with `--until` set prints a caveat line under this table's heading rather than silently applying a bound it can't honor.
 
 ---
 
@@ -838,6 +839,26 @@ Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call
 **Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
+
+---
+
+## workstream-cost
+
+**Purpose.** Per-branch session count and continuation "startup burn" -- an approximation of handoff overhead from session/branch shape alone (no signal connects an outgoing session to the continuation session a handoff produces, so this measures shape, not a literal handoff count). Read-only, corpus-wide, no `gh` calls by default.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
+- `--check-pr-status` -- additionally classify every branch as merged / closed-unmerged / no PR match at all via `gh`, pinned to this invocation's own repo identity the same way `pr-cost` pins one (`_resolve_pinned_gh_repo`, from `git remote get-url origin`). Requires `gh`.
+
+**Default (pure-transcript) mode.**
+- Groups sessions by attributed branch (carry-forward via `_attributed_branch`/`_session_branch_index`, so `worktree-agent-*` dispatches roll up to the real branch).
+- Orders each branch's sessions by first-turn timestamp, not iteration order (`iter_sessions` yields file-path sort order).
+- Prints branch count, mean/median sessions per branch, and startup-burn dollars as a share of total branch dollars.
+- Startup burn = each non-first session's first 5 main-thread turns' summed dollars (5 is `_RAMP_CURVE_TURN_INDEX_BUCKETS`'s own early-turns boundary), never padded when a session has fewer than 5 turns.
+
+**`--check-pr-status`.** Additionally lists every branch with no PR match at all (neither merged nor closed-unmerged) by its last local-activity age in days, oldest first -- a *candidate* abandoned branch, reported as a raw age value rather than a hard classification, since a branch with no PR match may simply not be finished yet. Prints no branch name in either mode.
+
+**When to reach for it.** Run the default mode alongside `pr-cost`/`cost-trend` to see whether a cost change coincided with a shift in session/branch shape (more sessions per branch, more startup burn) rather than a genuine reduction in total spend. Run `--check-pr-status` to spot old branches with local activity and no PR at all.
 
 ---
 

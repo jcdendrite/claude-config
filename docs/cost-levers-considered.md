@@ -279,6 +279,18 @@ Full empirical record: [`case-studies/cold-cache-attribution.md`](case-studies/c
 |---|---|---|
 | Retuning `HANDOFF_NUDGE_ABS_CAP` from 360,000 to 150,000 | Adopted | `pr-cost --record` populated a 145-row ledger (PRs #278–#698, this repo's own corpus) bucketed by `mean_context_at_turn`: the 100–150k bucket (n=23) is the cheapest bucket with a trustworthy sample, and both $/PR and $/1k output tokens rise monotonically through every larger bucket (150–200k through 300k+). 150,000 is that bucket's upper edge — sessions crossing it roll into the next, more expensive bucket. Supersedes the 2026-08-08 session-share-frequency basis the prior 360,000 default was grounded on (`docs/handoff-nudge.md`'s original "Why this cap" section): that basis measured nudge-dismissal risk, not cost per unit of delivered work, which is the question this retune answers instead. |
 
+## From `handoff-threshold-impact-analysis.md` — "Did the 360,000→150,000 handoff-nudge cap retune actually help?"
+
+Full empirical record: [`case-studies/handoff-threshold-impact.md`](case-studies/handoff-threshold-impact.md).
+
+| Question | Verdict | Headline figure (scope) |
+|---|---|---|
+| Does the nudge's mechanism-engagement gate (share of session dollars spent past the fire threshold) actually improve under the lower cap? | Yes, robustly | 89.5%→58.3% before/after (machine-wide); direction holds at every cap tested from 100,000 to 360,000, no sign flip |
+| Does cost per shipped PR improve? | No clean win — a real, non-dominant cost shift | Median flat ($30.79→$31.63, claude-config-only), but mean +24% and upper quartile +60% ($56.04→$89.55); does not trigger the study's own pre-registered overhead-dominance rule |
+| Does review quality decline under the new cap? | No | Reviewer-spawn intensity per branch rose, 8.72→9.95 (claude-config-only) — more scrutiny, not less |
+| Does handoff/continuation overhead explain the rise in cost per shipped PR? | Yes — grows monotonically across the transition | Startup-burn share of branch dollars: 1.7%→2.4%→3.4% across before/excluded/after (machine-wide) |
+| Was the earlier 1.25x–4x session-share risk (`absolute-token-handoff-threshold.md`) ever measured for this specific 360,000→150,000 drop? | Yes, this study measured it | 1.69x (53.1%→89.7%), each window at its own real governing cap |
+
 ## From `trim-global-claude-md.md` — "Trim and reorganize both CLAUDE.md files"
 
 | Lever | Verdict | Measured reason |
