@@ -103,6 +103,7 @@ fi
 # pass buckets by that prefix (the text up to the rightmost "/memory/")
 # instead, tallying both totals in one O(file count) scan.
 # Prints two lines: the byte total, then the project-store count.
+# shellcheck disable=SC2016 # single-quoted on purpose: $1/$0 are awk field variables, not shell variables; double-quoting would expand them in the shell before awk sees them.
 TOTAL_AND_COUNT=$(_lib_capped_for 5 awk '
   {
     count = $1
