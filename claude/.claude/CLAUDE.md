@@ -147,7 +147,7 @@ These rules govern every text surface you author — chat replies, PR bodies, co
 - **Cut every sentence that adds no information.** Keep the why when it is non-obvious. Never drop or flatten a fact, number, decision, hedge, or conditional to shorten a sentence — keep the content and accept the longer sentence.
 - **One idea per sentence, one term per concept.** Split a compound claim instead of chaining it into a run-on. Hold the chosen term for the whole document — elegant variation reads as a second thing, not a second word for the same thing.
 - **Active voice, plain verbs, no noun stacks.** Passive only when the actor is unknown or irrelevant to the reader. "Start," not "commence." A verb or prepositional phrase in place of a stacked-noun phrase.
-- If `<config-dir>/output-preferences.md` exists, read it at session start and apply it. Cap at 50 lines. That file layers personal tone and style calibration on the rules above; it is not a place to restate them.
+- If `<config-dir>/output-preferences.md` exists, read it at session start and apply it. That file layers personal tone and style calibration on the rules above; it is not a place to restate them.
 
 ## Code Comments, Documentation, and Prose
 
