@@ -626,6 +626,29 @@ def test_build_report_linux_numeric_procstart_live_pid_is_clean_exit_not_unknown
     assert row.classification == _mod.CLASS_CLEAN_EXIT
 
 
+def test_build_report_pid_reuse_guard_stale_procstart_is_unknown_not_clean_exit(tmp_path):
+    """Pid-reuse-across-reboot guard, real inputs: the registry entry's mtime
+    (1000.0) predates boot_time (2000.0), so _proc_start_comparable is False
+    even though a coincidentally-matching ticks value is injected for the
+    live pid. _entry_liveness must return 'indeterminate' rather than 'live',
+    so the row falls through every dead_before_boot/dead_after_boot/
+    mtime_unknown registry filter to the final CLASS_UNKNOWN return -- proving
+    the guard suppresses this false-positive match rather than a swapped
+    comparison operator silently passing."""
+    sessions_dir = tmp_path / "config" / "sessions"
+    live_pid = os.getpid()
+    entry_path = _write_registry_entry(sessions_dir, live_pid, sessionId="s1", procStart="13017318")
+    os.utime(entry_path, (1000.0, 1000.0))
+    report = _mod.build_report(
+        config_dirs=[tmp_path / "config"], find_root=tmp_path / "home",
+        boot_time_fn=lambda: 2000.0,
+        proc_starttime_ticks_fn=_fake_proc_starttime_ticks({live_pid: 13017318}),
+    )
+    row = next(r for r in report.rows if r.session_id == "s1")
+    assert row.classification != _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_UNKNOWN
+
+
 # ---------------------------------------------------------------------------
 # Source A — registry reading, including schema drift
 # ---------------------------------------------------------------------------
@@ -1201,6 +1224,23 @@ def test_build_report_lookup_dead_pid_no_transcript_is_unknown_not_actionable(tm
     assert "Possible crash" in output and session_id not in output.split("## Possible crash")[1].split("## ")[0]
 
 
+def test_build_report_lookup_only_row_attributes_config_dir_from_lookup_entry(tmp_path):
+    """A lookup-only session (no registry/lock/transcript entry) still
+    attributes its row's config_dir -- _read_lookup_entries derives it as
+    path.parent.parent off the sessions_dir/<pid> lookup file's own path."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-lookup-config-dir"
+    _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    now = time.time()
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.config_dir == config_dir_path
+
+
 def test_build_report_one_line_lookup_file_dead_pid_still_classifies(tmp_path):
     """A one-line lookup file (proc_start=None) is not an error -- a dead
     pid is still dead regardless, and the session still classifies."""
@@ -1516,6 +1556,24 @@ def test_classify_lookup_indeterminate_liveness_is_unknown():
     )
     assert row.classification == _mod.CLASS_UNKNOWN
     assert "liveness could not be confirmed" in row.detail
+
+
+def test_classify_lookup_disagreeing_entries_stays_unknown():
+    """Two lookup entries for the same session disagree on liveness -- one
+    dead (pid 400, ps_lstart returns None), one indeterminate (pid 500, no
+    stored proc_start so sameness can't be confirmed against its live pid).
+    Mirrors test_classify_collapses_multiple_registry_entries_alive_wins for
+    the lookup arm's own dead_lookups-and-not-indeterminate_lookups guard,
+    which must not promote past Unknown when the entries disagree."""
+    dead_lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0)
+    indeterminate_lookup = _lookup_entry(pid=500, session_id="s1", proc_start=None, mtime=1500.0)
+    row = _mod._classify_session(
+        "s1", [], [], None, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({500: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        lookup_entries=(dead_lookup, indeterminate_lookup),
+    )
+    assert row.classification == _mod.CLASS_UNKNOWN
+    assert "could not be confirmed" in row.detail
 
 
 def test_classify_unknown_row_names_the_uncertainty():
