@@ -33,7 +33,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 ## 1. Preconditions (halt on fail)
 
 - **Session is anchored in the branch's worktree.** Confirm the working directory is this branch's linked worktree, not the main checkout — an unanchored session silently runs every later check against the wrong tree. Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
-- Current branch is not the default branch (`main` / `master` / `develop`).
+- Current branch is not the default branch (`main` / `master` / `develop`). Also derive `<TICKET-ID>` here, once, for steps 5 and 6 to consume: split the branch name on `/`; if the first segment matches `^[A-Za-z]+-[0-9]+$`, that's the `<TICKET-ID>`, else there is none.
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
 - If no PR exists, step 5 authors the body and step 6 opens the PR from it,
@@ -108,14 +108,14 @@ Invoke the `pr-description` skill via the Skill tool. It owns body content in
 both directions and runs the same checks either way; the standard lives there,
 not here — don't restate it.
 Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS`, plus the `## Deferred review findings` block
+Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), plus the `## Deferred review findings` block
 if step 3's `/code-review` returned one (≥1 DEFER, no open PR). With a PR open
 it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
 body to a temp file and ends its report with a `BODY_FILE: <path>` line.
 
 ## 6. Create PR if missing (skip if PR already exists)
 
-Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
+Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars, using step 1's derived `<TICKET-ID>` (omit the prefix if step 1 found none).
 
 The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Capture the PR number for step 7, then launch the CI watch now (see "CI watch (out-of-band)" below).
 
