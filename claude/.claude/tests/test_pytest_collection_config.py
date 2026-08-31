@@ -370,18 +370,22 @@ class TestNoBareSameDirectorySiblingImports:
     """TestConftestModuleNamesAreUnique above only covers conftest.py's own
     module-naming collision. A test-local helper module like
     test_agent_roster.py hits the identical prepend-mode sys.path bug through
-    an ordinary bare sibling import (`from test_agent_roster import X`)
-    rather than pytest's own conftest loader, per CLAUDE.md's "audit
-    structural siblings before scoping a fix narrowly" principle. This walks
-    every tracked test file's AST rather than grepping for import lines,
-    since a regex can't distinguish `from test_agent_roster import X`
-    (breaks once claude/.claude/hooks/tests/ is no longer inserted directly
-    onto sys.path) from `from .test_agent_roster import X` (an ordinary
+    an ordinary bare sibling import, whether `from test_agent_roster import X`
+    or `import test_agent_roster` followed by attribute access, rather than
+    pytest's own conftest loader, per CLAUDE.md's "audit structural siblings
+    before scoping a fix narrowly" principle. This walks every tracked test
+    file's AST rather than grepping for import lines, since a regex can't
+    distinguish `from test_agent_roster import X` (breaks once
+    claude/.claude/hooks/tests/ is no longer inserted directly onto
+    sys.path) from `from .test_agent_roster import X` (an ordinary
     package-relative import that keeps working) or from a module of that
     name imported from an unrelated package. A future contributor
     copy-pasting a test file and reintroducing a bare
-    `from test_agent_roster import X` instead of the package-relative form
-    would trip this check."""
+    `from test_agent_roster import X` or `import test_agent_roster` instead
+    of the package-relative form would trip this check. Scanned trees with
+    no __init__.py of their own (claude/.claude/tests/) are exempt, since
+    they're never given a package identity and a bare same-directory import
+    there stays correct rather than latent."""
 
     @staticmethod
     def _tracked_test_tree_paths() -> list[Path]:
@@ -390,6 +394,7 @@ class TestNoBareSameDirectorySiblingImports:
                 "git", "ls-files", "-z", "--",
                 "claude/.claude/hooks/tests/*.py",
                 "claude/.claude/scripts/tests/*.py",
+                "claude/.claude/tests/*.py",
             ],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -410,6 +415,13 @@ class TestNoBareSameDirectorySiblingImports:
 
         violations = []
         for path in tracked_paths:
+            # A directory with no __init__.py (claude/.claude/tests/, by this
+            # plan's own "Out of scope" note — see .claude/plans/fix-conftest-module-collision.md)
+            # is never handed a package identity, so pytest's prepend import
+            # mode keeps inserting it directly onto sys.path and a bare
+            # same-directory import there stays correct rather than latent.
+            if not (path.parent / "__init__.py").exists():
+                continue
             sibling_stems = sibling_stems_by_dir[path.parent] - {path.stem}
             tree = ast.parse(path.read_text(), filename=str(path))
             for node in ast.walk(tree):
@@ -419,6 +431,17 @@ class TestNoBareSameDirectorySiblingImports:
                         f"`from {node.module} import ...` is a bare import of a same-directory "
                         f"sibling module — use `from .{node.module} import ...` instead"
                     )
+                elif isinstance(node, ast.Import):
+                    # ast.Import has no `level` attribute — that concept is
+                    # ImportFrom-only — so the sibling-stem match alone
+                    # identifies the bare-import case here.
+                    for alias in node.names:
+                        if alias.name in sibling_stems:
+                            violations.append(
+                                f"{path.relative_to(REPO_ROOT)}:{node.lineno}: "
+                                f"`import {alias.name}` is a bare import of a same-directory "
+                                f"sibling module — use `from . import {alias.name}` instead"
+                            )
 
         assert not violations, (
             "bare same-directory sibling import(s) found — these break once __init__.py "
