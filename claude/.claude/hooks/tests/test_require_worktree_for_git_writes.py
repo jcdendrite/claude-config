@@ -1091,23 +1091,20 @@ class TestWorktreeCollisionGuard:
         assert str(foreign_pid) in reason
         assert "live" in reason
 
-    def test_foreign_dead_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
-        """A lock naming a pid that is no longer running denies, naming that
-        pid and pointing at the manual `git worktree unlock` remedy — and
-        the worktree is still locked afterward, confirming the hook itself
-        never ran that unlock (no auto-eviction)."""
+    def test_foreign_dead_lock_auto_evicted_and_reclaimed(self, isolated_home, opted_in_with_worktree):
+        """A lock naming a pid that is no longer running is auto-evicted
+        and re-acquired for this session within the same hook invocation
+        -- reversing the "hook must not auto-evict a dead-pid lock"
+        invariant a prior design iteration pinned here. See
+        docs/design-decisions.md §36."""
         _, worktree = opted_in_with_worktree
         dead_pid = _dead_pid()
-        _lock_worktree(worktree, f"claude-code pid {dead_pid}")
+        _lock_worktree(worktree, f"claude-code pid {dead_pid} session foreign-dead-their-session")
 
-        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree)
+        assert run_hook(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=worktree) == "allow"
+        reason = _worktree_lock_reason(worktree)
         assert reason is not None
-        assert str(dead_pid) in reason
-        assert "no longer running" in reason
-        assert "git worktree unlock" in reason
-        assert _worktree_lock_reason(worktree) is not None, (
-            "hook must not auto-evict a dead-pid lock"
-        )
+        assert f"pid {os.getpid()}" in reason
 
     def test_unparseable_reason_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
         """A lock reason with no parseable pid (e.g. a human ran `git
@@ -1173,14 +1170,49 @@ exec "{real_git}" "$@"
         )
 
     def test_foreign_dead_lock_still_allows_read_via_fast_path(self, isolated_home, opted_in_with_worktree):
-        """Same as above for a dead-pid foreign lock -- a read must be
-        allowed regardless of which deny branch the guard would have taken
-        for a write."""
+        """Same as above for a dead-pid foreign lock -- a read is allowed
+        just like the live-lock case. Unlike that case, the guard here
+        doesn't just observe the lock: since it auto-reclaims a dead lock
+        as a side effect of being called at all (the same "reads acquire
+        the lock too" side effect
+        test_read_in_freshly_unlocked_worktree_still_acquires_lock
+        documents for the never-locked case), the lock this read leaves
+        behind now names this session, not the dead pid."""
         _, worktree = opted_in_with_worktree
         dead_pid = _dead_pid()
         _lock_worktree(worktree, f"claude-code pid {dead_pid}")
 
         assert run_hook(WORKTREE_HOOK, bash_input("git status"), cwd=worktree) == "allow"
+        reason = _worktree_lock_reason(worktree)
+        assert reason is not None
+        assert f"pid {os.getpid()}" in reason
+
+    def test_foreign_dead_lock_reclaimed_via_slow_path_parser(self, isolated_home, opted_in_with_worktree):
+        """The two dead-pid cases above both exercise the fast path -- its
+        own first guard call succeeds and the hook exits before the parser
+        ever runs. This is the only test confirming reclaim also works
+        correctly when invoked from the slow path's own
+        `COLLISION_REASON=$(...)` command-substitution call site, not a
+        bare `if guard; then`. Forced by running the write from the MAIN
+        tree's own cwd (`SESSION_IS_WORKTREE` false), which always routes
+        through the parser regardless of command content -- the same
+        `cd <worktree> && git ...` shape
+        test_cd_worktree_amp_git_commit_allowed_from_main_tree uses."""
+        repo, worktree = opted_in_with_worktree
+        dead_pid = _dead_pid()
+        _lock_worktree(worktree, f"claude-code pid {dead_pid} session foreign-dead-their-session")
+
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input(f"cd {worktree} && git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+        reason = _worktree_lock_reason(worktree)
+        assert reason is not None
+        assert f"pid {os.getpid()}" in reason
 
     def test_read_in_freshly_unlocked_worktree_does_not_reacquire_lock(self, isolated_home, opted_in_with_worktree):
         """A read never acquires the worktree lock, on either path. The fast

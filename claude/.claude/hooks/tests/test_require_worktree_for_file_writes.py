@@ -407,24 +407,21 @@ class TestWorktreeCollisionGuard:
         assert str(foreign_pid) in reason
         assert "live" in reason
 
-    def test_foreign_dead_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
-        """A lock naming a pid that is no longer running denies, naming that
-        pid and pointing at the manual `git worktree unlock` remedy — and
-        the worktree is still locked afterward, confirming the hook itself
-        never ran that unlock (no auto-eviction)."""
+    def test_foreign_dead_lock_auto_evicted_and_reclaimed(self, isolated_home, opted_in_with_worktree):
+        """A lock naming a pid that is no longer running is auto-evicted
+        and re-acquired for this session within the same hook invocation
+        -- reversing the "hook must not auto-evict a dead-pid lock"
+        invariant a prior design iteration pinned here. See
+        docs/design-decisions.md §36."""
         _, worktree = opted_in_with_worktree
         dead_pid = _dead_pid()
-        _lock_worktree(worktree, f"claude-code pid {dead_pid}")
+        _lock_worktree(worktree, f"claude-code pid {dead_pid} session foreign-dead-their-session")
 
         path = str(worktree / "file.txt")
-        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+        reason = _worktree_lock_reason(worktree)
         assert reason is not None
-        assert str(dead_pid) in reason
-        assert "no longer running" in reason
-        assert "git worktree unlock" in reason
-        assert _worktree_lock_reason(worktree) is not None, (
-            "hook must not auto-evict a dead-pid lock"
-        )
+        assert f"pid {os.getpid()}" in reason
 
     def test_unparseable_reason_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
         """A lock reason with no parseable pid (e.g. a human ran `git

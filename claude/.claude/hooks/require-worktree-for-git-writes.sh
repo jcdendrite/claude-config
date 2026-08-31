@@ -81,10 +81,13 @@
 #     can leave a truncated `pid`/`session` field; a truncated session token
 #     fails the session-id character-class regex and is treated as
 #     unparseable, matching the guard's fail-closed default.
-#   - A dead-PID lock the collision guard detects is never auto-cleared —
-#     `git worktree unlock` has no ownership check, so an in-hook
-#     evict-then-relock would itself be racy. The deny message names the
-#     manual `git worktree unlock <path>` remedy instead.
+#   - A dead-PID lock the collision guard detects gets one claim-gated
+#     reclaim attempt (`_lib_worktree_reclaim_dead_lock` in `_lib.sh`) before
+#     falling back to a deny. A claim burnt by an interrupted eviction
+#     permanently disables auto-eviction for that one lock identity, and the
+#     deny message then names the manual `git worktree unlock <path>`
+#     remedy instead. See `_lib.sh`'s own Known-gaps list for the full
+#     bound.
 #   - The collision guard's liveness check can't distinguish a dead PID from
 #     one owned by a different user on a shared machine — out of scope for
 #     this guardrail's single-developer-machine threat model.
