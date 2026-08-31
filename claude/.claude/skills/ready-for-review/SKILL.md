@@ -72,7 +72,9 @@ resolves through a dedicated script rather than an inline multi-statement Bash c
 ~/.claude/scripts/pr-diff-against-base.sh
 ```
 
-Review the cumulative PR-vs-base diff, not per-commit deltas — that's what reviewers actually see; per-commit findings feed in as inputs, not substitutes.
+<!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
+This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass.
+<!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
 Because the reviewed diff is not the staged diff, do NOT write the
 review-completion marker (per `/code-review`'s own rule). If findings

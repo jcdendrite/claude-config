@@ -430,6 +430,7 @@ Two tradeoffs are accepted rather than closed.
 ### Sources
 
 - `.claude/plans/worktree-lock-conditional-reacquire.md` — full assumption ledger, the over-powered-primitive check (a bash-side read/write pre-filter and a non-acquiring "peek" guard mode were both rejected), and the behavioral test matrix.
+
 ## 33. `skill-fidelity-reviewer`'s low cited-path edit rate is a citation-genre mismatch, not a reviewer-value signal (2026-08-30)
 
 The corrected `reviewer-yield` measurement (GH-762, PR #764) puts `skill-fidelity-reviewer`'s zero-finding-bucket cited-path edit rate well below every peer reviewer's. §9 established this agent's charter and its own findings-rate re-measurement instruction; it contains no discussion of the cited-path column, so citing it for why that rate is expected is a misattribution. This entry, not §9, is the record's home for the cited-path reasoning below.
@@ -452,7 +453,25 @@ Together this means the cross-reviewer `Rate` comparison is not like-for-like. A
 - `docs/transcript-analysis.md`'s `reviewer-yield` section — the `Cited`/`Active`/`Edited`/`Rate` column definitions and the digest-only redaction note.
 - GH-762 / PR #764 — the reviewer-yield measurement fix this observation post-dates.
 
-## 34. Skill evals run locally only; a CI eval harness stays declined (2026-08-29)
+## 34. Reviewer responsibility bounded to the diff under review, uniformly, with default-branch and cumulative-pass guards (2026-08-29)
+
+The redesign applies one uniform clause to every Change-type row: a spawn's exhaustive-enumeration duty is bounded to the diff already handed to it, but a defect outside that boundary the change causes, activates, or newly reaches stays in scope for the spawn's flagging duty. No per-row exemption list is needed to protect `ciso-reviewer`, `staff-sdet`, or any other row's cross-change reasoning.
+
+The boundary computes no new ref: it is simply the diff a spawn is already being handed (`git diff --cached` for the commit-gate pass, the same basis `require-code-review.sh` hashes), restated as file paths and line ranges for reviewers without `Bash`.
+
+`ready-for-review`'s cumulative PR-vs-base pass gets zero narrowing, enforced by a positive precondition rather than an opt-out flag: narrowing applies only when the diff under review is the currently-staged diff. Every context failing that precondition — the cumulative pass, a presentation-path review, an ad-hoc review — enumerates the full diff automatically, with no exclusion list to maintain. `ready-for-review/SKILL.md` carries its own mirrored applicability statement rather than relying solely on `code-review`'s precondition, because a session mid-way through several re-review rounds is exactly the case most likely to misclassify the cumulative pass as "just another round."
+
+The precondition additionally requires `HEAD` not be the repository's default branch. A direct commit to the default branch is followed by no `ready-for-review` cumulative pass at all, so the guard forces full, unnarrowed enumeration of that one commit. Worktree enforcement makes this rare in this repo specifically, but `claude/` installs to every stow consumer and not every consumer opts into worktree enforcement. Cross-commit protection generally comes from the causal-reach clause, applied uniformly to every row, not from this guard specifically.
+
+Responsibility-narrowing saves fix-loop churn, not reviewer reads — every non-prose reviewer still opens whole files for context, unchanged. Only the comment/prose row is additionally match-narrowed (it does not spawn at all when the boundary carries no comment/durable-doc prose), because it alone is closed-form with no cross-file reach; that is the one genuine token-read saving this design delivers.
+
+**Named residual, not fixed here.** Two `/code-review` invocations against the same staged state with no commit between them see an identical boundary under this design — it does not distinguish "already cleared this round" from "never reviewed" within a round, because both hand the same diff. `SKILL.md`'s existing requirement to pass prior findings plus what's been applied on re-review is the standing mitigation.
+
+### Sources
+
+- `.claude/plans/scope-code-review-delta-rounds.md` — full assumption ledger, mechanism list, and out-of-scope residuals.
+
+## 35. Skill evals run locally only; a CI eval harness stays declined (2026-08-29)
 
 `evals/run_skill_evals.py` measures a skill's declared behavior by launching `claude -p` under the operator's own Claude Code subscription auth and reports a per-case pass rate a human reads. Wiring the same harness into GitHub Actions was evaluated and declined on three grounds:
 
