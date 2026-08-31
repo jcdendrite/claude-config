@@ -2534,9 +2534,10 @@ class TestNegationDisqualifierMatchesBypassPhrasing:
         """Pins the bypass this regex closes: a reworded clause that keeps
         the mandatory modal and causal-reach keywords but negates them into
         an exception. Each arm proves one negation shape independently,
-        rather than all of them passing through `unless` alone — the
-        `does-not-modal-disjunct` arm exercises the `does/do/will/would/can/may`
-        branch, which none of `_MANDATORY_MODAL_TOKENS`' own tokens reach.
+        rather than all of them passing through `unless` alone. The
+        `does-not-modal-disjunct` arm specifically exercises the
+        `does/do/will/would/can/may` branch, which none of
+        `_MANDATORY_MODAL_TOKENS`' own tokens reach.
         """
         path = tmp_path / "SKILL.md"
         path.write_text(

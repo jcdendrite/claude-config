@@ -56,37 +56,40 @@
 # - The gh pr ready and gh pr create arms detect via plain-text regex on the
 #   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
 #   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
-#   create`) bypasses detection for those two arms — the same
-#   cooperative-threat-model residual require-respond-pr.sh's header
-#   documents for quoted/indirected subcommands, adopted here rather than
-#   chased.
+#   create`) bypasses detection for those two arms.
 # Every git rev-parse/symbolic-ref call in this script is capped via
-# _lib_capped, matching the rest of this repo's hooks, so a stalled
-# filesystem or locked index fails per the sibling-hook convention rather
-# than hanging indefinitely.
+# _lib_capped, so a stalled filesystem or locked index fails fast (5s)
+# instead of hanging indefinitely. REPO_ROOT, CURRENT_BRANCH/DEFAULT_BRANCH,
+# and the default-branch candidate loop fail OPEN on that timeout (see
+# guard-settings-session-keys.sh's identically named "fail-open posture" for
+# precedent). Only CURRENT_HEAD fails closed on that timeout (see its own
+# comment below).
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —
-# intentional. A prefix glob (`Bash(gh pr create *)`) cannot deliver the
-# wrapped, env-prefixed, and `git -C`-style forms the in-script fragment
-# tokenizer detects. The hook exits before any git, network, or marker work
-# when no gated command is present. A command that merely mentions a gated
-# command in free text is denied — fail-closed by design. A missing jq now
-# denies every Bash call, the posture every unconditional gate in this repo
-# already has. This gate's threat model is cooperative, not adversarial —
-# the same posture require-respond-pr.sh's header states for its own gate.
-# The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
-# self-merge, plus CI rerunning the full suite on push. That backstop holds
-# absent one of block-gh-pr-merge.sh's own documented bypasses:
-# - the `gh api .../pulls/N/merge` endpoint
-# - an `eval`/`bash -c` subshell wrapper
-# - a full-path `gh` invocation
-# It also assumes branch protection requires CI to pass before merge, a
-# GitHub setting this hook cannot itself verify.
-# Unconditional dispatch also means _lib_split_fragments et al. now run on
-# every Bash call across every consumer's shell, not only
-# push/pr-create/pr-ready commands. That is not a new bug, but any latent
-# portability gap in that shared path now has full exposure instead of a
-# narrow slice.
+# intentional, because a prefix glob (`Bash(gh pr create *)`) cannot deliver
+# the wrapped, env-prefixed, and `git -C`-style forms the in-script fragment
+# tokenizer detects.
+# - The hook exits before any git, network, or marker work when no gated
+#   command is present.
+# - A command that merely mentions a gated command in free text is denied —
+#   fail-closed by design.
+# - A missing jq denies every Bash call, the posture every unconditional
+#   gate in this repo already has.
+# - This gate's threat model is cooperative, not adversarial — the same
+#   posture require-respond-pr.sh's header states for its own gate.
+# - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
+#   self-merge, plus CI rerunning the full suite on push. That backstop
+#   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
+#   - the `gh api .../pulls/N/merge` endpoint
+#   - an `eval`/`bash -c` subshell wrapper
+#   - a full-path `gh` invocation
+#   It also assumes branch protection requires CI to pass before merge, a
+#   GitHub setting this hook cannot itself verify.
+# - Unconditional dispatch means _lib_split_fragments et al. now run on
+#   every Bash call across every consumer's shell, not only
+#   push/pr-create/pr-ready commands, so any latent portability gap in that
+#   shared path is now fully exposed, not reached only by a narrow slice of
+#   commands.
 
 set -uo pipefail
 

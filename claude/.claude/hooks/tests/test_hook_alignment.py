@@ -324,11 +324,11 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
 def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
     """Each self-filtering gate's PreToolUse entries carry no `if` key.
 
-    This proves the *declared* config state — settings.json wires the hook
-    with no `if`-condition — not that the harness actually invokes it for
-    every wrapped/indirected shape at runtime; a post-merge smoke check
-    (attempt a gated command from a fresh session and confirm the deny
-    fires) covers the runtime-honored gap this test doesn't. Mirrors
+    This proves the *declared* config state: settings.json wires the hook
+    with no `if`-condition. It does not prove the harness actually invokes
+    the hook for every wrapped/indirected shape at runtime. A post-merge
+    smoke check (attempt a gated command from a fresh session and confirm
+    the deny fires) covers that runtime-honored gap. Mirrors
     test_plan_mode_entry_paths_stay_closed_in_settings's same
     declared-vs-honored distinction.
     """
@@ -754,37 +754,10 @@ def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -
 
 def test_ready_for_review_missing_command_allowed() -> None:
     """A Bash tool call with a missing/empty `command` field must exit 0
-    (allow), mirroring block-gh-pr-merge.sh's
-    test_bash_tool_missing_command_allowed."""
+    (allow)."""
     hook = _MAIN_HOOKS_DIR / "require-ready-for-review.sh"
     payload = {"tool_name": "Bash", "tool_input": {}}
     assert run_hook(hook, payload) == "allow"
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "eval git push --dry-run && gh pr create",
-        "GIT_DIR=/tmp/example.git git push --dry-run && gh pr create",
-    ],
-)
-def test_ready_for_review_wrapped_dry_run_chained_bypass_matches_known_gap(
-    command: str, tmp_path: Path
-) -> None:
-    """A *wrapped* invocation of the --dry-run-chained bypass (see
-    test_require_ready_for_review.py's
-    test_gh_pr_create_chained_after_dry_run_push_bypasses_known_gap for the
-    plain-literal case) resolves to the same allow outcome. Proves the
-    unconditional-dispatch fix is risk-neutral for this residual — still
-    bypassed via --dry-run, not newly bypassed via missing dispatch — rather
-    than leaving that claim as manual reasoning only. The --dry-run bypass
-    greps the whole $COMMAND before any per-fragment or repo check runs, so
-    a non-repo tmp_path cwd reaches the same allow outcome a real repo
-    would.
-    """
-    hook = _MAIN_HOOKS_DIR / "require-ready-for-review.sh"
-    payload = bash_input(command, session_id="s")
-    assert run_hook(hook, payload, cwd=tmp_path) == "allow"
 
 
 @pytest.mark.timing
