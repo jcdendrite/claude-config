@@ -38,13 +38,18 @@ from _config_dir import config_dir
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
 from transcript_analysis.corpus import SUBAGENT_SUBDIR, _parse_ts, _read_session_file_partitioned, iter_sessions
 from transcript_analysis.cost import (
-    # The nine names below are read only via _mod.<name> from test files (unit-testing a
-    # private helper directly, or a monkeypatch retarget) -- cmd_cost/cmd_cost_trend are the
-    # only two this file's own code calls bare, via p_cost/p_cost_trend.set_defaults below.
+    # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
+    # a private helper directly, or a monkeypatch retarget). cmd_cost/cmd_cost_trend,
+    # _compute_pr_cost_branch_totals, _compute_workstream_dollars, and _new_pr_cost_agg are the
+    # five this file's own code also calls bare -- via p_cost/p_cost_trend.set_defaults below,
+    # and pr-cost's/workstream-cost's own call sites.
     _accumulate_per_account_turn,  # noqa: F401
     _attributed_branch,  # noqa: F401
+    _compute_pr_cost_branch_totals,
+    _compute_workstream_dollars,
     _cost_report,  # noqa: F401
     _cost_trend_report,  # noqa: F401
+    _new_pr_cost_agg,
     _print_branch_exclusion_diagnostic,  # noqa: F401
     _print_model_id_table,  # noqa: F401
     _print_thread_table,  # noqa: F401
@@ -77,7 +82,6 @@ from transcript_analysis.pricing import (
     _model_rates,
     _price_turn,
     _session_peak_context,
-    _token_counts,
     _warn_if_subagent_format_drift,
 )
 from transcript_analysis.pricing import dedup_turns_by_request_id as _dedup_turns_by_request_id
@@ -105,20 +109,27 @@ from transcript_analysis.render import (
     _recent_assistant_text,
     _recent_tool_trail,
     _sanitize_table_cell,
+    _strip_task_notifications,
 )
 from transcript_analysis.reviewer_yield import (
     # The seven names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
-    # _index_subagent_dispatches, and the two _REVIEWER_VERDICT_* names below are also read
-    # bare by this file's own still-monolithic code (p_reviewer_yield.set_defaults,
-    # _review_trace_session_events, cmd_subagent_mix, and _reviewer_gap_pp respectively).
+    # _index_subagent_dispatches, the two _REVIEWER_VERDICT_* names, and
+    # _REVIEWER_YIELD_ACTIVE_FLOOR/_REVIEWER_YIELD_INSUFFICIENT.
+    # Also read bare by this file's own still-monolithic code:
+    #   cmd_reviewer_yield                                          -> p_reviewer_yield.set_defaults
+    #   _is_reviewer_subagent_type                                  -> _review_trace_session_events
+    #   _index_subagent_dispatches                                  -> cmd_subagent_mix
+    #   _REVIEWER_VERDICT_* / _REVIEWER_YIELD_ACTIVE_FLOOR / _REVIEWER_YIELD_INSUFFICIENT -> _reviewer_gap_pp
     _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
     _REVIEWER_VERDICT_FINDINGS_FOUND,
     _REVIEWER_VERDICT_ZERO_FINDING,
+    _REVIEWER_YIELD_ACTIVE_FLOOR,
+    _REVIEWER_YIELD_INSUFFICIENT,
     _build_tool_result_ts_map,  # noqa: F401
     _dispatch_self_reference_keys,  # noqa: F401
     _extract_cited_paths,  # noqa: F401
-    _index_parent_edits,  # noqa: F401
+    _index_session_edits,  # noqa: F401
     _index_subagent_dispatches,
     _is_reviewer_subagent_type,
     _normalize_cited_path,  # noqa: F401
@@ -132,6 +143,7 @@ from transcript_analysis.scope import (
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
+    _parse_absolute_window_args,
     _parse_since_nd_arg,
     _projects_glob,
     _redaction_ordinals,
@@ -394,7 +406,7 @@ def cmd_struggle(args: argparse.Namespace) -> None:
             if rtype == "assistant":
                 last_fam[branch] = _fam(msg.get("model", ""))
             elif rtype in ("user", "human"):
-                text = _content_text(msg.get("content", "")).lower()
+                text = _strip_task_notifications(_content_text(msg.get("content", ""))).lower()
                 if any(phrase in text for phrase in STRUGGLE_PHRASES):
                     branch_data[branch][last_fam.get(branch, "unknown")] += 1
 
@@ -465,11 +477,13 @@ def _classify_prompt(text: str, is_initial: bool) -> tuple[str, str]:
     """Classify a fresh prompt as INITIAL, FOLLOWUP, or EXPLICIT_CORRECTION.
 
     Returns (classification, matched_phrase). matched_phrase is non-empty only
-    for EXPLICIT_CORRECTION.
+    for EXPLICIT_CORRECTION. Phrase-matching runs on text with any forwarded
+    `<task-notification>` envelope stripped, so a STRUGGLE_PHRASES entry inside
+    one does not register.
     """
     if is_initial:
         return "INITIAL", ""
-    lowered = text.lower()
+    lowered = _strip_task_notifications(text).lower()
     for phrase in STRUGGLE_PHRASES:
         if phrase in lowered:
             return "EXPLICIT_CORRECTION", phrase
@@ -516,14 +530,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
     out_path: str | None = getattr(args, "out", None) or None
     redact: bool = bool(getattr(args, "redact", False))
 
-    since_str: str | None = getattr(args, "since", None) or None
-    until_str: str | None = getattr(args, "until", None) or None
-    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    until_epoch: float | None = None
-    if until_str:
-        day_start = _parse_ts(f"{until_str}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
+    since_ts, until_epoch = _parse_absolute_window_args(args, "user-input")
 
     redact_map: dict[str, str] = _build_redact_map() if redact else {}
     session_redact_map: dict[str, str] = {}
@@ -1745,16 +1752,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "review-trace", roots=roots)
 
-    since_str: str | None = getattr(args, "since", None) or None
-    until_str: str | None = getattr(args, "until", None) or None
-    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    # Inclusive-day boundary: compute start of the *next* day and compare with strict <.
-    # Adding 86400 seconds covers the entire until-day at any sub-second precision.
-    until_epoch: float | None = None
-    if until_str:
-        day_start = _parse_ts(f"{until_str}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
+    since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
 
     if deny_summary:
         # Ahead of the scan, matching the default arm below: a crash partway
@@ -1853,14 +1851,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     roots = _resolve_scan_roots(args)
     session_iter, scope_label = _resolve_project_scope(args, "judgment-pair", roots=roots)
 
-    since_str: str | None = getattr(args, "since", None) or None
-    until_str: str | None = getattr(args, "until", None) or None
-    since_ts: float | None = _parse_ts(f"{since_str}T00:00:00Z") if since_str else None
-    until_epoch: float | None = None
-    if until_str:
-        day_start = _parse_ts(f"{until_str}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
+    since_ts, until_epoch = _parse_absolute_window_args(args, "judgment-pair")
 
     skills_arg: str = getattr(args, "skills", None) or ",".join(REVIEW_SKILLS)
     skill_set: set[str] = {s for s in skills_arg.split(",") if s}
@@ -2282,14 +2273,9 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     # assistant record (see _dispatch_usage_summary) -- independent of
     # since_ts above, which keeps its existing dispatch-level scope over
     # every other column in this table.
-    since_date_str: str | None = getattr(args, "since_date", None) or None
-    until_date_str: str | None = getattr(args, "until_date", None) or None
-    dollar_since_ts: float | None = _parse_ts(f"{since_date_str}T00:00:00Z") if since_date_str else None
-    dollar_until_ts: float | None = None
-    if until_date_str:
-        day_start = _parse_ts(f"{until_date_str}T00:00:00Z")
-        if day_start is not None:
-            dollar_until_ts = day_start + 86400
+    dollar_since_ts, dollar_until_ts = _parse_absolute_window_args(
+        args, "subagent-mix", since_attr="since_date", until_attr="until_date"
+    )
 
     # Read once, matching cost's own "never read the clock inside the
     # per-record loop" rationale -- kept as a plain wall-clock read here
@@ -6053,18 +6039,21 @@ def _parse_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     except ValueError:
         raise _CostLedgerParseError(f"line {line_no}: non-numeric denials {denials_s!r}") from None
 
-    reviewer_gap_pp: float | None = None
+    reviewer_gap_pp: float | str | None = None
     if gap_s:
-        if not gap_s.endswith("pp"):
+        if gap_s == _REVIEWER_YIELD_INSUFFICIENT:
+            reviewer_gap_pp = gap_s
+        elif not gap_s.endswith("pp"):
             raise _CostLedgerParseError(
                 f"line {line_no}: malformed reviewer_gap_pp {gap_s!r} (expected a trailing 'pp')"
             )
-        try:
-            reviewer_gap_pp = float(gap_s[:-2])
-        except ValueError:
-            raise _CostLedgerParseError(f"line {line_no}: non-numeric reviewer_gap_pp {gap_s!r}") from None
-        if math.isnan(reviewer_gap_pp) or math.isinf(reviewer_gap_pp):
-            raise _CostLedgerParseError(f"line {line_no}: non-finite reviewer_gap_pp {gap_s!r}")
+        else:
+            try:
+                reviewer_gap_pp = float(gap_s[:-2])
+            except ValueError:
+                raise _CostLedgerParseError(f"line {line_no}: non-numeric reviewer_gap_pp {gap_s!r}") from None
+            if math.isnan(reviewer_gap_pp) or math.isinf(reviewer_gap_pp):
+                raise _CostLedgerParseError(f"line {line_no}: non-finite reviewer_gap_pp {gap_s!r}")
 
     return {
         "week": week, "machine": machine, "rates": rates, "usd": usd,
@@ -6116,11 +6105,23 @@ def _parse_cost_ledger_file_text(text: str) -> tuple[str, list[dict]]:
     return preamble, rows
 
 
+def _format_reviewer_gap_cell(gap: float | str | None, *, unmeasured: str) -> str:
+    """Render reviewer_gap_pp for either the markdown-pipe or read-mode
+    format. unmeasured is the empty-denominator token -- "" for the
+    markdown file's empty cell, "unmeasured" for the read-mode fixed-width
+    line. A str value is always _REVIEWER_YIELD_INSUFFICIENT and passes
+    through unchanged."""
+    if gap is None:
+        return unmeasured
+    if isinstance(gap, str):
+        return gap
+    return f"{gap:+.1f}pp"
+
+
 def _format_cost_ledger_row(row: dict) -> str:
     """Render one row dict as its markdown table line -- the exact inverse
     of _parse_cost_ledger_row_cells."""
-    gap = row["reviewer_gap_pp"]
-    gap_s = "" if gap is None else f"{gap:+.1f}pp"
+    gap_s = _format_reviewer_gap_cell(row["reviewer_gap_pp"], unmeasured="")
     cells = [
         row["week"], row["machine"], row["rates"],
         f"{row['usd']:.2f}", f"{row['context_pct']:.1f}%", f"{row['opus_pct']:.1f}%",
@@ -6190,12 +6191,16 @@ def _write_cost_ledger_file(ledger_path: Path, preamble: str, rows: list[dict]) 
         raise
 
 
-def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | None:
+def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | str | None:
     """Percentage-point gap between the findings-found and zero-finding
     cited-path edit rates, aggregated across every reviewer agent type --
     cost-ledger's reviewer_gap_pp column. None (left empty in the row) when
     either side's Active denominator is zero, rather than dividing by zero
-    or silently substituting 0%.
+    or silently substituting 0%. _REVIEWER_YIELD_INSUFFICIENT when either
+    side's Active denominator is nonzero but below _REVIEWER_YIELD_ACTIVE_FLOOR
+    -- the same low-confidence signal reviewer-yield's own per-bucket rate
+    already reports, rather than an ordinary number with no distinguishing
+    signal.
     """
     findings_active = sum(
         v["active"] for (_stype, bucket), v in agg2.items() if bucket == _REVIEWER_VERDICT_FINDINGS_FOUND
@@ -6211,12 +6216,14 @@ def _reviewer_gap_pp(agg2: dict[tuple[str, str], dict[str, int]]) -> float | Non
     )
     if findings_active == 0 or zero_active == 0:
         return None
+    if findings_active < _REVIEWER_YIELD_ACTIVE_FLOOR or zero_active < _REVIEWER_YIELD_ACTIVE_FLOOR:
+        return _REVIEWER_YIELD_INSUFFICIENT
     return 100 * (findings_edited / findings_active - zero_edited / zero_active)
 
 
 _COST_LEDGER_READ_HEADER = (
     f"{'Week':<10} {'Machine':<9} {'Rates':<11} {'$':>12} {'Context%':>9} "
-    f"{'Opus%':>7} {'>=200k%':>8} {'Denials':>8} {'GapPP':>11}  Note"
+    f"{'Opus%':>7} {'>=200k%':>8} {'Denials':>8} {'GapPP':>12}  Note"
 )
 
 
@@ -6226,13 +6233,12 @@ def _format_cost_ledger_read_row(row: dict) -> str:
     markdown-pipe format. Empty reviewer_gap_pp prints as the literal token
     "unmeasured" (never a blank cell) so every column stays a single
     whitespace-delimited token."""
-    gap = row["reviewer_gap_pp"]
-    gap_s = "unmeasured" if gap is None else f"{gap:+.1f}pp"
+    gap_s = _format_reviewer_gap_cell(row["reviewer_gap_pp"], unmeasured="unmeasured")
     note = row["note"] or "-"
     return (
         f"{row['week']:<10} {row['machine']:<9} {row['rates']:<11} {row['usd']:>12,.2f} "
         f"{row['context_pct']:>8.1f}% {row['opus_pct']:>6.1f}% {row['ge200k_pct']:>7.1f}% "
-        f"{row['denials']:>8} {gap_s:>11}  {note}"
+        f"{row['denials']:>8} {gap_s:>12}  {note}"
     )
 
 
@@ -6433,7 +6439,13 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     cost_session_iter, scope_label = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
     deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", roots=roots)
-    reviewer_session_iter, _scope_label3 = _resolve_project_scope(args, "cost-ledger", roots=roots)
+    # Deliberately duplicates cost_session_iter's identical full-corpus include_subagents=True
+    # scan; sharing one materialized pass would require restructuring
+    # _compute_cost_trend_data/_compute_reviewer_yield_data's calling convention, also used by
+    # other commands.
+    reviewer_session_iter, _scope_label3 = _resolve_project_scope(
+        args, "cost-ledger", include_subagents=True, roots=roots
+    )
     _print_resolved_scope("cost-ledger", scope_label, roots)
 
     cost_weeks, _unpriced_turns, _unpriced_tokens = _compute_cost_trend_data(cost_session_iter)
@@ -6471,6 +6483,7 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     reviewer_data = _compute_reviewer_yield_data(reviewer_session_iter, since_ts=week_start_ts, until_ts=week_end_ts)
     reviewer_gap_pp = _reviewer_gap_pp(reviewer_data["agg2"])
+    _warn_if_subagent_format_drift(reviewer_data["subagent_spawns"], reviewer_data["sidechain_turns"])
 
     new_row = {
         "week": week_str,
@@ -7190,6 +7203,31 @@ def _gh_discover_merged_prs(corpus_host: str, pinned_repo: str) -> list[dict]:
         sys.exit(1)
 
 
+def _gh_discover_closed_unmerged_pr_branches(corpus_host: str, pinned_repo: str) -> set[str]:
+    """Bulk-discover the headRefName of every closed-but-unmerged PR for the
+    pinned repo -- same call shape as _gh_discover_merged_prs, --state
+    closed instead of --state merged. gh's own PR state model keeps "merged"
+    and "closed" disjoint (a merged PR's state is MERGED, never CLOSED), so
+    this tells workstream-cost's abandoned-branch check "had a PR that was
+    closed without merging" apart from "never had a PR at all" -- a branch
+    absent from both this set and _gh_discover_merged_prs' own result.
+    """
+    argv = [
+        "gh", "pr", "list", "--repo", _gh_host_qualified_repo(corpus_host, pinned_repo), "--state", "closed",
+        "--limit", str(_PR_COST_GH_PR_LIST_LIMIT),
+        "--json", "headRefName",
+    ]
+    proc, degraded = _gh_call_with_backoff(argv, label="pr list (closed)")
+    if degraded:
+        _pr_cost_abort_on_gh_failure("gh pr list (closed)", degraded)
+    try:
+        payload = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        print("pr-cost: gh pr list (closed) returned unparseable JSON", file=sys.stderr)
+        sys.exit(1)
+    return {pr["headRefName"] for pr in payload if pr.get("headRefName")}
+
+
 def _gh_pr_view_enrichment(corpus_host: str, pinned_repo: str, pr_number: int) -> tuple[dict | None, str]:
     """Per-PR enrichment call: commits/reviews/files, none of which
     `gh pr list` returns. Returns (payload, _PR_COST_STATUS_OK) on success,
@@ -7338,70 +7376,6 @@ def _pr_cost_mechanical_proxies(file_paths: Sequence[str], *, plan_glob: str, ri
         "plan_file_added": any(fnmatch.fnmatch(p, plan_glob) for p in file_paths),
         "risk_surface_flag": any(fnmatch.fnmatch(p, glob) for p in file_paths for glob in risk_globs),
     }
-
-
-def _new_pr_cost_agg() -> dict:
-    """Zero-valued per-branch aggregate shape accumulated by
-    _compute_pr_cost_branch_totals, and reused as the zero-cost default for
-    a merged PR whose branch carries no local corpus activity at all."""
-    return {
-        "dollars": dict.fromkeys(_TOKEN_CLASSES, 0.0),
-        "tokens": dict.fromkeys(_TOKEN_CLASSES, 0),
-        "unpriced_turns": 0, "unpriced_tokens": 0,
-        "turn_count": 0, "sessions": set(), "opus_dollars": 0.0, "sum_context_at_turn": 0,
-    }
-
-
-def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]:
-    """Single local corpus pass: every main+subagent turn's dollars/tokens,
-    grouped by _attributed_branch, over the whole scan -- run exactly once
-    per invocation regardless of how many PRs end up in scope. Mirrors
-    _cost_report's own dedup-then-price sequence so pr-cost's numbers are
-    derived the same way cost's are.
-
-    Returns (branch_totals, unbranched_totals): branch_totals is keyed by
-    each session's raw attributed branch string (never None); a record whose
-    _attributed_branch resolves to None (no gitBranch anywhere in the
-    session, not merely a worktree-agent carry-forward miss) accumulates
-    into the single unbranched_totals aggregate instead of being dropped,
-    unlike `buckets`, which silently skips records with no gitBranch.
-    """
-    branch_totals: dict[str, dict] = defaultdict(_new_pr_cost_agg)
-    unbranched_totals: dict = _new_pr_cost_agg()
-
-    for jsonl, records in session_iter:
-        records = _dedup_turns_by_request_id(records)  # dedup before pricing (must run first, see pricing.py)
-        branch_index = _session_branch_index(records)
-        session_id = jsonl.stem
-        for rec in records:
-            if rec.get("type") != "assistant":
-                continue
-            usage = (rec.get("message") or {}).get("usage")
-            if not usage:
-                continue
-            model = (rec.get("message") or {}).get("model", "")
-            dollars_by_class, context_at_turn, unpriced_tokens = _price_turn(model, usage)
-
-            branch = _attributed_branch(rec, branch_index)
-            agg = branch_totals[branch] if branch is not None else unbranched_totals
-
-            agg["turn_count"] += 1
-            agg["sessions"].add(session_id)
-            agg["sum_context_at_turn"] += context_at_turn
-
-            if dollars_by_class is None:
-                agg["unpriced_turns"] += 1
-                agg["unpriced_tokens"] += unpriced_tokens
-                continue
-
-            token_counts = _token_counts(usage)
-            for cls in _TOKEN_CLASSES:
-                agg["dollars"][cls] += dollars_by_class[cls]
-                agg["tokens"][cls] += token_counts[cls]
-            if _fam(model) == "opus":
-                agg["opus_dollars"] += sum(dollars_by_class.values())
-
-    return dict(branch_totals), unbranched_totals
 
 
 def _pr_cost_asof_window_ok(merged_at_iso: str, window_days: float, now: datetime) -> bool:
@@ -7845,6 +7819,92 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
             f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
         )
+
+
+def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
+    """Prints workstream-cost's "Sessions per branch" mean/median line and
+    "Startup-burn dollars" share line, computed from
+    _compute_workstream_dollars's own per-branch result."""
+    session_counts = [w["session_count"] for w in workstream.values()]
+    total_dollars = sum(w["total_dollars"] for w in workstream.values())
+    total_startup_burn = sum(w["startup_burn_dollars"] for w in workstream.values())
+
+    print(
+        f"Sessions per branch -- mean: {statistics.mean(session_counts):.2f},"
+        f" median: {statistics.median(session_counts):.2f}"
+    )
+    print(
+        f"Startup-burn dollars: {_fmt_usd(total_startup_burn)} of {_fmt_usd(total_dollars)} total branch dollars"
+        f" ({_pct_of(total_startup_burn, total_dollars)})"
+    )
+
+
+def cmd_workstream_cost(args: argparse.Namespace) -> None:
+    """CLI entry point for the workstream-cost subcommand.
+
+    Default mode: pure transcript data, no gh calls, corpus-wide across
+    every resolved root (the same root union every other read-only
+    subcommand resolves via _resolve_scan_roots). Prints sessions-per-branch
+    and continuation "startup burn" (_compute_workstream_dollars), free
+    across every account.
+
+    --check-pr-status additionally classifies every branch with no PR match
+    at all (neither merged nor closed-unmerged) by its last local-activity
+    age. A branch whose every turn carries an unparseable timestamp has no
+    last-activity age to sort by and is silently omitted from that listing.
+    It pins one gh repo identity the same way pr-cost pins one
+    (_resolve_pinned_gh_repo, from this invocation's own git remote).
+    --this-repo scopes the corpus side of that match to this repo's own
+    worktrees when the corpus spans more than one repo (see pr-cost's own
+    --this-repo caveat).
+    """
+    roots = _resolve_scan_roots(args)
+    session_iter, scope_label = _resolve_project_scope(
+        args, "workstream-cost", include_subagents=True, roots=roots,
+    )
+    _print_resolved_scope("workstream-cost", scope_label, roots)
+
+    workstream = _compute_workstream_dollars(session_iter)
+    if not workstream:
+        print("No branches with corpus activity were found.")
+        return
+
+    print(f"Branches: {len(workstream)}")
+    _print_workstream_session_stats(workstream)
+
+    if not bool(getattr(args, "check_pr_status", False)):
+        return
+
+    corpus_host, corpus_repo = _git_remote_origin_host_and_owner_repo()
+    if not _gh_auth_preflight_ok(corpus_host):
+        print(
+            "workstream-cost: gh auth status failed -- run `gh auth login` before --check-pr-status",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    redact_ordinals = _redaction_ordinals(roots)
+    pinned_repo, _repo_map = _resolve_pinned_gh_repo(
+        corpus_host, corpus_repo, ordinal=redact_ordinals[roots[0].resolve()]
+    )
+    merged_branches = {
+        pr["headRefName"] for pr in _gh_discover_merged_prs(corpus_host, pinned_repo) if pr.get("headRefName")
+    }
+    closed_unmerged_branches = _gh_discover_closed_unmerged_pr_branches(corpus_host, pinned_repo)
+
+    now_ts = datetime.now(UTC).timestamp()
+    no_match_ages_days = sorted(
+        (
+            (now_ts - agg["last_activity_ts"]) / 86400
+            for branch, agg in workstream.items()
+            if branch not in merged_branches and branch not in closed_unmerged_branches and agg["last_activity_ts"]
+        ),
+        reverse=True,
+    )
+    print("\nBranches with no PR match at all (merged or closed-unmerged), by last-activity age (days), oldest first:")
+    if not no_match_ages_days:
+        print("  (none)")
+    for age_days in no_match_ages_days:
+        print(f"  {age_days:.1f}")
 
 
 def cmd_spend_over_threshold(args: argparse.Namespace) -> None:
@@ -8974,7 +9034,7 @@ def _friction_struggle_turn_events(records: list[dict]) -> int:
         if rec.get("type") not in ("user", "human"):
             continue
         msg = rec.get("message") or {}
-        text = _content_text(msg.get("content", "")).lower()
+        text = _strip_task_notifications(_content_text(msg.get("content", ""))).lower()
         if any(phrase in text for phrase in STRUGGLE_PHRASES):
             count += 1
     return count
@@ -10377,6 +10437,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit to dispatches with timestamp in the last N days (e.g. 35d).",
     )
     p_reviewer_yield.add_argument(
+        "--until", metavar="DATE", type=_iso_date,
+        help=(
+            "Inclusive end date (YYYY-MM-DD). Bounds dispatch detection (table 1) only —"
+            " the cited-path edit-overlap table (table 2) is not date-windowed."
+        ),
+    )
+    p_reviewer_yield.add_argument(
         "--redact", action="store_true",
         help=(
             "No-op: reviewer-yield's output is aggregate-only per agent type and"
@@ -10948,6 +11015,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)"
     )
     p_spend_over_threshold.set_defaults(func=cmd_spend_over_threshold)
+
+    p_workstream_cost = sub.add_parser(
+        "workstream-cost",
+        help=(
+            "Per-branch session count and continuation startup-burn dollars -- a handoff-overhead"
+            " approximation from session/branch shape alone, no gh calls by default. --check-pr-status"
+            " additionally lists every zero-PR-match branch's last-activity age. Corpus-wide."
+        ),
+    )
+    _add_project_scope_args(p_workstream_cost)
+    p_workstream_cost.add_argument(
+        "--check-pr-status", action="store_true",
+        help=(
+            "Also classify every branch by merged/closed-unmerged/no-PR-match via gh, pinned to this"
+            " invocation's own repo identity like pr-cost. Requires gh."
+        ),
+    )
+    p_workstream_cost.set_defaults(func=cmd_workstream_cost)
 
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",

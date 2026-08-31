@@ -31,11 +31,10 @@ SKILLS_DIR = "claude/.claude/skills"
 SKILLS_TESTS_DIR = "claude/.claude/skills/tests"
 AGENTS_DIR = "claude/.claude/agents"
 RULES_DIR = "claude/.claude/rules"
+# Common ancestor for the plugin-generic hooks/skills/agents predicates below.
+PLUGINS_DIR = "plugins"
 LOVABLE_CLOUD_DIR = "plugins/lovable-cloud"
 LOVABLE_CLOUD_TESTS_DIR = "plugins/lovable-cloud/tests"
-LOVABLE_CLOUD_HOOKS_DIR = "plugins/lovable-cloud/hooks"
-LOVABLE_CLOUD_SKILLS_DIR = "plugins/lovable-cloud/skills"
-LOVABLE_CLOUD_AGENTS_DIR = "plugins/lovable-cloud/agents"
 LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
 LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
@@ -70,6 +69,65 @@ CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
 # test_ci_path_filter.py reads this exact file by path.
 GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
 
+# test_hook_alignment.py (HOOKS_TESTS_DIR) reads this file's permissions.allow
+# entries by path. test_doc_counts.py (HOOKS_TESTS_DIR) reads its
+# skillOverrides counts. test_skills.py (SKILLS_TESTS_DIR) reads its
+# skillOverrides map at line 153, its docs/skills.md cross-check at line 1686,
+# and its destructive-cleanup permissions check at line 1724.
+CLAUDE_SETTINGS_JSON = "claude/.claude/settings.json"
+
+# No test reads any file under this directory by path or subprocess.
+PLANS_DIR = ".claude/plans"
+
+# test_ci_path_filter.py's only reference to this literal string is a static
+# CI ignore-paths allowlist entry, independent of the file's content.
+CHANGELOG_MD = "CHANGELOG.md"
+
+# test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR) reads
+# this exact file by path.
+TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
+
+# Blanket for every file under docs/, rather than one exact-match constant
+# per file: test_hook_alignment.py reads docs/hooks.md, test_doc_counts.py
+# reads docs/design-decisions.md, docs/skills.md, and docs/handoff-nudge.md,
+# and test_skills.py's test_doc_has_no_state_path parametrizes over nearly
+# every docs/**/*.md file for a per-account state-path contract. A per-file
+# constant list would silently under-select the day a new doc gains a test
+# dependency; this rule can't.
+DOCS_DIR = "docs"
+
+# test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and token-cap
+# counts here. test_skills.py's test_doc_has_no_state_path (SKILLS_TESTS_DIR)
+# also reads it for the per-account state-path contract.
+README_MD = "README.md"
+
+# The test_install_sh_*.py family and test_shellcheck.py, both in
+# HOOKS_TESTS_DIR, read this file by path.
+INSTALL_SH = "install.sh"
+
+# test_skills.py (SKILLS_TESTS_DIR) and test_doc_counts.py (HOOKS_TESTS_DIR)
+# each read it by path. test_nudge_transcript_toolkit.py's
+# TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR) also picks it up via its
+# repo-wide rglob("*.md") content scan.
+GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
+
+# test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR)
+# builds its corpus via REPO_ROOT.rglob("*.md") reading file content, the
+# same dependency GLOBAL_CLAUDE_MD cites above. Unlike that file, no test
+# reads this one by path, so only HOOKS_TESTS_DIR is implicated.
+ROOT_CLAUDE_MD = "CLAUDE.md"
+
+# test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this directory
+# and RULES_DIR (claude/.claude/rules/) for frontmatter validation —
+# distinct from RULES_DIR's own exception below, since the two directories
+# are separate trees with the same test dependency.
+ROOT_RULES_DIR = ".claude/rules"
+
+# test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
+# .claude/skills/*/SKILL.md by path, one of three SKILL.md-glob roots
+# alongside SKILLS_DIR and plugins/*/skills/*/SKILL.md.
+ROOT_SKILLS_DIR = ".claude/skills"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
@@ -84,9 +142,24 @@ MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
     Path(RULES_DIR).name,
 })
 
-# claude/.claude/tests/ reads no file outside the paths GLOBAL_TRIGGER_PATHS
-# already covers, so it needs no CROSS_DOMAIN_EXCEPTIONS entry.
+# claude/.claude/tests/test_statusline_command.py reads
+# claude/.claude/statusline-command.sh by path, and its sibling helpers.py
+# reads .github/workflows/tests.yml by path. Both paths deliberately fall
+# open to the full suite instead of getting a CROSS_DOMAIN_EXCEPTIONS entry,
+# because claude/.claude/tests/ itself has no selectable pytest target.
 DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({"tests"})
+
+# Directory names directly under root .claude/ that DOMAIN_RULES or
+# CROSS_DOMAIN_EXCEPTIONS predicates reference by path (PLANS_DIR,
+# ROOT_RULES_DIR, ROOT_SKILLS_DIR). Mirrors MAPPED_TOP_LEVEL_DIRS's role for
+# claude/.claude/, but for the separate root .claude/ tree. Unlike that
+# sibling, root .claude/ has no directory-with-no-selectable-pytest-target
+# case, so it needs no DELIBERATELY_UNMAPPED counterpart.
+MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
+    Path(PLANS_DIR).name,
+    Path(ROOT_RULES_DIR).name,
+    Path(ROOT_SKILLS_DIR).name,
+})
 
 # Matches CI's own collectible pytest scope verbatim (see
 # .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
@@ -130,12 +203,21 @@ def _is_skill_management_or_evals_change(path: str) -> bool:
     ) or path == SKILL_EVALS_RUNNER
 
 
-def _is_lovable_cloud_hooks_change(path: str) -> bool:
-    return _is_under(path, LOVABLE_CLOUD_HOOKS_DIR)
+def _is_plugin_subpath(path: str, subdirectory: str) -> bool:
+    parts = Path(path).parts
+    return len(parts) > 3 and parts[0] == PLUGINS_DIR and parts[2] == subdirectory
 
 
-def _is_lovable_cloud_skills_or_agents_change(path: str) -> bool:
-    return _is_under(path, LOVABLE_CLOUD_SKILLS_DIR) or _is_under(path, LOVABLE_CLOUD_AGENTS_DIR)
+def _is_plugin_hooks_change(path: str) -> bool:
+    return _is_plugin_subpath(path, "hooks")
+
+
+def _is_plugin_skills_change(path: str) -> bool:
+    return _is_plugin_subpath(path, "skills")
+
+
+def _is_plugin_agents_change(path: str) -> bool:
+    return _is_plugin_subpath(path, "agents")
 
 
 def _is_lovable_cloud_shell_script_change(path: str) -> bool:
@@ -160,7 +242,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, SCRIPTS_DIR), (SCRIPTS_TESTS_DIR,)),
     (_is_skill_md_change, (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, SKILLS_TESTS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
+    (lambda p: _is_under(p, PLANS_DIR), ()),
+    (lambda p: p == CHANGELOG_MD, ()),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -175,10 +260,14 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # validator scripts and eval runner it exercises.
 # LOVABLE_CLOUD_PLUGIN_MANIFEST: test_plugin_manifests.py (SKILLS_TESTS_DIR)
 # globs every plugin's plugin.json by path.
-# _is_lovable_cloud_hooks_change: test_hook_alignment.py and test_lib.py
+# _is_plugin_hooks_change: test_hook_alignment.py and test_lib.py
 # (HOOKS_TESTS_DIR) glob plugins/*/hooks/*.sh.
-# _is_lovable_cloud_skills_or_agents_change: test_skills.py (SKILLS_TESTS_DIR)
-# globs plugins/*/skills/*/SKILL.md and plugins/*/agents/*.md.
+# _is_plugin_skills_change: test_skills.py (SKILLS_TESTS_DIR) globs
+# plugins/*/skills/*/SKILL.md.
+# _is_plugin_agents_change: test_agent_roster.py (HOOKS_TESTS_DIR) globs
+# plugins/*/agents/*.md for a cross-scope agent-name-collision check.
+# test_skills.py (SKILLS_TESTS_DIR) globs the same path for its state-path
+# contract.
 # _is_lovable_cloud_shell_script_change: test_shellcheck.py (HOOKS_TESTS_DIR)
 # lints every tracked shell script in the repo, not only claude/.claude/hooks/.
 # _is_scripts_dir_shell_script_change: same test_shellcheck.py dependency as
@@ -193,37 +282,50 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
-# LOVABLE_CLOUD_AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) globs
-# plugins/*/agents/*.md for a cross-scope agent-name-collision check.
 # _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py
 # (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
 # picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
-# lovable-cloud is the only plugin whose own DOMAIN_RULES entry is broad
-# enough to otherwise claim these paths ahead of the cross-plugin scans that
-# actually read them.
-# See TestSelectPytestTargets' unmatched-path cases for the other plugins,
-# which rely on no DOMAIN_RULES entry matching them at all.
+# _is_plugin_hooks_change, _is_plugin_skills_change, and
+# _is_plugin_agents_change match every plugin under plugins/, not only
+# lovable-cloud -- the test globs cited above are plugin-generic, so the
+# predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs
 # claude/.claude/rules/*.md by path.
 # GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
 # reads this exact file by path.
+# TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
+# (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
+# DOCS_DIR blanket below.
+# DOCS_DIR, README_MD, INSTALL_SH, and CLAUDE_SETTINGS_JSON: see each
+# constant's own comment above for its citation.
+# GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, and ROOT_SKILLS_DIR: see
+# each constant's own comment above for its citation.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == LOVABLE_CLOUD_PLUGIN_MANIFEST, (SKILLS_TESTS_DIR,)),
-    (_is_lovable_cloud_hooks_change, (HOOKS_TESTS_DIR,)),
-    (_is_lovable_cloud_skills_or_agents_change, (SKILLS_TESTS_DIR,)),
+    (_is_plugin_hooks_change, (HOOKS_TESTS_DIR,)),
+    (_is_plugin_skills_change, (SKILLS_TESTS_DIR,)),
+    (_is_plugin_agents_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
     (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
-    (lambda p: _is_under(p, LOVABLE_CLOUD_AGENTS_DIR), (HOOKS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
 )
 
 
@@ -231,6 +333,10 @@ class SelectionResult(NamedTuple):
     target_paths: tuple[str, ...]
     is_full_suite: bool
     reason: str
+    # Populated for "global-trigger" and "unmatched-path" so the caller can
+    # name the offending path(s) instead of only the reason code. Left empty
+    # for "empty-diff" and "git-unavailable", neither of which has one.
+    triggering_paths: tuple[str, ...] = ()
 
 
 def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
@@ -245,10 +351,12 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
     changed = list(changed_paths)
     if not changed:
         return SelectionResult(FULL_SUITE_TARGETS, True, "empty-diff")
-    if any(path in GLOBAL_TRIGGER_PATHS for path in changed):
-        return SelectionResult(FULL_SUITE_TARGETS, True, "global-trigger")
+    global_trigger_paths = tuple(path for path in changed if path in GLOBAL_TRIGGER_PATHS)
+    if global_trigger_paths:
+        return SelectionResult(FULL_SUITE_TARGETS, True, "global-trigger", global_trigger_paths)
 
     targets: set[str] = set()
+    unmatched_paths: list[str] = []
     for path in changed:
         matched = False
         for predicate, domain_targets in DOMAIN_RULES:
@@ -260,7 +368,10 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
                 targets.update(exception_targets)
                 matched = True
         if not matched:
-            return SelectionResult(FULL_SUITE_TARGETS, True, "unmatched-path")
+            unmatched_paths.append(path)
+
+    if unmatched_paths:
+        return SelectionResult(FULL_SUITE_TARGETS, True, "unmatched-path", tuple(unmatched_paths))
 
     return SelectionResult(tuple(sorted(targets)), False, "domain-selected")
 
@@ -379,7 +490,14 @@ def main(argv: list[str] | None = None) -> int:
         selection = select_pytest_targets(changed_paths)
 
     if selection.is_full_suite:
-        print(f"select-tests: running the full suite ({selection.reason})", file=sys.stderr)
+        if selection.triggering_paths:
+            paths = ", ".join(selection.triggering_paths)
+            print(f"select-tests: running the full suite ({selection.reason}: {paths})", file=sys.stderr)
+        else:
+            print(f"select-tests: running the full suite ({selection.reason})", file=sys.stderr)
+    elif not selection.target_paths:
+        print(f"select-tests: nothing to run ({selection.reason})", file=sys.stderr)
+        return 0
     else:
         print(f"select-tests: running {', '.join(selection.target_paths)}", file=sys.stderr)
 

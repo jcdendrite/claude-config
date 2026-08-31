@@ -10,7 +10,7 @@ at 150000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
 escalating token bands past the first fire — a marker file holds the
 triggering estimate and gates subsequent turns until the estimate advances
 HANDOFF_NUDGE_REARM_SPACING (default 80000) past it. Past
-HANDOFF_NUDGE_BLOCK_AFTER (default 1) ignored re-arms in one session, a
+HANDOFF_NUDGE_BLOCK_AFTER (default 4) ignored re-arms in one session, a
 further re-arm hard-blocks (stderr + exit 2) instead of emitting the
 advisory JSON -- but only on PostToolBatch; on Stop, exit 2 would force the
 conversation to continue, so that registration falls through to the
@@ -32,7 +32,18 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, TRAVERSAL_SESSION_ID, build_path_without
+from helpers import (
+    CANARY_CONTENT,
+    HOOKS_DIR,
+    SKILLS_DIR,
+    TRAVERSAL_SESSION_ID,
+    build_path_without,
+    extract_skill_command,
+    plant_traversal_canary,
+    run_skill_command,
+)
+
+HANDOFF_SKILL = SKILLS_DIR / "handoff" / "SKILL.md"
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
 
@@ -54,7 +65,7 @@ HOOK_EVENT_NAMES = ["PostToolBatch", "Stop"]
 
 # HANDOFF_NUDGE_BLOCK_AFTER's shipped default -- the escalation ladder hard-
 # blocks once a session's ignored-re-arm count reaches this value.
-DEFAULT_BLOCK_AFTER = 1
+DEFAULT_BLOCK_AFTER = 4
 
 # Must exceed 2 -- some ladder tests deliberately drive ignored_count to 2
 # (see test_escalation_counter_concurrent_rearms_no_lost_update); 5 is
@@ -322,6 +333,16 @@ def _ignored_marker_path(
 ) -> Path:
     base = config_dir if config_dir is not None else tmp_path / ".claude"
     return base / ".handoff-nudge-fired.d" / f"{session_id}-ignored"
+
+
+def _handoff_active_marker_path(
+    tmp_path: Path, session_id: str = SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    """The `/handoff` active-bypass marker path -- same layout as the other
+    four skills' `.{skill}-active.d/<session_id>` markers, written by
+    `marker.sh activate handoff` and read by `_lib_active_bypass_marker_live`."""
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".handoff-active.d" / session_id
 
 
 def _plant_stale_marker(
@@ -1272,10 +1293,10 @@ class TestNudgeHandoffNearContextCap:
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_block_after_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
-        """A malformed override must fall back to the shipped default (1), not
+        """A malformed override must fall back to the shipped default (4), not
         degrade toward 0 -- checked on this session's first-ever crossing, where a
         degraded BLOCK_AFTER=0 would hard-block immediately (0 >= 0) but a correct
-        fallback stays advisory (0 >= 1 is false)."""
+        fallback stays advisory (0 >= 4 is false)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
@@ -1288,10 +1309,11 @@ class TestNudgeHandoffNearContextCap:
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
     def test_block_after_malformed_override_positive_control_blocks_at_default(self, tmp_path, malformed_value):
-        """At the shipped default (1), range(DEFAULT_BLOCK_AFTER - 1) is range(0),
-        so this test's own contribution is the post-loop call, which drives the
-        real re-arm and asserts the default actually hard-blocks there (the sibling
-        test only checks the fallback isn't degraded to 0)."""
+        """At the shipped default (4), range(DEFAULT_BLOCK_AFTER - 1) is range(3):
+        the loop drives three advisory re-arms, and this test's own contribution
+        is the post-loop call, which drives the fourth re-arm and asserts the
+        default actually hard-blocks there (the sibling test only checks the
+        fallback isn't degraded to 0)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
@@ -2048,6 +2070,158 @@ class TestNudgeHandoffNearContextCap:
         )
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+
+
+class TestHandoffActiveBypassMarkerSuppressesTheBlock:
+    """A live `/handoff` active-bypass marker
+    (`.handoff-active.d/<session_id>`) keeps a qualifying re-arm on the
+    advisory path instead of hard-blocking -- otherwise the escalation
+    ladder can re-fire mid-`/handoff` write and truncate it (see
+    docs/handoff-nudge.md's "Recovering from a hard block"). Every case
+    below drives the ladder to the exact point
+    test_escalation_ladder_blocks_once_block_after_ignored_rearms_reached
+    proves blocks (HANDOFF_NUDGE_BLOCK_AFTER=2, fires spaced
+    DEFAULT_REARM_SPACING apart), then varies what's planted at
+    .handoff-active.d/<session_id> for the third, would-block fire."""
+
+    BLOCK_AFTER = "2"
+
+    def _drive_to_block_point(self, tmp_path: Path) -> tuple[Path, dict, int]:
+        """Two real fires (first fire, one ignored re-arm) so a third fire
+        sits exactly at HANDOFF_NUDGE_BLOCK_AFTER=2 -- mirrors
+        test_escalation_ladder_blocks_once_block_after_ignored_rearms_reached's
+        own setup. The transcript is grown to the third fire's estimate but
+        that fire is not run; the caller fires it after planting (or not
+        planting) a .handoff-active.d marker."""
+        transcript = tmp_path / "t.jsonl"
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": self.BLOCK_AFTER}
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.returncode == 0
+        assert first.stdout.strip() != ""
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 0
+        assert second.stdout.strip() != ""
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        return transcript, extra_env, estimate
+
+    def test_live_pid_marker_suppresses_the_block(self, tmp_path):
+        transcript, extra_env, _estimate = self._drive_to_block_point(tmp_path)
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(os.getpid()))
+
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        payload = json.loads(result.stdout)
+        assert "hookSpecificOutput" in payload
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "action=block" not in nudged_lines[-1]
+
+    def test_dead_pid_marker_does_not_suppress_and_is_evicted(self, tmp_path):
+        transcript, extra_env, _estimate = self._drive_to_block_point(tmp_path)
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("99999999")
+
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+
+        assert result.returncode == 2
+        assert result.stdout.strip() == ""
+        assert "/handoff" in result.stderr
+        assert "HANDOFF_NUDGE_BLOCK_AFTER=" in result.stderr
+        assert not marker.exists(), "a dead-PID marker must be evicted by the liveness check"
+
+    def test_other_sessions_marker_does_not_suppress(self, tmp_path):
+        transcript, extra_env, _estimate = self._drive_to_block_point(tmp_path)
+        other_marker = _handoff_active_marker_path(tmp_path, session_id="other-session-001")
+        other_marker.parent.mkdir(parents=True, exist_ok=True)
+        other_marker.write_text(str(os.getpid()))
+
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+
+        assert result.returncode == 2
+        assert result.stdout.strip() == ""
+        assert "/handoff" in result.stderr
+
+    def test_traversal_session_id_leaves_the_canary_untouched(self, tmp_path):
+        """The hook rejects a path-escaping session_id upstream, at
+        _lib_valid_session_id_component -- before FIRED_MARKER, let alone
+        .handoff-active.d/<session_id>, is ever built -- so this never
+        reaches the new suppression clause at all."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        (tmp_path / ".claude").mkdir(parents=True, exist_ok=True)
+        canary = plant_traversal_canary(tmp_path)
+
+        result = _run_hook(_base_payload(transcript, session_id=TRAVERSAL_SESSION_ID), tmp_path)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+        assert canary.read_text() == CANARY_CONTENT
+
+    def test_no_marker_at_all_still_blocks(self, tmp_path):
+        """Baseline: with nothing planted at .handoff-active.d/, the ladder
+        still hard-blocks exactly as it did before this suppression clause
+        existed -- guards against the new `&&` clause inverting the
+        condition instead of narrowing it."""
+        transcript, extra_env, _estimate = self._drive_to_block_point(tmp_path)
+
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+
+        assert result.returncode == 2
+        assert result.stdout.strip() == ""
+        assert "/handoff" in result.stderr
+
+    def test_skill_activate_recipe_suppresses_then_deactivate_recipe_restores_the_block(
+        self, tmp_path, monkeypatch
+    ):
+        """Runs the real SKILL.md activate-gate/deactivate-gate recipes,
+        not a hand-seeded marker -- proves the skill's literal command and
+        the hook's marker directory agree, rather than each independently
+        matching a shared test constant. marker.sh activate never calls
+        _resolve_repo_root, so tmp_path need not be a git repo."""
+        # run_skill_command inherits the ambient environment wholesale
+        # (unlike _run_hook above, which strips CLAUDE_CONFIG_DIR itself), so
+        # an ambient override on this machine would resolve marker.sh's
+        # CONFIG_DIR away from tmp_path/.claude.
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        transcript, extra_env, estimate = self._drive_to_block_point(tmp_path)
+        _seed_session(_default_config_dir(tmp_path), os.getpid(), SESSION_ID)
+        marker = _handoff_active_marker_path(tmp_path)
+
+        activate_command = extract_skill_command(HANDOFF_SKILL, "activate-gate")
+        run_skill_command(activate_command, cwd=tmp_path, isolated_home=tmp_path)
+        assert marker.exists(), (
+            "SKILL.md activate-gate recipe ran but no marker landed at the "
+            "path the hook reads -- the skill and hook disagree on layout."
+        )
+
+        advisory = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert advisory.returncode == 0
+        assert advisory.stdout.strip() != ""
+
+        deactivate_command = extract_skill_command(HANDOFF_SKILL, "deactivate-gate")
+        run_skill_command(deactivate_command, cwd=tmp_path, isolated_home=tmp_path)
+        assert not marker.exists(), (
+            "SKILL.md deactivate-gate recipe ran but the marker is still present."
+        )
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        blocked = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert blocked.returncode == 2
+        assert blocked.stdout.strip() == ""
 
 
 class TestCheckMode:

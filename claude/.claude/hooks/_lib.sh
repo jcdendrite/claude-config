@@ -65,6 +65,7 @@ _lib_realpath_m() {
   while true; do
     if [ -e "$current" ]; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
+      [ -n "$resolved" ] || return 1
       if [ -z "$suffix" ]; then
         printf '%s\n' "$resolved"
       elif [ "$resolved" = "/" ]; then
@@ -73,6 +74,9 @@ _lib_realpath_m() {
         printf '%s/%s\n' "$resolved" "$suffix"
       fi
       return 0
+    fi
+    if [ -L "$current" ]; then
+      return 1  # dangling symlink: [ -e ] reports false for it, so without this check its own name would be reattached literally as an unresolved suffix component instead of failing closed.
     fi
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
@@ -198,6 +202,29 @@ _lib_emit_deny() {
   fi
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
     "$reason_json"
+}
+
+# Emits a PreToolUse allow decision carrying an informational
+# additionalContext note, for a caller that wants to explain a side effect
+# of its own allow rather than silently permitting it. Mirrors
+# _lib_emit_deny's jq-encode-or-degrade shape above, but degrades to a
+# silent allow — no stdout — rather than _lib_emit_deny's hard block.
+# A parse failure here resolves to no decision on stdout, which the
+# harness already reads as the allow this caller wants, so losing the
+# note is not the fail-closed case _lib_emit_deny protects against.
+# permissionDecision is the exact lowercase literal "allow" -- the harness
+# is case-sensitive here the same way it is for _lib_emit_deny's "deny".
+# Caller contract matches _lib_emit_deny's. This function prints the JSON
+# envelope (or nothing, on the degrade path) and returns. The caller still
+# issues its own `exit 0` afterward, exactly as every _lib_emit_deny call
+# site already does for the deny path.
+_lib_emit_allow_with_context() {
+  local context="$1"
+  local context_json
+  context_json=$(printf '%s' "$context" | _lib_jq -Rs . 2>/dev/null)
+  [ -z "$context_json" ] && return 0
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":%s}}\n' \
+    "$context_json"
 }
 
 # Reads stdin into INPUT (global), extracts TOOL_NAME and COMMAND (globals)
@@ -345,80 +372,60 @@ _lib_marker_value_present() {
   grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
 }
 
-# Compute a content-addressed hash of the "active" plan file set in a
-# repo's .claude/plans/ directory, for the plan-review completion marker.
-# "Active" means untracked, or tracked-and-modified-vs-HEAD; a plan that is
-# tracked and byte-identical to HEAD is historical (its PR shipped) and is
-# excluded. Hashes repo-relative paths AND contents, so editing an active
-# plan (including a ledger row) changes the hash and re-arms the gate.
-# Paths are hashed repo-relative rather than absolute because the write side
-# and read side resolve the repo root independently; an absolute path would
-# fold any difference between those two resolutions into the digest.
+# Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
+# untracked, or tracked-and-modified-vs-HEAD. A plan that is tracked and
+# byte-identical to HEAD is historical (its PR shipped) and is excluded.
+# Prints one repo-relative active-plan path per line. Shared by
+# _lib_active_plan_hash below (which hashes the printed set) and by
+# require-plan-review.sh's own fast-path guard, which needs to know whether
+# anything is active before paying for a hash.
 #
-# Three-outcome contract -- exit status disambiguates stdout, because
-# "nothing to gate" and "could not compute" must never collapse onto the
-# same caller-visible signal:
-#   - exit 0, non-empty stdout: that hash is the active plan set.
-#   - exit 0, empty stdout:     no plan is active; the gate is disarmed.
-#   - exit 1, stdout = the path of the plan file that could not be hashed
-#     (unreadable, vanished mid-enumeration, sha256sum failed). Callers
-#     MUST fail closed. Treating this as the disarmed case is fail-*open*:
-#     it lets an unreviewed plan edit through on a transient disk or
-#     permission blip, silently and with nothing logged. Reusing stdout for
-#     the offending path keeps this to one call site with no subshell
-#     visibility problem -- the exit status already says which meaning
-#     applies.
+# Two-outcome contract -- exit status disambiguates stdout, because "nothing
+# active" and "could not enumerate" must never collapse onto the same
+# caller-visible signal:
+#   - exit 0, stdout: zero or more repo-relative active-plan paths, one per
+#     line. Empty stdout means no plan is active.
+#   - exit 1, stdout = the path of .claude/plans/ itself: a git enumeration
+#     call failed or timed out. Callers MUST fail closed -- a partial
+#     enumeration must never be read as "nothing is active".
 #
 # Determinism contract (write side [marker.sh] and read side
 # [require-plan-review.sh] must agree byte-for-byte, or the gate wedges):
-#   - `LC_ALL=C sort` on the file list -- a bare `sort` honors
-#     $LC_COLLATE, and the write-side (Bash-tool locale) and read-side
-#     (harness hook environment) callers can differ, flipping order on
-#     >=2 active plans and producing a false-deny. `-u` also collapses the
-#     overlap between the two git queries, which are unioned, not disjoint.
-#   - Path and per-file content-hash are newline-delimited per entry. With
-#     today's fixed-width 64-hex digests the concatenation would already be
-#     unambiguous without them, so this is defensive rather than
-#     load-bearing: it keeps the serialization injective if the digest ever
-#     becomes variable-width, and keeps the hashed input readable when
-#     debugging a mismatch. Do not cite it as a live collision defense.
-#   - Every digest is captured into a variable and tested for emptiness,
-#     rather than being returned as a pipeline's exit status. This is what
-#     makes the contract independent of the caller's shell options, and it
-#     is load-bearing: marker.sh sources this file under `set -u` with no
-#     `pipefail`, where a pipeline reports only its LAST command's status
-#     -- a missing or failed `sha256sum` still leaves `awk` exiting 0
-#     having printed nothing, which would silently misclassify a hash
-#     failure as "no active plan". The emptiness check, not `pipefail`, is
-#     the guard.
-# Usage: hash=$(_lib_active_plan_hash "$REPO_ROOT")
-_lib_active_plan_hash() {
+#   - `LC_ALL=C sort` is required because a bare `sort` honors
+#     `$LC_COLLATE`, which can differ between the write-side (Bash-tool
+#     locale) and read-side (harness hook environment) callers, flipping
+#     list order on >=2 active plans and producing a false-deny.
+#   - `-u` collapses the overlap between the two unioned (not disjoint) git
+#     queries.
+#
+# "Active" is exactly `untracked` UNION `tracked and modified vs HEAD`, so
+# ask git for those two sets directly rather than listing the directory and
+# probing each file's status. Enumerate-then-probe costs two git spawns per
+# plan file (~1.2s on a 61-plan directory) and this runs on every
+# Write/Edit/MultiEdit/ExitPlanMode.
+#
+# A failed or timed-out enumeration yields fewer files, which still looks
+# like a clean result to both the write side and the read side -- so an
+# unchecked call lets the gate open on a set neither side actually saw, with
+# nothing logged. Every git call here is therefore capped and status-checked,
+# so a partial enumeration fails closed instead.
+# :(glob) confines the `*` to one path segment, preserving the maxdepth-1
+# scope.
+# --others without --exclude-standard keeps gitignored plans in the set,
+# since an ignored plan is still an unreviewed plan.
+# --diff-filter=d drops deletions: a tracked plan deleted from the worktree
+# is reported as modified but has no bytes left to hash, and treating it as
+# active would fail the hash and deny forever instead of disarming.
+# core.quotePath=false keeps non-ASCII filenames raw rather than C-escaped.
+# Newline-delimited (not -z): a plan filename containing a newline is
+# already unsupported, and -z would force the output through a command
+# substitution, which strips NUL bytes.
+# Usage: files=$(_lib_active_plan_files "$REPO_ROOT") || <fail closed>
+_lib_active_plan_files() {
   local repo_root="$1"
   local plans_dir="$repo_root/.claude/plans"
   [ -d "$plans_dir" ] || return 0
 
-  # "Active" is exactly `untracked` UNION `tracked and modified vs HEAD`, so
-  # ask git for those two sets directly rather than listing the directory and
-  # probing each file's status. Enumerate-then-probe costs two git spawns per
-  # plan file (~1.2s on a 61-plan directory) and this runs on every
-  # Write/Edit/MultiEdit/ExitPlanMode.
-  #
-  # Every git call is capped AND status-checked. An unchecked call is the
-  # dangerous shape here: a failed or timed-out enumeration yields fewer
-  # files, and fewer files still hashes cleanly -- so both sides would agree
-  # on a hash computed over an active plan that neither of them saw, and the
-  # gate would open with nothing logged. A partial enumeration is therefore
-  # treated exactly like an unhashable file: fail closed.
-  # :(glob) confines the `*` to one path segment, preserving the maxdepth-1
-  # scope; --others without --exclude-standard keeps gitignored plans in the
-  # set, since an ignored plan is still an unreviewed plan.
-  # --diff-filter=d drops deletions: a tracked plan deleted from the worktree
-  # is reported as modified but has no bytes left to hash, and treating it as
-  # active would fail the hash and deny forever instead of disarming.
-  # core.quotePath=false keeps non-ASCII filenames raw rather than C-escaped.
-  # Newline-delimited (not -z): a plan filename containing a newline is
-  # already unsupported, and -z would force the output through a command
-  # substitution, which strips NUL bytes.
   local -a plan_pathspecs=(":(glob).claude/plans/*.md" ":(glob).claude/plans/*.txt")
   local untracked_plans modified_plans
   untracked_plans=$(_lib_capped git -C "$repo_root" -c core.quotePath=false \
@@ -443,16 +450,68 @@ _lib_active_plan_hash() {
   fi
 
   local plan_file
-  local -a active_files=()
   while IFS= read -r plan_file; do
     [ -n "$plan_file" ] || continue
-    active_files+=("$plan_file")
+    printf '%s\n' "$plan_file"
   done < <(printf '%s\n%s\n' "$untracked_plans" "$modified_plans" | LC_ALL=C sort -u)
+  return 0
+}
 
-  [ "${#active_files[@]}" -gt 0 ] || return 0
+# Compute a content-addressed hash of _lib_active_plan_files' output, for the
+# plan-review completion marker. Hashes repo-relative paths AND contents, so
+# editing an active plan (including a ledger row) changes the hash and
+# re-arms the gate. Paths are hashed repo-relative rather than absolute
+# because the write side and read side resolve the repo root independently;
+# an absolute path would fold any difference between those two resolutions
+# into the digest.
+#
+# Three-outcome contract -- exit status disambiguates stdout, because
+# "nothing to gate" and "could not compute" must never collapse onto the
+# same caller-visible signal:
+#   - exit 0, non-empty stdout: that hash is the active plan set.
+#   - exit 0, empty stdout:     no plan is active; the gate is disarmed.
+#   - exit 1, stdout = the path of the plan file that could not be hashed
+#     (unreadable, vanished mid-enumeration, sha256sum failed), or of
+#     .claude/plans/ itself when _lib_active_plan_files' own enumeration
+#     failed. Callers MUST fail closed.
+#
+# Treating the exit-1 case as the disarmed case is fail-*open*: it lets an
+# unreviewed plan edit through on a transient disk or permission blip,
+# silently and with nothing logged. Reusing stdout for the offending path
+# keeps this to one call site with no subshell visibility problem -- the
+# exit status already says which meaning applies.
+#
+# Determinism contract (write side [marker.sh] and read side
+# [require-plan-review.sh] must agree byte-for-byte, or the gate wedges) --
+# see _lib_active_plan_files above for the file-list-ordering half of this
+# contract:
+#   - Path and per-file content-hash are newline-delimited per entry. This is
+#     defensive, not load-bearing, given today's fixed-width 64-hex digests.
+#     It would matter only if the digest becomes variable-width (keeps the
+#     serialization injective) or when debugging a mismatch (keeps the hashed
+#     input readable) -- do not cite it as a live collision defense.
+#   - Every digest is captured into a variable and tested for emptiness
+#     rather than trusted as a pipeline's exit status, which keeps the
+#     contract independent of the caller's shell options. This is
+#     load-bearing for marker.sh, which sources this file under `set -u`
+#     with no `pipefail`: a failed `sha256sum` there still leaves `awk`
+#     exiting 0 with empty output, which the emptiness check -- not
+#     `pipefail` -- is what catches.
+# Usage: hash=$(_lib_active_plan_hash "$REPO_ROOT")
+_lib_active_plan_hash() {
+  local repo_root="$1"
+  local plans_dir="$repo_root/.claude/plans"
+
+  local active_files
+  if ! active_files=$(_lib_active_plan_files "$repo_root"); then
+    printf '%s' "$active_files"
+    return 1
+  fi
+  [ -n "$active_files" ] || return 0
 
   local file file_hash combined=""
-  for file in "${active_files[@]}"; do
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
     file_hash=$(_lib_capped sha256sum -- "$repo_root/$file" 2>/dev/null | awk '{print $1}')
     if [ -z "$file_hash" ]; then
       # Unreadable or vanished mid-enumeration. Name the offending file on
@@ -461,7 +520,7 @@ _lib_active_plan_hash() {
       return 1
     fi
     combined+="$file"$'\n'"$file_hash"$'\n'
-  done
+  done <<< "$active_files"
 
   local digest
   digest=$(printf '%s' "$combined" | sha256sum | awk '{print $1}')
@@ -470,6 +529,32 @@ _lib_active_plan_hash() {
     return 1
   fi
   printf '%s' "$digest"
+}
+
+# _lib_is_repo_plan_file REPO_ROOT ABS_PATH
+# Both arguments must already be _lib_realpath_m-normalized by the caller --
+# the same precondition the agent-reviews/ check in require-plan-review.sh
+# relies on. Returns 0 iff ABS_PATH is a direct child of
+# REPO_ROOT/.claude/plans whose name ends in .md or .txt.
+# The suffix set must stay identical to plan_pathspecs above, or this
+# exemption and the hash it exempts would describe two different file sets.
+# The depth check is a separate `dirname` comparison rather than a combined
+# glob because bash's `case` glob matches `/` where git's `:(glob)` does not
+# -- `case ".claude/plans/sub/x.md" in .claude/plans/*.md) ...` matches in
+# bash, which would wrongly exempt a nested path the hash never covers.
+# Deliberately fork-free and git-free, unlike _lib_active_plan_hash, because
+# this runs on every gated tool call.
+_lib_is_repo_plan_file() {
+  # Arity guard, matching _lib_active_bypass_marker_live's shape: `[ ]`
+  # rather than `(( ))`, for the same set -e-safety reason documented at
+  # that function's arity guard.
+  [ "$#" -eq 2 ] || return 1
+  local repo_root="$1" abs_path="$2"
+  [ "$(dirname -- "$abs_path")" = "$repo_root/.claude/plans" ] || return 1
+  case "$abs_path" in
+    *.md|*.txt) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Decide whether a shell fragment actually invokes `git`, not just mentions it
@@ -971,6 +1056,85 @@ _lib_worktree_lock_pid() {
   return 0
 }
 
+# _lib_worktree_lock_absent WORKTREE_GIT_DIR
+# Returns 0 (true) iff WORKTREE_GIT_DIR/locked does not exist yet.
+# Every _lib_worktree_collision_guard call site runs this immediately
+# before calling the guard.
+# A pre-existing foreign *live* lock always denies, never allows.
+# A pre-existing foreign *dead* lock may now be reclaimed and allowed via
+# the guard's own eviction path (_lib_worktree_reclaim_dead_lock), which
+# this pre-check cannot see, since the lock file itself was never absent.
+# If the guard then allows, its own O_EXCL write inside that call is the
+# only way the combination "was absent, now allows" happens for a foreign
+# session. A same-session parallel call can also produce that combination,
+# via the guard's self-lock-recognition fast path. See the hook callers'
+# known-gaps notes on the same-session double-message race.
+# So for the foreign-session case, the caller then knows this call is the
+# reason the worktree is now locked.
+_lib_worktree_lock_absent() {
+  local worktree_git_dir="$1"
+  [ ! -e "$worktree_git_dir/locked" ]
+}
+
+# _lib_worktree_acquire_lock WORKTREE_ROOT WT_GIT_DIR MY_PID MY_SESSION_ID
+# Attempts the O_EXCL lock-file create in WT_GIT_DIR and, on success,
+# re-reads porcelain to confirm the write landed as MY_PID/MY_SESSION_ID.
+# Prints nothing. Returns 0 when acquired and verified, 1 when the write
+# itself failed (contended -- caller diagnoses the current holder), 2 when
+# the write succeeded but the post-write reread could not confirm it
+# (caller emits its own "could not be confirmed after acquiring it"
+# message -- message ownership stays with the caller, not this function).
+_lib_worktree_acquire_lock() {
+  local worktree_root="$1" wt_git_dir="$2" my_pid="$3" my_session_id="$4"
+  local porcelain lock_output locked_pid locked_session_id state
+  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2/$3 must resolve as the inner bash's own positional parameters, not expand in this shell before exec.
+  # Double-quoting would open a shell-injection surface via $wt_git_dir.
+  _lib_capped bash -c 'set -o noclobber; printf "claude-code pid %s session %s\n" "$1" "$2" > "$3/locked"' _ "$my_pid" "$my_session_id" "$wt_git_dir" 2>/dev/null || return 1
+
+  porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || return 2
+  lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
+  read -r locked_pid locked_session_id <<< "$lock_output"
+  if [ "$state" -eq 0 ]; then
+    if [ -n "$locked_session_id" ]; then
+      [ "$locked_session_id" = "$my_session_id" ] && return 0
+    elif [ "$locked_pid" = "$my_pid" ]; then
+      return 0
+    fi
+  fi
+  return 2
+}
+
+# _lib_worktree_reclaim_dead_lock WORKTREE_ROOT WT_GIT_DIR DEAD_PID DEAD_SESSION_ID MY_PID MY_SESSION_ID
+# Claims a once-only, per-lock-identity right to evict a worktree lock the
+# caller has already proven dead via `kill -0`, then evicts it and
+# re-acquires it for MY_PID/MY_SESSION_ID. The claim is an O_EXCL create of
+# `WT_GIT_DIR/claude-evicted-lock-<DEAD_PID>-<DEAD_SESSION_ID or nosession>`
+# and is never removed -- see docs/design-decisions.md §36 for why a
+# release-free claim is the race-safe primitive here. Winning the claim
+# reads the raw lock file and unlinks it in the same subprocess only if its
+# content still matches the diagnosed-dead identity, closing the window a
+# separate reread-then-delete call pair would leave open between confirming
+# the lock's content and removing it.
+# Prints nothing. Returns 0 only on a verified reclaim; every failure path
+# returns 1 with the claim file left in place.
+_lib_worktree_reclaim_dead_lock() {
+  local worktree_root="$1" wt_git_dir="$2" dead_pid="$3" dead_session_id="$4" my_pid="$5" my_session_id="$6"
+  local claim_path="$wt_git_dir/claude-evicted-lock-${dead_pid}-${dead_session_id:-nosession}"
+
+  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2 must resolve as the inner bash's own positional parameters, not expand in this shell before exec.
+  # Double-quoting would open a shell-injection surface via $claim_path.
+  _lib_capped bash -c 'set -o noclobber; printf "claimed by claude-code pid %s\n" "$1" > "$2"' _ "$my_pid" "$claim_path" 2>/dev/null || return 1
+
+  local expected_reason="claude-code pid ${dead_pid}"
+  [ -n "$dead_session_id" ] && expected_reason="${expected_reason} session ${dead_session_id}"
+  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2 must resolve as the inner bash's own positional parameters, not expand in this shell before exec.
+  # Double-quoting would open a shell-injection surface via $expected_reason.
+  _lib_capped bash -c 'content=$(cat "$1" 2>/dev/null); [ "$content" = "$2" ] && rm -f "$1"' _ "$wt_git_dir/locked" "$expected_reason" 2>/dev/null || return 1
+
+  _lib_worktree_acquire_lock "$worktree_root" "$wt_git_dir" "$my_pid" "$my_session_id" && return 0
+  return 1
+}
+
 # _lib_worktree_collision_guard TARGET_PATH REPO_GIT_COMMON_DIR
 # Enforces that at most one live session holds write access to a given
 # linked worktree at a time. TARGET_PATH is any path inside the worktree to
@@ -999,23 +1163,59 @@ _lib_worktree_lock_pid() {
 # `unlock`/`remove` all still read and act on it correctly. A successful
 # write is re-read via porcelain to confirm our own pid before returning 0,
 # fail-closed on mismatch. A failed write (contended) re-reads porcelain to
-# diagnose the holder and denies -- this function never calls `git worktree
-# unlock` (verified empirically to have no ownership check), since an
-# in-function evict-then-relock would itself be racy against a second
-# evictor.
+# diagnose the holder: a live holder denies; a dead holder gets one
+# claim-gated reclaim attempt (_lib_worktree_reclaim_dead_lock) before
+# falling back to today's manual-unlock deny. This function still never
+# calls `git worktree unlock` itself (verified empirically to have no
+# ownership check) -- eviction removes the raw lock file directly, guarded
+# by an exclusive-create-only claim that is never released, which is what
+# makes it race-safe where a bare evict-then-relock sequence is not (see
+# docs/design-decisions.md §36).
 #
 # Known gaps (single-developer-machine threat model, not an adversarial
 # boundary):
 # - `kill -0` can't distinguish a dead PID from one owned by another user.
+#   The same root cause also covers PID reuse that already happened before
+#   or at the instant of that single call -- an unavoidable ambiguity, not
+#   a check-then-recheck window, since nothing downstream re-derives
+#   liveness.
 # - A non-contention write failure (a permission error, or `bash` missing
 #   from PATH) is misdiagnosed as a transient race and told to "retry" --
 #   permanently wrong advice in that case.
+# - `_lib_worktree_reclaim_dead_lock`'s re-acquisition call collapses
+#   `_lib_worktree_acquire_lock`'s exit codes 1 (write failed) and 2 (wrote
+#   but couldn't confirm) into a single failure -- a code-2 outcome (the
+#   lock was actually just removed and rewritten as this caller's own,
+#   unconfirmed lock) gets the same "no longer running, and could not be
+#   cleared automatically" deny message as a genuine failure, which could
+#   mislead a user into running `git worktree unlock` and stripping their
+#   own freshly-written lock.
 # - A write killed mid-write (the 5s `_lib_capped` timeout) can leave a
 #   truncated `locked` file, misdiagnosed as a foreign manual lock instead
 #   of our own timed-out write.
 # - O_EXCL/`noclobber` exclusivity is not guaranteed atomic on older
 #   NFS-mounted git-dirs, which would silently defeat this function's core
 #   guarantee -- out of scope for this threat model.
+# - A claim burnt by an interrupted eviction permanently disables
+#   auto-eviction for that one lock identity in that one worktree.
+# - Claim files are not garbage-collected.
+# - If the harness kills the hook, or `_lib_capped`'s own 5s timeout fires,
+#   after the lock removal succeeds but before reacquisition is confirmed,
+#   the worktree is left fully unlocked with an orphaned, permanently-burnt
+#   claim file. This is the one path that skips the deny-plus-manual-unlock
+#   fallback every other failure mode in this list otherwise guarantees.
+# - The reclaim path's aggregate `_lib_capped` call count is not a fixed
+#   constant across successful reclaims: it varies with
+#   `_lib_resolve_claude_pid`'s depth-dependent ancestor-PID-walk.
+# - Its fixed component is 6 ordinary-path calls (3 rev-parse + self-check
+#   porcelain + write + confirm-porcelain) plus a reclaim delta of exactly
+#   +4 -- about 1.67x, not triple.
+# - On a machine with neither `timeout` nor `gtimeout` on PATH,
+#   `_lib_capped_for`'s fallback runs every call uncapped (pre-existing
+#   gap).
+# - Narrows but does not eliminate the residual race described in
+#   docs/design-decisions.md §36 (a manual unlock racing this
+#   subprocess's own read-then-unlink).
 _lib_worktree_collision_guard() {
   local target_path="$1" repo_git_common_dir="$2"
   local worktree_root
@@ -1073,21 +1273,11 @@ _lib_worktree_collision_guard() {
     return 1
   fi
 
-  # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2/$3 must resolve as the inner bash's own positional parameters, not expand in this shell before exec -- double-quoting would either expand to nothing ($my_pid/$my_session_id aren't exported) or open a shell-injection surface via $wt_git_dir.
-  if _lib_capped bash -c 'set -o noclobber; printf "claude-code pid %s session %s\n" "$1" "$2" > "$3/locked"' _ "$my_pid" "$my_session_id" "$wt_git_dir" 2>/dev/null; then
-    porcelain=$(_lib_capped git -C "$worktree_root" worktree list --porcelain 2>/dev/null) || {
-      printf 'could not confirm the worktree lock for %s after acquiring it' "$worktree_root"
-      return 1
-    }
-    lock_output=$(_lib_worktree_lock_pid "$worktree_root" "$porcelain") && state=0 || state=$?
-    read -r locked_pid locked_session_id <<< "$lock_output"
-    if [ "$state" -eq 0 ]; then
-      if [ -n "$locked_session_id" ]; then
-        [ "$locked_session_id" = "$my_session_id" ] && return 0
-      elif [ "$locked_pid" = "$my_pid" ]; then
-        return 0
-      fi
-    fi
+  local acquire_status
+  _lib_worktree_acquire_lock "$worktree_root" "$wt_git_dir" "$my_pid" "$my_session_id" && acquire_status=0 || acquire_status=$?
+  if [ "$acquire_status" -eq 0 ]; then
+    return 0
+  elif [ "$acquire_status" -eq 2 ]; then
     printf 'the worktree lock for %s could not be confirmed after acquiring it — treating as unresolved' "$worktree_root"
     return 1
   fi
@@ -1122,9 +1312,11 @@ _lib_worktree_collision_guard() {
     0)
       if kill -0 "$locked_pid" 2>/dev/null; then
         printf 'this worktree is already in use by a live Claude Code session (pid %s) — wait for it to finish, or work in a different worktree' "$locked_pid"
+      elif _lib_worktree_reclaim_dead_lock "$worktree_root" "$wt_git_dir" "$locked_pid" "$locked_session_id" "$my_pid" "$my_session_id"; then
+        return 0
       else
         # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the deny message, not command substitution.
-        printf 'this worktree is locked by pid %s, which is no longer running; if confirmed, clear it with `git worktree unlock %s` and retry' "$locked_pid" "$worktree_root"
+        printf 'this worktree is locked by pid %s, which is no longer running, and could not be cleared automatically — clear it with `git worktree unlock %s` and retry' "$locked_pid" "$worktree_root"
       fi
       ;;
   esac

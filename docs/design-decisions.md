@@ -375,7 +375,7 @@ The agent also pins `model: opus` in its own frontmatter, in addition to the per
 
 `plan-architect` is deliberately a custom agent file rather than the harness built-in `Plan`. `Plan` (with `Explore`) is one of exactly two subagent types that skip the automatic CLAUDE.md/git-status startup load every other subagent gets ([Claude Code sub-agents](https://code.claude.com/docs/en/sub-agents), "Subagent Startup Context Loading"). `Plan`'s tool set and read-only boundary are also undocumented in this repo — a "mandate," not a registry `test_agent_roster.py` can assert against — where a custom agent's `tools: Read, Grep, Glob` frontmatter is pinned mechanically by the test suite.
 
-`plan-architect` holds no `Write`, `Edit`, `Bash`, or `Skill`: it returns finished plan prose for the dispatching session to insert verbatim into the plan file, rather than writing `.claude/plans/` itself. This sidesteps `require-plan-review.sh`'s gate, which has no write exemption for `.claude/plans/` the way it does for `agent-reviews/` — an agent holding `Write` that authored the plan directly would trip the gate on its own first write, then be denied every subsequent edit to the section it was still drafting, with no `Bash`/`Skill` to clear it itself.
+`plan-architect` holds no `Write`, `Edit`, `Bash`, or `Skill`: it returns finished plan prose for the dispatching session to insert verbatim into the plan file, rather than writing `.claude/plans/` itself. `require-plan-review.sh` exempts a `Write`/`Edit`/`MultiEdit` targeting a `.claude/plans/` file the same way it does `agent-reviews/`, so `plan-architect`'s no-`Write` choice stands on its own grounds independent of that gate.
 
 Rejected alternatives:
 - No `model:` frontmatter field at all — fails `test_agent_roster.py`'s `test_required_fields_present`, which requires a non-empty `model:` on every agent file.
@@ -414,13 +414,112 @@ A second, distinct property is equally unverified against the real CLI. `claude-
 - `docs/design-decisions.md` §28 — the prior decision this entry reverses, including the schema-size figures and the citations to the Claude Code settings reference and settings JSON Schema.
 - `.claude/plans/disable-artifact-workflow-default.md` — full assumption ledger, the go/no-go measurement, and Verification step 2's falsification test.
 
-## 32. `/code-review`'s marker short-circuit left `ready-for-review` untouched (2026-08-24)
+## 32. Worktree-lock fast path: reads stop reacquiring the lock (2026-08-28)
+
+The fast path calls `_lib_worktree_collision_guard` only when the lock is already present, so a read never reaches the guard's "unlocked" diagnosis. An absent lock falls through to full parsing, where a read is allowed unconditionally and a write re-runs the guard. Acquisition is a write-only side effect on both paths.
+
+The guard's contention tiebreak is first-write-wins: the first *write* — a git write via this hook, or a file write via `require-worktree-for-file-writes.sh`'s identical guard call — is what claims the worktree. This is the correct direction for a guard whose stated purpose is preventing two sessions from writing into one worktree. A read-only session was never the invariant it needed to protect.
+
+Two tradeoffs are accepted rather than closed.
+
+- The fast path's exclusion list (`cd`, `-C`, `(`, backtick) doesn't cover `||`/`&`. A `||`/`&`-chained git write such as `git fetch || git commit -m x` denies when the lock is absent, via the slow path's `||`/`&` write-cwd-ambiguity check. That check cannot distinguish a relocation-risky chain from a bare read-then-write chain with no `cd`. The deny names its own remedy and the window self-heals on the first lock acquisition from any source. Relaxing that deny for a no-`cd` chain is deferred to a separate change, since it loosens a security-relevant gate in the permissive direction and deserves its own review.
+- The fast path's python3-free exit now requires an already-held lock, narrower than before:
+  - A never-locked worktree's first git operation, read or write, falls through to full parsing.
+  - A foreign-locked worktree's python3-less write denies citing python3 rather than the true foreign-lock holder, because the fast path checks only the guard's exit code, not its reason. `test_python3_absent_against_foreign_lock_gives_misleading_reason` pins this case.
+
+### Sources
+
+- `.claude/plans/worktree-lock-conditional-reacquire.md` — full assumption ledger, the over-powered-primitive check (a bash-side read/write pre-filter and a non-acquiring "peek" guard mode were both rejected), and the behavioral test matrix.
+
+## 33. `skill-fidelity-reviewer`'s low cited-path edit rate is a citation-genre mismatch, not a reviewer-value signal (2026-08-30)
+
+The corrected `reviewer-yield` measurement (GH-762, PR #764) puts `skill-fidelity-reviewer`'s zero-finding-bucket cited-path edit rate well below every peer reviewer's. §9 established this agent's charter and its own findings-rate re-measurement instruction; it contains no discussion of the cited-path column, so citing it for why that rate is expected is a misattribution. This entry, not §9, is the record's home for the cited-path reasoning below.
+
+**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude/.claude/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
+
+**Mechanism 2: on a clean pass the scanned output names specifications, not the branch's work surface.** Citations are drawn from the last assistant text plus every `Write` blob. With `findings_path` set, the inline return is a one-line pointer, and the substance lives in the findings file. On a clean pass, that file's content is a dismissal list naming skills and skill bodies — the specs the agent read, not the diff it was handed. A branch is not normally editing the skill it invoked, which is what keeps the numerator small.
+
+Dispatch timing then inflates the denominator without touching that numerator. `/ready-for-review` spawns this agent once per branch at the last gate before handoff. The ship path at that point still produces real edits, but they are edits fixing other reviewers' findings, not this reviewer's own citations. `Active`, defined as "the session recorded any code edit at all," is a null control, not a path-specific one, so it is easily satisfied while the cited spec paths stay untouched.
+
+Together this means the cross-reviewer `Rate` comparison is not like-for-like. A `staff-*` reviewer carries `Bash`, re-fetches the diff inside its own context, and cites the diff's own files — the files the session edits next. `skill-fidelity-reviewer` carries `Read, Grep, Glob, Write`, no `Bash`, and cites the specifications it checked the diff against. Ranking the two against each other measures citation genre, not reviewer value, so §25's scope-widening decision and §9's charter and re-measurement instruction stand unchanged: no routing, trigger-prose, or dispatch-condition change follows from this rate.
+
+**Falsifier.** Cited paths are held only as sha256 digests and never surface as raw paths, so mechanism 2 cannot be checked against the tool's own output. It can be checked against the agent's own findings files under `agent-reviews/` in existing worktrees: if clean-pass findings files routinely name the branch's own diff paths rather than the skills and specs read, mechanism 2 is wrong and the low rate becomes a real "the session ignored what it was told" signal. The same follows if the agent's Output format later gains a required enumeration of files checked. Either observation reopens this entry.
+
+### Sources
+
+- `claude/.claude/scripts/transcript_analysis/reviewer_yield.py` — `_normalize_cited_path` (lexical, hashed join key) and `_reviewer_yield_cited_keys` (citation candidates drawn from the last assistant text and every `Write` blob).
+- `claude/.claude/agents/skill-fidelity-reviewer.md` — Name resolution (config-dir path reads); Output format (findings-file substance on a clean pass).
+- `claude/.claude/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
+- `docs/transcript-analysis.md`'s `reviewer-yield` section — the `Cited`/`Active`/`Edited`/`Rate` column definitions and the digest-only redaction note.
+- GH-762 / PR #764 — the reviewer-yield measurement fix this observation post-dates.
+
+## 34. Reviewer responsibility bounded to the diff under review, uniformly, with default-branch and cumulative-pass guards (2026-08-29)
+
+The redesign applies one uniform clause to every Change-type row: a spawn's exhaustive-enumeration duty is bounded to the diff already handed to it, but a defect outside that boundary the change causes, activates, or newly reaches stays in scope for the spawn's flagging duty. No per-row exemption list is needed to protect `ciso-reviewer`, `staff-sdet`, or any other row's cross-change reasoning.
+
+The boundary computes no new ref: it is simply the diff a spawn is already being handed (`git diff --cached` for the commit-gate pass, the same basis `require-code-review.sh` hashes), restated as file paths and line ranges for reviewers without `Bash`.
+
+`ready-for-review`'s cumulative PR-vs-base pass gets zero narrowing, enforced by a positive precondition rather than an opt-out flag: narrowing applies only when the diff under review is the currently-staged diff. Every context failing that precondition — the cumulative pass, a presentation-path review, an ad-hoc review — enumerates the full diff automatically, with no exclusion list to maintain. `ready-for-review/SKILL.md` carries its own mirrored applicability statement rather than relying solely on `code-review`'s precondition, because a session mid-way through several re-review rounds is exactly the case most likely to misclassify the cumulative pass as "just another round."
+
+The precondition additionally requires `HEAD` not be the repository's default branch. A direct commit to the default branch is followed by no `ready-for-review` cumulative pass at all, so the guard forces full, unnarrowed enumeration of that one commit. Worktree enforcement makes this rare in this repo specifically, but `claude/` installs to every stow consumer and not every consumer opts into worktree enforcement. Cross-commit protection generally comes from the causal-reach clause, applied uniformly to every row, not from this guard specifically.
+
+Responsibility-narrowing saves fix-loop churn, not reviewer reads — every non-prose reviewer still opens whole files for context, unchanged. Only the comment/prose row is additionally match-narrowed (it does not spawn at all when the boundary carries no comment/durable-doc prose), because it alone is closed-form with no cross-file reach; that is the one genuine token-read saving this design delivers.
+
+**Named residual, not fixed here.** Two `/code-review` invocations against the same staged state with no commit between them see an identical boundary under this design — it does not distinguish "already cleared this round" from "never reviewed" within a round, because both hand the same diff. `SKILL.md`'s existing requirement to pass prior findings plus what's been applied on re-review is the standing mitigation.
+
+### Sources
+
+- `.claude/plans/scope-code-review-delta-rounds.md` — full assumption ledger, mechanism list, and out-of-scope residuals.
+
+## 35. Skill evals run locally only; a CI eval harness stays declined (2026-08-29)
+
+`evals/run_skill_evals.py` measures a skill's declared behavior by launching `claude -p` under the operator's own Claude Code subscription auth and reports a per-case pass rate a human reads. Wiring the same harness into GitHub Actions was evaluated and declined. A CI runner *can* authenticate — `claude -p` accepts an `ANTHROPIC_API_KEY` — so the deciding ground is cost, not reachability:
+
+- Every sample is a full headless session.
+- Cost scales as K samples × cases per skill.
+- `disposition-fidelity` adds about four `claude -p` calls per sample on top of that.
+- All of it bills per token, off-subscription.
+
+Two secondary grounds stand independently:
+
+- Triggering is probabilistic, so a single-sample binary pass/fail is flaky.
+- A public-repo workflow would need `--dangerously-skip-permissions` over PR-authored content.
+
+`evals/README.md`'s "Why local only — never CI" section holds the full statement and is the site to update when one ground changes. The same posture covers `evals/measure_subagent_model_resolution.py`. The substitute for CI coverage is a manual pre-merge run against the skill the change touches, with the pass rate recorded in the PR description.
+
+## 36. Auto-clearing a dead-PID worktree lock via a release-free claim file (2026-08-28)
+
+`_lib_worktree_collision_guard` (`claude/.claude/hooks/_lib.sh`) denied a write against a worktree whose lock it had just conclusively proven dead via `kill -0`, requiring a human to run `git worktree unlock <path>` and retry manually. This mechanism accounted for 48 identical deny-then-manual-unlock-then-retry cycles in a two-week window (GH-754), and a background subagent dispatch hitting the same lock had no way to clear it at all, since approving the manual unlock needs a human the dispatch does not have (GH-747).
+
+The fix makes eviction of a proven-dead lock a **once-only right, claimed by an exclusive create and never released**: before removing a lock it has proven dead, a caller must win an `O_EXCL` create of a per-lock-identity claim file in the worktree's own admin directory (`<wt-git-dir>/claude-evicted-lock-<dead-pid>-<dead-session-id or nosession>`). Winning the claim reads the raw lock file and unlinks it in the same subprocess, only if its content still matches the holder it proved dead — closing the window a separate reread-then-delete call pair would leave open between confirming the lock's content and removing it. No other *evictor* holding the same claim can land a write in between. The residual window this narrows to, rather than closes, is a manual `git worktree unlock` plus a third party's fresh acquisition landing within that one subprocess's own read-then-unlink instructions, which could still in principle race it. Closing that fully would need an OS-level primitive (`flock`/`lockf`), rejected below for cross-platform reasons. The winner then re-acquires the lock through the guard's existing atomic acquisition path (`_lib_worktree_acquire_lock`). The guard returns 0 on a successful reclaim, so the Edit/Write/git call that triggered the hook proceeds in the same `PreToolUse` invocation — no manual `git worktree unlock`, no retry. Every losing claimant denies with the existing message, reworded since the guard now attempts a clearance rather than only diagnosing one: `this worktree is locked by pid %s, which is no longer running, and could not be cleared automatically — clear it with \`git worktree unlock %s\` and retry`.
+
+A successful reclaim is less observable than an ordinary first-time acquisition on a virgin worktree. An ordinary acquisition emits an `additionalContext` note (via `_lib_emit_allow_with_context`) explaining that the write just re-acquired the lock; a reclaim never does. That note's callers gate it on `_lib_worktree_lock_absent`, which tests only whether the lock file was absent before the guard's own write. That check is never true for a reclaim, since a lock file being present is the reclaim's own precondition. The claim file is therefore the only after-the-fact detection surface a reclaim gets. This is why the Revisit triggers below already recommend periodically grepping for orphaned claim files: it is the same surface, not a new recommendation.
+
+**Supersedes** `.claude/plans/worktree-collision-guard.md:86-108`, which rejected in-hook eviction on exactly this design shape: "git's `worktree lock` is exclusive-create but `worktree unlock` is not compare-and-swap, there is no race-safe way to auto-evict inline without adding a second coordination layer on top of the first." That reasoning is still correct, and this design doesn't argue with it — it adds the second coordination layer the prior analysis said was needed, but the layer is **exclusive-create-only, with no unlock half at all**. The prior rejection's own live-reproduced counterexample was a race in the *unlock* half of an evict-then-relock sequence (one session unlocks-and-relocks while a second session's stale `unlock` call lands afterward and strips the first session's fresh lock); a claim that is created once and never removed has no unlock half to race. A conventional acquire/release mutex would reintroduce the same problem one level up, since a mutex that leaks (the hook killed mid-critical-section) needs staleness handling, and stale-mutex reaping is itself an unconditional unlink racing a second reaper — never releasing is what makes the claim race-safe where releasing safely could not be made race-safe.
+
+Cross-reference: §29 fixed a different bug in the same function (self-recognition keyed on `session_id` instead of PID, so a resumed session's own lock survives `claude --continue`). This entry builds on that format directly — the claim filename's `<dead-session-id or nosession>` component is the same session_id §29 introduced, falling back to a `nosession` placeholder for a pre-§29, old-format lock that carries no session_id field.
+
+Rejected alternatives, from lightest to heaviest:
+- No coordination at all (unlink-then-relock with no claim) — the exact shape §29's plan document already live-reproduced as unsafe.
+- The existing `O_EXCL` create on the lock file alone, with no separate claim — exclusive for *creating* the lock, but eviction needs an *unlink* first, and unlink is unconditional; the unlink-to-create window stays unprotected.
+- The existing post-write verification re-read alone — two evictors can each verify their own write at a different instant and both return 0, which is why the guard's `TestCollisionGuardRereadRace` tests assert a fail-closed outcome rather than treating that re-read as a mutual-exclusion primitive.
+- `git worktree unlock` plus a new ownership token in the reason string — the token has to be checked and then acted on in two separate steps, so it's the same non-atomic sequence with an extra field, and `unlock` still has no ownership check, so anyone can strip the token-bearing lock regardless.
+- A long-lived daemon or watcher reaping dead locks out of band — a far more privileged, invasive execution context (a persistent process, its own lifecycle, its own crash story) for a problem one file create solves, and it would still race a live session acquiring a lock it's mid-reap.
+- OS-level `flock`/`lockf` — neither CLI is present on both platforms this hook runs on (macOS ships `lockf` but not `flock`; CI's `ubuntu-24.04` ships `flock` but not `lockf`), and reaching `flock(2)` from bash would need a `python3` spawn, adding a dependency this guard doesn't otherwise carry.
+- **A runtime kill-switch** (a `.claude/worktree-optout`-style file gating auto-eviction specifically) — rejected as unnecessary ceremony. Reverting the `_lib.sh` diff cleanly restores deny-only behavior with no migration step: any claim files already created by the time of a revert become inert, unused files (bounded by worktree lifetime, since they live in the worktree's own admin directory and are removed with it). A code revert is an adequate rollback path, so a parallel runtime toggle would be a second lever doing the same job the first already does.
+
+### Sources
+
+- `.claude/plans/auto-clear-dead-worktree-locks.md` — full plan, assumption ledger, and mechanism justifications.
+
+**Revisit triggers.** Re-count locked-but-dead worktrees on a developer machine after ~30 days and compare against the pre-fix baseline (70 worktrees locked, 61 of 66 unique locking PIDs dead, at the time this plan was authored) — a count that hasn't dropped means auto-eviction isn't firing in practice, not that the problem went away. Separately, check for orphaned claim files (`find <repo>/.git/worktrees/*/claude-evicted-lock-* ` across active worktrees) left behind by an interrupted eviction — each one permanently disables auto-eviction for that one lock identity in that one worktree, and a growing count over time would indicate the harness is killing hooks mid-reclaim more often than the design's bounded-worst-case reasoning assumed.
+## 37. `/code-review`'s marker short-circuit left `ready-for-review` untouched (2026-08-24)
 
 `/code-review`'s new `Step 0.1 — Short-circuit already-reviewed diff` (`code-review/SKILL.md:23`) calls `marker.sh check code-review` and reports "already reviewed clean" without dispatching the specialist panel when the existing marker's hash already matches the current staged diff. `ready-for-review` was deliberately scoped out of getting an equivalent short-circuit of its own: its step 8 already writes a completion marker keyed on the post-resync HEAD SHA (`ready-for-review/SKILL.md:41`), which covers whole-gate idempotency for the cumulative PR-vs-base diff its step 3 reviews. `/code-review`'s marker is keyed on the *staged* diff instead, and step 3's own text explains why that can't substitute: "Because the reviewed diff is not the staged diff, do NOT write the review-completion marker" (`ready-for-review/SKILL.md:77`). A staged-diff marker answers a different question than the one step 3 needs answered, so no new mechanism was added on the `ready-for-review` side.
 
 That left one real hazard inside `/code-review` itself: step 3 invokes `/code-review` with the working tree already fully committed, so the staged diff at that point is normally empty. `marker.sh check`'s recipe hashes `git diff --cached`, and an empty diff hashes to a fixed value — if any earlier, unrelated `/code-review` run in the same repo happened to write a marker for an empty staged diff (plausible after a stray re-invocation right after a commit), Step 0.1 would match against it and silently skip step 3's cumulative-diff review. `marker.sh check code-review` closes this by treating an empty staged diff as an unconditional no-match (`git diff --cached --quiet` before ever computing or comparing a hash) — the recipe never even reaches the point where cross-context collision could occur, so the composition stays safe without `ready-for-review` needing to know anything about `/code-review`'s internal short-circuit.
 
-## 33. Subagent turn-count nudge threshold, and a renewed rejection of a hard per-dispatch cap (2026-08-24)
+## 38. Subagent turn-count nudge threshold, and a renewed rejection of a hard per-dispatch cap (2026-08-24)
 
 `nudge-long-turn-subagent.sh` (`claude/.claude/hooks/`) nudges — informational only, never blocking — when a subagent dispatch's own turn count crosses a measured outlier threshold. The threshold, 340, was chosen from a corpus scan of every `subagents/*.jsonl` transcript across this machine's personal-account corpus (4,058 dispatches with recorded turns): p50 = 28 turns, p90 = 82, p95 = 136, p99 = 339, max = 4,178 (`.claude/plans/prevent-runaway-subagent-cost.md`'s corpus-measurement bullet). 340 sits just above that measured p99, so the hook nudges only the same roughly-1%-outlier tail the corpus scan identified, not ordinary long-running work. The incident that motivated this mechanism (see `.claude/plans/prevent-runaway-subagent-cost.md`'s Context section for the full narrative) would have crossed this threshold after roughly 13% of its eventual turn count.
 
@@ -437,7 +536,7 @@ A hard per-dispatch turn or time cap — killing a dispatch outright at some cei
 - §11 — `code-writer`'s deliberate absence of a turn cap.
 - `docs/case-studies/check-runner.md` — the Retirement section's follow-on measurement.
 
-## 34. `marker.sh check code-review` gains an age bound; `write`/commit-gate stay hash-only (2026-08-24)
+## 39. `marker.sh check code-review` gains an age bound; `write`/commit-gate stay hash-only (2026-08-24)
 
 `marker.sh check code-review` — the short-circuit `/code-review`'s Step 0.1 consults before dispatching its specialist panel — treats a hash-matching marker as `no-match` when the marker file's mtime is older than `CODE_REVIEW_CHECK_MAX_AGE_SECONDS` (default 86400, 24h); a hash match alone is not sufficient. A marker written weeks or months ago for a diff that happens to recur (a revert-then-reapply, or two branches independently producing byte-identical staged content) would otherwise let `check` skip the specialist panel indefinitely.
 

@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import _worktree_lock_reason
+from helpers import build_path_without
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -374,6 +376,116 @@ def test_missing_emit_deny_loud_fail() -> None:
     )
 
 
+def test_lib_emit_allow_with_context_emits_expected_envelope() -> None:
+    """Emits the PreToolUse allow envelope with additionalContext set to
+    the jq-encoded message, mirroring _lib_emit_deny's envelope shape but
+    with permissionDecision "allow" and no permissionDecisionReason."""
+    result = _run_lib_call('_lib_emit_allow_with_context "test message"', env=dict(os.environ))
+    assert result.returncode == 0, repr(result)
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "additionalContext": "test message",
+        }
+    }
+
+
+def test_lib_emit_allow_with_context_degrades_to_no_output_when_jq_absent(tmp_path: Path) -> None:
+    """No jq on PATH -> _lib_jq's degrade path returns empty, and the
+    caller-facing contract is a silent allow (no stdout). Unlike
+    _lib_emit_deny, which hard-blocks (exit 2) on this same jq-absent case,
+    losing an informational note is not the fail-closed case _lib_emit_deny
+    protects against."""
+    farm_dir = tmp_path / "path-farm"
+    farm_dir.mkdir()
+    restricted_path = build_path_without("jq", farm_dir)
+
+    env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+    result = _run_lib_call('_lib_emit_allow_with_context "test message"', env=env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "", repr(result.stdout)
+    assert result.stderr == "", repr(result.stderr)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+def test_lib_worktree_lock_absent_reports_absent_under_eacces(tmp_path: Path) -> None:
+    """`[ -e ... ]` can't distinguish "doesn't exist" from "exists but
+    unreadable". chmod 000 on the git-dir denies stat(2) on the lock file
+    inside it with EACCES. Empirically `[ -e ]` resolves that denial to
+    false, so _lib_worktree_lock_absent reports the lock "absent" (returns
+    0/true) even though it is actually present underneath. Pins this
+    resolution so a future change to the pre-check's implementation can't
+    silently flip it."""
+    git_dir = tmp_path / "git-dir"
+    git_dir.mkdir()
+    (git_dir / "locked").write_text("claude-code pid 1\n")
+    git_dir.chmod(0o000)
+    try:
+        result = _run_lib_call(f'_lib_worktree_lock_absent "{git_dir}"', env=dict(os.environ))
+    finally:
+        git_dir.chmod(0o755)
+    assert result.returncode == 0, (
+        f"expected _lib_worktree_lock_absent to report 'absent' (exit 0) under EACCES: {result!r}"
+    )
+
+
+def test_lib_worktree_lock_absent_stale_read_survives_opposite_race(
+    isolated_home: Path, opted_in_with_worktree: tuple[Path, Path]
+) -> None:
+    """Deterministic version of the "opposite-direction race" the header
+    comments document:
+
+    1. The pre-check reads "locked" (WAS_UNLOCKED=false).
+    2. The lock is then cleared, standing in for a genuinely concurrent
+       `git worktree unlock`.
+    3. The guard performs a real fresh acquisition.
+
+    WAS_UNLOCKED stays false, since the pre-check's stale read is never
+    corrected retroactively. So a caller wired this way emits no
+    fresh-lock message despite the real acquisition that just happened."""
+    opted_in_repo, worktree = opted_in_with_worktree
+    subprocess.run(
+        ["git", "-C", str(worktree), "worktree", "lock", str(worktree), "--reason", "pre-existing"],
+        check=True,
+    )
+    common_dir = subprocess.run(
+        ["git", "-C", str(opted_in_repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    git_dir = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    script = textwrap.dedent(f"""
+        . "{_LIB_SH}"
+        WAS_UNLOCKED=false
+        _lib_worktree_lock_absent "{git_dir}" && WAS_UNLOCKED=true
+        git -C "{worktree}" worktree unlock "{worktree}"
+        _lib_worktree_collision_guard "{worktree}" "{common_dir}" >/dev/null
+        printf '%s' "$WAS_UNLOCKED"
+    """)
+    env = {**os.environ, "HOME": str(isolated_home)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env=env, check=False
+    )
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "false", (
+        f"pre-check's stale WAS_UNLOCKED read must not be corrected by the "
+        f"guard's later real acquisition: {result!r}"
+    )
+    assert _worktree_lock_reason(worktree) is not None, (
+        "the guard's own call is expected to have genuinely re-locked the worktree"
+    )
+
+
 def test_null_literal_input_denied() -> None:
     """JSON null literal → DENY (empty TOOL_NAME after jq, path c).
 
@@ -676,10 +788,11 @@ def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -
 # --- _lib_active_bypass_marker_live ---------------------------------------
 #
 # The four bypass-shaped gates (require-{memory-skill,plan-review,
-# ready-for-review,respond-pr}.sh) share this helper, so the liveness,
+# ready-for-review,respond-pr}.sh), plus nudge-handoff-near-context-cap.sh's
+# hard-block suppression, share this helper, so the liveness,
 # orphan-eviction, and traversal properties are pinned once here rather than
-# four times over. Each hook's own test file still asserts the disposition its
-# gate produces when the helper returns false, which is what differs by gate.
+# five times over. Each caller's own test file still asserts the disposition
+# it produces when the helper returns false, which is what differs by caller.
 
 _MARKER_DIR_NAME = ".test-skill-active.d"
 
@@ -1111,6 +1224,23 @@ class TestLibRealpathM:
         result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
         assert result.returncode != 0 or not result.stdout.strip(), (
             f"expected fail-closed (empty/nonzero) for a `..`-bearing unresolved suffix, "
+            f"got stdout={result.stdout!r} rc={result.returncode}"
+        )
+
+    def test_forced_fallback_fails_closed_on_dangling_symlink(self, tmp_path: Path) -> None:
+        """A dangling symlink's own leaf is `[ -e ]`-false, so the fallback's
+        ancestor walk would otherwise skip past it and reattach its name as
+        a literal, unresolved suffix component -- letting a same-prefix
+        boundary check (require-plan-review.sh's plan-file and
+        agent-reviews/ exemptions) treat the symlink's own path as if it
+        resolved inside the boundary, when its real target does not. Fails
+        closed (empty output, exit 1) instead."""
+        symlink_path = tmp_path / "plans" / "evil.md"
+        symlink_path.parent.mkdir(parents=True)
+        symlink_path.symlink_to(tmp_path / "outside" / "target.py")
+        result = _run_realpath_m(str(symlink_path), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0 or not result.stdout.strip(), (
+            f"expected fail-closed (empty/nonzero) for a dangling symlink, "
             f"got stdout={result.stdout!r} rc={result.returncode}"
         )
 

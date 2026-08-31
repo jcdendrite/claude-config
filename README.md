@@ -126,7 +126,7 @@ Linear pipeline: plan-it → plan-review → code → code-review → commit →
 ```mermaid
 flowchart LR
     A[/plan-it/] --> B[/plan-review/]
-    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists"| EPM([ExitPlanMode / present to user])
+    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists\n(exempt: writes to the plan file itself)"| EPM([ExitPlanMode / present to user])
     EPM --> C([Write code])
     C --> D[/code-review/]
     D -->|"require-code-review.sh\ngates git commit"| E([git commit])
@@ -155,7 +155,7 @@ flowchart LR
 
 | Hook | Gates | Cleared by |
 |---|---|---|
-| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` marker covering the current plan set |
+| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
@@ -258,7 +258,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
-Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one. Run that remedy from the interactive session before dispatching into the worktree, after confirming the pid is dead with `ps -p <pid>`. A subagent that hits the stale lock cannot clear it itself — approving a mutating git command needs a human the background dispatch does not have.
+Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid. A worktree whose holder has since exited has its lock automatically reclaimed and re-acquired for the current caller within the same hook invocation — no manual `git worktree unlock` step, no retry. This lets a background subagent dispatch clear it itself with no human in the loop. Reclaim is a once-only right per lock identity; see `docs/design-decisions.md` §36 for the eviction-claim mechanism and its failure-mode fallback.
 
 #### Activating enforcement on a repo
 
@@ -511,6 +511,13 @@ ShellCheck takes no flags on the command line — they live in the repo-root
 The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
 
 The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
+
+`-n auto` resolves to the machine's logical CPU count. To cap it:
+
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/` and `select-tests.py`.
+- Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
+- When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
+- Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 

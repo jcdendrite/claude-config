@@ -21,7 +21,7 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
-# The 17 single-command tilde-form shapes the hook accepts — single source of
+# The 19 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -34,10 +34,12 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh activate ready-for-review",
     "~/.claude/scripts/marker.sh activate respond-pr",
     "~/.claude/scripts/marker.sh activate memory-skill",
+    "~/.claude/scripts/marker.sh activate handoff",
     "~/.claude/scripts/marker.sh deactivate plan-review",
     "~/.claude/scripts/marker.sh deactivate ready-for-review",
     "~/.claude/scripts/marker.sh deactivate respond-pr",
     "~/.claude/scripts/marker.sh deactivate memory-skill",
+    "~/.claude/scripts/marker.sh deactivate handoff",
     "~/.claude/scripts/marker.sh clear-stale",
     "~/.claude/scripts/marker.sh clear-stale --dry-run",
     "~/.claude/scripts/marker.sh resolve-session-id",
@@ -48,7 +50,7 @@ TILDE_MARKER_SHAPES = [
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 17 single-command shapes, each must be allowed       #
+    # Valid shapes — 19 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -149,7 +151,7 @@ class TestEnforceMarkerScriptShape:
     # permitted for any op/target combination: the chain's end state is   #
     # identical to running each op separately, and every op is already    #
     # individually allowlisted or harmless (clear-stale). These are NOT   #
-    # single shapes and must NOT appear in the 16-shape parametrize list  #
+    # single shapes and must NOT appear in the 19-shape parametrize list  #
     # above.                                                              #
     # ------------------------------------------------------------------ #
 
@@ -389,6 +391,16 @@ class TestEnforceMarkerScriptShape:
     def test_check_missing_skill_argument_denied(self):
         """check requires a skill argument -- bare `check` must be denied."""
         cmd = "~/.claude/scripts/marker.sh check"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_handoff_extra_arg_denied(self):
+        """activate handoff with a trailing arg must be denied."""
+        cmd = "~/.claude/scripts/marker.sh activate handoff extra"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_handoff_bad_suffix_denied(self):
+        """handoff_bad is not in the allowlist."""
+        cmd = "~/.claude/scripts/marker.sh activate handoff_bad"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     # ------------------------------------------------------------------ #
@@ -665,7 +677,7 @@ class TestGateReleaseAuthority:
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
-        "target", ["plan-review", "ready-for-review", "respond-pr", "memory-skill"]
+        "target", ["plan-review", "ready-for-review", "respond-pr", "memory-skill", "handoff"]
     )
     def test_activate_denied_for_no_release_agents(self, agent_type, target):
         """`activate` is the more dangerous verb: the active-bypass marker holds a

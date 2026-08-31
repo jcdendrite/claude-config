@@ -390,6 +390,58 @@ class TestCheckSkillLength:
             == "deny"
         )
 
+    def test_memory_files_skill_over_default_under_override_allows(
+        self, isolated_home, tmp_path
+    ):
+        """ai-instruction-and-memory-files/SKILL.md gets a 215-line cap; 210 lines (over 200, under 215) → allow."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
+            parents=True
+        )
+        (repo / memory_path).write_text(make_skill_content(195))
+        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / memory_path).write_text(make_skill_content(210))
+        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_memory_files_skill_over_override_denies(self, isolated_home, tmp_path):
+        """ai-instruction-and-memory-files/SKILL.md over the 215-line override and growing → deny."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
+            parents=True
+        )
+        (repo / memory_path).write_text(make_skill_content(210))
+        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / memory_path).write_text(make_skill_content(216))
+        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, skill_repo
     ):

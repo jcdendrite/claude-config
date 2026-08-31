@@ -26,8 +26,8 @@ Subcommands:
   status     Report every completion marker (code-review, skill-review,
              plan-review, ready-for-review) for this repo and every
              active-bypass marker (plan-review, ready-for-review,
-             respond-pr, memory-skill) for this session, each as live,
-             historical, or absent. Takes no skill argument. Evicts a
+             respond-pr, memory-skill, handoff) for this session, each as
+             live, historical, or absent. Takes no skill argument. Evicts a
              stale (dead-PID) active-bypass marker for this session as a
              side effect of classifying it.
   check      Report whether a completion marker already matches the
@@ -37,8 +37,8 @@ Subcommands:
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
-  activate    plan-review | ready-for-review | respond-pr | memory-skill
-  deactivate  plan-review | ready-for-review | respond-pr | memory-skill
+  activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
+  deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
   check       code-review
 EOF
 }
@@ -226,7 +226,7 @@ _marker_mtime_epoch() {
 # _resolve_code_review_check_max_age_seconds
 # Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
 # deliberately conservative, ungrounded choice (docs/design-decisions.md
-# §33). Malformed override (empty, zero, non-digit, zero-padded, or 9+
+# §38). Malformed override (empty, zero, non-digit, zero-padded, or 9+
 # digits) falls back to the default -- same guard shape as
 # nudge-long-turn-subagent.sh's resolve_threshold.
 _resolve_code_review_check_max_age_seconds() {
@@ -458,8 +458,14 @@ case "$SUBCOMMAND" in
         mkdir -p "$CONFIG_DIR/.memory-skill-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID"
         ;;
+      handoff)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        mkdir -p "$CONFIG_DIR/.handoff-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
+        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -485,8 +491,12 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID"
         ;;
+      handoff)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        rm -f "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill\n" "$SKILL" >&2
+        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -583,6 +593,7 @@ case "$SUBCOMMAND" in
     _status_report_active_bypass ready-for-review ".ready-for-review-active.d" "$SESSION_ID"
     _status_report_active_bypass respond-pr ".respond-pr-active.d" "$SESSION_ID"
     _status_report_active_bypass memory-skill ".memory-skill-active.d" "$SESSION_ID"
+    _status_report_active_bypass handoff ".handoff-active.d" "$SESSION_ID"
     ;;
   check)
     case "$SKILL" in

@@ -203,48 +203,64 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert _mod.HOOKS_TESTS_DIR in result.target_paths
 
-    def test_skill_management_hooks_and_skills_change_is_unmatched_and_falls_open(self):
-        """Only LOVABLE_CLOUD_DIR is broadly scoped under plugins/, so a
-        hooks/*.sh or SKILL.md change under any other plugin (here:
-        skill-management) falls open to the full suite instead of
-        silently under-selecting."""
+    def test_skill_management_hooks_and_skills_change_selects_matching_domain_tests(self):
+        """test_hook_alignment.py and test_lib.py glob plugins/*/hooks/*.sh
+        generically, across every plugin, not only lovable-cloud, so a
+        skill-management hooks change now selects HOOKS_TESTS_DIR instead of
+        falling open. test_skills.py globs plugins/*/skills/*/SKILL.md just
+        as generically, so a skill-management skills change selects
+        SKILLS_TESTS_DIR."""
         result = _mod.select_pytest_targets(["plugins/skill-management/hooks/require-skill-review.sh"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
 
         result = _mod.select_pytest_targets(["plugins/skill-management/skills/skill-review/SKILL.md"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_npm_semver_hooks_and_skills_change_is_unmatched_and_falls_open(self):
-        """Same safety net as skill-management, for npm-semver."""
+    def test_npm_semver_hooks_and_skills_change_selects_matching_domain_tests(self):
+        """Same plugin-generic plugins/*/hooks/*.sh and
+        plugins/*/skills/*/SKILL.md globs as skill-management, for
+        npm-semver."""
         result = _mod.select_pytest_targets(["plugins/npm-semver/hooks/require-npm-version-bump.sh"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
 
         result = _mod.select_pytest_targets(["plugins/npm-semver/skills/npm-semver/SKILL.md"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_plugin_semver_hooks_and_skills_change_is_unmatched_and_falls_open(self):
-        """Same safety net as skill-management, for plugin-semver."""
+    def test_plugin_semver_hooks_and_skills_change_selects_matching_domain_tests(self):
+        """Same plugin-generic plugins/*/hooks/*.sh and
+        plugins/*/skills/*/SKILL.md globs as skill-management, for
+        plugin-semver."""
         result = _mod.select_pytest_targets(["plugins/plugin-semver/hooks/require-plugin-version-bump.sh"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
 
         result = _mod.select_pytest_targets(["plugins/plugin-semver/skills/plugin-semver/SKILL.md"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_claude_hook_review_skills_change_is_unmatched_and_falls_open(self):
-        """Same safety net as skill-management, for claude-hook-review.
+    def test_claude_hook_review_skills_change_selects_skills_tests(self):
+        """Same plugin-generic plugins/*/skills/*/SKILL.md glob as
+        skill-management, for claude-hook-review.
 
         This plugin has no hooks/ directory of its own, only skills/, so
         only the SKILL.md case applies.
         """
         result = _mod.select_pytest_targets(["plugins/claude-hook-review/skills/claude-hook-review/SKILL.md"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_plugin_skills_nested_subdirectory_change_also_selects_skills_tests(self):
+        """_is_plugin_skills_change matches any depth under plugins/*/skills/,
+        not just the single-level plugins/*/skills/*/SKILL.md shape the
+        globs in test_skills.py actually use -- a SKILL.md nested one level
+        deeper than any real glob reaches must still select SKILLS_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["plugins/npm-semver/skills/npm-semver/subdir/SKILL.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
     def test_multi_domain_change_unions_both_target_sets(self):
         result = _mod.select_pytest_targets([
@@ -282,7 +298,11 @@ class TestSelectPytestTargets:
         assert result.reason == "global-trigger"
 
     def test_unmatched_path_falls_open_to_full_suite(self):
-        result = _mod.select_pytest_targets(["README.md"])
+        """.gitignore matches no domain rule and no cross-domain exception --
+        CI's own SKIP_REGEX doesn't list it either, so select-tests.py must
+        not route it to an empty target (its empty-target set must stay a
+        subset of CI's confirmed-unread set)."""
+        result = _mod.select_pytest_targets([".gitignore"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
@@ -317,6 +337,183 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
+    def test_plans_dir_change_selects_no_tests(self):
+        """No test reads any file under .claude/plans/ by path or
+        subprocess, so a plan change is covered without pulling in the
+        full-suite fallback."""
+        result = _mod.select_pytest_targets([".claude/plans/some-plan.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_plans_dir_sibling_directory_sharing_prefix_does_not_match(self):
+        """_is_under's directory-boundary check requires an exact match or a
+        `directory + "/"` prefix. .claude/plans-archive/ shares PLANS_DIR's
+        string prefix but is a distinct sibling directory, so it must not
+        match."""
+        result = _mod.select_pytest_targets([".claude/plans-archive/x.md"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_changelog_md_change_selects_no_tests(self):
+        """test_ci_path_filter.py is the only test that references
+        CHANGELOG.md. It matches it as a static CI ignore-paths allowlist
+        entry and never reads its content."""
+        result = _mod.select_pytest_targets([_mod.CHANGELOG_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == ()
+
+    def test_transcript_analysis_doc_md_change_selects_hooks_and_skills_tests(self):
+        """No test reads docs/transcript-analysis.md's content by path --
+        every existing reference is a source-code comment citing the doc for
+        human readers -- but it's still covered by the docs/ blanket like
+        every other docs/*.md file."""
+        result = _mod.select_pytest_targets(["docs/transcript-analysis.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_transcript_analysis_architecture_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
+        reads this exact file's content by path to pin its module list, in
+        addition to the docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR,
+        since test_skills.py's test_doc_has_no_state_path also parametrizes
+        over it."""
+        result = _mod.select_pytest_targets([_mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
+
+    def test_docs_dir_change_selects_hooks_and_skills_tests(self):
+        """The docs/ blanket covers any file directly under docs/:
+        test_hook_alignment.py, test_doc_counts.py (both HOOKS_TESTS_DIR),
+        and test_skills.py's test_doc_has_no_state_path (SKILLS_TESTS_DIR)
+        all read docs/*.md files by path."""
+        result = _mod.select_pytest_targets(["docs/some-guide.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_docs_reports_nested_file_change_also_selects_hooks_and_skills_tests(self):
+        """_is_under matches any depth under DOCS_DIR, so a nested
+        docs/reports/*.md file is covered by the same blanket as a
+        top-level docs/*.md file. Over-selecting here is deliberate: only
+        test_skills.py's test_doc_has_no_state_path excludes docs/reports/**
+        from its own corpus (preserved historical records, CLAUDE.md Axis 3),
+        and over-selection is the safe direction."""
+        result = _mod.select_pytest_targets(["docs/reports/2026-08-audit.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_readme_md_change_selects_hooks_and_skills_tests(self):
+        """test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and
+        token-cap counts in README.md. test_skills.py's
+        test_doc_has_no_state_path (SKILLS_TESTS_DIR) also reads it for the
+        per-account state-path contract."""
+        result = _mod.select_pytest_targets([_mod.README_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_install_sh_change_selects_hooks_tests(self):
+        """The eleven test_install_sh_*.py modules and test_shellcheck.py,
+        both in HOOKS_TESTS_DIR, read install.sh by path."""
+        result = _mod.select_pytest_targets([_mod.INSTALL_SH])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+
+    def test_claude_settings_json_change_selects_hooks_and_skills_tests(self):
+        """test_hook_alignment.py and test_doc_counts.py (HOOKS_TESTS_DIR)
+        read this file's permissions and skillOverrides entries by path.
+        test_skills.py (SKILLS_TESTS_DIR) reads it for the
+        skillOverrides-to-docs/skills.md cross-check."""
+        result = _mod.select_pytest_targets([_mod.CLAUDE_SETTINGS_JSON])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_global_claude_md_change_selects_hooks_and_skills_tests(self):
+        """test_skills.py (SKILLS_TESTS_DIR) reads this file by path in six
+        places, including test_global_claude_md_has_no_state_path.
+        test_doc_counts.py (HOOKS_TESTS_DIR) reads it by path in
+        _count_ground_every_choice_categories. test_nudge_transcript_toolkit.py's
+        TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR) also picks it up via its
+        repo-wide rglob("*.md") content scan."""
+        result = _mod.select_pytest_targets([_mod.GLOBAL_CLAUDE_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_root_claude_md_change_selects_hooks_tests(self):
+        """No test reads the repo-root CLAUDE.md by path -- unlike
+        GLOBAL_CLAUDE_MD, it has no SKILLS_TESTS_DIR reader. It's still
+        picked up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
+        (HOOKS_TESTS_DIR) repo-wide rglob("*.md") content scan."""
+        result = _mod.select_pytest_targets([_mod.ROOT_CLAUDE_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+
+    def test_root_rules_dir_change_selects_skills_tests(self):
+        """test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this
+        directory and RULES_DIR (claude/.claude/rules/) for frontmatter
+        validation."""
+        result = _mod.select_pytest_targets([".claude/rules/settings-json-conventions.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_root_skills_dir_change_selects_skills_tests(self):
+        """test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
+        .claude/skills/*/SKILL.md by path, one of three SKILL.md-glob roots
+        alongside SKILLS_DIR and plugins/*/skills/*/SKILL.md."""
+        result = _mod.select_pytest_targets([".claude/skills/code-review-claude-config/SKILL.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_skills_test_tree_change_selects_skills_tests(self):
+        """The skills domain's own test directory previously matched no
+        rule -- only a literal SKILL.md filename triggered the skills
+        domain. The new _is_under(p, SKILLS_TESTS_DIR) blanket closes that
+        gap, mirroring the hooks and scripts domains' own blanket
+        _is_under() rules."""
+        result = _mod.select_pytest_targets(["claude/.claude/skills/tests/test_skills.py"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_non_lovable_cloud_plugin_agents_change_selects_hooks_and_skills_tests(self):
+        """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
+        (SKILLS_TESTS_DIR) both glob plugins/*/agents/*.md generically, not
+        just lovable-cloud's. npm-semver doesn't need an agents/ directory
+        to exist on disk for this -- select_pytest_targets is a pure
+        path-string mapping."""
+        result = _mod.select_pytest_targets(["plugins/npm-semver/agents/reviewer.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_triggering_paths_populated_for_unmatched_path(self):
+        result = _mod.select_pytest_targets([".gitignore", "LICENSE"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+        assert result.triggering_paths == (".gitignore", "LICENSE")
+
+    def test_matched_and_unmatched_path_together_falls_open_to_full_suite(self):
+        """A path that matches a domain rule alongside a path that matches
+        none still falls open to the full suite -- the accumulate-all-
+        unmatched-paths refactor doesn't let a matched domain's targets
+        leak through when another path in the same diff is unmatched."""
+        result = _mod.select_pytest_targets(
+            ["claude/.claude/scripts/mark-terminal.py", ".gitignore"],
+        )
+        assert result.is_full_suite is True
+        assert result.target_paths == _mod.FULL_SUITE_TARGETS
+        assert result.triggering_paths == (".gitignore",)
+
+    def test_triggering_paths_populated_for_global_trigger(self):
+        result = _mod.select_pytest_targets([
+            "pyproject.toml", "claude/.claude/scripts/mark-terminal.py",
+        ])
+        assert result.reason == "global-trigger"
+        assert result.triggering_paths == ("pyproject.toml",)
+
+    def test_triggering_paths_empty_for_empty_diff(self):
+        result = _mod.select_pytest_targets([])
+        assert result.reason == "empty-diff"
+        assert result.triggering_paths == ()
 
 
 class TestBuildPytestArgv:
@@ -388,6 +585,24 @@ class TestRunPytest:
         assert recorded["cmd"][0] == str(fake_pytest)
 
 
+# Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
+# in CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
+# real on-disk path leaves that predicate silently dead -- it matches
+# nothing, and no test fails.
+_EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
+    _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST,
+    _mod.README_MD,
+    _mod.INSTALL_SH,
+    _mod.CLAUDE_SETTINGS_JSON,
+    _mod.HANDOFF_SKILL_MD,
+    _mod.CODE_REVIEW_SKILL_MD,
+    _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
+    _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
+    _mod.GLOBAL_CLAUDE_MD,
+    _mod.ROOT_CLAUDE_MD,
+)
+
+
 class TestRuleTablePathFidelity:
     """Catches silent drift if a rule-table target directory is later
     renamed or a glob pattern stops matching anything."""
@@ -416,8 +631,9 @@ class TestRuleTablePathFidelity:
         for path in _mod.GLOBAL_TRIGGER_PATHS:
             assert (_REPO_ROOT / path).is_file(), f"{path} does not exist as a file"
 
-    def test_lovable_cloud_plugin_manifest_path_exists_on_disk(self):
-        assert (_REPO_ROOT / _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST).is_file()
+    def test_every_exact_match_literal_path_constant_exists_on_disk(self):
+        for constant in _EXACT_MATCH_LITERAL_PATH_CONSTANTS:
+            assert (_REPO_ROOT / constant).is_file(), f"{constant} does not exist as a file"
 
     def test_every_real_top_level_claude_dir_is_mapped_or_allowlisted(self):
         """Existing tests above validate declared table entries -- that a
@@ -439,6 +655,43 @@ class TestRuleTablePathFidelity:
             "neither MAPPED_TOP_LEVEL_DIRS nor DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS "
             "-- audit whether any test reads into this directory by path or "
             "subprocess and add the corresponding table entry"
+        )
+
+    def test_every_real_root_claude_dir_is_mapped(self):
+        """Mirrors test_every_real_top_level_claude_dir_is_mapped_or_allowlisted
+        for the separate root .claude/ tree, where PLANS_DIR, ROOT_RULES_DIR,
+        and ROOT_SKILLS_DIR reference subdirectories by path. No union with a
+        DELIBERATELY_UNMAPPED counterpart: unlike claude/.claude/tests/, no
+        real subdirectory of root .claude/ lacks a selectable pytest target."""
+        root_claude_dir = _REPO_ROOT / ".claude"
+        real_dirs = {
+            d.name for d in root_claude_dir.iterdir()
+            if d.is_dir() and d.name != "worktrees"  # gitignored, not a tracked domain
+        }
+        unmapped = real_dirs - _mod.MAPPED_ROOT_CLAUDE_DIRS
+        assert not unmapped, (
+            f".claude/{sorted(unmapped)} exist on disk but are not named in "
+            "MAPPED_ROOT_CLAUDE_DIRS -- audit whether any test reads into "
+            "this directory by path or subprocess and add the corresponding "
+            "table entry"
+        )
+
+    def test_lovable_cloud_is_the_only_plugin_with_a_tests_directory(self):
+        """_is_plugin_hooks_change/_is_plugin_skills_change/_is_plugin_agents_change
+        route every plugin's hooks/skills/agents changes to
+        HOOKS_TESTS_DIR/SKILLS_TESTS_DIR, never to a plugin's own tests/
+        directory -- safe only because lovable-cloud is the only plugin
+        with one today."""
+        plugins_with_tests_dir = sorted(
+            path.parent.name for path in (_REPO_ROOT / _mod.PLUGINS_DIR).glob("*/tests")
+        )
+        assert plugins_with_tests_dir == ["lovable-cloud"], (
+            f"plugins with their own tests/ directory: {plugins_with_tests_dir}. "
+            "A second plugin gaining a tests/ directory means the "
+            "plugin-generic hooks/skills/agents rules in select-tests.py now "
+            "under-select for it -- audit DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS "
+            "and give that plugin its own LOVABLE_CLOUD_TESTS_DIR-shaped "
+            "domain rule."
         )
 
 
@@ -675,6 +928,47 @@ class TestMainComposition:
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
 
+    def test_empty_target_selection_skips_run_pytest_and_returns_zero(self, monkeypatch):
+        """A domain-selected-but-empty target set (e.g. a .claude/plans/
+        change) must short-circuit before run_pytest, not fall through to
+        a bare `pytest` invocation that recursively collects the whole repo."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main([])
+
+        assert exit_code == 0
+
+    def test_empty_target_selection_with_passthrough_args_still_skips_run_pytest(
+        self, monkeypatch,
+    ):
+        """Pins the empty-target short circuit against a future edit that
+        relocates it below build_pytest_argv, which would reintroduce
+        whole-repo collection specifically when passthrough args are
+        non-empty."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            raise AssertionError("run_pytest must not be called for an empty target selection")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".claude/plans/some-plan.md"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main(["-k", "foo"])
+
+        assert exit_code == 0
+
     def test_argv_none_falls_back_to_sys_argv(self, monkeypatch):
         """main()'s real entry point (`sys.exit(main())` under
         `__main__`) always calls it with argv=None; this pins that branch
@@ -698,3 +992,31 @@ class TestMainComposition:
 
         assert exit_code == 0
         assert recorded["pytest_argv"] == [_mod.SCRIPTS_TESTS_DIR, "-k", "bar"]
+
+    def test_unmatched_path_prints_offending_paths_to_stderr(self, monkeypatch, capsys):
+        """stderr previously named only the reason code, never the path
+        that actually triggered it."""
+        fake_repo_root = Path("/fake/repo/root")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(
+            _mod, "compute_changed_paths", lambda repo_root: [".gitignore", "LICENSE"],
+        )
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd: 0)
+
+        _mod.main([])
+
+        stderr = capsys.readouterr().err
+        assert "running the full suite (unmatched-path: .gitignore, LICENSE)" in stderr
+
+    def test_global_trigger_prints_offending_path_to_stderr(self, monkeypatch, capsys):
+        fake_repo_root = Path("/fake/repo/root")
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: fake_repo_root)
+        monkeypatch.setattr(_mod, "compute_changed_paths", lambda repo_root: ["pyproject.toml"])
+        monkeypatch.setattr(_mod, "run_pytest", lambda pytest_argv, *, cwd: 0)
+
+        _mod.main([])
+
+        stderr = capsys.readouterr().err
+        assert "running the full suite (global-trigger: pyproject.toml)" in stderr

@@ -239,8 +239,9 @@ def opted_in_with_worktree(opted_in_repo, tmp_path, isolated_home):
     """Opted-in repo with a linked worktree at a path that does NOT contain
     '/worktrees/' — verifies the hook's worktree check reads git-dir rather
     than pattern-matching the working-tree path. Seeds a session file so
-    _lib_worktree_collision_guard (which every allow-into-a-worktree path now
-    runs through) can resolve this test process's own PID as the lock owner."""
+    _lib_worktree_collision_guard can resolve this test process's own PID as
+    the lock owner. Every write into this worktree runs the guard. A read
+    runs it only when the worktree's lock is already present."""
     wt_path = tmp_path / "feature-tree"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt_path)],
