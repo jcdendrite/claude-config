@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -380,6 +382,49 @@ class TestRequireReadyForReview:
             )
             == "deny"
         )
+
+    @pytest.mark.timing
+    def test_current_head_git_timeout_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path
+    ):
+        """Required regression test: the CURRENT_HEAD `git rev-parse HEAD`
+        call's _lib_capped exit status must fail closed on timeout, the same
+        way an unresolvable HEAD already denies per the completion-marker
+        check's own fail-closed comment — a stalled filesystem must not hang
+        the gate indefinitely. Seeds a completion marker for the branch's
+        real HEAD so an uncapped, fully-resolved CURRENT_HEAD would match it
+        and allow — making `decision == "deny"` actually discriminate a
+        working cap (empty CURRENT_HEAD, no match) from a broken one, rather
+        than passing on every path because no marker exists at all."""
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        sid = "s"
+        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+
+        fake_git = tmp_path / "git"
+        fake_git.write_text(
+            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        decision = run_hook(
+            READY_FOR_REVIEW_HOOK,
+            bash_input("git push origin feature", session_id=sid),
+            cwd=repo_on_feature_branch,
+            extra_env=env,
+        )
+        elapsed = time.monotonic() - start
+        assert decision == "deny"
+        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     def test_other_sessions_completion_marker_authorizes_at_same_head(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists

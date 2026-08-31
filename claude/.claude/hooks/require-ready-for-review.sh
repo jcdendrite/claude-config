@@ -43,21 +43,48 @@
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
 #
-# Known gaps, inherited by gh pr create, not closed here (not yet filed as
-# a follow-up issue): the --dry-run bypass greps the whole $COMMAND, so
-# `git push --dry-run && gh pr create` exits 0 before the gh pr create arm
-# is evaluated (this shape already bypassed a second real `git push`
-# chained the same way, pre-existing and unchanged by this diff); the
-# default-branch bypass runs before any command-type check, so
-# `gh pr create` from the default branch is also exempted — believed inert
-# in practice, since gh errors on a same-branch PR regardless of this hook.
-# Separately, the settings.json `if`-dispatch entries are prefix globs
-# (`Bash(gh pr create *)`) while the in-script detection is fragment-based;
-# a disguised standalone invocation (`eval "gh pr create"`, an env-prefixed
-# form) not chained after a git-push/gh-pr-ready fragment may not match the
-# dispatch pattern, so the hook never runs at all for that shape — the same
-# dispatch-vs-internal-regex gap the git-push and gh-pr-ready arms already
-# have.
+# Known gaps, inherited by gh pr create, not closed here (tracked in
+# https://github.com/jcdendrite/claude-config/issues/773):
+# - The --dry-run bypass greps the whole $COMMAND, so
+#   `git push --dry-run && gh pr create` exits 0 before the gh pr create arm
+#   is evaluated.
+# - The same whole-$COMMAND grep also lets a second chained `git push`
+#   through.
+# - The default-branch bypass runs before any command-type check, so
+#   `gh pr create` from the default branch is also exempted — believed inert
+#   in practice, since gh errors on a same-branch PR regardless of this hook.
+# - The gh pr ready and gh pr create arms detect via plain-text regex on the
+#   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
+#   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
+#   create`) bypasses detection for those two arms — the same
+#   cooperative-threat-model residual require-respond-pr.sh's header
+#   documents for quoted/indirected subcommands, adopted here rather than
+#   chased.
+# Every git rev-parse/symbolic-ref call in this script is capped via
+# _lib_capped, matching the rest of this repo's hooks, so a stalled
+# filesystem or locked index fails per the sibling-hook convention rather
+# than hanging indefinitely.
+#
+# Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —
+# intentional. A prefix glob (`Bash(gh pr create *)`) cannot deliver the
+# wrapped, env-prefixed, and `git -C`-style forms the in-script fragment
+# tokenizer detects. The hook exits before any git, network, or marker work
+# when no gated command is present. A command that merely mentions a gated
+# command in free text is denied — fail-closed by design. A missing jq now
+# denies every Bash call, the posture every unconditional gate in this repo
+# already has. This gate's threat model is cooperative, not adversarial —
+# the same posture require-respond-pr.sh's header states for its own gate.
+# The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
+# self-merge, plus CI rerunning the full suite on push. That backstop holds
+# absent one of block-gh-pr-merge.sh's own documented bypasses — the gh api
+# pulls/N/merge endpoint, an eval/bash -c subshell wrapper, or a full-path
+# gh invocation. It also assumes branch protection requires CI to pass
+# before merge, a GitHub setting this hook cannot itself verify.
+# Unconditional dispatch also means _lib_split_fragments et al. now run on
+# every Bash call across every consumer's shell, not only
+# push/pr-create/pr-ready commands. That is not a new bug, but any latent
+# portability gap in that shared path now has full exposure instead of a
+# narrow slice.
 
 set -uo pipefail
 
@@ -87,8 +114,10 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty')
+[ -z "$COMMAND" ] && exit 0
+
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
+CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Detect gated commands by tokenizing fragments, not regex. This handles:
@@ -147,7 +176,7 @@ if $is_git_push; then
 fi
 
 # Are we in a git repo?
-REPO_ROOT=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -159,11 +188,11 @@ fi
 # `rev-parse --abbrev-ref origin/HEAD`: the latter outputs the literal
 # string "origin/HEAD" (not empty) when origin/HEAD isn't a symbolic ref,
 # which defeats the fallback path.
-CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null)
-DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --abbrev-ref HEAD 2>/dev/null)
+DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
 if [ -z "$DEFAULT_BRANCH" ]; then
   for candidate in main master develop; do
-    if cd "$CWD" 2>/dev/null && git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+    if cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
       DEFAULT_BRANCH="$candidate"
       break
     fi
@@ -201,7 +230,7 @@ fi
 # reading across the filename's session key safe.
 # An unresolvable HEAD leaves CURRENT_HEAD empty, which never matches, so a
 # failed rev-parse denies rather than releasing the gate.
-CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && git rev-parse HEAD 2>/dev/null)
+CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse HEAD 2>/dev/null)
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the push/PR-ready command through.
