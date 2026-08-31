@@ -1159,8 +1159,8 @@ _lib_worktree_reclaim_dead_lock() {
 # - If the harness kills the hook, or `_lib_capped`'s own 5s timeout fires,
 #   after the lock removal succeeds but before reacquisition is confirmed,
 #   the worktree is left fully unlocked with an orphaned, permanently-burnt
-#   claim file -- not the deny-plus-manual-unlock fallback this design
-#   otherwise guarantees.
+#   claim file. This is the one path that skips the deny-plus-manual-unlock
+#   fallback every other failure mode in this list otherwise guarantees.
 # - The reclaim path's aggregate `_lib_capped` call count is not a fixed
 #   constant across successful reclaims: it varies with
 #   `_lib_resolve_claude_pid`'s depth-dependent ancestor-PID-walk.
