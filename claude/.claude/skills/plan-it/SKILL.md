@@ -49,6 +49,7 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 Dispatch `plan-architect` with an explicit `model: "opus"` override to author this section — on every `/plan-it` run, regardless of what model the session itself is anchored to. Pass no `isolation: "worktree"` — the session is already anchored in the implementation branch's worktree, and `plan-architect` writes nothing.
 
 The dispatch prompt carries:
+- `MODE=plan-sections` as the prompt's first line, on every Step 5 dispatch including revision re-dispatches. This literal selects the plan-section grammar — `plan-architect` also serves ad hoc consults, so the mode can no longer be inferred from context.
 - The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim.
 - Every Step 3 subagent's findings, framed as evidence rather than conclusions, plus the absolute path of every file it flagged.
 
