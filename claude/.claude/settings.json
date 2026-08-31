@@ -141,6 +141,15 @@
             "command": "~/.claude/hooks/restore-authorization-boundary-on-compact.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/prune-otel-raw-bodies.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [
