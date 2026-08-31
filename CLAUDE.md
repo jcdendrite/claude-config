@@ -120,7 +120,14 @@ doubt, strip it.
 **Reviewer discipline only — hook doesn't catch these:** internal
 tool/product names not generally known in open source; commit SHAs or
 PR numbers from private repos; structural fingerprints and
-private-corpus provenance (see below).
+private-corpus provenance (see below); the owner's own email address.
+The person-name blocklist above is user-populated with no default
+entries, so nothing catches the owner's own `mailto:` in
+`SECURITY.md`, a PR body, or similar. Route security reports to
+GitHub private vulnerability reporting and other contact to the
+maintainer's published business site (linked from README.md). If a
+template genuinely demands a `mailto:`, propose a role mailbox and
+confirm before committing.
 
 ### Also redact structural fingerprints and provenance
 

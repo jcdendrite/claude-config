@@ -99,25 +99,21 @@ dispatching subagents — a read-only lookup counts too, since it's the
 
 ## Crossing to a different branch mid-session
 
-When the engineer has uncommitted work in the main checkout and the
-next task is on another branch, add a worktree rather than `git
-checkout` / `git switch` / `git stash` in place:
+Worktree enforcement, where armed, denies `checkout`/`switch`/`stash`
+against the main tree. It's opt-in, and it doesn't stop those same
+commands inside a worktree you're already anchored in. Apply the
+discipline either way: when the next task is on another branch and the
+current tree holds uncommitted work, add a worktree instead of
+switching in place. A linked worktree leaves the main checkout
+untouched. Stashed work is easily left unpopped. `refs/stash` is
+shared across worktrees, so an earlier stash still pops from inside
+the new one.
 
-- Stashed work in progress is fragile and easily left unpopped.
-- A linked worktree leaves the main checkout untouched.
-- Stashes and refs are shared across worktrees, so an earlier stash
-  still pops from inside the new one.
-
-When more than one session may be running against this repo, use a
-worktree even when the destination branch matches current HEAD, and
-state branch and PR facts from the remote (`git fetch`, then
-`origin/<branch>` or `gh pr view`) rather than from a local worktree
-snapshot that can be captured between a sibling's commit and its
-cleanup. Each of these signals a sibling session:
-
-- An unexpected `git worktree list` entry.
-- A main-checkout HEAD you did not check out.
-- An unfamiliar recent commit on a remote branch.
+When another session may be running against this repo, use a worktree
+even when the destination branch matches current HEAD. State branch
+and PR facts from the remote (`git fetch`, then `origin/<branch>` or
+`gh pr view`), not from a local worktree snapshot — a sibling's
+commit-then-cleanup can be captured mid-window.
 
 ## Plan files go on the implementation branch
 
