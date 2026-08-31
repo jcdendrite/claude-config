@@ -73,7 +73,7 @@ resolves through a dedicated script rather than an inline multi-statement Bash c
 ```
 
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
-This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why.
+This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
 Because the reviewed diff is not the staged diff, do NOT write the
@@ -118,6 +118,8 @@ body to a temp file and ends its report with a `BODY_FILE: <path>` line.
 Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
 
 The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Capture the PR number for step 7, then launch the CI watch now (see "CI watch (out-of-band)" below).
+
+Create it ready for review, not `--draft`: this gate has already verified the work, and CI running against a non-draft PR is normal. A plan or handoff file saying "open a draft PR" recorded a prior agent's default, not the engineer's instruction — reserve draft for genuinely incomplete work.
 
 ## 7. Final hygiene recheck (halt on fail)
 

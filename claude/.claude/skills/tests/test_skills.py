@@ -435,6 +435,23 @@ class TestConventionSkillWiring:
         """code-writer must tell the writer to consult sql-query-conventions for read-path SQL."""
         assert "sql-query-conventions/SKILL.md" in self._agent_body("code-writer")
 
+    def test_code_writer_self_review_cross_checks_porcelain(self):
+        """code-writer's self-review must cross-check tracked paths against `git status --porcelain`."""
+        assert "git status --porcelain" in self._agent_body("code-writer")
+
+    def test_code_writer_self_review_avoids_git_diff_head(self):
+        """code-writer's self-review must warn against `git diff HEAD`, which pulls a prior round's staged work into the diff."""
+        body = self._agent_body("code-writer")
+        lines_with_git_diff_head = [
+            line for line in body.splitlines() if "git diff HEAD" in line
+        ]
+        assert lines_with_git_diff_head, (
+            "code-writer body no longer mentions `git diff HEAD` at all."
+        )
+        assert any("never" in line.lower() for line in lines_with_git_diff_head), (
+            "code-writer mentions `git diff HEAD` but no line prohibits it."
+        )
+
     def test_staff_sdet_reads_test_conventions_body(self):
         """staff-sdet must Read test-conventions/SKILL.md to ground its §N citations."""
         body = self._agent_body("staff-sdet")

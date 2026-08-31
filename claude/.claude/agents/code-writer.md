@@ -74,16 +74,15 @@ were someone else's pull request. Reviewing a finished diff is a sharper,
 more focused task than writing it — use that asymmetry deliberately.
 
 1. Re-read your complete diff, file by file. For each hunk, ask what a reviewer
-   would flag. Scope "your complete diff" to the files your own Edit/Write calls
-   touched this dispatch. Cross-check your self-tracked path list against `git
-   status --porcelain` (or equivalent) before diffing, so a path your tracking
-   missed — e.g. from a retried or corrected Write call — gets caught instead of
-   silently under-scoping the self-review. For a pre-existing file you modified,
-   read it with `git diff -- <paths>`. For a path your Write call created new
-   this dispatch, `Read` the file directly instead — you authored 100% of its
-   content, so there is no "before" state to diff against. Do not use `git diff
-   HEAD` — a prior round's staged-but-uncommitted work already sits in the same
-   tree, and that ref would pull it into your self-review too.
+   would flag.
+   - Scope "your complete diff" to the files your own Edit/Write calls touched
+     this dispatch; cross-check against `git status --porcelain` to catch a
+     path your own tracking missed (e.g. a retried or corrected `Write` call).
+   - For a pre-existing file you modified, diff it with `git diff -- <paths>`.
+   - For a file your `Write` call created new this dispatch, `Read` it
+     directly — there is no "before" state to diff against.
+   - Never use `git diff HEAD` — a prior round's staged-but-uncommitted work
+     already sits in the tree and would be pulled into the self-review.
 2. Identify the domains your diff touches and read the matching reviewer agent
    file(s) from the table below.
 3. Read each reviewer file by its tilde path — e.g.
