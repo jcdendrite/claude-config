@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -84,6 +85,35 @@ def _write_lock(path: Path, **overrides) -> Path:
     return _write_json(path, _lock_json(**overrides))
 
 
+def _write_lookup_file(
+    sessions_dir: Path, pid: int, *, session_id: str, proc_start: str | None = "Mon Jan  1 00:00:00 2024",
+) -> Path:
+    """Mirrors capture-session-id.sh:106's own two-line format: session id on
+    line 1, `ps -o lstart=` output on line 2. proc_start=None writes only the
+    first line, matching a one-line file (_read_lookup_entries must still
+    classify a dead pid off a one-line file)."""
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    path = sessions_dir / str(pid)
+    path.write_text(f"{session_id}\n" if proc_start is None else f"{session_id}\n{proc_start}\n")
+    return path
+
+
+def _write_proc_stat(proc_root: Path, pid: int, *, comm: str = "cmd", starttime_ticks: int) -> Path:
+    """Writes a minimal /proc/<pid>/stat line: field 2 (comm) parenthesized
+    exactly like the kernel's own rendering, so a comm containing spaces or
+    parens still round-trips through _proc_starttime_ticks's rpartition(")")
+    split. 20 space-separated fields follow, with field 22 (index
+    _PROC_STAT_STARTTIME_INDEX of that remainder) holding starttime_ticks;
+    every other field is an inert zero placeholder."""
+    fields = ["0"] * 20
+    fields[_mod._PROC_STAT_STARTTIME_INDEX] = str(starttime_ticks)
+    proc_dir = proc_root / str(pid)
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    stat_path = proc_dir / "stat"
+    stat_path.write_text(f"{pid} ({comm}) " + " ".join(fields) + "\n")
+    return stat_path
+
+
 def _write_transcript(path: Path, records: list[dict]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
@@ -108,6 +138,13 @@ def _fake_ps_lstart(alive: dict[int, str]):
     return _fn
 
 
+def _fake_proc_starttime_ticks(ticks: dict[int, int]):
+    """Stub matching _proc_starttime_ticks's single-positional-pid call convention."""
+    def _fn(pid):
+        return ticks.get(pid)
+    return _fn
+
+
 def _registry_entry(
     *, session_id: str = "s1", pid: int = 100, proc_start: str | None = "Mon Jan  1 00:00:00 2024",
     cwd: str | None = "/tmp/proj", mtime: float = 1000.0, version: str | None = "2.1.221",
@@ -128,6 +165,16 @@ def _lock_entry(
     return _mod.LockEntry(
         session_id=session_id, pid=pid, proc_start=proc_start, acquired_at=acquired_at,
         mtime=mtime, path=path or Path("/fake/.claude/scheduled_tasks.lock"),
+    )
+
+
+def _lookup_entry(
+    *, session_id: str = "s3", pid: int = 300, proc_start: str | None = "Mon Jan  1 00:00:00 2024",
+    mtime: float | None = 1000.0, path: Path | None = None,
+) -> _mod.LookupEntry:
+    return _mod.LookupEntry(
+        session_id=session_id, pid=pid, proc_start=proc_start, mtime=mtime,
+        path=path or Path("/fake/sessions/300"),
     )
 
 
@@ -465,6 +512,141 @@ def test_entry_liveness_tolerance_boundary_through_stubbed_ps_lstart():
 def test_entry_liveness_live_pid_missing_procstart_returns_indeterminate():
     fake = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
     assert _mod._entry_liveness(100, None, ps_lstart=fake, ps_usable=True) == "indeterminate"
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 — Linux numeric procStart (/proc/<pid>/stat field 22)
+# ---------------------------------------------------------------------------
+
+def test_parse_lstart_returns_none_for_non_string_not_raise():
+    """RegistryEntry.proc_start is read from raw JSON with no type check --
+    a future CLI storing procStart as a JSON number must not reach
+    raw.strip() and raise AttributeError."""
+    assert _mod._parse_lstart(13017318, _mod.UTC) is None
+
+
+def test_proc_starttime_ticks_parses_field_22_when_comm_contains_spaces_and_parens(tmp_path):
+    """comm (field 2) is parenthesized and may itself contain spaces and
+    parens -- the split must happen after the *last* ")" in the line, never
+    the first, or a hostile comm would shift every subsequent field."""
+    proc_root = tmp_path / "proc"
+    _write_proc_stat(proc_root, 100, comm="weird (nested) name", starttime_ticks=13017318)
+    assert _mod._proc_starttime_ticks(100, proc_root=proc_root) == 13017318
+
+
+def test_proc_starttime_ticks_returns_none_for_missing_file(tmp_path):
+    proc_root = tmp_path / "proc"
+    assert _mod._proc_starttime_ticks(100, proc_root=proc_root) is None
+
+
+def test_proc_starttime_ticks_returns_none_for_short_line(tmp_path):
+    """A stat line shorter than field 22 (schema drift, or a kernel reporting
+    fewer fields) degrades to None rather than raising IndexError."""
+    proc_root = tmp_path / "proc"
+    proc_dir = proc_root / "100"
+    proc_dir.mkdir(parents=True)
+    (proc_dir / "stat").write_text("100 (cmd) S 1 1 1\n")
+    assert _mod._proc_starttime_ticks(100, proc_root=proc_root) is None
+
+
+def test_entry_liveness_numeric_procstart_live_when_ticks_match_and_comparable():
+    fake_ps = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
+    fake_ticks = _fake_proc_starttime_ticks({100: 13017318})
+    result = _mod._entry_liveness(
+        100, "13017318", ps_lstart=fake_ps, ps_usable=True,
+        proc_starttime_ticks=fake_ticks, proc_start_comparable=True,
+    )
+    assert result == "live"
+
+
+def test_entry_liveness_numeric_procstart_dead_when_ticks_mismatch():
+    """No tolerance: the raw ticks compare for exact integer equality, since
+    both sides are the same integer clock with nothing to reconcile."""
+    fake_ps = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
+    fake_ticks = _fake_proc_starttime_ticks({100: 13017319})
+    result = _mod._entry_liveness(
+        100, "13017318", ps_lstart=fake_ps, ps_usable=True,
+        proc_starttime_ticks=fake_ticks, proc_start_comparable=True,
+    )
+    assert result == "dead"
+
+
+def test_entry_liveness_numeric_procstart_indeterminate_when_not_comparable():
+    """Pid-reuse guard: a numeric procStart captured before the current boot
+    is not comparable, since its ticks are an offset from a different boot
+    than the live process's own."""
+    fake_ps = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
+    fake_ticks = _fake_proc_starttime_ticks({100: 13017318})
+    result = _mod._entry_liveness(
+        100, "13017318", ps_lstart=fake_ps, ps_usable=True,
+        proc_starttime_ticks=fake_ticks, proc_start_comparable=False,
+    )
+    assert result == "indeterminate"
+
+
+def test_entry_liveness_numeric_procstart_indeterminate_when_proc_unreadable():
+    fake_ps = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
+    fake_ticks = _fake_proc_starttime_ticks({})
+    result = _mod._entry_liveness(
+        100, "13017318", ps_lstart=fake_ps, ps_usable=True,
+        proc_starttime_ticks=fake_ticks, proc_start_comparable=True,
+    )
+    assert result == "indeterminate"
+
+
+def test_entry_liveness_darwin_format_never_calls_proc_starttime_ticks():
+    """A non-numeric (Darwin lstart-string) procStart takes the existing
+    _same_process path unchanged -- proc_starttime_ticks is never consulted
+    for it, even when proc_start_comparable is True."""
+    def _forbidden(pid):
+        raise AssertionError("proc_starttime_ticks must not be called for a non-numeric procStart")
+    fake_ps = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
+    result = _mod._entry_liveness(
+        100, "Mon Jan  1 00:00:00 2024", ps_lstart=fake_ps, ps_usable=True,
+        proc_starttime_ticks=_forbidden, proc_start_comparable=True,
+    )
+    assert result == "live"
+
+
+def test_build_report_linux_numeric_procstart_live_pid_is_clean_exit_not_unknown(tmp_path):
+    """Bug 3 headline: a registry entry with a Linux-shaped numeric procStart
+    for a live pid, with a matching injected ticks function, must classify
+    CLASS_CLEAN_EXIT -- before row4 this never parsed and fell through to
+    CLASS_UNKNOWN regardless of the pid's real liveness."""
+    sessions_dir = tmp_path / "config" / "sessions"
+    live_pid = os.getpid()
+    _write_registry_entry(sessions_dir, live_pid, sessionId="s1", procStart="13017318")
+    boot_time = 0.0  # every mtime is >= boot_time -> proc_start_comparable is True
+    report = _mod.build_report(
+        config_dirs=[tmp_path / "config"], find_root=tmp_path / "home",
+        boot_time_fn=lambda: boot_time,
+        proc_starttime_ticks_fn=_fake_proc_starttime_ticks({live_pid: 13017318}),
+    )
+    row = next(r for r in report.rows if r.session_id == "s1")
+    assert row.classification == _mod.CLASS_CLEAN_EXIT
+
+
+def test_build_report_pid_reuse_guard_stale_procstart_is_unknown_not_clean_exit(tmp_path):
+    """Pid-reuse-across-reboot guard, real inputs: the registry entry's mtime
+    (1000.0) predates boot_time (2000.0), so _proc_start_comparable is False
+    even though a coincidentally-matching ticks value is injected for the
+    live pid. _entry_liveness must return 'indeterminate' rather than 'live',
+    so the row falls through every dead_before_boot/dead_after_boot/
+    mtime_unknown registry filter to the final CLASS_UNKNOWN return -- proving
+    the guard suppresses this false-positive match rather than a swapped
+    comparison operator silently passing."""
+    sessions_dir = tmp_path / "config" / "sessions"
+    live_pid = os.getpid()
+    entry_path = _write_registry_entry(sessions_dir, live_pid, sessionId="s1", procStart="13017318")
+    os.utime(entry_path, (1000.0, 1000.0))
+    report = _mod.build_report(
+        config_dirs=[tmp_path / "config"], find_root=tmp_path / "home",
+        boot_time_fn=lambda: 2000.0,
+        proc_starttime_ticks_fn=_fake_proc_starttime_ticks({live_pid: 13017318}),
+    )
+    row = next(r for r in report.rows if r.session_id == "s1")
+    assert row.classification != _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -825,39 +1007,308 @@ def test_scan_transcripts_hostile_bytes_in_session_id_still_merges_main_and_suba
     assert list(transcripts.keys()) == [sanitized_id]
     assert transcripts[sanitized_id].has_main is True
     assert transcripts[sanitized_id].subagent_count == 1
-    transcripts = {"orphan": _transcript_info(session_id="orphan", last_activity=950.0, has_main=True)}
-    assert _mod._near_boot_transcript_only_ids(transcripts, set(), boot_time=1000.0) == ["orphan"]
 
 
-def test_near_boot_transcript_only_ids_excludes_known_session():
+def test_recent_transcript_only_ids_excludes_known_session():
     transcripts = {"s1": _transcript_info(session_id="s1", last_activity=950.0, has_main=True)}
-    assert _mod._near_boot_transcript_only_ids(transcripts, {"s1"}, boot_time=1000.0) == []
+    assert _mod._recent_transcript_only_ids(transcripts, {"s1"}, boot_time=1000.0) == []
 
 
-def test_near_boot_transcript_only_ids_includes_activity_within_widened_window():
+def test_recent_transcript_only_ids_boot_anchored_includes_activity_within_widened_window():
     """A gap of 14000s before boot would have missed the old 600s window
     entirely — this is the empirical failure mode the widened window fixes."""
     transcripts = {"s1": _transcript_info(session_id="s1", last_activity=1000.0 - 14000.0, has_main=True)}
-    assert _mod._near_boot_transcript_only_ids(transcripts, set(), boot_time=1000.0) == ["s1"]
+    assert _mod._recent_transcript_only_ids(transcripts, set(), boot_time=1000.0) == ["s1"]
 
 
-def test_near_boot_transcript_only_ids_excludes_activity_outside_window():
+def test_recent_transcript_only_ids_excludes_activity_outside_both_windows():
     transcripts = {"s1": _transcript_info(session_id="s1", last_activity=1000.0 - 20000.0, has_main=True)}
-    assert _mod._near_boot_transcript_only_ids(transcripts, set(), boot_time=1000.0) == []
+    assert _mod._recent_transcript_only_ids(transcripts, set(), boot_time=1000.0) == []
 
 
-def test_near_boot_transcript_only_ids_boundary_is_inclusive_one_instant_past_is_excluded():
+def test_recent_transcript_only_ids_boot_anchored_boundary_is_inclusive_one_instant_past_is_excluded():
     boot_time = 100000.0
-    window = _mod._NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS
+    window = _mod._CRASH_EVIDENCE_WINDOW_SECONDS
     at_boundary = {"s1": _transcript_info(session_id="s1", last_activity=boot_time - window, has_main=True)}
     just_past = {"s1": _transcript_info(session_id="s1", last_activity=boot_time - window - 0.001, has_main=True)}
-    assert _mod._near_boot_transcript_only_ids(at_boundary, set(), boot_time=boot_time) == ["s1"]
-    assert _mod._near_boot_transcript_only_ids(just_past, set(), boot_time=boot_time) == []
+    assert _mod._recent_transcript_only_ids(at_boundary, set(), boot_time=boot_time) == ["s1"]
+    assert _mod._recent_transcript_only_ids(just_past, set(), boot_time=boot_time) == []
 
 
-def test_near_boot_transcript_only_ids_none_when_boot_time_unknown():
+def test_recent_transcript_only_ids_excluded_when_boot_time_and_now_both_unknown():
     transcripts = {"s1": _transcript_info(session_id="s1", last_activity=950.0, has_main=True)}
-    assert _mod._near_boot_transcript_only_ids(transcripts, set(), boot_time=None) == []
+    assert _mod._recent_transcript_only_ids(transcripts, set(), boot_time=None) == []
+
+
+def test_recent_transcript_only_ids_now_anchored_surfaces_with_boot_time_none():
+    """Regression guard for row9's guard: boot_time=None must not raise
+    TypeError on `None - window_seconds` once the boot_time is None -> []
+    early return is gone — the now-anchored disjunct must still evaluate on
+    its own and surface a session with no reboot to anchor it at all."""
+    now = 100000.0
+    transcripts = {"s1": _transcript_info(session_id="s1", last_activity=now - 3600.0, has_main=True)}
+    assert _mod._recent_transcript_only_ids(transcripts, set(), boot_time=None, now=now) == ["s1"]
+
+
+def test_recent_transcript_only_ids_now_anchored_boundary_is_inclusive_one_instant_past_is_excluded():
+    now = 100000.0
+    window = _mod._CRASH_EVIDENCE_WINDOW_SECONDS
+    at_boundary = {"s1": _transcript_info(session_id="s1", last_activity=now - window, has_main=True)}
+    just_past = {"s1": _transcript_info(session_id="s1", last_activity=now - window - 0.001, has_main=True)}
+    assert _mod._recent_transcript_only_ids(at_boundary, set(), boot_time=None, now=now) == ["s1"]
+    assert _mod._recent_transcript_only_ids(just_past, set(), boot_time=None, now=now) == []
+
+
+def test_recent_transcript_only_ids_excludes_when_neither_anchor_matches():
+    boot_time = 1_000_000.0
+    now = 2_000_000.0
+    transcripts = {"s1": _transcript_info(session_id="s1", last_activity=0.0, has_main=True)}
+    assert _mod._recent_transcript_only_ids(transcripts, set(), boot_time=boot_time, now=now) == []
+
+
+def test_recent_transcript_only_ids_surfaces_once_when_both_anchors_match():
+    """A session whose last_activity satisfies both the boot-anchored and
+    now-anchored disjuncts must surface exactly once, not duplicated."""
+    boot_time = 1000.0
+    now = 1000.0
+    transcripts = {"s1": _transcript_info(session_id="s1", last_activity=950.0, has_main=True)}
+    result = _mod._recent_transcript_only_ids(transcripts, set(), boot_time=boot_time, now=now)
+    assert result == ["s1"]
+
+
+# ---------------------------------------------------------------------------
+# Source D — capture-session-id.sh lookup files
+# ---------------------------------------------------------------------------
+
+def test_read_lookup_entries_admits_file_within_window(tmp_path):
+    path = _write_lookup_file(tmp_path, 100, session_id="s1")
+    entries = _mod._read_lookup_entries([path], now=time.time(), window_seconds=14400.0)
+    assert [e.session_id for e in entries] == ["s1"]
+    assert entries[0].pid == 100
+
+
+def test_read_lookup_entries_excludes_file_outside_window(tmp_path):
+    path = _write_lookup_file(tmp_path, 100, session_id="s1")
+    stale = time.time() - 20000.0
+    os.utime(path, (stale, stale))
+    entries = _mod._read_lookup_entries([path], now=time.time(), window_seconds=14400.0)
+    assert entries == []
+
+
+def test_read_lookup_entries_boundary_is_inclusive_one_instant_past_is_excluded(tmp_path):
+    now = 100000.0
+    window = 14400.0
+    at_boundary = _write_lookup_file(tmp_path / "a", 100, session_id="s1")
+    os.utime(at_boundary, (now - window, now - window))
+    just_past = _write_lookup_file(tmp_path / "b", 200, session_id="s2")
+    os.utime(just_past, (now - window - 0.001, now - window - 0.001))
+    assert [e.pid for e in _mod._read_lookup_entries([at_boundary], now=now, window_seconds=window)] == [100]
+    assert _mod._read_lookup_entries([just_past], now=now, window_seconds=window) == []
+
+
+def test_read_lookup_entries_none_now_admits_nothing(tmp_path):
+    """build_report's fail-closed now=None default must admit no Source D
+    entries at all, matching the module-level contract."""
+    path = _write_lookup_file(tmp_path, 100, session_id="s1")
+    assert _mod._read_lookup_entries([path], now=None) == []
+
+
+def test_read_lookup_entries_one_line_file_still_parses_with_proc_start_none(tmp_path):
+    """A file with fewer than two lines is not an error -- proc_start=None
+    only makes a *live* pid's liveness indeterminate; a dead pid is still
+    dead regardless."""
+    path = _write_lookup_file(tmp_path, 100, session_id="s1", proc_start=None)
+    entries = _mod._read_lookup_entries([path], now=time.time())
+    assert len(entries) == 1
+    assert entries[0].proc_start is None
+
+
+def test_read_lookup_entries_sanitizes_hostile_session_id(tmp_path):
+    """The session id is read from a file and must not be trusted just
+    because _lib_valid_session_id_component validated it at write time."""
+    hostile_id = "s1\x1b]0;pwned\x07"
+    path = _write_lookup_file(tmp_path, 100, session_id=hostile_id)
+    entries = _mod._read_lookup_entries([path], now=time.time())
+    assert entries[0].session_id == "s1]0;pwned"
+
+
+def test_read_lookup_entries_non_pid_filename_skipped(tmp_path):
+    bogus = tmp_path / "not-a-pid"
+    bogus.write_text("s1\nMon Jan  1 00:00:00 2024\n")
+    assert _mod._read_lookup_entries([bogus], now=time.time()) == []
+
+
+def test_build_report_lookup_dead_pid_with_transcript_in_window_is_possible_crash(tmp_path):
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    proj = tmp_path / "lookup-only-project"
+    proj.mkdir()
+    dead = _dead_pid()
+    session_id = "sess-lookup"
+    lookup_path = _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record(str(proj), session_id=session_id),
+    ])
+    now = time.time()
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "capture-session-id.sh lookup file" in row.detail
+    assert lookup_path not in report.legacy_bare_pid_dead
+    output = _mod.render_report(report, redact=False)
+    assert f"cd {proj} && claude --resume {session_id}" in output
+
+
+def test_build_report_lookup_dead_pid_outside_window_not_classified_but_in_cleanup_list(tmp_path):
+    """The same fixture shape as the in-window case above, with the lookup
+    file's own mtime pushed outside the window -- not classified at all, and
+    surfaces in the legacy cleanup list instead."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-lookup-old"
+    lookup_path = _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/proj", session_id=session_id),
+    ])
+    now = time.time()
+    stale = now - 20000.0
+    os.utime(lookup_path, (stale, stale))
+    os.utime(transcript_path, (stale, stale))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    assert session_id not in {row.session_id for row in report.rows}
+    assert lookup_path in report.legacy_bare_pid_dead
+
+
+def test_build_report_lookup_live_pid_is_clean_exit(tmp_path):
+    """A live pid via an injected ps_lstart stub returning a matching lstart
+    classifies CLASS_CLEAN_EXIT."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    session_id = "sess-lookup-live"
+    lstart = "Mon Jan  1 00:00:00 2024"
+    lookup_path = _write_lookup_file(sessions_dir, 100, session_id=session_id, proc_start=lstart)
+    now = time.time()
+    # _ps_usable's self-test queries our own pid, so the fake must answer for
+    # it too, or build_report treats ps as unusable and everything is Unknown.
+    fake_ps_lstart = _fake_ps_lstart({100: lstart, os.getpid(): "Mon Jan  1 00:00:00 2024"})
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, ps_lstart=fake_ps_lstart,
+        boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_CLEAN_EXIT
+    assert lookup_path not in report.legacy_bare_pid_dead
+
+
+def test_build_report_lookup_dead_pid_no_transcript_is_unknown_not_actionable(tmp_path):
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-lookup-no-transcript"
+    _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    now = time.time()
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_UNKNOWN
+    output = _mod.render_report(report, redact=False)
+    assert "Resumable (0)" in output
+    assert "Possible crash" in output and session_id not in output.split("## Possible crash")[1].split("## ")[0]
+
+
+def test_build_report_lookup_only_row_attributes_config_dir_from_lookup_entry(tmp_path):
+    """A lookup-only session (no registry/lock/transcript entry) still
+    attributes its row's config_dir -- _read_lookup_entries derives it as
+    path.parent.parent off the sessions_dir/<pid> lookup file's own path."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-lookup-config-dir"
+    _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    now = time.time()
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.config_dir == config_dir_path
+
+
+def test_build_report_one_line_lookup_file_dead_pid_still_classifies(tmp_path):
+    """A one-line lookup file (proc_start=None) is not an error -- a dead
+    pid is still dead regardless, and the session still classifies."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    proj = tmp_path / "one-line-project"
+    proj.mkdir()
+    dead = _dead_pid()
+    session_id = "sess-one-line"
+    _write_lookup_file(sessions_dir, dead, session_id=session_id, proc_start=None)
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record(str(proj), session_id=session_id),
+    ])
+    now = time.time()
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
+def test_build_report_lookup_file_mtime_governs_admission_not_transcript_mtime(tmp_path):
+    """Source D's admission test is the lookup file's own mtime, never the
+    transcript's -- a recent lookup file paired with a stale transcript
+    still surfaces under Possible crash."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-divergent"
+    _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/proj", session_id=session_id),
+    ])
+    now = time.time()
+    stale = now - 10 * 3600
+    os.utime(transcript_path, (stale, stale))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "capture-session-id.sh lookup file" in row.detail
+
+
+def test_build_report_stale_lookup_file_falls_through_to_transcript_only_evidence(tmp_path):
+    """The reverse: a stale (out-of-window) lookup file is treated as if
+    absent entirely -- a recent transcript for the same session id still
+    surfaces independently through the row9 transcript-only fallback."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-divergent-2"
+    lookup_path = _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    now = time.time()
+    stale = now - 10 * 3600
+    os.utime(lookup_path, (stale, stale))
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/proj", session_id=session_id),
+    ])
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "no registry, lock, or lookup-file entry" in row.detail
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +1340,23 @@ def test_classify_registry_dead_before_boot_no_transcript_is_crashed_no_transcri
     assert row.classification == _mod.CLASS_CRASHED_NO_TRANSCRIPT
 
 
-def test_classify_registry_dead_after_boot_is_unknown_not_crash_evidence():
+def test_classify_registry_dead_after_boot_with_transcript_is_possible_crash():
+    """The death is unexplained by a reboot, which is exactly what an
+    unclean application crash looks like -- promoted to Possible crash
+    rather than the prior Unknown, but never all the way to Resumable
+    since a deliberate clean exit looks identical."""
+    entry = _registry_entry(mtime=1500.0)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "after boot" in row.detail
+
+
+def test_classify_registry_dead_after_boot_no_transcript_is_unknown():
+    """With no transcript to resume, the after-boot case still has nothing
+    actionable to offer and stays Unknown."""
     entry = _registry_entry(mtime=1500.0)
     row = _mod._classify_session(
         "s1", [entry], [], None, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
@@ -978,7 +1445,7 @@ def test_classify_near_boot_transcript_only_session_is_possible_crash():
     )
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert "within 4h before the last boot" in row.detail
-    assert "no registry or lock corroboration" in row.detail
+    assert "no other corroboration" in row.detail
 
 
 def test_classify_near_boot_transcript_only_session_detail_reflects_custom_window():
@@ -998,6 +1465,20 @@ def test_classify_near_boot_transcript_only_session_detail_formats_fractional_wi
         near_boot_window_seconds=1.5 * 3600,
     )
     assert "within 1.5h before the last boot" in row.detail
+
+
+def test_classify_now_anchored_transcript_only_session_is_possible_crash():
+    """Mirrors test_classify_near_boot_transcript_only_session_is_possible_crash
+    for the now-anchored disjunct: with no boot_time to anchor against, recent
+    activity relative to now alone is the non-reboot-crash shape this anchor
+    exists to catch."""
+    transcript = _transcript_info(session_id="s1", last_activity=1950.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=None, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        now=2000.0,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "no reboot in between" in row.detail
 
 
 def test_classify_subagent_only_transcript_does_not_count_as_resumable():
@@ -1032,6 +1513,67 @@ def test_classify_registry_entries_take_precedence_over_lock_entries():
     )
     assert row.classification == _mod.CLASS_CRASHED_NO_TRANSCRIPT
     assert row.entry_count == 2
+
+
+def test_classify_registry_arm_precedes_lookup_arm_lookup_evidence_absent_from_detail():
+    """Pins the registry-arm-before-lookup-arm ordering row13 establishes so
+    a later reorder has a failing test to catch it."""
+    registry_dead_after_boot = _registry_entry(pid=100, mtime=1500.0)
+    lookup = _lookup_entry(pid=400, session_id="s1")
+    transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [registry_dead_after_boot], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, lookup_entries=(lookup,),
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "lookup" not in row.detail.lower()
+    assert row.entry_count == 2
+
+
+def test_classify_lookup_arm_precedes_lock_arm_lock_evidence_absent_from_detail():
+    """Pins the lookup-arm-before-lock-arm ordering row13 establishes."""
+    lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0)
+    lock_dead = _lock_entry(pid=200, session_id="s1", mtime=1500.0)
+    transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
+    row = _mod._classify_session(
+        "s1", [], [lock_dead], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, lookup_entries=(lookup,),
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "lock" not in row.detail.lower()
+    assert row.entry_count == 2
+
+
+def test_classify_lookup_indeterminate_liveness_is_unknown():
+    """A one-line lookup file (no proc_start) whose pid appears occupied
+    can't be confirmed same-or-different, so it must stay Unknown rather
+    than being promoted to Possible crash or Resumable off no evidence."""
+    lookup = _lookup_entry(pid=400, session_id="s1", proc_start=None, mtime=1500.0)
+    row = _mod._classify_session(
+        "s1", [], [], None, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({400: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        lookup_entries=(lookup,),
+    )
+    assert row.classification == _mod.CLASS_UNKNOWN
+    assert "liveness could not be confirmed" in row.detail
+
+
+def test_classify_lookup_disagreeing_entries_stays_unknown():
+    """Two lookup entries for the same session disagree on liveness -- one
+    dead (pid 400, ps_lstart returns None), one indeterminate (pid 500, no
+    stored proc_start so sameness can't be confirmed against its live pid).
+    Mirrors test_classify_collapses_multiple_registry_entries_alive_wins for
+    the lookup arm's own dead_lookups-and-not-indeterminate_lookups guard,
+    which must not promote past Unknown when the entries disagree."""
+    dead_lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0)
+    indeterminate_lookup = _lookup_entry(pid=500, session_id="s1", proc_start=None, mtime=1500.0)
+    row = _mod._classify_session(
+        "s1", [], [], None, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({500: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        lookup_entries=(dead_lookup, indeterminate_lookup),
+    )
+    assert row.classification == _mod.CLASS_UNKNOWN
+    assert "could not be confirmed" in row.detail
 
 
 def test_classify_unknown_row_names_the_uncertainty():
@@ -1547,7 +2089,7 @@ def test_render_report_possible_crash_section_lists_rows_sorted_by_recency():
         detail="only a transcript exists", entry_count=0, cwd_missing=False,
     )
     output = _mod.render_report(_blank_report(rows=[older, newer]), redact=False)
-    assert "## Possible crash — transcript only (2)" in output
+    assert "## Possible crash — process gone, clean exit not ruled out (2)" in output
     assert output.index("s-new") < output.index("s-old")
 
 
@@ -1600,8 +2142,8 @@ def test_render_report_possible_crash_detail_with_custom_window_survives_redact(
         session_id="sess-one", classification=_mod.CLASS_POSSIBLE_CRASH,
         cwd="/repo/example-project", git_branch="feature-x", last_activity=1000.0,
         detail=(
-            "only a transcript exists, with no registry or lock entry; its last activity sits "
-            "within 72h before the last boot, but with no registry or lock corroboration this "
+            "only a transcript exists, with no registry, lock, or lookup-file entry; its last "
+            "activity sits within 72h before the last boot, but with no other corroboration this "
             "cannot confirm the session was still open at crash time."
         ),
         entry_count=0, cwd_missing=False,
@@ -1613,7 +2155,7 @@ def test_render_report_possible_crash_detail_with_custom_window_survives_redact(
 def test_build_report_transcript_only_near_boot_surfaces_as_possible_crash(tmp_path):
     """End-to-end regression for the original bug shape: a real transcript
     file with no registry entry and no lock file, last activity inside the
-    widened window before boot. Unit coverage of _near_boot_transcript_only_ids
+    widened window before boot. Unit coverage of _recent_transcript_only_ids
     and _classify_session alone doesn't prove the
     _scan_transcripts -> known_session_ids -> classification wiring stays
     correct."""
@@ -1634,7 +2176,7 @@ def test_build_report_transcript_only_near_boot_surfaces_as_possible_crash(tmp_p
     row = next(r for r in report.rows if r.session_id == session_id)
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     output = _mod.render_report(report, redact=False)
-    assert "Possible crash — transcript only (1)" in output
+    assert "Possible crash — process gone, clean exit not ruled out (1)" in output
 
 
 def test_build_report_near_boot_window_seconds_widens_what_surfaces(tmp_path):
@@ -1775,6 +2317,71 @@ def test_render_report_legacy_pid_cleanup_command_present_under_explicit_config_
     assert "/fake/config/account-a/sessions/111" in output
     rm_line = next(line for line in output.splitlines() if line.strip().startswith("rm --"))
     assert "111" in rm_line and "222" in rm_line
+
+
+def test_render_report_legacy_pid_truncation_note_appears_under_redact_too():
+    """The truncation note itself carries no path/session data, so it must
+    render the same way regardless of --redact."""
+    paths = [Path(f"/fake/sessions/{i}") for i in range(25)]
+    report = _blank_report(legacy_bare_pid_dead=paths)
+    output = _mod.render_report(report, redact=True)
+    assert "showing 20 of 25" in output
+    assert "rm --" not in output
+
+
+def test_render_report_legacy_pid_truncation_note_appears_under_declared_roots_default():
+    paths = [Path(f"/fake/config/account-a/sessions/{i}") for i in range(25)]
+    report = _blank_report(
+        config_dirs=[Path("/fake/config/account-a"), Path("/fake/config/account-b")],
+        legacy_bare_pid_dead=paths,
+    )
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=False)
+    assert "showing 20 of 25" in output
+    assert "rm --" not in output
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — legacy dead-pid list cap
+# ---------------------------------------------------------------------------
+
+def test_render_report_legacy_pid_cap_25_files_shows_20_oldest_with_note(tmp_path):
+    paths = []
+    for i in range(25):
+        p = tmp_path / f"sessions-{i}"
+        p.write_text("x")
+        os.utime(p, (1000.0 + i, 1000.0 + i))
+        paths.append(p)
+    report = _blank_report(legacy_bare_pid_dead=paths)
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    assert "showing 20 of 25" in output
+    listing_lines = [line for line in output.splitlines() if line.strip().startswith(str(tmp_path))]
+    assert len(listing_lines) == _mod._LEGACY_DEAD_LIST_CAP
+    shown_names = {Path(line.strip()).name for line in listing_lines}
+    assert shown_names == {f"sessions-{i}" for i in range(_mod._LEGACY_DEAD_LIST_CAP)}
+    rm_line = next(line for line in output.splitlines() if line.strip().startswith("rm --"))
+    assert len(shlex.split(rm_line.removeprefix("  rm -- "))) == _mod._LEGACY_DEAD_LIST_CAP
+
+
+def test_render_report_legacy_pid_5_files_no_truncation_note(tmp_path):
+    paths = [tmp_path / f"sessions-{i}" for i in range(5)]
+    for p in paths:
+        p.write_text("x")
+    report = _blank_report(legacy_bare_pid_dead=paths)
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    assert "showing" not in output.lower()
+
+
+def test_render_report_legacy_pid_exactly_cap_count_all_render_no_note(tmp_path):
+    """Pins the cap's boundary, not just above/below it: exactly
+    _LEGACY_DEAD_LIST_CAP files all render with no truncation note."""
+    paths = [tmp_path / f"sessions-{i}" for i in range(_mod._LEGACY_DEAD_LIST_CAP)]
+    for p in paths:
+        p.write_text("x")
+    report = _blank_report(legacy_bare_pid_dead=paths)
+    output = _mod.render_report(report, redact=False, config_dirs_explicit=True)
+    assert "showing" not in output.lower()
+    rm_line = next(line for line in output.splitlines() if line.strip().startswith("rm --"))
+    assert len(shlex.split(rm_line.removeprefix("  rm -- "))) == _mod._LEGACY_DEAD_LIST_CAP
 
 
 # ---------------------------------------------------------------------------
@@ -2136,6 +2743,39 @@ def test_main_threads_near_boot_hours_into_build_report(tmp_path, monkeypatch, c
     exit_code = _mod.main(["--near-boot-hours", "72"])
     assert exit_code == 0
     assert captured_kwargs["near_boot_window_seconds"] == 72 * 3600.0
+
+
+def test_main_threads_crash_window_hours_primary_spelling_into_build_report(tmp_path, monkeypatch):
+    """--crash-window-hours is the primary spelling (row10); --near-boot-hours
+    (covered above) must keep working as an alias with identical effect."""
+    captured_kwargs = _spy_on_build_report(monkeypatch)
+    empty_config = tmp_path / "empty-config"
+    empty_config.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty_config))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main(["--crash-window-hours", "72"])
+    assert exit_code == 0
+    assert captured_kwargs["near_boot_window_seconds"] == 72 * 3600.0
+
+
+def test_main_wires_one_now_capture_into_both_build_report_and_render_report(tmp_path, monkeypatch):
+    """Guards against build_report's now=None fail-closed default silently
+    disabling Source D admission in production, and against build_report and
+    render_report capturing two different `now` values that could disagree
+    about the crash-evidence window -- main() is the only production `now`
+    call site."""
+    build_kwargs = _spy_on_build_report(monkeypatch)
+    render_kwargs = _spy_on_render_report(monkeypatch)
+    empty_config = tmp_path / "empty-config"
+    empty_config.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(empty_config))
+    monkeypatch.setenv(_mod._FIND_ROOT_ENV_VAR, str(tmp_path / "home"))
+
+    exit_code = _mod.main([])
+    assert exit_code == 0
+    assert build_kwargs["now"] is not None
+    assert build_kwargs["now"] == render_kwargs["now"]
 
 
 def test_main_threads_explicit_config_dir_flag_into_render_report(tmp_path, monkeypatch):
