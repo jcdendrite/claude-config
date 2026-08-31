@@ -9,7 +9,6 @@ import subprocess
 import time
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
@@ -29,6 +28,8 @@ from helpers import (
     write_plan_review_marker,
     write_skill_review_marker,
 )
+
+from .conftest import _seed_session
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 

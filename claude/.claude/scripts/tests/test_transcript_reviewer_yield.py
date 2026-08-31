@@ -7,7 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import (
+
+from .conftest import (
     _agent_use,
     _asst,
     _edit_use,

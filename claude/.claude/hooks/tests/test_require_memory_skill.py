@@ -7,7 +7,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -21,6 +20,8 @@ from helpers import (
     run_skill_command,
     write_input,
 )
+
+from .conftest import _seed_session
 
 HOOK_PATH = HOOKS_DIR / "require-memory-skill.sh"
 AI_MEMORY_SKILL = SKILLS_DIR / "ai-instruction-and-memory-files" / "SKILL.md"

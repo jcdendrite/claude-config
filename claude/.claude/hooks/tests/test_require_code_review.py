@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
@@ -24,6 +23,8 @@ from helpers import (
     staged_diff_hash,
     write_marker,
 )
+
+from .conftest import _seed_session
 
 CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 CODE_REVIEW_SKILL = SKILLS_DIR / "code-review" / "SKILL.md"

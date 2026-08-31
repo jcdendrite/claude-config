@@ -6,7 +6,6 @@ import os
 import subprocess
 
 import pytest
-from conftest import _dead_pid, _worktree_lock_reason
 from helpers import (
     HOOKS_DIR,
     bash_input,
@@ -17,6 +16,8 @@ from helpers import (
     run_hook_reason,
     write_input,
 )
+
+from .conftest import _dead_pid, _worktree_lock_reason
 
 FILE_WRITES_HOOK = HOOKS_DIR / "require-worktree-for-file-writes.sh"
 

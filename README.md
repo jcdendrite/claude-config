@@ -511,6 +511,8 @@ The `.venv` lives only in the main worktree root. Linked worktrees live at `.cla
 
 The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
 
+A test directory under `claude/.claude/` that carries its own `conftest.py` needs an `__init__.py` in both itself and its parent domain directory, or its conftest collides with another tree's — see [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) for the invariant.
+
 `-n auto` resolves to the machine's logical CPU count. To cap it:
 
 - Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/` and `select-tests.py`.

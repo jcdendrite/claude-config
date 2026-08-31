@@ -480,6 +480,30 @@ class TestConventionSkillWiring:
         assert "run the `pr-description`" in self._skill_body("handoff")
 
 
+class TestCodeWriterSelfReviewScope:
+    """Pin code-writer's self-review diffing instructions.
+
+    Deliberately does not pin the surrounding explanatory prose -- a
+    copy-edit there must not fail this test; the three pinned fragments are
+    the mechanical instructions whose loss changes what the agent diffs.
+    """
+
+    def _body(self) -> str:
+        return " ".join(_agent_body("code-writer").split())
+
+    def test_pins_git_diff_paths_for_pre_existing_files(self):
+        """A pre-existing modified file must be reviewed with `git diff -- <paths>`."""
+        assert "`git diff -- <paths>`" in self._body()
+
+    def test_pins_git_status_porcelain_cross_check(self):
+        """The self-tracked path list must be cross-checked against `git status --porcelain`."""
+        assert "`git status --porcelain`" in self._body()
+
+    def test_prohibits_git_diff_head(self):
+        """`git diff HEAD` must not be used -- it pulls a prior round's staged work into scope."""
+        assert "Never use `git diff HEAD`" in self._body()
+
+
 class TestSkillFidelityReviewerUndecidableDismissal:
     """Pin the decidability-keyed dismissal rule and its visible output slot.
 
@@ -2408,13 +2432,16 @@ _ADVISORY_DISQUALIFIER_RE = re.compile(
 # it into an exception, e.g. "...is not automatically in scope... unless
 # separately raised" — _ADVISORY_DISQUALIFIER_RE's discretionary-softening
 # phrasings don't match that shape.
-# Known false-positive class: a legitimate strengthening reword that uses one
-# of these words as reinforcement rather than a carve-out (e.g. "...stays in
-# scope, not merely as a suggestion") also trips this regex, since the match
-# isn't bound to the negated clause. No current SKILL.md content hits this;
-# tighten the pattern if a real strengthening reword starts failing here.
+# The match is bound to the sentence's own mandatory modal (or a second
+# mandatory-shaped verb group for "does/do/will/would/can/may"), so a
+# negation attached to a trailing reinforcement clause is not a carve-out and
+# does not match. `unless` matches unbound, since any `unless` in this one
+# sentence makes the guarantee conditional regardless of where it sits.
 _NEGATION_DISQUALIFIER_RE = re.compile(
-    r"\bnot\b|\bno longer\b|\bunless\b", re.IGNORECASE
+    r"\b(?:" + "|".join(_MANDATORY_MODAL_TOKENS) + r"|does|do|will|would|can|may)\s+not\b"
+    r"|\bno longer\s+(?:" + "|".join(_MANDATORY_MODAL_TOKENS) + r"|in scope)\b"
+    r"|\bunless\b",
+    re.IGNORECASE,
 )
 
 
@@ -2482,16 +2509,41 @@ class TestNegationDisqualifierMatchesBypassPhrasing:
     dedicated fixture.
     """
 
-    def test_negated_causal_reach_sentence_matches(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "carve_out_clause",
+        [
+            pytest.param(
+                "is not automatically in scope unless separately raised",
+                id="modal-negation-plus-unless",
+            ),
+            pytest.param(
+                "is not automatically in scope",
+                id="modal-negation-alone",
+            ),
+            pytest.param(
+                "is no longer in scope",
+                id="no-longer-alone",
+            ),
+            pytest.param(
+                "stays in scope, though it does not apply when separately configured",
+                id="does-not-modal-disjunct",
+            ),
+        ],
+    )
+    def test_negated_causal_reach_sentence_matches(self, tmp_path: Path, carve_out_clause: str) -> None:
         """Pins the bypass this regex closes: a reworded clause that keeps
         the mandatory modal and causal-reach keywords but negates them into
-        an exception ("is not ... unless ...").
+        an exception. Each arm proves one negation shape independently,
+        rather than all of them passing through `unless` alone. The
+        `does-not-modal-disjunct` arm specifically exercises the
+        `does/do/will/would/can/may` branch, which none of
+        `_MANDATORY_MODAL_TOKENS`' own tokens reach.
         """
         path = tmp_path / "SKILL.md"
         path.write_text(
             "<!-- SCOPE_RULE:code-review-staged-diff-only start -->\n"
             "A change that causes, activates, or newly reaches new behavior "
-            "is not automatically in scope unless separately raised.\n"
+            f"{carve_out_clause}.\n"
             "<!-- SCOPE_RULE:code-review-staged-diff-only end -->"
         )
         region = _extract_scope_anchor_region(path, "SCOPE_RULE:code-review-staged-diff-only")
@@ -2501,6 +2553,51 @@ class TestNegationDisqualifierMatchesBypassPhrasing:
         )
         assert causal_reach_sentence is not None
         assert _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence) is not None
+
+
+class TestNegationDisqualifierIgnoresReinforcementPhrasing:
+    """Direct coverage for _NEGATION_DISQUALIFIER_RE's non-match branch,
+    mirroring TestNegationDisqualifierMatchesBypassPhrasing's literal-fixture
+    pattern — a legitimate strengthening reword must survive the whole
+    three-check tripwire, not just this one regex.
+    """
+
+    @pytest.mark.parametrize(
+        "reinforcement_clause",
+        [
+            pytest.param("stays in scope, not merely as a suggestion", id="not-merely"),
+            pytest.param("stays in scope, no longer discretionary", id="no-longer-discretionary"),
+            pytest.param("stays in scope, not just for that spawn", id="not-just"),
+        ],
+    )
+    def test_reinforcement_reword_does_not_trip_the_tripwire(
+        self, tmp_path: Path, reinforcement_clause: str
+    ) -> None:
+        """A reword that uses "not"/"no longer" as reinforcement rather than
+        a carve-out must not fail any of the three tripwire checks.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "<!-- SCOPE_RULE:code-review-staged-diff-only start -->\n"
+            "A change that causes, activates, or newly reaches new behavior "
+            f"{reinforcement_clause}.\n"
+            "<!-- SCOPE_RULE:code-review-staged-diff-only end -->"
+        )
+        region = _extract_scope_anchor_region(path, "SCOPE_RULE:code-review-staged-diff-only")
+        causal_reach_sentence = next(
+            (s for s in _sentences(region) if any(kw in s for kw in _CAUSAL_REACH_KEYWORDS)),
+            None,
+        )
+        assert causal_reach_sentence is not None
+        assert _MANDATORY_MODAL_RE.search(causal_reach_sentence), (
+            f"expected a mandatory modal in {causal_reach_sentence!r}"
+        )
+        assert _ADVISORY_DISQUALIFIER_RE.search(causal_reach_sentence) is None, (
+            f"reinforcement reword {causal_reach_sentence!r} must not read as discretionary"
+        )
+        assert _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence) is None, (
+            f"reinforcement reword {causal_reach_sentence!r} must not read as a carve-out"
+        )
 
 
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:

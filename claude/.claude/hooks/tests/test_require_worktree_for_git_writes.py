@@ -7,7 +7,6 @@ import shutil
 import subprocess
 
 import pytest
-from conftest import _dead_pid, _seed_session, _worktree_lock_reason
 from helpers import (
     HOOKS_DIR,
     bash_input,
@@ -17,6 +16,8 @@ from helpers import (
     run_hook_payload,
     run_hook_reason,
 )
+
+from .conftest import _dead_pid, _seed_session, _worktree_lock_reason
 
 WORKTREE_HOOK = HOOKS_DIR / "require-worktree-for-git-writes.sh"
 

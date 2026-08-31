@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import bash_input, build_path_without, write_input
+from helpers import bash_input, build_path_without, run_hook, write_input
 
 # ------------------------------------------------------------------ #
 # Paths                                                               #
@@ -151,15 +151,16 @@ _SKILLS_DIR = _REPO_ROOT / "claude" / ".claude" / "skills"
 _SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
 
 
-def _pretooluse_command_for(hook: Path) -> list[str]:
-    """Every PreToolUse command wired to `hook`, matched by exact equality on
-    the command's last shell word — not a substring/endswith match, which
-    would also match a hook name appearing as a non-final CLI argument to an
-    unrelated script. Tokenized with shlex, which parses shell quoting, so
-    the match stays correct regardless of a plugin author's quoting style —
-    a bare whitespace split has no notion of quoting at all, so pairing it
-    with an `expected_invocation` written to match today's quoting
-    convention is a coincidence of current data, not a guarantee.
+def _pretooluse_entries_for(hook: Path) -> list[dict]:
+    """Every PreToolUse hook-entry dict wired to `hook`, matched by exact
+    equality on the command's last shell word — not a substring/endswith
+    match, which would also match a hook name appearing as a non-final CLI
+    argument to an unrelated script. Tokenized with shlex, which parses
+    shell quoting, so the match stays correct regardless of a plugin
+    author's quoting style — a bare whitespace split has no notion of
+    quoting at all, so pairing it with an `expected_invocation` written to
+    match today's quoting convention is a coincidence of current data, not
+    a guarantee.
     """
     if hook.parent == _MAIN_HOOKS_DIR:
         config_path = _SETTINGS_PATH
@@ -173,7 +174,7 @@ def _pretooluse_command_for(hook: Path) -> list[str]:
         f"exist"
     )
     config = json.loads(config_path.read_text())
-    matched: list[str] = []
+    matched: list[dict] = []
     for group in config.get("hooks", {}).get("PreToolUse", []):
         if not isinstance(group, dict):
             continue
@@ -183,8 +184,14 @@ def _pretooluse_command_for(hook: Path) -> list[str]:
             command = entry.get("command", "")
             tokens = shlex.split(command)
             if tokens and tokens[-1] == expected_invocation:
-                matched.append(command)
+                matched.append(entry)
     return matched
+
+
+def _pretooluse_command_for(hook: Path) -> list[str]:
+    """Every PreToolUse command string wired to `hook` — see
+    _pretooluse_entries_for for the matching rules."""
+    return [entry.get("command", "") for entry in _pretooluse_entries_for(hook)]
 
 
 # Review skills whose descriptions advertise a gate, paired with the hook that
@@ -295,6 +302,45 @@ def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
         f"reopens the same escalation state the EnterPlanMode deny closes, "
         f"via a config write rather than a tool call"
     )
+
+
+# Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
+# dispatch: each self-filters on its own tool_input rather than relying on
+# a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
+# above (a static naming exception), this set is expected to grow — the
+# cross-hook `if`-dispatch audit tracked in
+# https://github.com/jcdendrite/claude-config/issues/774 is expected to add
+# an entry here each time it lands another hook's own dispatch fix.
+_SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
+    "block-gh-pr-merge.sh",
+    "require-respond-pr.sh",
+    "deny-private-project-refs.sh",
+    "deny-pii-in-commits.sh",
+    "require-ready-for-review.sh",
+)
+
+
+@pytest.mark.parametrize("hook_name", _SELF_FILTERING_BASH_GATES)
+def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
+    """Each self-filtering gate's PreToolUse entries carry no `if` key.
+
+    This proves the *declared* config state: settings.json wires the hook
+    with no `if`-condition. It does not prove the harness actually invokes
+    the hook for every wrapped/indirected shape at runtime. A post-merge
+    smoke check (attempt a gated command from a fresh session and confirm
+    the deny fires) covers that runtime-honored gap. Mirrors
+    test_plan_mode_entry_paths_stay_closed_in_settings's same
+    declared-vs-honored distinction.
+    """
+    hook = _MAIN_HOOKS_DIR / hook_name
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook_name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert "if" not in entry, (
+            f"{hook_name}: PreToolUse entry carries an 'if' key "
+            f"({entry.get('if')!r}) — this gate's header declares "
+            f"unconditional dispatch"
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -704,6 +750,14 @@ def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert not result.stdout.strip(), f"expected silent allow, got stdout={result.stdout!r}"
+
+
+def test_ready_for_review_missing_command_allowed() -> None:
+    """A Bash tool call with a missing/empty `command` field must exit 0
+    (allow)."""
+    hook = _MAIN_HOOKS_DIR / "require-ready-for-review.sh"
+    payload = {"tool_name": "Bash", "tool_input": {}}
+    assert run_hook(hook, payload) == "allow"
 
 
 @pytest.mark.timing

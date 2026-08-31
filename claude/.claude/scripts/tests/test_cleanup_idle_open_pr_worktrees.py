@@ -18,7 +18,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import (
+
+from .conftest import (
     _commit,
     _make_feature_branch,
     _make_repo_with_remote,
@@ -714,7 +715,7 @@ class TestGhFailureModes:
     but are distinguished in their error text."""
 
     def test_no_upstream_remote_is_a_usage_error(self, tmp_path, fake_gh):
-        from conftest import _init_repo
+        from .conftest import _init_repo
 
         repo = tmp_path / "no-origin-repo"
         _init_repo(repo)
