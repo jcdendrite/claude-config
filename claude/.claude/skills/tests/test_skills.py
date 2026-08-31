@@ -501,7 +501,7 @@ class TestCodeWriterSelfReviewScope:
 
     def test_prohibits_git_diff_head(self):
         """`git diff HEAD` must not be used -- it pulls a prior round's staged work into scope."""
-        assert "Do not use `git diff HEAD`" in self._body()
+        assert "Never use `git diff HEAD`" in self._body()
 
 
 class TestSkillFidelityReviewerUndecidableDismissal:
