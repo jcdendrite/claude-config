@@ -240,7 +240,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and settings.json conventions.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, settings.json conventions, and test-tree packaging.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra and SQL/DDL conventions that apply across every repo the user opens, not just this one.
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
@@ -511,7 +511,7 @@ The `.venv` lives only in the main worktree root. Linked worktrees live at `.cla
 
 The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
 
-A test directory under `claude/.claude/` that carries its own `conftest.py` needs an `__init__.py` in both itself and its parent domain directory, or its conftest collides with another tree's — see [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) for the invariant.
+Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
 `-n auto` resolves to the machine's logical CPU count. To cap it:
 
