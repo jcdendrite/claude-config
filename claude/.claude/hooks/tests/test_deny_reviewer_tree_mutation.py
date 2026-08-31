@@ -15,7 +15,8 @@ from helpers import (
     run_hook_reason,
     write_input,
 )
-from test_agent_roster import CANARY_AGENTS
+
+from .test_agent_roster import CANARY_AGENTS
 
 HOOK = HOOKS_DIR / "deny-reviewer-tree-mutation.sh"
 

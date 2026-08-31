@@ -16,8 +16,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import _dead_pid, _seed_session, _worktree_lock_reason
 from helpers import HOOKS_DIR
+
+from .conftest import _dead_pid, _seed_session, _worktree_lock_reason
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 

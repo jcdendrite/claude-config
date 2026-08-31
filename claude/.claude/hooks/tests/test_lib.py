@@ -19,8 +19,9 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import _worktree_lock_reason
 from helpers import build_path_without
+
+from .conftest import _worktree_lock_reason
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"

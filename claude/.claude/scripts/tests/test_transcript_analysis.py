@@ -15,7 +15,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import (
+from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
+
+from .conftest import (
     _agent_use,
     _asst,
     _audit_routing_args,
@@ -37,7 +39,6 @@ from conftest import (
     _write_subagent_jsonl,
     _write_use,
 )
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module

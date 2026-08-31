@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import time
 
-from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -18,6 +17,8 @@ from helpers import (
     write_plan_review_active_marker,
     write_plan_review_routing_read_marker,
 )
+
+from .conftest import _seed_session
 
 REQUIRE_ROUTING_READ_HOOK = HOOKS_DIR / "require-routing-read.sh"
 PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"

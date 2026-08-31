@@ -34,7 +34,8 @@ from typing import NamedTuple
 
 import pytest
 from helpers import CLAUDE_DIR
-from test_agent_roster import REVIEWER_AGENTS
+
+from .test_agent_roster import REVIEWER_AGENTS
 
 # CLAUDE_DIR is defined in helpers.py as Path(__file__).resolve().parent.parent,
 # anchored to the stow-source path, not the symlink target (~/.claude/).

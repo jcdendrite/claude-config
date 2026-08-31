@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -21,6 +20,8 @@ from helpers import (
     run_hook,
     run_skill_command,
 )
+
+from .conftest import _seed_session
 
 READY_FOR_REVIEW_HOOK = HOOKS_DIR / "require-ready-for-review.sh"
 READY_FOR_REVIEW_SKILL = SKILLS_DIR / "ready-for-review" / "SKILL.md"

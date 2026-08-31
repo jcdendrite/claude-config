@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import (
+
+from .conftest import (
     _priced,
     _write_jsonl,
     _write_subagent_jsonl,

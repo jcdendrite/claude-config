@@ -15,7 +15,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from conftest import _shimmed_env
+
+from .conftest import _shimmed_env
 
 _SCRIPT = Path(__file__).parent.parent / "respond-pr-safe-patch.sh"
 

@@ -20,7 +20,8 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import _dead_pid
+
+from .conftest import _dead_pid
 
 _SCRIPT = Path(__file__).parent.parent / "post-crash-sessions.py"
 _spec = importlib.util.spec_from_file_location("post_crash_sessions", _SCRIPT)

@@ -10,7 +10,6 @@ import textwrap
 import time
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
@@ -29,6 +28,8 @@ from helpers import (
     write_input,
     write_plan_review_marker,
 )
+
+from .conftest import _seed_session
 
 PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"
 

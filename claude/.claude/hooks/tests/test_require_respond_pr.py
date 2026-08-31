@@ -5,7 +5,6 @@ import os
 import subprocess
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -16,6 +15,8 @@ from helpers import (
     run_hook,
     run_skill_command,
 )
+
+from .conftest import _seed_session
 
 RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 RESPOND_PR_SKILL = SKILLS_DIR / "respond-pr" / "SKILL.md"

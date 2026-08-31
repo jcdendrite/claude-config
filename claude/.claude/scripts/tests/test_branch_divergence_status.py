@@ -9,7 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from conftest import (
+from .conftest import (
     _commit,
     _curated_path_without_direnv,
     _init_repo,

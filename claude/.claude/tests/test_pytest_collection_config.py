@@ -10,12 +10,14 @@ Run with: pytest claude/.claude/
 
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from helpers import REPO_ROOT
 
 
@@ -231,4 +233,195 @@ class TestTimingMarkerCoverageParity:
             f'-m "not timing" selected {len(not_timing_ids)}, -m timing selected '
             f"{len(timing_ids)}, but the unfiltered run collected {len(all_ids)} — "
             "pytest's mark-filtering disagrees with itself across these three invocations"
+        )
+
+
+class TestConftestModuleNamesAreUnique:
+    """Two sibling test trees each carry a conftest.py: claude/.claude/hooks/tests/
+    and claude/.claude/scripts/tests/. Without a package identity, pytest's
+    prepend import mode names both `conftest` and evicts the previous one
+    from sys.modules before loading the next, so that slot is
+    last-writer-wins. A test file's own `from .conftest import X` is an
+    ordinary Python import that reads whatever sits in that slot. The
+    __init__.py markers under claude/.claude/hooks/ and claude/.claude/scripts/
+    give each tree a dotted name so both coexist. The package root is
+    asserted as well as the name, because a tree missing only its domain
+    marker (e.g. claude/.claude/hooks/__init__.py, keeping
+    claude/.claude/hooks/tests/__init__.py) still produces a dotted name,
+    just one level shallower than intended."""
+
+    @staticmethod
+    def _resolve(conftest_path: Path) -> tuple[Path, str]:
+        """Resolve pkg_root/module_name the way pytest's own prepend-mode
+        conftest loader would, including its fallback for an unpackaged
+        path.
+
+        No public pytest API exposes this resolution as of pytest 8.4.2 —
+        hand-reimplementing the __init__.py walk instead of calling
+        resolve_pkg_root_and_module_name would drift from pytest's own rule
+        as its algorithm evolves. Accepted trade-off, matching the
+        precedent at TestNorecursedirsDefaultsPreserved above: switch to a
+        public accessor if pytest ever adds one.
+        """
+        # requirements-dev.txt pins pytest==8.*, which permits an automatic minor bump.
+        # An ImportError here means such a bump renamed or removed this private
+        # symbol, not that the module-naming invariant broke.
+        from _pytest.pathlib import CouldNotResolvePathError, resolve_pkg_root_and_module_name
+
+        try:
+            return resolve_pkg_root_and_module_name(conftest_path, consider_namespace_packages=False)
+        except CouldNotResolvePathError:
+            # Mirrors import_path's own fallback for a path belonging to no
+            # package at all (_pytest/pathlib.py's import_path).
+            return conftest_path.parent, conftest_path.stem
+
+    @staticmethod
+    def _tracked_conftest_paths() -> list[Path]:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*conftest.py"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return [REPO_ROOT / p for p in out.split("\0") if p]
+
+    def test_every_tracked_conftest_resolves_to_a_pairwise_unique_module_name(self):
+        conftest_paths = self._tracked_conftest_paths()
+        assert conftest_paths, "no conftest.py tracked in the repo — did the git ls-files glob break?"
+
+        resolved = {conftest_path: self._resolve(conftest_path) for conftest_path in conftest_paths}
+
+        module_names = [module_name for _, module_name in resolved.values()]
+        duplicate_names = {name for name in module_names if module_names.count(name) > 1}
+        assert not duplicate_names, (
+            f"conftest.py files resolve to duplicate module name(s) {duplicate_names} — "
+            "pytest's prepend import mode gives both the same name and evicts one from "
+            "sys.modules before loading the other, so a `from .conftest import X` in one "
+            f"test tree can silently read the other tree's conftest instead: {resolved}"
+        )
+
+        claude_root = REPO_ROOT / "claude" / ".claude"
+        for conftest_path, (pkg_root, module_name) in resolved.items():
+            if claude_root not in conftest_path.parents:
+                continue
+            domain = conftest_path.parent.parent.name
+            needed = f"claude/.claude/{domain}/__init__.py and claude/.claude/{domain}/tests/__init__.py"
+            assert "." in module_name, (
+                f"{conftest_path} resolved to bare module name {module_name!r} — add {needed}"
+            )
+            assert pkg_root == claude_root, (
+                f"{conftest_path} resolved pkg_root {pkg_root}, expected {claude_root} — add {needed}"
+            )
+
+    def test_resolution_fallback_matches_pytests_own_unpackaged_path_handling(self, tmp_path: Path):
+        """Unit test of `_resolve`'s own CouldNotResolvePathError fallback
+        branch, exercised against a synthetic unpackaged path rather than
+        the live tree — after the __init__.py markers land, every tracked
+        conftest.py resolves via resolve_package_path and never trips this
+        branch, so the assertion above gives it no coverage."""
+        unpackaged_conftest = tmp_path / "conftest.py"
+        unpackaged_conftest.write_text("")
+
+        assert self._resolve(unpackaged_conftest) == (tmp_path, "conftest")
+
+
+class TestMultiArgCollectionSpansTestDomains:
+    """Reproduces the trigger shape directly, independent of
+    TestConftestModuleNamesAreUnique's naming-invariant check above: two
+    initial path arguments whose conftests both preload before either test
+    module is imported, so the second argument's conftest evicts the
+    first's from sys.modules and whichever module is named last wins,
+    order-dependent. A future pytest release could change the naming rule
+    the other class targets while still preserving this order-dependent
+    eviction behavior, and only this class would catch that regression."""
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [
+            (
+                "claude/.claude/scripts/tests/test_token_analyzer.py",
+                "claude/.claude/hooks/tests/test_require_routing_read.py",
+            ),
+            (
+                "claude/.claude/hooks/tests/test_require_routing_read.py",
+                "claude/.claude/scripts/tests/test_token_analyzer.py",
+            ),
+        ],
+    )
+    def test_collection_succeeds_regardless_of_argument_order(self, first: str, second: str):
+        # Both orders: the victim is whichever argument's conftest loads
+        # first, since the later argument's conftest evicts it from
+        # sys.modules before that module ever imports.
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", first, second, "--collect-only", "-q", "--rootdir", str(REPO_ROOT)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"collection failed for argument order ({first}, {second}) "
+            f"(exit {result.returncode}):\n{result.stdout}\n{result.stderr}"
+        )
+
+
+class TestNoBareSameDirectorySiblingImports:
+    """TestConftestModuleNamesAreUnique above only covers conftest.py's own
+    module-naming collision. A test-local helper module like
+    test_agent_roster.py hits the identical prepend-mode sys.path bug through
+    an ordinary bare sibling import (`from test_agent_roster import X`)
+    rather than pytest's own conftest loader, per CLAUDE.md's "audit
+    structural siblings before scoping a fix narrowly" principle. This walks
+    every tracked test file's AST rather than grepping for import lines,
+    since a regex can't distinguish `from test_agent_roster import X`
+    (breaks once claude/.claude/hooks/tests/ is no longer inserted directly
+    onto sys.path) from `from .test_agent_roster import X` (an ordinary
+    package-relative import that keeps working) or from a module of that
+    name imported from an unrelated package. A future contributor
+    copy-pasting a test file and reintroducing a bare
+    `from test_agent_roster import X` instead of the package-relative form
+    would trip this check."""
+
+    @staticmethod
+    def _tracked_test_tree_paths() -> list[Path]:
+        out = subprocess.run(
+            [
+                "git", "ls-files", "-z", "--",
+                "claude/.claude/hooks/tests/*.py",
+                "claude/.claude/scripts/tests/*.py",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return [REPO_ROOT / p for p in out.split("\0") if p]
+
+    def test_no_bare_import_resolves_to_a_same_directory_sibling_module(self):
+        tracked_paths = self._tracked_test_tree_paths()
+        assert tracked_paths, (
+            "no tracked .py files under hooks/tests or scripts/tests — did the git ls-files glob break?"
+        )
+
+        sibling_stems_by_dir: dict[Path, set[str]] = {}
+        for path in tracked_paths:
+            sibling_stems_by_dir.setdefault(path.parent, set()).add(path.stem)
+
+        violations = []
+        for path in tracked_paths:
+            sibling_stems = sibling_stems_by_dir[path.parent] - {path.stem}
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in sibling_stems:
+                    violations.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno}: "
+                        f"`from {node.module} import ...` is a bare import of a same-directory "
+                        f"sibling module — use `from .{node.module} import ...` instead"
+                    )
+
+        assert not violations, (
+            "bare same-directory sibling import(s) found — these break once __init__.py "
+            "markers stop hooks/tests/ or scripts/tests/ being inserted directly onto "
+            "sys.path under pytest's prepend import mode:\n" + "\n".join(violations)
         )
