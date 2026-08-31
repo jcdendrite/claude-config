@@ -315,8 +315,8 @@ class TestNudgeLongTurnSubagent:
 
         assert all(r.returncode == 0 for r in results)
         nonempty_count = sum(1 for r in results if r.stdout.strip() != "")
-        assert nonempty_count in (0, 1, 2), (
-            f"expected 0, 1, or 2 nudges depending on cadence-boundary timing, got {nonempty_count}"
+        assert nonempty_count <= 1, (
+            f"at most one of two racing fires may win the FIRED_MARKER claim, got {nonempty_count}"
         )
 
         if nonempty_count > 0:
@@ -1229,6 +1229,36 @@ class TestNudgeLongTurnSubagent:
         assert canary.read_text() == CANARY_CONTENT, (
             "a traversal session_id must not touch a file outside .long-turn-nudge-fired.d/"
         )
+
+    def test_scan_treats_adversarial_transcript_content_as_inert_data(self, tmp_path):
+        """A transcript record's .message.content can hold arbitrary
+        attacker-controlled text -- shell metacharacters and an embedded NUL
+        (written here as the literal escape sequence \\u0000, since that's
+        how json.dumps encodes a NUL on disk -- no raw NUL byte transits
+        the pipeline) must never reach a shell. _scan_turn_count_cached
+        pipes transcript bytes through tail/head/jq, never eval or exec, so
+        this content is inert data at every stage of the pipeline. Mirrors
+        test_traversal_session_id_writes_nothing_outside_marker_dir's
+        canary-file assertion style."""
+        canary = tmp_path / "pwned"
+        transcript = tmp_path / "t.jsonl"
+        records = [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD + 4)]
+        records.append({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "usage": {"output_tokens": 1},
+                "content": f"$(touch {canary}) `touch {canary}` \x00",
+            },
+        })
+        _write_transcript(transcript, records)
+
+        results = _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE)
+
+        assert all(r.returncode == 0 for r in results)
+        assert not canary.exists(), "adversarial transcript content must not reach a shell"
+        _, total, _ = _scan_state_path(tmp_path).read_text().splitlines()
+        assert int(total) == DEFAULT_THRESHOLD + 5
 
     def test_missing_session_id_fails_open(self, tmp_path):
         transcript = tmp_path / "t.jsonl"

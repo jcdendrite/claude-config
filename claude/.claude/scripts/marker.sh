@@ -244,6 +244,11 @@ _resolve_code_review_check_max_age_seconds() {
 # confirmed at least one hash match. That single-grep call stays the cheap
 # common-case check for "no hash match at all". This loop only runs once a
 # hash match exists, and narrows that match set down to non-stale files.
+# The candidates loop below is O(n) in GLOB_PREFIX's accumulated marker
+# count. That's bounded today because this repo's own worktree-enforced
+# hashing keys REPO_HASH to an ephemeral per-branch path rather than a
+# stable long-lived one. A non-worktree-enforced repo would scale
+# unboundedly here, since completion markers are never pruned.
 _code_review_marker_fresh_age() {
   local markers_dir="$1" expected_value="$2" glob_prefix="$3" max_age_seconds="$4"
   local nullglob_was_set=0

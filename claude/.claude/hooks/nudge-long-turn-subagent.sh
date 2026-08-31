@@ -51,21 +51,22 @@
 #   holding _scan_turn_count_cached's scan lock:
 #   - Leaks the lock directory; only the periodic MARKER_DIR sweep
 #     reclaims it, up to 30 days.
-#   - The likely root cause is an unwrapped mkdir/rmdir/mktemp hang hitting
+#   - The likely root cause is an unwrapped rmdir/mktemp hang hitting
 #     a harness execution timeout -- see docs/hooks.md's known-limitations
 #     entry for this hook.
 #   - Every later sampled fire for that dispatch fails to scan while the
 #     lock is leaked, blinding the nudge for the rest of the dispatch.
 #   - In practice that's far under the 30-day reclaim window, since a
 #     dispatch rarely runs anywhere near that long.
+# - The same lock directory can also be orphaned by the 2s
+#   _lib_capped_for timeout on its own mkdir: if mkdir(2) completes after
+#   the timeout's SIGTERM fires, the caller sees exit 124 and treats
+#   acquisition as failed while the directory persists, subject to the
+#   same 30-day reclaim as the SIGKILL case above.
 #   - The same leak also happens if a trappable signal lands in the single
 #     statement between mkdir "$lock_dir" succeeding and LOCK_DIR being
 #     assigned, since the EXIT trap closes over LOCK_DIR while it's still
 #     empty at that instant.
-# - mkdir -p "$MARKER_DIR" is unwrapped the same way. Unlike the scan-lock
-#   scenario above, it runs on every fire rather than only a sampled scan
-#   fire, so this hang risk spans the dispatch's entire remaining
-#   lifetime.
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
@@ -154,7 +155,7 @@ trap 'rm -f "$WINDOW_FILE"; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 _scan_turn_count_cached() {
   local transcript_path="$1" scan_state_file="$2"
   local lock_dir="${scan_state_file}.lock"
-  mkdir "$lock_dir" 2>/dev/null || return 1
+  _lib_capped_for 2 mkdir "$lock_dir" 2>/dev/null || return 1
   LOCK_DIR="$lock_dir"
 
   local stored_offset="" stored_total="" stored_misaligned=""
@@ -238,7 +239,7 @@ _scan_turn_count_cached() {
   fi
 
   TURN_COUNT=$(( stored_total + new_turns ))
-  mkdir -p "$(dirname "$scan_state_file")" 2>/dev/null || true
+  _lib_capped_for 2 mkdir -p "$(dirname "$scan_state_file")" 2>/dev/null || true
 
   printf '%s\n%s\n%s\n' "$new_offset" "$TURN_COUNT" "$new_misaligned" > "$scan_state_file" 2>/dev/null || true
   rmdir "$lock_dir" 2>/dev/null
@@ -294,7 +295,7 @@ fi
 
 MARKER_DIR="$CONFIG_DIR/.long-turn-nudge-fired.d"
 NUDGE_LOG="$CONFIG_DIR/.long-turn-nudge.log"
-mkdir -p "$MARKER_DIR" 2>/dev/null || true
+_lib_capped_for 2 mkdir -p "$MARKER_DIR" 2>/dev/null || true
 
 # Already fired: this dispatch already got its one nudge, so every later
 # fire exits here immediately with no counter upkeep, scan, or re-emit.
@@ -341,7 +342,7 @@ OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson thr
 # Atomic claim: mkdir is atomic, so only one of two near-simultaneous fires
 # that both built OUTPUT can claim FIRED_MARKER. The loser discards its
 # already-built OUTPUT and exits without emitting a duplicate nudge.
-mkdir "$FIRED_MARKER" 2>/dev/null || exit 0
+_lib_capped_for 2 mkdir "$FIRED_MARKER" 2>/dev/null || exit 0
 
 printf 'nudged session=%s turns=%s threshold=%s event=%s\n' \
   "$SESSION_ID" "$TURN_COUNT" "$THRESHOLD" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
