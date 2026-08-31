@@ -173,7 +173,7 @@ resolve_rearm_spacing() {
 # re-arm; 10+ digits risks wrapping negative).
 resolve_block_after() {
   case "$HANDOFF_NUDGE_BLOCK_AFTER" in
-    ''|0|*[!0-9]*|0[0-9]*|?????????*) BLOCK_AFTER=1 ;;
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) BLOCK_AFTER=4 ;;
     *) BLOCK_AFTER=$HANDOFF_NUDGE_BLOCK_AFTER ;;
   esac
 }

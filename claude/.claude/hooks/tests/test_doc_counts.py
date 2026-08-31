@@ -251,13 +251,19 @@ def _count_handoff_nudge_abs_cap_default() -> int:
 def _count_handoff_nudge_block_after_default() -> int:
     """Return the handoff-nudge hard-block escalation count, derived behaviorally.
 
-    Fires the hook twice (advisory, then a re-arm) with HANDOFF_NUDGE_BLOCK_AFTER
-    unset and reads the default back from the hard-block stderr -- a source-scan
-    of the fallback literal wouldn't prove the runtime path actually uses it.
-    Keep both estimates under 9 digits: the marker's `?????????*` corrupt-value
-    guard would otherwise reset the re-arm count instead of exercising it.
+    Fires the hook once (advisory), then fires successive re-arms with
+    HANDOFF_NUDGE_BLOCK_AFTER unset until one hard-blocks, and reads the
+    default back from the hard-block stderr -- a source-scan of the fallback
+    literal wouldn't prove the runtime path actually uses it. The re-arm loop
+    doesn't assume the default's numeric value up front, only an upper bound
+    on how many re-arms it could plausibly take. Each re-arm's estimate
+    increment (200000) clears HANDOFF_NUDGE_REARM_SPACING's own default
+    (80000) with margin, and the loop's own bound (20) keeps every estimate
+    under 9 digits, short of the marker's `?????????*` corrupt-value guard.
     """
     hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
+    max_rearms = 20
+    rearm_increment = 200_000
 
     def _usage_record(cache_read: int) -> dict:
         return {
@@ -276,7 +282,8 @@ def _count_handoff_nudge_block_after_default() -> int:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         transcript_path = tmp_path / "t.jsonl"
-        transcript_path.write_text(json.dumps(_usage_record(400_000)) + "\n")
+        estimate = 400_000
+        transcript_path.write_text(json.dumps(_usage_record(estimate)) + "\n")
         payload = {
             "session_id": "doc-count-block-after-probe",
             "transcript_path": str(transcript_path),
@@ -285,14 +292,26 @@ def _count_handoff_nudge_block_after_default() -> int:
         env = {**os.environ, "HOME": str(tmp_path)}
         env.pop("CLAUDE_CONFIG_DIR", None)
         env.pop("HANDOFF_NUDGE_BLOCK_AFTER", None)
+        env.pop("HANDOFF_NUDGE_REARM_SPACING", None)
+        env.pop("HANDOFF_NUDGE_ABS_CAP", None)
         subprocess.run(
             [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
         )
-        with transcript_path.open("a") as transcript_fh:
-            transcript_fh.write(json.dumps(_usage_record(900_000)) + "\n")
-        result = subprocess.run(
-            [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
-        )
+        for _ in range(max_rearms):
+            estimate += rearm_increment
+            with transcript_path.open("a") as transcript_fh:
+                transcript_fh.write(json.dumps(_usage_record(estimate)) + "\n")
+            result = subprocess.run(
+                [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
+            )
+            if result.returncode == 2:
+                break
+        else:
+            raise ValueError(
+                f"The hook never hard-blocked within {max_rearms} re-arms; the shipped "
+                "default has grown past this probe's bound, or the escalation ladder "
+                "regressed."
+            )
     match = re.search(r"HANDOFF_NUDGE_BLOCK_AFTER=(\d+)\)", result.stderr)
     if match is None:
         raise ValueError(
