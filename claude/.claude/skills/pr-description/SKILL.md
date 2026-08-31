@@ -60,6 +60,7 @@ not something you can resolve. If none match, proceed without a layer.
   the body's own headings — do not drop it, do not silently paraphrase it,
   and do not leave it sitting as an unlabeled block between sections. A bare
   block is exactly the span the coherence pass is told to flag.
+- **A closing-keyword reference, when a `<TICKET-ID>` was passed in.** Include `Fixes <TICKET-ID>` in the body alongside any existing citation of it (see REFERENCES.md for why).
 - **The attribution trailer**, at both the top and the bottom of the body — the first line (blank line, then the rest of the body) and the last line: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 
 ## Cost section
