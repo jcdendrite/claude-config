@@ -9570,9 +9570,9 @@ def _parse_nudge_log_entries(log_path: Path) -> list[dict]:
     tool controls.
 
     Each returned dict carries "kind" plus that kind's own fields:
-    - nudged: session, est (int), model, window (int), event, and "action"
-      (only present when the line carries it -- a hard-block fire logs
-      action=block, an advisory fire logs no action field at all)
+    - nudged: session, est (int), model, window (int), event
+      - action: present only on a hard-block fire (action=block); absent on an advisory fire
+      - ignored (int), skills: present on log lines written by hook versions that record per-fire telemetry; absent on older lines
     - schema-drift: session, event
     - handoff: session
     """
@@ -9607,6 +9607,11 @@ def _parse_nudge_log_entries(log_path: Path) -> list[dict]:
             }
             if "action" in fields:
                 entry["action"] = fields["action"]
+            if "ignored" in fields:
+                with contextlib.suppress(ValueError):
+                    entry["ignored"] = int(fields["ignored"])
+            if "skills" in fields:
+                entry["skills"] = fields["skills"]
             entries.append(entry)
         elif kind == "schema-drift":
             if not {"session", "event"} <= fields.keys():
@@ -9629,8 +9634,8 @@ def _operator_response_lag_from_log(
     own SESSION_ID) to that session's ordered per-main-thread-turn abs-token
     values (context_at_turn + output_tokens -- the hook's own ESTIMATE unit).
     A `nudged` log line carries no timestamp (docs/handoff-nudge.md's "Log
-    location" table: session=/est=/model=/window=/event= only), so the join
-    key is session_id plus a first-crossing rule: the fire turn is the
+    location" table enumerates its fields), so the join key is session_id
+    plus a first-crossing rule: the fire turn is the
     trace's first value >= est, matching the real hook's own semantics -- it
     fires once, at the first crossing, never later. A nearest-value join
     would instead risk landing on a turn *after* a mid-session compaction

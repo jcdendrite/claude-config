@@ -9,12 +9,15 @@ unrecognized/missing model IDs, which default to the 1M window — are capped
 at 150000 rather than the raw 400000 (40% of 1M). The nudge re-arms at
 escalating token bands past the first fire — a marker file holds the
 triggering estimate and gates subsequent turns until the estimate advances
-HANDOFF_NUDGE_REARM_SPACING (default 80000) past it. Past
-HANDOFF_NUDGE_BLOCK_AFTER (default 4) ignored re-arms in one session, a
-further re-arm hard-blocks (stderr + exit 2) instead of emitting the
-advisory JSON -- but only on PostToolBatch; on Stop, exit 2 would force the
-conversation to continue, so that registration falls through to the
-advisory path instead.
+HANDOFF_NUDGE_REARM_SPACING (default 80000) past it. Once a session's
+estimate reaches HANDOFF_NUDGE_BLOCK_AT (default 470000), a further re-arm
+hard-blocks (stderr + exit 2) instead of emitting the advisory JSON -- but
+only on PostToolBatch; on Stop, exit 2 would force the conversation to
+continue, so that registration falls through to the advisory path instead.
+A session's first-ever crossing never hard-blocks, even if its estimate is
+already past HANDOFF_NUDGE_BLOCK_AT. Every `nudged` log line also carries
+ignored= (the ignored-re-arm count, recorded for telemetry only) and
+skills= (the active-bypass skill markers live at fire time, or "-").
 
 All tests sandbox $HOME via monkeypatch so markers and logs land in tmp_path
 rather than the real $HOME.
@@ -63,14 +66,15 @@ SESSION_ID = "test-session-nudge-001"
 # test_unrecognized_event_falls_back_to_user_prompt_submit_and_bootstraps.
 HOOK_EVENT_NAMES = ["PostToolBatch", "Stop"]
 
-# HANDOFF_NUDGE_BLOCK_AFTER's shipped default -- the escalation ladder hard-
-# blocks once a session's ignored-re-arm count reaches this value.
-DEFAULT_BLOCK_AFTER = 4
+# HANDOFF_NUDGE_BLOCK_AT's shipped default -- the escalation ladder hard-
+# blocks once a session's estimate reaches this absolute token position.
+DEFAULT_BLOCK_AT = 470_000
 
-# Must exceed 2 -- some ladder tests deliberately drive ignored_count to 2
-# (see test_escalation_counter_concurrent_rearms_no_lost_update); 5 is
-# otherwise arbitrary above that floor.
-REARM_MECHANICS_BLOCK_AFTER = "5"
+# Seven digits, high enough that no rearm-mechanics test's own estimate ever
+# reaches it (clears LARGE_THRESHOLD plus a handful of REARM_SPACING hops
+# with wide margin), while staying under the marker's own 9-digit
+# `?????????*` corrupt-value guard.
+REARM_MECHANICS_BLOCK_AT = "9000000"
 
 # Mirrors the hook's own window table so no test hand-computes a threshold.
 LARGE_WINDOW = 1_000_000
@@ -202,10 +206,15 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's fire path invokes
     (`cat`/`jq` for the payload/output JSON, `dirname` to locate _lib.sh,
     `tail`/`wc`/`tr`/`head` for read_latest_usage_cached's incremental scan,
-    `mkdir`/`find`/`touch` for the marker dir), omitting both timeout(1) and
-    gtimeout(1). Skips (does not silently under-symlink) when a needed real
-    binary is itself absent from the test machine."""
-    for tool in ("cat", "dirname", "find", "head", "jq", "mkdir", "tail", "touch", "tr", "wc"):
+    `mkdir`/`find`/`touch` for the marker dir, `bash`/`basename` for the
+    active-bypass marker enumeration and `sort`/`paste` to join its labels),
+    omitting both timeout(1) and gtimeout(1). Skips (does not silently
+    under-symlink) when a needed real binary is itself absent from the test
+    machine."""
+    for tool in (
+        "bash", "basename", "cat", "dirname", "find", "head", "jq", "mkdir",
+        "paste", "sort", "tail", "touch", "tr", "wc",
+    ):
         real = shutil.which(tool)
         if not real:
             pytest.skip(f"{tool} not found in PATH")
@@ -343,6 +352,16 @@ def _handoff_active_marker_path(
     `marker.sh activate handoff` and read by `_lib_active_bypass_marker_live`."""
     base = config_dir if config_dir is not None else tmp_path / ".claude"
     return base / ".handoff-active.d" / session_id
+
+
+def _memory_skill_active_marker_path(
+    tmp_path: Path, session_id: str = SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    """The `memory-skill` active-bypass marker path -- sibling to
+    `_handoff_active_marker_path` above, used to exercise the skills= log
+    field with two simultaneously-live markers."""
+    base = config_dir if config_dir is not None else tmp_path / ".claude"
+    return base / ".memory-skill-active.d" / session_id
 
 
 def _plant_stale_marker(
@@ -733,10 +752,10 @@ class TestNudgeHandoffNearContextCap:
         """Two real hook invocations: the second, past LAST_FIRED_AT + REARM_SPACING,
         fires again and overwrites the marker with the new triggering estimate --
         not left at the old value, not empty, not touched-to-zero-byte. Pins
-        HANDOFF_NUDGE_BLOCK_AFTER above the default so this real re-arm (mechanics
+        HANDOFF_NUDGE_BLOCK_AT above the default so this real re-arm (mechanics
         under test) stays advisory rather than exercising the escalation ladder."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
         _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
@@ -759,11 +778,11 @@ class TestNudgeHandoffNearContextCap:
     def test_rearm_boundary_at_last_fired_plus_spacing(self, tmp_path, second_estimate, expect_fire):
         """N-1/N boundary pair at the rearm threshold, matching this file's existing
         adjacent-pair convention for every other threshold it tests. Pins
-        HANDOFF_NUDGE_BLOCK_AFTER above the default so the expect_fire=True case's
+        HANDOFF_NUDGE_BLOCK_AT above the default so the expect_fire=True case's
         real re-arm (mechanics under test) stays advisory rather than exercising
         the escalation ladder."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
         _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
@@ -827,11 +846,11 @@ class TestNudgeHandoffNearContextCap:
 
     def test_three_fire_sequence_rearms_twice(self, tmp_path):
         """Fire, suppress, re-fire past the second band, in one session -- exercises
-        the marker overwrite happening twice. Pins HANDOFF_NUDGE_BLOCK_AFTER above
+        the marker overwrite happening twice. Pins HANDOFF_NUDGE_BLOCK_AT above
         the default so the third call's real re-arm (mechanics under test) stays
         advisory rather than exercising the escalation ladder."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
         _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
@@ -875,11 +894,11 @@ class TestNudgeHandoffNearContextCap:
         """A fire mid-write, where the transcript's newly appended bytes are
         an incomplete JSON line: the stored offset must stop before it, and
         the next fire -- once the line completes -- picks up the completed
-        record whole, not duplicated or dropped. Pins HANDOFF_NUDGE_BLOCK_AFTER
+        record whole, not duplicated or dropped. Pins HANDOFF_NUDGE_BLOCK_AT
         above the default so the third call's real re-arm (mechanics under
         test) stays advisory rather than exercising the escalation ladder."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
         _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
@@ -1142,12 +1161,12 @@ class TestNudgeHandoffNearContextCap:
         is no synchronization barrier here forcing genuine overlap instead.
         Marked timing (run serially, -m timing -n0) since heavier xdist
         parallel load skews which ordering is likelier, not because either
-        ordering is itself invalid. Pins HANDOFF_NUDGE_BLOCK_AFTER above the
-        default -- and above the "2" a genuine concurrent overlap can legitimately
-        reach here -- so this test discriminates atomic-append correctness, not
-        the escalation ladder."""
+        ordering is itself invalid. Pins HANDOFF_NUDGE_BLOCK_AT above the
+        default -- well above any estimate a genuine concurrent overlap can
+        legitimately reach here -- so this test discriminates atomic-append
+        correctness, not the escalation ladder."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
         first_estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(first_estimate, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
@@ -1167,7 +1186,7 @@ class TestNudgeHandoffNearContextCap:
         for t in threads:
             t.join()
 
-        # Both stay advisory under the pinned HANDOFF_NUDGE_BLOCK_AFTER above,
+        # Both stay advisory under the pinned HANDOFF_NUDGE_BLOCK_AT above,
         # regardless of ordering. ignored_count is 1 under full serialization
         # (see docstring) or 2 under genuine overlap -- both are legitimate;
         # anything outside {1, 2} would indicate corruption.
@@ -1175,34 +1194,97 @@ class TestNudgeHandoffNearContextCap:
         ignored_count = _ignored_marker_path(tmp_path).stat().st_size
         assert ignored_count in (1, 2), f"expected 1 or 2 ignored re-arms, got {ignored_count}"
 
-    def test_escalation_ladder_blocks_once_block_after_ignored_rearms_reached(self, tmp_path):
-        """Advisory nudges keep firing (stdout JSON, exit 0) until
-        HANDOFF_NUDGE_BLOCK_AFTER ignored re-arms are reached, at which
-        point the hook hard-blocks (stderr, exit 2) instead. Also checks the
-        log: only the hard-block fire's line carries action=block, not
-        either advisory fire's."""
+    def test_escalation_counter_concurrent_rearms_at_hard_block_boundary(self, tmp_path):
+        """Same near-simultaneous PostToolBatch race as
+        test_escalation_counter_concurrent_rearms_no_lost_update above, but
+        with HANDOFF_NUDGE_BLOCK_AT pinned reachable (not pinned high), so
+        the race lands on the hard-block deny boundary itself rather than
+        staying advisory throughout. Whichever invocation reads
+        LAST_FIRED_AT first passes the rearm-spacing gate and hard-blocks
+        (exit 2). A fully serialized ordering leaves the other invocation
+        reading the already-updated FIRED_MARKER and exiting 0 via the
+        ordinary rearm-spacing gate before it ever reaches the escalation
+        logic; a genuine overlap has both read the pre-update marker and
+        both hard-block; a read straddling the other racer's marker rewrite
+        can also read an empty marker and fall to the corrupt-marker
+        fail-open path (see the comment above the LAST_FIRED_AT case
+        statement), which stays advisory (exit 0, JSON on stdout) rather
+        than silently suppressing. All three orderings are legitimate; this
+        test checks that neither process crashes and the resulting
+        marker/log state is self-consistent under all of them."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": "2"}
+        first_estimate = LARGE_THRESHOLD
+        rearm_estimate = first_estimate + DEFAULT_REARM_SPACING
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(rearm_estimate)}
+        _write_transcript(transcript, [_record_totalling(first_estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.returncode == 0
+        assert first.stdout.strip() != ""  # first fire: no increment (not a re-arm)
+
+        _append_to_transcript(transcript, [_record_totalling(rearm_estimate, model="claude-sonnet-5")])
+
+        exit_codes: list[int | None] = [None, None]
+        results: list[subprocess.CompletedProcess | None] = [None, None]
+
+        def _run(i: int) -> None:
+            results[i] = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+            exit_codes[i] = results[i].returncode
+
+        threads = [threading.Thread(target=_run, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert set(exit_codes) <= {0, 2}, f"unexpected exit codes under concurrency: {exit_codes}"
+        assert 2 in exit_codes, "estimate has reached HANDOFF_NUDGE_BLOCK_AT, so at least one racer must hard-block"
+
+        for code, result in zip(exit_codes, results, strict=True):
+            if code == 2:
+                assert result.stdout.strip() == ""
+                assert result.stderr.strip() != ""
+            else:
+                # exit 0 covers two legitimate orderings here: silent
+                # rearm-spacing suppression (empty stdout) or the
+                # corrupt-marker fail-open path advising instead (JSON on
+                # stdout) -- neither ever writes to stderr.
+                assert result.stderr.strip() == ""
+
+        assert _marker_path(tmp_path).read_text() == f"{rearm_estimate}\n"
+        nudged_lines = [line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")]
+        block_lines = [line for line in nudged_lines if line.endswith("action=block")]
+        assert len(block_lines) == exit_codes.count(2)
+
+    def test_escalation_ladder_blocks_once_estimate_reaches_block_at(self, tmp_path):
+        """Advisory nudges keep firing (stdout JSON, exit 0) until the
+        estimate reaches HANDOFF_NUDGE_BLOCK_AT, at which point the hook
+        hard-blocks (stderr, exit 2) instead. Also checks the log: only the
+        hard-block fire's line carries action=block, not either advisory
+        fire's."""
+        transcript = tmp_path / "t.jsonl"
+        block_at = LARGE_THRESHOLD + 2 * DEFAULT_REARM_SPACING
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(block_at)}
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.returncode == 0
-        assert first.stdout.strip() != ""  # first fire: advisory, no increment
+        assert first.stdout.strip() != ""  # first-ever crossing: always advisory
 
         estimate += DEFAULT_REARM_SPACING
         _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert second.returncode == 0
-        assert second.stdout.strip() != ""  # first re-arm (ignored count -> 1): still advisory
+        assert second.stdout.strip() != ""  # below block_at: still advisory
 
         estimate += DEFAULT_REARM_SPACING
+        assert estimate == block_at
         _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-        assert third.returncode == 2, "second re-arm (ignored count -> 2) reaches HANDOFF_NUDGE_BLOCK_AFTER=2"
+        assert third.returncode == 2, f"estimate reaches HANDOFF_NUDGE_BLOCK_AT={block_at}"
         assert third.stdout.strip() == ""
         assert third.stderr.strip() != ""
         assert "/handoff" in third.stderr
-        assert "HANDOFF_NUDGE_BLOCK_AFTER=" in third.stderr
+        assert "HANDOFF_NUDGE_BLOCK_AT=" in third.stderr
         assert "genuinely almost done" not in third.stderr
         assert "too aggressive for your workflow" not in third.stderr
         assert _ignored_marker_path(tmp_path).stat().st_size == 2
@@ -1214,15 +1296,15 @@ class TestNudgeHandoffNearContextCap:
         assert "action=block" not in nudged_lines[1]
         assert nudged_lines[2].endswith("action=block")
 
-    def test_escalation_ladder_resets_when_ignored_marker_removed(self, tmp_path):
-        """Removing the -ignored marker (e.g. the handoff skill's conversion
-        step, per SKILL.md) resets the escalation ladder for that session --
-        the next re-arm is advisory again, not an immediate repeat block.
-        Uses HANDOFF_NUDGE_BLOCK_AFTER=2 rather than 1: at 1, any single
-        re-arm blocks regardless of whether the reset took effect, so the
-        two outcomes would be indistinguishable."""
+    def test_removing_ignored_marker_does_not_lift_block_past_block_at(self, tmp_path):
+        """Removing the -ignored marker no longer resets anything: under the
+        absolute HANDOFF_NUDGE_BLOCK_AT design the block point never depends
+        on the ignored-re-arm count, so a later fire past BLOCK_AT still
+        hard-blocks even with the marker gone -- the inverse of the
+        count-based design's own reset behavior."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": "2"}
+        block_at = LARGE_THRESHOLD + 2 * DEFAULT_REARM_SPACING
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(block_at)}
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
@@ -1232,51 +1314,121 @@ class TestNudgeHandoffNearContextCap:
         _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert second.returncode == 0
-        assert second.stdout.strip() != "", "first re-arm (ignored count -> 1): still advisory"
-
-        estimate += DEFAULT_REARM_SPACING
-        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
-        third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-        assert third.returncode == 2, "second re-arm (ignored count -> 2) reaches HANDOFF_NUDGE_BLOCK_AFTER=2"
+        assert second.stdout.strip() != ""
 
         ignored_marker = _ignored_marker_path(tmp_path)
         assert ignored_marker.exists()
         ignored_marker.unlink()
 
         estimate += DEFAULT_REARM_SPACING
+        assert estimate == block_at
         _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
-        fourth = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
-        assert fourth.returncode == 0
-        assert fourth.stdout.strip() != "", (
-            "advisory again after the ignored-count marker was removed -- without the "
-            "reset this re-arm would be the third ignored one, still >= HANDOFF_NUDGE_BLOCK_AFTER=2"
+        third = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert third.returncode == 2, (
+            "removing the -ignored marker must not lift a block once the estimate "
+            "reaches HANDOFF_NUDGE_BLOCK_AT -- the absolute block point does not "
+            "depend on the ignored-re-arm count"
         )
+        assert third.stdout.strip() == ""
+
+    def test_first_ever_crossing_already_past_block_at_stays_advisory(self, tmp_path):
+        """A session's first-ever fire never hard-blocks, even when its
+        estimate already exceeds HANDOFF_NUDGE_BLOCK_AT -- no FIRED_MARKER
+        exists yet, so LAST_FIRED_AT is empty and the block condition's own
+        precondition is never met. Without this precondition a resumed or
+        long-plan-mode-gated session whose first observed crossing already
+        sits past BLOCK_AT would hard-block with no advisory warning at
+        all."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(LARGE_THRESHOLD)}
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "action=block" not in nudged_lines[-1]
+
+    def test_block_at_override_below_threshold_rearm_hard_blocks(self, tmp_path):
+        """HANDOFF_NUDGE_BLOCK_AT can be set below the resolved fire
+        threshold itself -- e.g. an admin override tightening dismissal
+        tolerance below the shipped default. The session's first-ever
+        crossing already exceeds BLOCK_AT but still stays advisory (no
+        FIRED_MARKER yet), and the very next re-arm hard-blocks."""
+        transcript = tmp_path / "t.jsonl"
+        block_at = 50_000
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(block_at)}
+        estimate = LARGE_THRESHOLD
+        assert block_at < estimate, "the override must sit below the first-ever crossing's own estimate"
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.returncode == 0
+        assert first.stdout.strip() != ""  # first-ever crossing: always advisory
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 2, f"re-arm past HANDOFF_NUDGE_BLOCK_AT={block_at} must hard-block"
+        assert second.stdout.strip() == ""
+        assert second.stderr.strip() != ""
+
+    def test_block_at_env_read_is_per_invocation_not_cached_across_calls(self, tmp_path):
+        """HANDOFF_NUDGE_BLOCK_AT is read fresh on every invocation, never
+        cached anywhere keyed on session_id. The first call pins BLOCK_AT
+        well below the estimate -- which would hard-block a re-arm if that
+        value carried over to a later call -- but a session's first-ever
+        crossing always stays advisory regardless of BLOCK_AT, so this call
+        alone can't expose a caching bug. The second call, a genuine re-arm,
+        pins BLOCK_AT high enough that it must stay advisory under its own
+        env value; a hook that instead reused the first call's low BLOCK_AT
+        would wrongly hard-block here."""
+        transcript = tmp_path / "t.jsonl"
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env={"HANDOFF_NUDGE_BLOCK_AT": "5"})
+        assert first.returncode == 0
+        assert first.stdout.strip() != ""  # first-ever crossing: always advisory
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(
+            _base_payload(transcript), tmp_path, extra_env={"HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT}
+        )
+        assert second.returncode == 0, (
+            "the second call's own HANDOFF_NUDGE_BLOCK_AT is far above the estimate -- a "
+            "hard block here would mean the hook reused the first call's BLOCK_AT=5 "
+            "instead of reading its own invocation's env"
+        )
+        assert second.stdout.strip() != ""
 
     @pytest.mark.parametrize("hook_event_name", HOOK_EVENT_NAMES)
     def test_hard_block_only_fires_on_post_tool_batch(self, tmp_path, hook_event_name):
         """Regression test for the exit-code inversion: PostToolBatch's own
         exit-2 contract stops the agentic loop, but the same hook is also
         registered on Stop, where exit 2 instead forces the conversation to
-        continue -- the opposite of a block. Under the identical ignored-
-        count/block-after condition, PostToolBatch hard-blocks while Stop
+        continue -- the opposite of a block. Under the identical estimate,
+        past HANDOFF_NUDGE_BLOCK_AT, PostToolBatch hard-blocks while Stop
         falls through to the advisory JSON-envelope path instead."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": "1"}
+        block_at = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(block_at)}
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         first = _run_hook(
             _base_payload(transcript, hook_event_name=hook_event_name), tmp_path, extra_env=extra_env
         )
         assert first.returncode == 0
-        assert first.stdout.strip() != ""  # first fire: advisory, no increment
+        assert first.stdout.strip() != ""  # first-ever crossing: always advisory
 
         estimate += DEFAULT_REARM_SPACING
+        assert estimate == block_at
         _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         second = _run_hook(
             _base_payload(transcript, hook_event_name=hook_event_name), tmp_path, extra_env=extra_env
         )
         if hook_event_name == "PostToolBatch":
-            assert second.returncode == 2, "ignored count -> 1 reaches HANDOFF_NUDGE_BLOCK_AFTER=1 on PostToolBatch"
+            assert second.returncode == 2, f"estimate reaches HANDOFF_NUDGE_BLOCK_AT={block_at} on PostToolBatch"
             assert second.stdout.strip() == ""
             assert second.stderr.strip() != ""
         else:
@@ -1292,37 +1444,48 @@ class TestNudgeHandoffNearContextCap:
     @pytest.mark.parametrize(
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
-    def test_block_after_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
-        """A malformed override must fall back to the shipped default (4), not
-        degrade toward 0 -- checked on this session's first-ever crossing, where a
-        degraded BLOCK_AFTER=0 would hard-block immediately (0 >= 0) but a correct
-        fallback stays advisory (0 >= 4 is false)."""
+    def test_block_at_malformed_override_falls_back_to_default_not_zero(self, tmp_path, malformed_value):
+        """A malformed override must fall back to the shipped default
+        (470000), not degrade toward 0 -- checked on a re-arm (not the
+        session's first-ever crossing, which always stays advisory
+        regardless of BLOCK_AT), where a degraded BLOCK_AT=0 would hard-block
+        (ESTIMATE >= 0 is always true) but a correct fallback stays advisory
+        (ESTIMATE is nowhere near 470000)."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": malformed_value}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": malformed_value}
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.returncode == 0
         assert first.stdout.strip() != ""
 
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 0
+        assert second.stdout.strip() != "", (
+            f"malformed HANDOFF_NUDGE_BLOCK_AT={malformed_value!r} should fall back to the "
+            "default (470000) and stay advisory well under it, not degrade toward 0"
+        )
+
     @pytest.mark.parametrize(
         "malformed_value", ["abc", "080000", "", "0", "-1", "1.5", "1e5", "9223372036854775808"]
     )
-    def test_block_after_malformed_override_positive_control_blocks_at_default(self, tmp_path, malformed_value):
-        """At the shipped default (4), range(DEFAULT_BLOCK_AFTER - 1) is range(3):
-        the loop drives three advisory re-arms, and this test's own contribution
-        is the post-loop call, which drives the fourth re-arm and asserts the
-        default actually hard-blocks there (the sibling test only checks the
-        fallback isn't degraded to 0)."""
+    def test_block_at_malformed_override_positive_control_blocks_at_default(self, tmp_path, malformed_value):
+        """Positive control for the test above: proves the fallback actually
+        lands on DEFAULT_BLOCK_AT rather than some other silent-non-blocking
+        state. Drives the estimate up in REARM_SPACING hops to just under
+        DEFAULT_BLOCK_AT (still advisory), then one hop further to exactly
+        DEFAULT_BLOCK_AT (hard-blocks), pinning the exact default."""
         transcript = tmp_path / "t.jsonl"
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": malformed_value}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": malformed_value}
         result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert result.returncode == 0
-        assert result.stdout.strip() != ""
+        assert result.stdout.strip() != ""  # first-ever crossing: always advisory
 
-        for _ in range(DEFAULT_BLOCK_AFTER - 1):
+        while estimate + DEFAULT_REARM_SPACING < DEFAULT_BLOCK_AT:
             estimate += DEFAULT_REARM_SPACING
             _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
             result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
@@ -1330,12 +1493,45 @@ class TestNudgeHandoffNearContextCap:
             assert result.stdout.strip() != ""
 
         estimate += DEFAULT_REARM_SPACING
+        assert estimate == DEFAULT_BLOCK_AT
         _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert result.returncode == 2, (
-            f"malformed HANDOFF_NUDGE_BLOCK_AFTER={malformed_value!r} should fall back to the "
-            "default and block once that many re-arms are reached"
+            f"malformed HANDOFF_NUDGE_BLOCK_AT={malformed_value!r} should fall back to the "
+            "default and block once the estimate reaches it"
         )
+
+    # -----------------------------------------------------------------------
+    # HANDOFF_NUDGE_BLOCK_AFTER migration notice
+    # -----------------------------------------------------------------------
+
+    def test_block_after_still_set_produces_one_time_migration_notice(self, tmp_path):
+        """A still-exported HANDOFF_NUDGE_BLOCK_AFTER -- which no longer has
+        any effect on the now-absolute block point -- produces a one-time
+        stderr migration notice, once per session, not on every fire."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": "4"}
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.stdout.strip() != ""
+        assert "HANDOFF_NUDGE_BLOCK_AFTER is set" in first.stderr
+
+        estimate = LARGE_THRESHOLD + DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.stdout.strip() != ""
+        assert "HANDOFF_NUDGE_BLOCK_AFTER is set" not in second.stderr, (
+            "the migration notice must print once per session, not on every fire"
+        )
+
+    def test_no_migration_notice_when_block_after_unset(self, tmp_path):
+        """No migration notice when HANDOFF_NUDGE_BLOCK_AFTER was never
+        exported -- the notice must not fire unconditionally."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert "HANDOFF_NUDGE_BLOCK_AFTER is set" not in result.stderr
 
     def test_killswitch_suppresses(self, tmp_path):
         """Presence of ~/.claude/.handoff-nudge-disabled suppresses nudge and produces no log line."""
@@ -1904,7 +2100,7 @@ class TestNudgeHandoffNearContextCap:
 
     def test_rearm_spacing_override_changes_rearm_point(self, tmp_path):
         """A valid HANDOFF_NUDGE_REARM_SPACING overrides the default 80000-token
-        spacing between fires. Pins HANDOFF_NUDGE_BLOCK_AFTER above the default
+        spacing between fires. Pins HANDOFF_NUDGE_BLOCK_AT above the default
         so the third call's real re-arm (mechanics under test) stays advisory
         rather than exercising the escalation ladder."""
         custom_spacing = 20_000
@@ -1912,7 +2108,7 @@ class TestNudgeHandoffNearContextCap:
         _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
         extra_env = {
             "HANDOFF_NUDGE_REARM_SPACING": str(custom_spacing),
-            "HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER,
+            "HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT,
         }
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
@@ -1957,14 +2153,14 @@ class TestNudgeHandoffNearContextCap:
         """Positive control for the test above: proves the fallback actually lands on
         DEFAULT_REARM_SPACING rather than some other silent-non-firing state that the
         negative-only test above cannot distinguish from a guard regression that
-        leaves the hook permanently silent. Pins HANDOFF_NUDGE_BLOCK_AFTER above the
+        leaves the hook permanently silent. Pins HANDOFF_NUDGE_BLOCK_AT above the
         default so the third call's real re-arm (mechanics under test) stays advisory
         rather than exercising the escalation ladder."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(LARGE_THRESHOLD, model="claude-sonnet-5")])
         extra_env = {
             "HANDOFF_NUDGE_REARM_SPACING": malformed_value,
-            "HANDOFF_NUDGE_BLOCK_AFTER": REARM_MECHANICS_BLOCK_AFTER,
+            "HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT,
         }
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert first.stdout.strip() != ""
@@ -2079,22 +2275,23 @@ class TestHandoffActiveBypassMarkerSuppressesTheBlock:
     ladder can re-fire mid-`/handoff` write and truncate it (see
     docs/handoff-nudge.md's "Recovering from a hard block"). Every case
     below drives the ladder to the exact point
-    test_escalation_ladder_blocks_once_block_after_ignored_rearms_reached
-    proves blocks (HANDOFF_NUDGE_BLOCK_AFTER=2, fires spaced
-    DEFAULT_REARM_SPACING apart), then varies what's planted at
-    .handoff-active.d/<session_id> for the third, would-block fire."""
+    test_escalation_ladder_blocks_once_estimate_reaches_block_at
+    proves blocks (HANDOFF_NUDGE_BLOCK_AT pinned two REARM_SPACING hops past
+    LARGE_THRESHOLD, fires spaced DEFAULT_REARM_SPACING apart), then varies
+    what's planted at .handoff-active.d/<session_id> for the third,
+    would-block fire."""
 
-    BLOCK_AFTER = "2"
+    BLOCK_AT = str(LARGE_THRESHOLD + 2 * DEFAULT_REARM_SPACING)
 
     def _drive_to_block_point(self, tmp_path: Path) -> tuple[Path, dict, int]:
-        """Two real fires (first fire, one ignored re-arm) so a third fire
-        sits exactly at HANDOFF_NUDGE_BLOCK_AFTER=2 -- mirrors
-        test_escalation_ladder_blocks_once_block_after_ignored_rearms_reached's
-        own setup. The transcript is grown to the third fire's estimate but
+        """Two real fires (first-ever crossing, one re-arm) so a third fire
+        sits exactly at HANDOFF_NUDGE_BLOCK_AT -- mirrors
+        test_escalation_ladder_blocks_once_estimate_reaches_block_at's own
+        setup. The transcript is grown to the third fire's estimate but
         that fire is not run; the caller fires it after planting (or not
         planting) a .handoff-active.d marker."""
         transcript = tmp_path / "t.jsonl"
-        extra_env = {"HANDOFF_NUDGE_BLOCK_AFTER": self.BLOCK_AFTER}
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": self.BLOCK_AT}
         estimate = LARGE_THRESHOLD
         _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
         first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
@@ -2139,7 +2336,7 @@ class TestHandoffActiveBypassMarkerSuppressesTheBlock:
         assert result.returncode == 2
         assert result.stdout.strip() == ""
         assert "/handoff" in result.stderr
-        assert "HANDOFF_NUDGE_BLOCK_AFTER=" in result.stderr
+        assert "HANDOFF_NUDGE_BLOCK_AT=" in result.stderr
         assert not marker.exists(), "a dead-PID marker must be evicted by the liveness check"
 
     def test_other_sessions_marker_does_not_suppress(self, tmp_path):
@@ -2222,6 +2419,123 @@ class TestHandoffActiveBypassMarkerSuppressesTheBlock:
         blocked = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert blocked.returncode == 2
         assert blocked.stdout.strip() == ""
+
+
+class TestNudgeLogTelemetry:
+    """Every `nudged` line carries ignored= (the repurposed re-arm counter,
+    now recorded rather than gating) and skills= (the active-bypass skill
+    markers live at fire time, or "-"). See docs/handoff-nudge.md's "Log
+    location" for the field contract."""
+
+    def test_ignored_field_present_and_equals_ignored_marker_size(self, tmp_path):
+        """ignored= is present on every nudged line: 0 on the first-ever
+        fire (no -ignored marker file exists yet), then the marker's actual
+        byte size on every later re-arm."""
+        transcript = tmp_path / "t.jsonl"
+        estimate = LARGE_THRESHOLD
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path)
+        assert second.stdout.strip() != ""
+
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert len(nudged_lines) == 2
+        assert "ignored=0" in nudged_lines[0]
+        ignored_marker_size = _ignored_marker_path(tmp_path).stat().st_size
+        assert ignored_marker_size == 1
+        assert f"ignored={ignored_marker_size}" in nudged_lines[1]
+
+    def test_skills_field_names_a_live_marker(self, tmp_path):
+        """skills= names an active-bypass marker that's live at fire time."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(os.getpid()))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "skills=handoff" in nudged_lines[-1]
+
+    def test_skills_field_omits_and_evicts_a_dead_pid_marker(self, tmp_path):
+        """A dead-PID marker is absent from skills= and is evicted, mirroring
+        _lib_active_bypass_marker_live's own eviction-on-read behavior."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("99999999")
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "skills=-" in nudged_lines[-1]
+        assert not marker.exists(), "a dead-PID marker must be evicted during enumeration"
+
+    def test_skills_field_is_dash_when_no_markers_active(self, tmp_path):
+        """skills=- when no active-bypass marker is live for this session."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "skills=-" in nudged_lines[-1]
+
+    def test_skills_field_skips_a_marker_directory_with_a_non_conforming_label(self, tmp_path):
+        """A hand-created `.*-active.d` directory whose derived label
+        contains a character outside [A-Za-z0-9_-] (here, a space) is
+        skipped rather than emitted -- a bad label could otherwise corrupt
+        the log line's own whitespace-delimited tokenization."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        bad_marker_dir = tmp_path / ".claude" / ". bad name-active.d"
+        bad_marker_dir.mkdir(parents=True, exist_ok=True)
+        (bad_marker_dir / SESSION_ID).write_text(str(os.getpid()))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "skills=-" in nudged_lines[-1]
+        assert len(nudged_lines[-1].split()) == 8, (
+            "a non-conforming label must not add extra whitespace-delimited tokens to the line"
+        )
+
+    def test_skills_field_two_live_markers_sorted_and_comma_joined(self, tmp_path):
+        """Two simultaneously-live active-bypass markers produce a skills=
+        value with a deterministic sort order and comma delimiter, not just
+        "at least one label present" -- every other case in this class uses
+        at most one marker, so this is the only test pinning the sort/join
+        behavior itself."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        handoff_marker = _handoff_active_marker_path(tmp_path)
+        handoff_marker.parent.mkdir(parents=True, exist_ok=True)
+        handoff_marker.write_text(str(os.getpid()))
+        memory_marker = _memory_skill_active_marker_path(tmp_path)
+        memory_marker.parent.mkdir(parents=True, exist_ok=True)
+        memory_marker.write_text(str(os.getpid()))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert "skills=handoff,memory-skill" in nudged_lines[-1]
 
 
 class TestCheckMode:
