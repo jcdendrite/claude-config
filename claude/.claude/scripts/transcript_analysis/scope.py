@@ -28,7 +28,6 @@ from _config_dir import (
     declared_roots_file_state,
     declared_transcript_roots,
 )
-
 from transcript_analysis.corpus import _parse_ts, iter_sessions, read_session_file
 
 PROJECTS_DIR = config_dir() / "projects"

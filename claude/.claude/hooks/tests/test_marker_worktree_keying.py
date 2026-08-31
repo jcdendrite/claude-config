@@ -21,7 +21,6 @@ import os
 import subprocess
 
 import pytest
-from conftest import _seed_session as _seed_session_at
 from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
@@ -30,6 +29,8 @@ from helpers import (
     write_marker,
     write_skill_review_marker,
 )
+
+from .conftest import _seed_session as _seed_session_at
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 REQUIRE_CODE_REVIEW = HOOKS_DIR / "require-code-review.sh"

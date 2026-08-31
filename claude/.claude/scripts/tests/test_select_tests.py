@@ -16,7 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import _commit, _init_repo, _make_repo_with_remote
+
+from .conftest import _commit, _init_repo, _make_repo_with_remote
 
 _SCRIPT = Path(__file__).parent.parent / "select-tests.py"
 _spec = importlib.util.spec_from_file_location("select_tests", _SCRIPT)

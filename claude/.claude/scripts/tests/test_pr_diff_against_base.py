@@ -13,7 +13,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from conftest import _make_feature_branch, _make_repo_with_remote
+from .conftest import _make_feature_branch, _make_repo_with_remote
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-diff-against-base.sh"
