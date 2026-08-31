@@ -105,6 +105,29 @@ README_MD = "README.md"
 # HOOKS_TESTS_DIR, read this file by path.
 INSTALL_SH = "install.sh"
 
+# test_skills.py (SKILLS_TESTS_DIR) and test_doc_counts.py (HOOKS_TESTS_DIR)
+# each read it by path. test_nudge_transcript_toolkit.py's
+# TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR) also picks it up via its
+# repo-wide rglob("*.md") content scan.
+GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
+
+# test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR)
+# builds its corpus via REPO_ROOT.rglob("*.md") reading file content, the
+# same dependency GLOBAL_CLAUDE_MD cites above. Unlike that file, no test
+# reads this one by path, so only HOOKS_TESTS_DIR is implicated.
+ROOT_CLAUDE_MD = "CLAUDE.md"
+
+# test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this directory
+# and RULES_DIR (claude/.claude/rules/) for frontmatter validation —
+# distinct from RULES_DIR's own exception below, since the two directories
+# are separate trees with the same test dependency.
+ROOT_RULES_DIR = ".claude/rules"
+
+# test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
+# .claude/skills/*/SKILL.md by path, one of three SKILL.md-glob roots
+# alongside SKILLS_DIR and plugins/*/skills/*/SKILL.md.
+ROOT_SKILLS_DIR = ".claude/skills"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
@@ -125,6 +148,18 @@ MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
 # open to the full suite instead of getting a CROSS_DOMAIN_EXCEPTIONS entry,
 # because claude/.claude/tests/ itself has no selectable pytest target.
 DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({"tests"})
+
+# Directory names directly under root .claude/ that DOMAIN_RULES or
+# CROSS_DOMAIN_EXCEPTIONS predicates reference by path (PLANS_DIR,
+# ROOT_RULES_DIR, ROOT_SKILLS_DIR). Mirrors MAPPED_TOP_LEVEL_DIRS's role for
+# claude/.claude/, but for the separate root .claude/ tree. Unlike that
+# sibling, root .claude/ has no directory-with-no-selectable-pytest-target
+# case, so it needs no DELIBERATELY_UNMAPPED counterpart.
+MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
+    Path(PLANS_DIR).name,
+    Path(ROOT_RULES_DIR).name,
+    Path(ROOT_SKILLS_DIR).name,
+})
 
 # Matches CI's own collectible pytest scope verbatim (see
 # .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
@@ -265,6 +300,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # DOCS_DIR blanket below.
 # DOCS_DIR, README_MD, INSTALL_SH, and CLAUDE_SETTINGS_JSON: see each
 # constant's own comment above for its citation.
+# GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, and ROOT_SKILLS_DIR: see
+# each constant's own comment above for its citation.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -285,6 +322,10 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
 )
 
 

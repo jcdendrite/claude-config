@@ -429,6 +429,42 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
+    def test_global_claude_md_change_selects_hooks_and_skills_tests(self):
+        """test_skills.py (SKILLS_TESTS_DIR) reads this file by path in six
+        places, including test_global_claude_md_has_no_state_path.
+        test_doc_counts.py (HOOKS_TESTS_DIR) reads it by path in
+        _count_ground_every_choice_categories. test_nudge_transcript_toolkit.py's
+        TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR) also picks it up via its
+        repo-wide rglob("*.md") content scan."""
+        result = _mod.select_pytest_targets([_mod.GLOBAL_CLAUDE_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+
+    def test_root_claude_md_change_selects_hooks_tests(self):
+        """No test reads the repo-root CLAUDE.md by path -- unlike
+        GLOBAL_CLAUDE_MD, it has no SKILLS_TESTS_DIR reader. It's still
+        picked up by test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown
+        (HOOKS_TESTS_DIR) repo-wide rglob("*.md") content scan."""
+        result = _mod.select_pytest_targets([_mod.ROOT_CLAUDE_MD])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+
+    def test_root_rules_dir_change_selects_skills_tests(self):
+        """test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this
+        directory and RULES_DIR (claude/.claude/rules/) for frontmatter
+        validation."""
+        result = _mod.select_pytest_targets([".claude/rules/settings-json-conventions.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_root_skills_dir_change_selects_skills_tests(self):
+        """test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
+        .claude/skills/*/SKILL.md by path, one of three SKILL.md-glob roots
+        alongside SKILLS_DIR and plugins/*/skills/*/SKILL.md."""
+        result = _mod.select_pytest_targets([".claude/skills/code-review-claude-config/SKILL.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
     def test_skills_test_tree_change_selects_skills_tests(self):
         """The skills domain's own test directory previously matched no
         rule -- only a literal SKILL.md filename triggered the skills
@@ -549,6 +585,24 @@ class TestRunPytest:
         assert recorded["cmd"][0] == str(fake_pytest)
 
 
+# Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
+# in CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
+# real on-disk path leaves that predicate silently dead -- it matches
+# nothing, and no test fails.
+_EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
+    _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST,
+    _mod.README_MD,
+    _mod.INSTALL_SH,
+    _mod.CLAUDE_SETTINGS_JSON,
+    _mod.HANDOFF_SKILL_MD,
+    _mod.CODE_REVIEW_SKILL_MD,
+    _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
+    _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
+    _mod.GLOBAL_CLAUDE_MD,
+    _mod.ROOT_CLAUDE_MD,
+)
+
+
 class TestRuleTablePathFidelity:
     """Catches silent drift if a rule-table target directory is later
     renamed or a glob pattern stops matching anything."""
@@ -577,8 +631,9 @@ class TestRuleTablePathFidelity:
         for path in _mod.GLOBAL_TRIGGER_PATHS:
             assert (_REPO_ROOT / path).is_file(), f"{path} does not exist as a file"
 
-    def test_lovable_cloud_plugin_manifest_path_exists_on_disk(self):
-        assert (_REPO_ROOT / _mod.LOVABLE_CLOUD_PLUGIN_MANIFEST).is_file()
+    def test_every_exact_match_literal_path_constant_exists_on_disk(self):
+        for constant in _EXACT_MATCH_LITERAL_PATH_CONSTANTS:
+            assert (_REPO_ROOT / constant).is_file(), f"{constant} does not exist as a file"
 
     def test_every_real_top_level_claude_dir_is_mapped_or_allowlisted(self):
         """Existing tests above validate declared table entries -- that a
@@ -600,6 +655,25 @@ class TestRuleTablePathFidelity:
             "neither MAPPED_TOP_LEVEL_DIRS nor DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS "
             "-- audit whether any test reads into this directory by path or "
             "subprocess and add the corresponding table entry"
+        )
+
+    def test_every_real_root_claude_dir_is_mapped(self):
+        """Mirrors test_every_real_top_level_claude_dir_is_mapped_or_allowlisted
+        for the separate root .claude/ tree, where PLANS_DIR, ROOT_RULES_DIR,
+        and ROOT_SKILLS_DIR reference subdirectories by path. No union with a
+        DELIBERATELY_UNMAPPED counterpart: unlike claude/.claude/tests/, no
+        real subdirectory of root .claude/ lacks a selectable pytest target."""
+        root_claude_dir = _REPO_ROOT / ".claude"
+        real_dirs = {
+            d.name for d in root_claude_dir.iterdir()
+            if d.is_dir() and d.name != "worktrees"  # gitignored, not a tracked domain
+        }
+        unmapped = real_dirs - _mod.MAPPED_ROOT_CLAUDE_DIRS
+        assert not unmapped, (
+            f".claude/{sorted(unmapped)} exist on disk but are not named in "
+            "MAPPED_ROOT_CLAUDE_DIRS -- audit whether any test reads into "
+            "this directory by path or subprocess and add the corresponding "
+            "table entry"
         )
 
     def test_lovable_cloud_is_the_only_plugin_with_a_tests_directory(self):
