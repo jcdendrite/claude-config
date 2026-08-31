@@ -76,10 +76,12 @@
 # the same posture require-respond-pr.sh's header states for its own gate.
 # The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
 # self-merge, plus CI rerunning the full suite on push. That backstop holds
-# absent one of block-gh-pr-merge.sh's own documented bypasses — the gh api
-# pulls/N/merge endpoint, an eval/bash -c subshell wrapper, or a full-path
-# gh invocation. It also assumes branch protection requires CI to pass
-# before merge, a GitHub setting this hook cannot itself verify.
+# absent one of block-gh-pr-merge.sh's own documented bypasses:
+# - the `gh api .../pulls/N/merge` endpoint
+# - an `eval`/`bash -c` subshell wrapper
+# - a full-path `gh` invocation
+# It also assumes branch protection requires CI to pass before merge, a
+# GitHub setting this hook cannot itself verify.
 # Unconditional dispatch also means _lib_split_fragments et al. now run on
 # every Bash call across every consumer's shell, not only
 # push/pr-create/pr-ready commands. That is not a new bug, but any latent

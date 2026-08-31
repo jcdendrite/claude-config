@@ -326,10 +326,10 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
 
     This proves the *declared* config state — settings.json wires the hook
     with no `if`-condition — not that the harness actually invokes it for
-    every wrapped/indirected shape at runtime; that gap is why a post-merge
-    smoke check is still required (see
-    `.claude/plans/pr-771-deferred-findings.md`'s Verification section).
-    Mirrors test_plan_mode_entry_paths_stay_closed_in_settings's same
+    every wrapped/indirected shape at runtime; a post-merge smoke check
+    (attempt a gated command from a fresh session and confirm the deny
+    fires) covers the runtime-honored gap this test doesn't. Mirrors
+    test_plan_mode_entry_paths_stay_closed_in_settings's same
     declared-vs-honored distinction.
     """
     hook = _MAIN_HOOKS_DIR / hook_name
@@ -754,11 +754,8 @@ def test_ready_for_review_allows_when_gh_absent(tmp_path: Path, _path_without) -
 
 def test_ready_for_review_missing_command_allowed() -> None:
     """A Bash tool call with a missing/empty `command` field must exit 0
-    (allow). Previously unreachable under `if`-scoped dispatch, since a
-    matching glob guaranteed a non-empty COMMAND; only live now that
-    dispatch is unconditional, so it needs its own coverage rather than
-    inheriting block-gh-pr-merge.sh's own
-    test_bash_tool_missing_command_allowed, which this mirrors."""
+    (allow), mirroring block-gh-pr-merge.sh's
+    test_bash_tool_missing_command_allowed."""
     hook = _MAIN_HOOKS_DIR / "require-ready-for-review.sh"
     payload = {"tool_name": "Bash", "tool_input": {}}
     assert run_hook(hook, payload) == "allow"
