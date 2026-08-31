@@ -439,9 +439,9 @@ For plan and model requirements, activation, the full hard-floor deny table, the
 
 ### Output preferences
 
-To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Output Preferences" section.
+To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Prose and Output Format" section. That section also carries the non-personal prose rules — response shape, concision, sentence craft — and those apply to every session and subagent whether or not this file exists.
 
-**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Avoid duplicating rules already in the global CLAUDE.md — they apply regardless, and duplicate entries waste context budget.
+**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Keep it to personal tone and style — rules already in the global CLAUDE.md apply regardless, and a second copy here costs context budget and drifts from the original.
 
 **Template:**
 
@@ -449,9 +449,7 @@ To customize response tone, formatting, and communication style, create `<config
 # Output preferences
 
 - Tone: direct and calibrated — state things plainly; match certainty to evidence (no overclaiming, no hedging filler).
-- Length: concise. Include the why when non-obvious; skip narration of internal process.
 - Avoid emoji unless explicitly asked.
-- Prefer plain prose over bullet lists when the answer is a single concept.
 ```
 
 ### Machine-specific overrides
