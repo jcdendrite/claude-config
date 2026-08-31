@@ -99,6 +99,8 @@ DOCS_DIR = "docs"
 # test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and token-cap
 # counts here. test_skills.py's test_doc_has_no_state_path (SKILLS_TESTS_DIR)
 # also reads it for the per-account state-path contract.
+# test_output_preferences_layering.py (HOOKS_TESTS_DIR) reads its Output
+# preferences section's template block and its pointer to GLOBAL_CLAUDE_MD.
 README_MD = "README.md"
 
 # The test_install_sh_*.py family and test_shellcheck.py, both in
@@ -108,7 +110,8 @@ INSTALL_SH = "install.sh"
 # test_skills.py (SKILLS_TESTS_DIR) and test_doc_counts.py (HOOKS_TESTS_DIR)
 # each read it by path. test_nudge_transcript_toolkit.py's
 # TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR) also picks it up via its
-# repo-wide rglob("*.md") content scan.
+# repo-wide rglob("*.md") content scan. test_output_preferences_layering.py
+# (HOOKS_TESTS_DIR) reads it for the "## Prose and Output Format" heading.
 GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
 
 # test_nudge_transcript_toolkit.py's TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR)
