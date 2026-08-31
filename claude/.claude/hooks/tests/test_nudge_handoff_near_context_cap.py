@@ -1239,7 +1239,7 @@ class TestNudgeHandoffNearContextCap:
         assert set(exit_codes) <= {0, 2}, f"unexpected exit codes under concurrency: {exit_codes}"
         assert 2 in exit_codes, "estimate has reached HANDOFF_NUDGE_BLOCK_AT, so at least one racer must hard-block"
 
-        for code, result in zip(exit_codes, results):
+        for code, result in zip(exit_codes, results, strict=True):
             if code == 2:
                 assert result.stdout.strip() == ""
                 assert result.stderr.strip() != ""

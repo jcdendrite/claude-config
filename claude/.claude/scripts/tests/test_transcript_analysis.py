@@ -14971,6 +14971,122 @@ class TestParseNudgeLogEntries:
              "window": 1000000, "event": "PostToolBatch", "action": "block"},
         ]
 
+    def test_ignored_and_skills_fields_are_captured_when_present(self, tmp_path):
+        """A telemetry-era nudged line carries ignored=/skills= -- captured
+        as typed fields (ignored as int, skills as the raw comma-joined
+        string), the same optional-key style action= already uses."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch "
+            "ignored=3 skills=handoff,memory-skill action=block\n"
+        )
+        assert _mod._parse_nudge_log_entries(log_path) == [
+            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
+             "window": 1000000, "event": "PostToolBatch", "action": "block",
+             "ignored": 3, "skills": "handoff,memory-skill"},
+        ]
+
+    def test_pre_telemetry_line_parses_without_ignored_or_skills_keys(self, tmp_path):
+        """A `nudged` line written before the ignored=/skills= telemetry
+        addition carries neither field -- the returned dict has no
+        "ignored" or "skills" key at all, distinguishable from a live
+        session with nothing active (skills=-, ignored=0) rather than
+        conflated with it."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        assert "ignored" not in entries[0]
+        assert "skills" not in entries[0]
+
+    def test_malformed_ignored_field_drops_only_that_key(self, tmp_path):
+        """A non-integer ignored= value doesn't discard the whole entry --
+        only the "ignored" key is left unset, matching how a pre-telemetry
+        line (missing the key entirely) is already handled. skills= is
+        unaffected, confirming the malformed field is isolated from its
+        sibling."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop "
+            "ignored=not-an-int skills=-\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        assert len(entries) == 1
+        assert "ignored" not in entries[0]
+        assert entries[0]["skills"] == "-"
+
+
+class TestParseNudgeLogEntriesRealHookLineContract:
+    """Fires the real nudge-handoff-near-context-cap.sh hook and feeds its
+    emitted `nudged` line straight into _parse_nudge_log_entries, rather than
+    a hand-written fixture line on each side -- a field-ordering or delimiter
+    drift between the hook's printf format and this parser could otherwise
+    pass both suites while breaking the real pipeline."""
+
+    _NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
+
+    @staticmethod
+    def _usage_record(total: int, *, model: str = "claude-sonnet-5") -> dict:
+        """An assistant record whose four usage fields sum to `total`,
+        matching nudge-handoff-near-context-cap.sh's own ESTIMATE
+        computation (cache_read + cache_creation + input + output tokens)."""
+        rec = _asst(model)
+        rec["message"]["usage"] = {
+            "cache_read_input_tokens": total,
+            "cache_creation_input_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        return rec
+
+    def _fire(self, tmp_path: Path, transcript: Path, env: dict) -> subprocess.CompletedProcess:
+        payload = {
+            "session_id": "contract-session",
+            "transcript_path": str(transcript),
+            "hook_event_name": "PostToolBatch",
+        }
+        return subprocess.run(
+            [str(self._NUDGE_HOOK)], input=json.dumps(payload),
+            capture_output=True, text=True, env=env, check=False,
+        )
+
+    def test_real_hard_block_line_parses_with_ignored_and_skills_correctly_typed(self, tmp_path):
+        # claude-sonnet-5's 1M window caps its threshold at
+        # HANDOFF_NUDGE_ABS_CAP's shipped default (150000); block_at is one
+        # rearm-spacing hop past that, so the second fire is both a qualifying
+        # rearm and past the block point.
+        threshold = 150_000
+        block_at = threshold + 80_000
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        for var in ("HANDOFF_NUDGE_ABS_CAP", "HANDOFF_NUDGE_REARM_SPACING", "HANDOFF_NUDGE_BLOCK_AFTER"):
+            env.pop(var, None)
+        env["HANDOFF_NUDGE_BLOCK_AT"] = str(block_at)
+
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [self._usage_record(threshold)])
+        first = self._fire(tmp_path, transcript, env)
+        assert first.returncode == 0  # first-ever crossing: always advisory
+
+        with transcript.open("a") as f:
+            f.write(json.dumps(self._usage_record(block_at)) + "\n")
+        second = self._fire(tmp_path, transcript, env)
+        assert second.returncode == 2, f"estimate reaches HANDOFF_NUDGE_BLOCK_AT={block_at}"
+
+        log_path = tmp_path / ".claude" / ".handoff-nudge.log"
+        nudged_lines = [line for line in log_path.read_text().splitlines() if line.startswith("nudged")]
+        # Pre-parse sanity tripwire on the raw log line; the parser-based
+        # assertions below are what actually validate the contract.
+        assert nudged_lines[-1].endswith("action=block")
+
+        entries = _mod._parse_nudge_log_entries(log_path)
+        block_entry = entries[-1]
+        assert block_entry["action"] == "block"
+        assert block_entry["ignored"] == 1
+        assert isinstance(block_entry["ignored"], int)
+        assert block_entry["skills"] == "-"
+
 
 class TestOperatorResponseLagFromLog:
     def test_exact_match_join_measures_lag_past_the_fire_point(self):

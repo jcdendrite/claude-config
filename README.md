@@ -490,6 +490,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 ### Threshold reference
 
 - 150000 tokens (default): the absolute-token cap for `/handoff`'s suggested threshold — this repo's own chosen ceiling, not a vendor-specified figure, overridable via `HANDOFF_NUDGE_ABS_CAP`. `nudge-handoff-near-context-cap.sh` computes the actual per-session threshold as the lesser of 40% of the resolved model's context window (200k or 1M, model-dependent) and this cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
+- 470000 tokens (default): `HANDOFF_NUDGE_BLOCK_AT`, the absolute token position past which a further re-arm hard-blocks (stderr + exit 2) instead of staying advisory, independent of how many re-arms preceded it. Overridable via `HANDOFF_NUDGE_BLOCK_AT`; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for why this point and the surviving exits from a block.
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `analyze-context` to inspect token usage for the current session.
 
