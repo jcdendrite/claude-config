@@ -248,22 +248,25 @@ def _count_handoff_nudge_abs_cap_default() -> int:
     return int(match.group(1))
 
 
-def _count_handoff_nudge_block_after_default() -> int:
-    """Return the handoff-nudge hard-block escalation count, derived behaviorally.
+def _count_handoff_nudge_block_at_default() -> int:
+    """Return the handoff-nudge hard-block absolute token point, derived behaviorally.
 
-    Fires the hook once (advisory), then fires successive re-arms with
-    HANDOFF_NUDGE_BLOCK_AFTER unset until one hard-blocks, and reads the
-    default back from the hard-block stderr -- a source-scan of the fallback
-    literal wouldn't prove the runtime path actually uses it. The re-arm loop
-    doesn't assume the default's numeric value up front, only an upper bound
-    on how many re-arms it could plausibly take. Each re-arm's estimate
-    increment (200000) clears HANDOFF_NUDGE_REARM_SPACING's own default
-    (80000) with margin, and the loop's own bound (20) keeps every estimate
-    under 9 digits, short of the marker's `?????????*` corrupt-value guard.
+    Fires the hook once (advisory -- a session's first-ever crossing always
+    stays advisory, satisfying the block condition's own precondition), then
+    fires again at an estimate far above any plausible block point, and
+    reads the default back from the hard-block stderr -- a source-scan of
+    the fallback literal wouldn't prove the runtime path actually uses it.
+    Unlike the retired count-based ground truth this replaces, the block
+    point is now a single absolute-token comparison, so two invocations
+    suffice instead of an up-to-20-invocation re-arm loop: one to establish
+    LAST_FIRED_AT, one at an estimate certain to clear both the re-arm
+    spacing gate and the shipped default regardless of its exact value.
     """
     hook_path = REPO_ROOT / _NUDGE_HOOK_REL_PATH
-    max_rearms = 20
-    rearm_increment = 200_000
+    first_estimate = 400_000
+    # Six digits, under the 1M window, comfortably clears both the default
+    # re-arm spacing past first_estimate and any plausible BLOCK_AT default.
+    second_estimate = 900_000
 
     def _usage_record(cache_read: int) -> dict:
         return {
@@ -282,40 +285,42 @@ def _count_handoff_nudge_block_after_default() -> int:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         transcript_path = tmp_path / "t.jsonl"
-        estimate = 400_000
-        transcript_path.write_text(json.dumps(_usage_record(estimate)) + "\n")
+        transcript_path.write_text(json.dumps(_usage_record(first_estimate)) + "\n")
         payload = {
-            "session_id": "doc-count-block-after-probe",
+            "session_id": "doc-count-block-at-probe",
             "transcript_path": str(transcript_path),
             "hook_event_name": "PostToolBatch",
         }
         env = {**os.environ, "HOME": str(tmp_path)}
         env.pop("CLAUDE_CONFIG_DIR", None)
-        env.pop("HANDOFF_NUDGE_BLOCK_AFTER", None)
+        env.pop("HANDOFF_NUDGE_BLOCK_AT", None)
         env.pop("HANDOFF_NUDGE_REARM_SPACING", None)
         env.pop("HANDOFF_NUDGE_ABS_CAP", None)
-        subprocess.run(
+        first_result = subprocess.run(
             [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
         )
-        for _ in range(max_rearms):
-            estimate += rearm_increment
-            with transcript_path.open("a") as transcript_fh:
-                transcript_fh.write(json.dumps(_usage_record(estimate)) + "\n")
-            result = subprocess.run(
-                [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
-            )
-            if result.returncode == 2:
-                break
-        else:
+        if first_result.returncode != 0:
             raise ValueError(
-                f"The hook never hard-blocked within {max_rearms} re-arms; the shipped "
-                "default has grown past this probe's bound, or the escalation ladder "
-                "regressed."
+                "The hook's first-ever crossing did not fire advisory "
+                f"(returncode={first_result.returncode}, stderr={first_result.stderr!r}) -- a "
+                "first-ever crossing must always stay advisory, so this ground truth's own "
+                "setup step failed."
             )
-    match = re.search(r"HANDOFF_NUDGE_BLOCK_AFTER=(\d+)\)", result.stderr)
+        with transcript_path.open("a") as transcript_fh:
+            transcript_fh.write(json.dumps(_usage_record(second_estimate)) + "\n")
+        result = subprocess.run(
+            [str(hook_path)], input=json.dumps(payload), capture_output=True, text=True, env=env, check=False,
+        )
+        if result.returncode != 2:
+            raise ValueError(
+                f"The hook did not hard-block at an estimate of {second_estimate}; the "
+                "shipped default has grown past this probe's bound, or the escalation "
+                "ladder regressed."
+            )
+    match = re.search(r"HANDOFF_NUDGE_BLOCK_AT=(\d+)\)", result.stderr)
     if match is None:
         raise ValueError(
-            "Could not find 'HANDOFF_NUDGE_BLOCK_AFTER=N)' in the hook's hard-block "
+            "Could not find 'HANDOFF_NUDGE_BLOCK_AT=N)' in the hook's hard-block "
             f"stderr message (stderr: {result.stderr!r}); the message wording "
             "changed and this ground truth needs updating."
         )
@@ -433,13 +438,13 @@ _REGISTERED_FACTS: list[DocCountFact] = [
         ],
     ),
     DocCountFact(
-        ground_truth_fn=_count_handoff_nudge_block_after_default,
-        label="handoff-nudge HANDOFF_NUDGE_BLOCK_AFTER default, derived behaviorally",
+        ground_truth_fn=_count_handoff_nudge_block_at_default,
+        label="handoff-nudge HANDOFF_NUDGE_BLOCK_AT default, derived behaviorally",
         occurrences=[
             Occurrence(
                 rel_path="docs/handoff-nudge.md",
-                pattern=r"`HANDOFF_NUDGE_BLOCK_AFTER` \(default (\d+)\)",
-                description="docs/handoff-nudge.md: HANDOFF_NUDGE_BLOCK_AFTER (default N)",
+                pattern=r"`HANDOFF_NUDGE_BLOCK_AT` \(default (\d+)\)",
+                description="docs/handoff-nudge.md: HANDOFF_NUDGE_BLOCK_AT (default N)",
             ),
         ],
     ),

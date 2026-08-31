@@ -35,7 +35,7 @@
   - Two correct readings of one artifact.
 
   If that sentence cannot be written, pick the sensible default and say so instead of escalating.
-- Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do.
+- Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do. When you don't know, say so and name what would resolve it, rather than offering a plausible answer at hedged confidence.
 - **Compounding defensive layers are a wrong-foundation tell.** Each new defensive layer closing a gap the prior layer created — or a review that starts citing its own prior findings — is a wrong-foundation signal; fix the foundation instead of adding another layer.
 - Before assuming anything about the environment, stack, or project conventions, check first. Read the actual config files rather than guessing defaults.
 - Use descriptive variable and function names. No generic names.
@@ -98,7 +98,7 @@
 
 ## Model & Effort Routing
 
-- **Opus:** judgment-heavy reasoning and parent-dispatcher orchestration. `/plan-it` Step 5 dispatches Opus-pinned `plan-architect` automatically (see its own Step 5 for the mechanism). A user-started whole-session `--model opus` covers the rarer case where the *reads*, not only the synthesis, need Opus. It escalates every inheriting dispatch that session makes, so pass an explicit `model: sonnet` on each one (see below).
+- **Opus:** judgment-heavy reasoning and parent-dispatcher orchestration. `/plan-it` Step 5 dispatches Opus-pinned `plan-architect` automatically (see its own Step 5 for the mechanism). A user-started whole-session `--model opus` covers the rarer case where the *reads*, not only the synthesis, need Opus. It escalates every inheriting dispatch that session makes, so pass an explicit `model: sonnet` on each one (see below). When the user explicitly asks for outside/Opus-level architectural judgment mid-session (not a literal "Opus" keyword match), dispatch `plan-architect` with `MODE=consult` as the prompt's first line, not `general-purpose` with `model: opus`. It is already read-only and Opus-pinned, so its charter need not be restated per dispatch. Relay what it returns rather than replacing its reasoning with your own, and never dispatch it this way on your own initiative (see `docs/design-decisions.md` §37 in the claude-config repo).
 - **Sonnet (default):** all code reading, code writing, and specialist reviewer agents. Pass an explicit `model: sonnet` on every dispatch, even ones with a `model:` pin — both are requests, not guarantees, and resolution doesn't always follow them; it costs nothing either way (see `docs/auto-mode.md` in the claude-config repo for the current measurement).
 - **Haiku:** narrow, deterministic skills only. Never for code authoring or judgment.
 - **Delegated code-writing dispatches to `code-writer`.** When implementation work is handed to a subagent — feature code, fixes, refactors, migrations, schema, scripts — dispatch the `code-writer` agent, not `general-purpose`. It carries `model: sonnet` frontmatter and self-reviews its own diff against the `staff-*` reviewer angles before returning, catching review-finding-class defects in its own context instead of as a parent round-trip. This is a substitution for the code-writing path only — it does not change when the parent delegates versus writes inline — see `subagent-delegation` for that call.
@@ -134,6 +134,22 @@
 - Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
 - `.claude/settings.json` vs `.claude/settings.local.json` scoping: project-shared rules (permissions, hooks, skillOverrides that every engineer on the project needs) go in committed `.claude/settings.json`. Personal-machine-only rules (per-machine tooling, individual preferences) go in gitignored `.claude/settings.local.json`. Before adding a rule, ask: would another engineer on this project need this? If yes → `settings.json`. If no → `settings.local.json`.
 
+## Prose and Output Format
+
+These rules govern every text surface you author — chat replies, PR bodies, commit messages, handoff notes, plan files, ticket comments. Code comments and durable in-repo docs carry the further constraints in the section below.
+
+- **Lead with the answer or the action taken.** Caveats and reasoning come after it. Skip process narration, and skip a closing summary that only restates what you already said.
+- **Shape follows content.**
+  - A single concept gets a sentence or two of prose.
+  - Several parallel items get a list.
+  - Headers earn their place only past ~15 lines.
+
+  Match a code block's language tag to what is actually inside it. In terminal output, avoid markdown tables where width-wrapping would break them.
+- **Cut every sentence that adds no information.** Keep the why when it is non-obvious. Never drop or flatten a fact, number, decision, hedge, or conditional to shorten a sentence — keep the content and accept the longer sentence.
+- **One idea per sentence, one term per concept.** Split a compound claim instead of chaining it into a run-on. Hold the chosen term for the whole document — elegant variation reads as a second thing, not a second word for the same thing.
+- **Active voice, plain verbs, no noun stacks.** Passive only when the actor is unknown or irrelevant to the reader. "Start," not "commence." A verb or prepositional phrase in place of a stacked-noun phrase.
+- If `<config-dir>/output-preferences.md` exists, read it at session start and apply it. That file layers personal tone and style calibration on the rules above; it is not a place to restate them.
+
 ## Code Comments, Documentation, and Prose
 
 ### Where to put it
@@ -150,10 +166,6 @@ Code comments and durable in-repo documentation (REFERENCES.md, doc files, READM
 - **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. Move the rationale to the commit message instead.
 - **One line, not a paragraph.** State the non-obvious constraint in one sentence — a multi-paragraph rationale block means the comment is doing the PR description's job; trim narration, never the fact.
 - **Split multi-fact comments.** State each non-obvious fact as its own sentence rather than chaining several into one run-on via semicolons, dashes, and parentheticals — a reader shouldn't have to parse a whole sentence-cluster to find where one fact ends and the next begins. When the facts are genuinely parallel (a set of gaps, conditions, or exclusions of the same kind), use an explicit list, one item per fact, instead of nesting them as asides in unrelated prose. Facts that are tightly coupled — a cause and its direct effect — may still share a sentence.
-
-## Output Preferences
-
-If `<config-dir>/output-preferences.md` exists, read it at session start and apply those preferences for response tone and formatting. Cap at 50 lines.
 
 ## Shipping
 

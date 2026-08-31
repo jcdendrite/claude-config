@@ -72,7 +72,7 @@ The README below is organized by feature surface (hooks, skills, plugins, script
 - **Post-compaction authorization boundary restatement** — `restore-authorization-boundary-on-compact.sh` matches `compact` only, re-injecting the irreversible-action confirmation boundary the harness-generated compact summary's "Optional Next Step" section carries no trace of. See [Context management](#context-management).
 - **Read-before-dispatch routing gate** — `require-routing-read.sh` blocks subagent spawn during `/plan-review` until `ROUTING.md` is read; a PostToolUse companion records the read per session. See [`docs/hooks.md`](docs/hooks.md).
 - **Self-consuming continuity files** — `/handoff`/`/brief` write to a durable `~/.claude/` directory, not `/tmp`, so they survive a reboot; a `PostToolUse` `Read` hook mechanically consumes the file the moment it's read directly (the same-session `/clear`-then-read path), while `resume-context.sh` covers the fresh-process path. Owner-only permissions come from `./install.sh`'s one-time hardening, not a per-skill chmod. See [`docs/hooks.md`](docs/hooks.md) (`consume-durable-continuity-file-on-read.sh`), [`docs/design-decisions.md`](docs/design-decisions.md), and [Context management](#context-management).
-- **Post-crash session recovery** — `post-crash-sessions` cross-references Claude Code's own session registry, scheduled-task lock files, and the transcript corpus against last-boot time to find sessions an unclean shutdown orphaned, printing a `cd <cwd> && claude --resume <id>` for each recoverable one — no manual transcript-corpus spelunking required. See [`docs/scripts.md`](docs/scripts.md).
+- **Post-crash session recovery** — `post-crash-sessions` cross-references four session-liveness sources, including a never-swept lookup corpus that survives a same-day crash with no reboot, to find and resume crash-orphaned sessions. See [`docs/scripts.md`](docs/scripts.md).
 - **Project-layer composition by glob + Skill-tool dispatch** — `/plan-it`, `/plan-review`, `/code-review`, and `/test-conventions` glob for `.claude/skills/<parent>-<project>/SKILL.md` at runtime; consuming repos extend the base skill without forking. Description-based auto-trigger was empirically tested and rejected (it doesn't fire from inside a running skill). Add-on skills on the project side should set `disable-model-invocation: true` — the parent invokes them via the Skill tool, so their description doesn't need to be in the always-loaded skill-listing budget. See [docs/skills.md](docs/skills.md) and `docs/design-decisions.md` decision 8.
 - **Three-tier redaction** — always-on tracker-ID regex, opt-in user-local blocklist, reviewer discipline for structural fingerprints and private-corpus provenance. See [Private-project redaction](#private-project-redaction).
 - **Multi-account transcript corpus scope** — `transcript-analysis.py`, `post-crash-sessions`, `analyze-context.py`, and `token-analyzer.py` default to the union of every root in `~/.claude/transcript-config-dirs`, except `cost --summary` (active account only) — each subcommand's resolved-scope header states the root count so scope is never silently narrower than it looks. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md) for the per-subcommand mechanics.
@@ -242,7 +242,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
 - **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and settings.json conventions.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra and SQL/DDL conventions that apply across every repo the user opens, not just this one.
-- **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model; the escalation path for Opus planning is `plan-architect`, dispatched automatically by `/plan-it` Step 5 (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+- **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
 ### Scripts
 
@@ -439,9 +439,9 @@ For plan and model requirements, activation, the full hard-floor deny table, the
 
 ### Output preferences
 
-To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Output Preferences" section.
+To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Prose and Output Format" section. That section also carries the non-personal prose rules — response shape, concision, sentence craft — and those apply to every session and subagent whether or not this file exists.
 
-**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Avoid duplicating rules already in the global CLAUDE.md — they apply regardless, and duplicate entries waste context budget.
+**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Keep it to personal tone and style — rules already in the global CLAUDE.md apply regardless, and a second copy here costs context budget and drifts from the original.
 
 **Template:**
 
@@ -449,9 +449,7 @@ To customize response tone, formatting, and communication style, create `<config
 # Output preferences
 
 - Tone: direct and calibrated — state things plainly; match certainty to evidence (no overclaiming, no hedging filler).
-- Length: concise. Include the why when non-obvious; skip narration of internal process.
 - Avoid emoji unless explicitly asked.
-- Prefer plain prose over bullet lists when the answer is a single concept.
 ```
 
 ### Machine-specific overrides
@@ -490,6 +488,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 ### Threshold reference
 
 - 150000 tokens (default): the absolute-token cap for `/handoff`'s suggested threshold — this repo's own chosen ceiling, not a vendor-specified figure, overridable via `HANDOFF_NUDGE_ABS_CAP`. `nudge-handoff-near-context-cap.sh` computes the actual per-session threshold as the lesser of 40% of the resolved model's context window (200k or 1M, model-dependent) and this cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
+- 470000 tokens (default): `HANDOFF_NUDGE_BLOCK_AT`, the absolute token position past which a further re-arm hard-blocks (stderr + exit 2) instead of staying advisory, independent of how many re-arms preceded it. Overridable via `HANDOFF_NUDGE_BLOCK_AT`; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for why this point and the surviving exits from a block.
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `analyze-context` to inspect token usage for the current session.
 

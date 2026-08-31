@@ -1,5 +1,5 @@
 """Tests for nudge-long-turn-subagent.sh. See the hook's own header comment
-for what it does and why; see docs/design-decisions.md §38 for the
+for what it does and why; see docs/design-decisions.md §40 for the
 threshold's measurement basis.
 
 All tests sandbox $HOME via monkeypatch so markers and logs land in tmp_path

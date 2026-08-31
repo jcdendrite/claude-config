@@ -7,9 +7,9 @@
 # rationale and why cost tracks absolute tokens, not window percentage.
 #
 # Nudge re-arms at escalating token bands past the first fire — see
-# docs/handoff-nudge.md "Why this spacing". Past HANDOFF_NUDGE_BLOCK_AFTER
-# ignored re-arms, a further re-arm hard-blocks instead of advising — see
-# "Why this block-after count" in the same doc. The hard block uses
+# docs/handoff-nudge.md "Why this spacing". Once a session's estimate
+# reaches HANDOFF_NUDGE_BLOCK_AT, a further re-arm hard-blocks instead of
+# advising — see "Why this block point" in the same doc. The hard block uses
 # PostToolBatch's own exit-2 loop-stop, not a JSON envelope, and only fires
 # on that event: exit 2 on Stop forces continuation instead of blocking it,
 # so a Stop-registered re-arm falls through to the advisory path instead.
@@ -27,9 +27,9 @@
 # previously-recorded fire history, never as a side effect of a broken
 # dependency.
 #
-# Log file: ~/.claude/.handoff-nudge.log records two event types:
-#   nudged  session=<id> est=<n> model=<id> window=<n> event=<PostToolBatch|Stop> [action=block]  — threshold crossed, nudge emitted; action=block present only on a hard-block fire
-#   schema-drift session=<id> event=<PostToolBatch|Stop>     — usage block present but all token fields 0/null
+# Log file: ~/.claude/.handoff-nudge.log records two event types, `nudged`
+# and `schema-drift` — see docs/handoff-nudge.md's "Log location" section for
+# the field-by-field format.
 #
 # --check mode: `nudge-handoff-near-context-cap.sh --check` reports the
 # session's current estimate, threshold, model, and window as one JSON object
@@ -164,17 +164,18 @@ resolve_rearm_spacing() {
   esac
 }
 
-# Escalation-block threshold: past this many ignored re-arms in one session,
-# a further re-arm hard-blocks instead of advising — see
-# docs/handoff-nudge.md "Why this block-after count" for the grounding.
-# HANDOFF_NUDGE_BLOCK_AFTER overrides it; same malformed-value guard as
+# Escalation-block threshold: an absolute token position past which a
+# further re-arm hard-blocks instead of advising, independent of how many
+# re-arms preceded it — see docs/handoff-nudge.md "Why this block point"
+# for the grounding.
+# HANDOFF_NUDGE_BLOCK_AT overrides it; same malformed-value guard as
 # HANDOFF_NUDGE_ABS_CAP/HANDOFF_NUDGE_REARM_SPACING above, for the same
 # reason (a degraded value toward 0 would hard-block on the very first
 # re-arm; 10+ digits risks wrapping negative).
-resolve_block_after() {
-  case "$HANDOFF_NUDGE_BLOCK_AFTER" in
-    ''|0|*[!0-9]*|0[0-9]*|?????????*) BLOCK_AFTER=4 ;;
-    *) BLOCK_AFTER=$HANDOFF_NUDGE_BLOCK_AFTER ;;
+resolve_block_at() {
+  case "$HANDOFF_NUDGE_BLOCK_AT" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) BLOCK_AT=470000 ;;
+    *) BLOCK_AT=$HANDOFF_NUDGE_BLOCK_AT ;;
   esac
 }
 
@@ -559,8 +560,19 @@ fi
 # Escalation ladder: every fire past the first (LAST_FIRED_AT non-empty) is
 # a re-arm the session ignored — append one byte to IGNORED_MARKER to count
 # it. O_APPEND writes are atomic under POSIX for a write this small, closing
-# the lost-update race a read-modify-write counter would have.
-resolve_block_after
+# the lost-update race a read-modify-write counter would have. IGNORED_MARKER
+# feeds only the log's ignored= field and the hard-block stderr message; it
+# does not gate the hard block.
+resolve_block_at
+
+# One-time migration notice for a still-exported HANDOFF_NUDGE_BLOCK_AFTER.
+# Same per-session dedup as DRIFT_MARKER above.
+BLOCK_AFTER_DRIFT_MARKER="${MARKER_DIR}/${SESSION_ID}-block-after-drift"
+if [ -n "${HANDOFF_NUDGE_BLOCK_AFTER:-}" ] && [ ! -f "$BLOCK_AFTER_DRIFT_MARKER" ]; then
+  printf 'HANDOFF_NUDGE_BLOCK_AFTER is set but no longer used: the hard block now fires at an absolute token position (HANDOFF_NUDGE_BLOCK_AT, default 470000), not a count of ignored re-arms. Set HANDOFF_NUDGE_BLOCK_AT instead.\n' >&2
+  touch "$BLOCK_AFTER_DRIFT_MARKER" 2>/dev/null || true
+fi
+
 IGNORED_MARKER="${MARKER_DIR}/${SESSION_ID}-ignored"
 if [ -n "$LAST_FIRED_AT" ]; then
   printf '.' >> "$IGNORED_MARKER" 2>/dev/null || true
@@ -571,21 +583,58 @@ if [ -f "$IGNORED_MARKER" ]; then
   case "$IGNORED_COUNT" in ''|*[!0-9]*) IGNORED_COUNT=0 ;; esac
 fi
 
-if [ "$IGNORED_COUNT" -ge "$BLOCK_AFTER" ] 2>/dev/null && [ "$HOOK_EVENT" = "PostToolBatch" ] \
-  && ! _lib_active_bypass_marker_live ".handoff-active.d" "$SESSION_ID"; then
+# Sorted, comma-joined list of active-bypass skill labels live for this
+# session at fire time. Each label is a marker directory name with its
+# ".{name}-active.d" wrapper stripped.
+# This glob idiom mirrors scripts/marker.sh's own enumeration
+# (marker.sh:435-437) instead of maintaining a second, separate list of
+# skill names.
+# The whole block is wrapped in _lib_capped_for like every other external
+# call on this hook's fire path, since up to five marker directories, each
+# probed via _lib_active_bypass_marker_live's own subshell/cat/kill -0,
+# could otherwise chain 10-15 uncapped subprocess spawns in the worst case.
+# shellcheck disable=SC2016 # single-quoted on purpose: $1/$2/$3 are the nested bash -c script's own positional params, meant to expand there, not in this outer shell.
+LIVE_SKILL_LABELS=$(_lib_capped_for 2 bash -c '
+  . "$1"
+  for active_dir in "$2"/.*-active.d; do
+    [ -d "$active_dir" ] || continue
+    dir_name=$(basename "$active_dir")
+    label="${dir_name#.}"
+    label="${label%-active.d}"
+    case "$label" in
+      ""|*[!A-Za-z0-9_-]*) continue ;;
+    esac
+    _lib_active_bypass_marker_live "$dir_name" "$3" && printf "%s\n" "$label"
+  done
+' _ "$(dirname "$0")/_lib.sh" "$CONFIG_DIR" "$SESSION_ID" 2>/dev/null)
+SKILLS_FIELD=$(printf '%s\n' "$LIVE_SKILL_LABELS" | sort | paste -sd, - 2>/dev/null)
+[ -n "$SKILLS_FIELD" ] || SKILLS_FIELD="-"
+
+# The block condition's /handoff suppression below derives from the same
+# enumeration above instead of a second _lib_active_bypass_marker_live call,
+# so .handoff-active.d is read once per fire rather than twice.
+HANDOFF_ACTIVE=0
+case $'\n'"$LIVE_SKILL_LABELS"$'\n' in
+  *$'\n''handoff'$'\n'*) HANDOFF_ACTIVE=1 ;;
+esac
+
+if [ "$ESTIMATE" -ge "$BLOCK_AT" ] 2>/dev/null && [ -n "$LAST_FIRED_AT" ] \
+  && [ "$HOOK_EVENT" = "PostToolBatch" ] && [ "$HANDOFF_ACTIVE" -eq 0 ]; then
   # Hard block: PostToolBatch's own exit-2 contract stops the agentic loop
   # before the next model call, with no JSON envelope. Guarded to
   # PostToolBatch only — on Stop, exit 2 forces the conversation to
   # continue instead of blocking it, so that registration falls through to
-  # the advisory fire path below.
+  # the advisory fire path below. LAST_FIRED_AT non-empty means this isn't
+  # the session's first-ever crossing — a first crossing always stays
+  # advisory, even when ESTIMATE already exceeds BLOCK_AT.
   # A hook_event_name value degraded away from PostToolBatch by something
   # other than a genuine Stop registration would silently fall through to
   # advisory-only here too, with no distinguishing log signal.
-  printf 'nudged session=%s est=%s model=%s window=%s event=%s action=block\n' \
-    "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
+  printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s action=block\n' \
+    "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" "$IGNORED_COUNT" "$SKILLS_FIELD" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
-  printf 'Context is past this session'\''s handoff-nudge threshold (%s tokens), and %s prior re-arms went unacted on this session (HANDOFF_NUDGE_BLOCK_AFTER=%s). Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session.\n' \
-    "$THRESHOLD" "$IGNORED_COUNT" "$BLOCK_AFTER" >&2
+  printf 'Context (%s tokens) is past this session'\''s handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=%s), after %s ignored re-arms. Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session.\n' \
+    "$ESTIMATE" "$BLOCK_AT" "$IGNORED_COUNT" >&2
   exit 2
 fi
 
@@ -600,8 +649,8 @@ OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson thr
     additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish.")
   }
 }' 2>/dev/null) && [ -n "$OUTPUT" ] && {
-  printf 'nudged session=%s est=%s model=%s window=%s event=%s\n' \
-    "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
+  printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s\n' \
+    "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" "$IGNORED_COUNT" "$SKILLS_FIELD" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
   printf '%s' "$OUTPUT"
 }

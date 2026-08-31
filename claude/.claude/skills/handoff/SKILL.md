@@ -178,14 +178,13 @@ The script cannot check these — verify them yourself before writing:
 Once the handoff file is written and verified:
 
 - Append the session id to `nudge-handoff-near-context-cap.sh`'s own log (pairs with that hook's `nudged` lines for a future nudge→handoff conversion report).
-- Remove that session's escalation-ladder marker, so a successful handoff resets the ignored-re-arm count.
 
 ```bash
 ~/.claude/scripts/handoff-record-conversion.sh
 ```
 
-Best-effort: silently skips the log append and marker removal if this session's id can't be
-resolved — a conversion metric and a defense-in-depth reset, not a gate. Recipes across this repo
+Best-effort: silently skips the log append if this session's id can't be
+resolved — a conversion metric, not a gate. Recipes across this repo
 route through a dedicated script like this one instead of an inline multi-statement Bash call;
 see `docs/worktree-bash-guard.md` for why.
 
