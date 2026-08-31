@@ -441,7 +441,16 @@ class TestConventionSkillWiring:
 
     def test_code_writer_self_review_avoids_git_diff_head(self):
         """code-writer's self-review must warn against `git diff HEAD`, which pulls a prior round's staged work into the diff."""
-        assert "Never use `git diff HEAD`" in self._agent_body("code-writer")
+        body = self._agent_body("code-writer")
+        lines_with_git_diff_head = [
+            line for line in body.splitlines() if "git diff HEAD" in line
+        ]
+        assert lines_with_git_diff_head, (
+            "code-writer body no longer mentions `git diff HEAD` at all."
+        )
+        assert any("never" in line.lower() for line in lines_with_git_diff_head), (
+            "code-writer mentions `git diff HEAD` but no line prohibits it."
+        )
 
     def test_staff_sdet_reads_test_conventions_body(self):
         """staff-sdet must Read test-conventions/SKILL.md to ground its §N citations."""

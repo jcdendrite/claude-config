@@ -14,11 +14,13 @@ subscription auth. This means:
 
 - **No `ANTHROPIC_API_KEY` required.** Max-plan OAuth auth is used automatically.
 - **No per-token charge** beyond your subscription. `claude -p` accepts an
-  `ANTHROPIC_API_KEY` and would authenticate fine in CI, but that shifts
-  every sample onto per-token billing — K samples × cases per skill, plus
-  the ~4 `claude -p` calls per sample `disposition-fidelity` spends (see
-  "Runtime cost" below) — which is the actual reason this stays local, not
-  an auth limitation.
+  `ANTHROPIC_API_KEY` and would authenticate fine in CI — cost, not
+  reachability, is the actual reason this stays local:
+  - Every sample is a full headless session.
+  - Cost scales as K samples × cases per skill.
+  - `disposition-fidelity` adds about four `claude -p` calls per sample on
+    top of that (see "Runtime cost" below).
+  - All of it bills per token, off-subscription.
 - **No CI wiring.** Every method (see [Measurement
   methods](#measurement-methods)) produces a probabilistic model
   classification, not a deterministic computation. A single-sample binary
