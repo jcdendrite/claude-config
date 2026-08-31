@@ -35,7 +35,7 @@ The `__init__.py` requirement is prescriptive — it tells a contributor what to
 
 ### Mechanisms
 
-- **M1 — New `.claude/rules/test-tree-packaging.md`, two `paths:` globs** (`claude/.claude/**/tests/**` and `claude/.claude/**/conftest.py`). *anchors: root, row 1, row 2* — the tests-tree glob is what makes the rule land under the pessimistic reading of row 2, because a contributor building a new tree reads an existing sibling test file before writing their own; the conftest glob covers a conftest that lands outside a `tests/` directory.
+- **M1 — New `.claude/rules/test-tree-packaging.md`, two `paths:` globs** (`claude/.claude/**/tests/**` and `claude/.claude/**/conftest.py`). *anchors: root, row 1, row 2* — the tests-tree glob is what makes the rule land under the pessimistic reading of row 2, because a contributor building a new tree reads an existing sibling test file before writing their own. The conftest glob covers a conftest that lands outside a `tests/` directory.
 - **M2 — Rule body states the required action only, citing the test for the mechanism.** *anchors: root, row 8* — the test docstring is already the canonical home for *why*; restating it in the rule creates the second copy this plan exists to remove.
 - **M3 — One line in the rule on the relative sibling-import form.** *anchors: row 4* — the same packaging decision produces this second required action, `TestNoBareSameDirectorySiblingImports` fails CI on it, and no contributor-facing doc states it anywhere today. The rule fires on exactly the population that needs it. **This is a deliberate one-line extension past the ticket's literal wording; it is strikeable without affecting the rest of the plan.**
 - **M4 — One line in the rule prohibiting `claude/.claude/tests/__init__.py`.** *anchors: G3, row 5* — M1's globs put the rule in front of someone editing that directory, and the rule's own imperative would otherwise read as instructing them to package it, which the predecessor plan calls actively harmful.
@@ -95,7 +95,7 @@ A test directory that carries its own `conftest.py` needs an `__init__.py` in
 both itself and its parent domain directory — `claude/.claude/<domain>/__init__.py`
 and `claude/.claude/<domain>/tests/__init__.py`. Both are required: with only the
 leaf marker, the tree resolves to a module name one level too shallow and
-collides with a sibling tree's conftest again. Each marker holds one docstring
+collides with a sibling tree's conftest. Each marker holds one docstring
 line naming the test below, and nothing else.
 
 In a test tree that has an `__init__.py`, import a same-directory sibling module
@@ -103,13 +103,14 @@ as `from .sibling import X`, never `from sibling import X` — the bare form sto
 resolving once the directory is a package.
 
 Do not add `claude/.claude/tests/__init__.py`. That directory stays unpackaged
-deliberately: `helpers.py` is already importable as a top-level module through
-`pyproject.toml`'s `pythonpath`, and packaging it would create a second
+deliberately. `helpers.py` is already importable as a top-level module through
+`pyproject.toml`'s `pythonpath`. Packaging the directory would create a second
 `helpers` module object with its own `REPO_ROOT`.
 
-`claude/.claude/tests/test_pytest_collection_config.py` carries the mechanism.
-`TestConftestModuleNamesAreUnique` fails CI on a missing marker;
-`TestNoBareSameDirectorySiblingImports` fails CI on a bare sibling import.
+`claude/.claude/tests/test_pytest_collection_config.py` carries the mechanism:
+
+- `TestConftestModuleNamesAreUnique` fails CI on a missing marker.
+- `TestNoBareSameDirectorySiblingImports` fails CI on a bare sibling import.
 ```
 
 Do not restate the eviction/`sys.modules` mechanism here — row 8's docstring owns it, and duplicating it is the defect this change removes.
