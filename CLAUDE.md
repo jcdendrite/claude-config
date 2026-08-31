@@ -113,21 +113,24 @@ tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or
 project/org names (including the owner's own private projects),
 codenames, internal URLs/project domains on a TLD other than the
 always-on list above, non-home-rooted filesystem paths embedding
-project names, env var names encoding a project, and person names
-other than the repo owner's commit-author identity. Default: if in
-doubt, strip it.
+project names, env var names encoding a project, and person names. The
+blocklist is user-populated with no default entries, so the repo
+owner's own commit-author identity is covered only if deliberately
+added. Default: if in doubt, strip it.
 
-**Reviewer discipline only — hook doesn't catch these:** internal
-tool/product names not generally known in open source; commit SHAs or
-PR numbers from private repos; structural fingerprints and
-private-corpus provenance (see below); the owner's own email address.
-The person-name blocklist above is user-populated with no default
-entries, so nothing catches the owner's own `mailto:` in
-`SECURITY.md`, a PR body, or similar. Route security reports to
-GitHub private vulnerability reporting and other contact to the
-maintainer's published business site (linked from README.md). If a
-template genuinely demands a `mailto:`, propose a role mailbox and
-confirm before committing.
+**Reviewer discipline only — hook doesn't catch these:**
+
+- Internal tool/product names not generally known in open source.
+- Commit SHAs or PR numbers from private repos.
+- Structural fingerprints and private-corpus provenance (see below).
+- The owner's own email address — the blocklist above has no default
+  entries, so nothing catches the owner's own `mailto:` in
+  `SECURITY.md`, a PR body, or similar:
+  - Route security reports to GitHub private vulnerability reporting.
+  - Route other contact to the maintainer's published business site
+    (linked from README.md).
+  - If a template genuinely demands a `mailto:`, propose a role
+    mailbox and confirm before committing.
 
 ### Also redact structural fingerprints and provenance
 
