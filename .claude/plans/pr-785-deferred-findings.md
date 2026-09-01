@@ -376,3 +376,22 @@ alone:
 - **A `pyproject.toml` change to run `timing` tests serially by default**
   (G1). Repo-wide collection config affecting every domain, and it would
   force a full-suite selection on this PR.
+
+## Scope reconciliation (post-implementation)
+
+M2's "two new tests, not four" and the Out-of-scope exclusion of dedicated
+`symbolic-ref`/candidate-loop timing tests were both superseded during
+`/code-review`.
+
+- 5 `timing` tests shipped, not the 2 M2 named:
+  `test_repo_root_git_timeout_allows`,
+  `test_current_branch_git_timeout_arms_the_gate`,
+  `test_default_branch_symbolic_ref_timeout_still_allows_via_candidate_loop`,
+  `test_candidate_loop_exhausted_arms_the_gate`,
+  `test_gh_pr_view_timeout_allows`.
+- Out-of-scope's "duplicate assertion" premise held for only the
+  candidate-loop-exhausted path, not the symbolic-ref-succeeds path: the
+  latter produces `allow`, not `deny` — a distinction row 9's trace had not
+  separated.
+- M4 shipped `test_gh_pr_view_timeout_allows` and a `gh_timeout_shim`
+  fixture in `conftest.py` — a regression test M4's text never scoped.
