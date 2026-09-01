@@ -551,13 +551,30 @@ The new section's "one idea per sentence" restates the core of §Code Comments' 
 - `claude/.claude/agents/comment-discipline-reviewer.md` — the six review angles, all already covered by existing CLAUDE.md rules.
 - `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md` §2 — the 200-line cap and the per-line behavior test each promoted line was drafted against.
 - `claude/.claude/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
-## 39. `/code-review`'s marker short-circuit left `ready-for-review` untouched (2026-08-24)
+## 39. `claudeMdExcludes` suppresses the nested-discovery duplicate of `claude/.claude/CLAUDE.md` (2026-08-31)
+
+Nested-CLAUDE.md discovery walks the physical filesystem tree rather than deduplicating against files already loaded through a symlink. A session working in this repo therefore loaded the global-instructions file twice: once at user scope through the `~/.claude/CLAUDE.md` stow symlink, and again as a fresh system-reminder block the first time anything under `claude/.claude/**` was read.
+
+The exclusion is added to this repo's own project-scope `.claude/settings.json` rather than to any per-machine `settings.local.json`, because the duplicate only occurs for a session whose working directory is inside this repo — every contributor hits it, so the fix belongs where every contributor's `git pull` picks it up.
+
+The stow-source `claude/.claude/settings.json` deliberately carries no matching entry. That file installs to every consumer's user-scope `~/.claude/settings.json`, so an entry there would apply to every project on every consumer's machine — wider than the condition it addresses, which is specific to sessions working inside this repo.
+
+Renaming or relocating `claude/.claude/CLAUDE.md` to dodge the duplicate was rejected: Stow links each immediate child of `claude/.claude/` individually (§5), so moving the file breaks the 1:1 install mapping every consumer runs.
+
+Whether `claudeMdExcludes` also matches a symlink's target path is undocumented for CLAUDE.md files (only for `.claude/rules/`), so this pattern's correctness was unverified until a fresh session confirmed it empirically. That fresh session confirmed both that the user-scope load survives and that the pattern does not over-suppress. See the plan's assumption ledger (`.claude/plans/exclude-nested-claude-md-duplicate.md`) for the full ledger row.
+
+### Sources
+
+- [Claude Code memory docs](https://code.claude.com/docs/en/memory), "Exclude specific CLAUDE.md files" — `claudeMdExcludes` setting, path-matching semantics, and the either-path symlink rule for `.claude/rules/` files.
+- `.claude/plans/exclude-nested-claude-md-duplicate.md` — full assumption ledger and verification steps.
+
+## 40. `/code-review`'s marker short-circuit left `ready-for-review` untouched (2026-08-24)
 
 `/code-review`'s new `Step 0.1 — Short-circuit already-reviewed diff` (`code-review/SKILL.md:23`) calls `marker.sh check code-review` and reports "already reviewed clean" without dispatching the specialist panel when the existing marker's hash already matches the current staged diff. `ready-for-review` was deliberately scoped out of getting an equivalent short-circuit of its own: its step 8 already writes a completion marker keyed on the post-resync HEAD SHA (`ready-for-review/SKILL.md:41`), which covers whole-gate idempotency for the cumulative PR-vs-base diff its step 3 reviews. `/code-review`'s marker is keyed on the *staged* diff instead, and step 3's own text explains why that can't substitute: "Because the reviewed diff is not the staged diff, do NOT write the review-completion marker" (`ready-for-review/SKILL.md:77`). A staged-diff marker answers a different question than the one step 3 needs answered, so no new mechanism was added on the `ready-for-review` side.
 
 That left one real hazard inside `/code-review` itself: step 3 invokes `/code-review` with the working tree already fully committed, so the staged diff at that point is normally empty. `marker.sh check`'s recipe hashes `git diff --cached`, and an empty diff hashes to a fixed value — if any earlier, unrelated `/code-review` run in the same repo happened to write a marker for an empty staged diff (plausible after a stray re-invocation right after a commit), Step 0.1 would match against it and silently skip step 3's cumulative-diff review. `marker.sh check code-review` closes this by treating an empty staged diff as an unconditional no-match (`git diff --cached --quiet` before ever computing or comparing a hash) — the recipe never even reaches the point where cross-context collision could occur, so the composition stays safe without `ready-for-review` needing to know anything about `/code-review`'s internal short-circuit.
 
-## 40. Subagent turn-count nudge threshold, and a renewed rejection of a hard per-dispatch cap (2026-08-24)
+## 41. Subagent turn-count nudge threshold, and a renewed rejection of a hard per-dispatch cap (2026-08-24)
 
 `nudge-long-turn-subagent.sh` (`claude/.claude/hooks/`) nudges — informational only, never blocking — when a subagent dispatch's own turn count crosses a measured outlier threshold. The threshold, 340, was chosen from a corpus scan of every `subagents/*.jsonl` transcript across this machine's personal-account corpus (4,058 dispatches with recorded turns): p50 = 28 turns, p90 = 82, p95 = 136, p99 = 339, max = 4,178 (`.claude/plans/prevent-runaway-subagent-cost.md`'s corpus-measurement bullet). 340 sits just above that measured p99, so the hook nudges only the same roughly-1%-outlier tail the corpus scan identified, not ordinary long-running work. The incident that motivated this mechanism (see `.claude/plans/prevent-runaway-subagent-cost.md`'s Context section for the full narrative) would have crossed this threshold after roughly 13% of its eventual turn count.
 
@@ -574,7 +591,7 @@ A hard per-dispatch turn or time cap — killing a dispatch outright at some cei
 - §11 — `code-writer`'s deliberate absence of a turn cap.
 - `docs/case-studies/check-runner.md` — the Retirement section's follow-on measurement.
 
-## 41. `marker.sh check code-review` gains an age bound; `write`/commit-gate stay hash-only (2026-08-24)
+## 42. `marker.sh check code-review` gains an age bound; `write`/commit-gate stay hash-only (2026-08-24)
 
 `marker.sh check code-review` — the short-circuit `/code-review`'s Step 0.1 consults before dispatching its specialist panel — treats a hash-matching marker as `no-match` when the marker file's mtime is older than `CODE_REVIEW_CHECK_MAX_AGE_SECONDS` (default 86400, 24h); a hash match alone is not sufficient. A marker written weeks or months ago for a diff that happens to recur (a revert-then-reapply, or two branches independently producing byte-identical staged content) would otherwise let `check` skip the specialist panel indefinitely.
 

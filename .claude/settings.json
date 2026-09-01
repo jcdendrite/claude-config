@@ -11,5 +11,8 @@
       "Bash(../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py)",
       "Bash(pytest claude/.claude/scripts/tests/test_cleanup_merged_branches.py)"
     ]
-  }
+  },
+  "claudeMdExcludes": [
+    "**/claude/.claude/CLAUDE.md"
+  ]
 }

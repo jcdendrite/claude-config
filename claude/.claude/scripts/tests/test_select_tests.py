@@ -466,6 +466,13 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
+    def test_root_settings_json_change_selects_hooks_tests(self):
+        """test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads the repo-root
+        .claude/settings.json's claudeMdExcludes entry by path."""
+        result = _mod.select_pytest_targets([_mod.ROOT_SETTINGS_JSON])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+
     def test_skills_test_tree_change_selects_skills_tests(self):
         """The skills domain's own test directory previously matched no
         rule -- only a literal SKILL.md filename triggered the skills
@@ -601,6 +608,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
     _mod.GLOBAL_CLAUDE_MD,
     _mod.ROOT_CLAUDE_MD,
+    _mod.ROOT_SETTINGS_JSON,
 )
 
 
