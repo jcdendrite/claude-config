@@ -52,7 +52,7 @@ Before doing anything else, run
   the last dispatch, and the identical resulting line would dedup away as a
   no-op, silently pinning the step at attempt 1 forever. (Retry cap: 3 total
   attempts / 2 automatic retries — rationale and citation in
-  `docs/design-decisions.md` §31.)
+  `docs/design-decisions.md` §39.)
 
 A truncated or unparseable line (a kill mid-write) is possible; treat any
 line you cannot parse as absent evidence for that step, not as a completed

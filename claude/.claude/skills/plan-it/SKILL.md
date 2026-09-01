@@ -49,6 +49,7 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 Dispatch `plan-architect` with an explicit `model: "opus"` override to author this section — on every `/plan-it` run, regardless of what model the session itself is anchored to. Pass no `isolation: "worktree"` — the session is already anchored in the implementation branch's worktree, and `plan-architect` writes nothing.
 
 The dispatch prompt carries:
+- `MODE=plan-sections` as the prompt's first line, on every Step 5 dispatch including revision re-dispatches. This literal selects the plan-section grammar — `plan-architect` also serves ad hoc consults, so the mode can no longer be inferred from context.
 - The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim.
 - Every Step 3 subagent's findings, framed as evidence rather than conclusions, plus the absolute path of every file it flagged.
 
@@ -66,6 +67,8 @@ Re-dispatch from scratch, rather than repairing inline, on any of these returns:
 Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
 **External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — not a paraphrase, not a summary, not the section heading. A bare pattern name risks crystallizing a wrong interpretation.
+
+**Comment-content discipline.** When a plan prescribes a comment or docstring verbatim, prescribe the durable one-line fact only — the plan's own rationale belongs in the commit message and PR body, per CLAUDE.md §Code Comments, Documentation, and Prose.
 
 **Name the dispatch split.** Implementation of an approved plan is
 delegated to `code-writer` per phase by default (`subagent-delegation`);
@@ -102,7 +105,7 @@ Write the plan with these sections:
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
 3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths.
-4. **Verification** — how to test end-to-end
+4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
 5. **Out of scope** — only if scope creep was observed
 
 Effort sections optional; if present, describe review surface (file count, domain spread, risk concentration), never hours or days.

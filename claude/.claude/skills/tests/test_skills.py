@@ -435,6 +435,23 @@ class TestConventionSkillWiring:
         """code-writer must tell the writer to consult sql-query-conventions for read-path SQL."""
         assert "sql-query-conventions/SKILL.md" in self._agent_body("code-writer")
 
+    def test_code_writer_self_review_cross_checks_porcelain(self):
+        """code-writer's self-review must cross-check tracked paths against `git status --porcelain`."""
+        assert "git status --porcelain" in self._agent_body("code-writer")
+
+    def test_code_writer_self_review_avoids_git_diff_head(self):
+        """code-writer's self-review must warn against `git diff HEAD`, which pulls a prior round's staged work into the diff."""
+        body = self._agent_body("code-writer")
+        lines_with_git_diff_head = [
+            line for line in body.splitlines() if "git diff HEAD" in line
+        ]
+        assert lines_with_git_diff_head, (
+            "code-writer body no longer mentions `git diff HEAD` at all."
+        )
+        assert any("never" in line.lower() for line in lines_with_git_diff_head), (
+            "code-writer mentions `git diff HEAD` but no line prohibits it."
+        )
+
     def test_staff_sdet_reads_test_conventions_body(self):
         """staff-sdet must Read test-conventions/SKILL.md to ground its §N citations."""
         body = self._agent_body("staff-sdet")
@@ -461,6 +478,30 @@ class TestConventionSkillWiring:
     def test_handoff_runs_pr_description(self):
         """handoff's pre-write checklist must have an actionable run pointer to pr-description."""
         assert "run the `pr-description`" in self._skill_body("handoff")
+
+
+class TestCodeWriterSelfReviewScope:
+    """Pin code-writer's self-review diffing instructions.
+
+    Deliberately does not pin the surrounding explanatory prose -- a
+    copy-edit there must not fail this test; the three pinned fragments are
+    the mechanical instructions whose loss changes what the agent diffs.
+    """
+
+    def _body(self) -> str:
+        return " ".join(_agent_body("code-writer").split())
+
+    def test_pins_git_diff_paths_for_pre_existing_files(self):
+        """A pre-existing modified file must be reviewed with `git diff -- <paths>`."""
+        assert "`git diff -- <paths>`" in self._body()
+
+    def test_pins_git_status_porcelain_cross_check(self):
+        """The self-tracked path list must be cross-checked against `git status --porcelain`."""
+        assert "`git status --porcelain`" in self._body()
+
+    def test_prohibits_git_diff_head(self):
+        """`git diff HEAD` must not be used -- it pulls a prior round's staged work into scope."""
+        assert "Never use `git diff HEAD`" in self._body()
 
 
 class TestSkillFidelityReviewerUndecidableDismissal:
@@ -1140,9 +1181,9 @@ class TestHandoffCollectStepPinsLoadBearingClauses:
     def test_collect_step_treats_a_repeat_hard_block_as_expected(self):
         body = _skill_file("handoff").read_text()
         assert (
-            "it is expected, not a new problem: it means this session is "
-            "still past its threshold while already following the block's "
-            "own remediation"
+            "that's expected, not a new problem — it just means the "
+            "session is still past its threshold while following the "
+            "block's own remediation"
             in body
         )
 
@@ -1212,7 +1253,7 @@ class TestReviewOrchestratorRetryCapLanguage:
     def test_retry_cap_is_three_total_attempts_cites_design_decisions_grounding(self):
         assert (
             "Retry cap: 3 total attempts / 2 automatic retries — rationale "
-            "and citation in `docs/design-decisions.md` §31."
+            "and citation in `docs/design-decisions.md` §39."
             in self._normalized_body()
         )
 
@@ -1460,6 +1501,14 @@ class TestCorpusBudgetFunction:
 
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
 
+# The two DISPOSITION_RULE anchor regions in the corpus. Asserted as an exact
+# set, not just "each found anchor is non-trivial" — a corpus scan alone
+# passes vacuously if an entire anchor pair is deleted.
+_EXPECTED_DISPOSITION_RULE_ANCHORS = {
+    ("code-review", "code-review-defer-invariant"),
+    ("plan-review", "plan-review-fix-or-ask"),
+}
+
 
 def _all_skill_md_paths() -> list[Path]:
     """Every SKILL.md under the stowed skills dir and plugin skill dirs."""
@@ -1619,19 +1668,34 @@ def test_disposition_rule_anchors_present() -> None:
     vice versa); calling the production parser here closes that gap. The
     regex below is retained only to discover which anchor *names* exist in
     each file — extract_governing_rule() needs a name to look up.
+
+    The found set is also compared against _EXPECTED_DISPOSITION_RULE_ANCHORS
+    exactly, not just "each found anchor is non-trivial." A scan that only
+    validates names it finds passes vacuously if an entire anchor pair is
+    deleted, since no name is left to fail the length check.
     """
     MIN_RULE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
 
+    found: set[tuple[str, str]] = set()
     for skill_md_path in _all_skill_md_paths():
         text = skill_md_path.read_text()
+        skill_name = skill_md_path.parent.name
         anchor_names = {m.group(1) for m in _DISPOSITION_RULE_ANCHOR_RE.finditer(text)}
 
         for name in anchor_names:
+            found.add((skill_name, name))
             enclosed = extract_governing_rule(skill_md_path, name)
             assert len(enclosed) >= MIN_RULE_TEXT_CHARS, (
                 f"{skill_md_path}: DISPOSITION_RULE:{name} encloses only {len(enclosed)} "
                 f"non-whitespace chars after stripping — looks deleted or gutted"
             )
+
+    assert found == _EXPECTED_DISPOSITION_RULE_ANCHORS, (
+        "DISPOSITION_RULE anchors drifted from the expected set — a region was "
+        "added, renamed, or deleted.\n"
+        f"  expected but missing: {sorted(_EXPECTED_DISPOSITION_RULE_ANCHORS - found)}\n"
+        f"  found but unexpected: {sorted(found - _EXPECTED_DISPOSITION_RULE_ANCHORS)}"
+    )
 
 
 _LEGACY_TRIGGER_METHODS = {"runtime", "description-fidelity", "behavioral-dispatch"}
@@ -2282,6 +2346,345 @@ def test_invalid_skip_rationale_labels_match_across_review_skills() -> None:
     )
 
 
+_SCOPE_RULE_ANCHOR_RE = re.compile(r"<!-- SCOPE_RULE:(\S+) (start|end) -->")
+_SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->")
+
+# The three anchor regions the staged-diff scope-boundary redesign introduced.
+# Asserted as an exact set, not just "each found anchor is non-trivial" — a
+# corpus scan alone passes vacuously if an entire anchor pair is deleted.
+_EXPECTED_SCOPE_ANCHORS = {
+    ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
+    ("code-review", "SCOPE_EXEMPT_ROW"),
+    ("code-review", "SCOPE_RULE:code-review-causal-reach"),
+    ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
+}
+
+_SECURITY_CONTROLS_ROW = "Adds/modifies security controls"
+
+
+def _extract_scope_anchor_region(skill_md_path: Path, marker_name: str) -> str:
+    """Extract text strictly between a `<!-- <marker_name> start/end -->` pair.
+
+    Mirrors extract_governing_rule()'s (evals/run_skill_evals.py) presence/
+    order/duplicate validation, parameterized over the marker name instead of
+    that function's hard-coded `DISPOSITION_RULE:` prefix — reusing that
+    prefix would silently enroll a scope rule in the disposition-fidelity
+    eval, which is why this anchor namespace needs its own small parser
+    rather than calling extract_governing_rule() directly.
+    """
+    text = skill_md_path.read_text()
+    start_marker = f"<!-- {marker_name} start -->"
+    end_marker = f"<!-- {marker_name} end -->"
+    start_count = text.count(start_marker)
+    end_count = text.count(end_marker)
+    if start_count > 1 or end_count > 1:
+        raise ValueError(
+            f"{marker_name!r} anchor in {skill_md_path}: appears more than once "
+            f"(start x{start_count}, end x{end_count}) — duplicate anchor names "
+            "are not supported, rename one of them"
+        )
+    start_idx = text.find(start_marker)
+    end_idx = text.find(end_marker)
+    if start_idx == -1 or end_idx == -1:
+        raise ValueError(
+            f"{marker_name!r} anchor not found (or incomplete) in {skill_md_path} "
+            f"— start present: {start_idx != -1}, end present: {end_idx != -1}"
+        )
+    if end_idx < start_idx:
+        raise ValueError(
+            f"{marker_name!r} anchor in {skill_md_path}: end marker appears before start marker"
+        )
+    return text[start_idx + len(start_marker) : end_idx].strip()
+
+
+class TestExtractScopeAnchorRegion:
+    """Direct branch coverage for _extract_scope_anchor_region's three raise
+    branches, exercised with tiny inline fixtures rather than waiting for the
+    real corpus to happen to contain such a defect. Mirrors
+    TestTriggerAFenceScan's pattern of testing a small parsing helper
+    branch-by-branch with literal string fixtures before the corpus-wide
+    sweep runs.
+    """
+
+    _MARKER = "SCOPE_RULE:example"
+
+    def _write(self, tmp_path: Path, content: str) -> Path:
+        path = tmp_path / "SKILL.md"
+        path.write_text(content)
+        return path
+
+    def test_happy_path_extracts_enclosed_text(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} start -->\nsome rule text\n<!-- {self._MARKER} end -->",
+        )
+        assert _extract_scope_anchor_region(path, self._MARKER) == "some rule text"
+
+    def test_duplicate_start_marker_raises(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} start -->\nfirst\n<!-- {self._MARKER} start -->\n"
+            f"second\n<!-- {self._MARKER} end -->",
+        )
+        with pytest.raises(ValueError, match="more than once"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_duplicate_end_marker_raises(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} start -->\ntext\n<!-- {self._MARKER} end -->\n"
+            f"<!-- {self._MARKER} end -->",
+        )
+        with pytest.raises(ValueError, match="more than once"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_start_present_end_missing_raises(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, f"<!-- {self._MARKER} start -->\ntext")
+        with pytest.raises(ValueError, match="not found"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_end_present_start_missing_raises(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, f"text\n<!-- {self._MARKER} end -->")
+        with pytest.raises(ValueError, match="not found"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_end_before_start_raises(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} end -->\ntext\n<!-- {self._MARKER} start -->",
+        )
+        with pytest.raises(ValueError, match="before start"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+
+def test_scope_rule_anchors_present() -> None:
+    """Every SCOPE_RULE:/SCOPE_EXEMPT_ROW anchor pair is present, ordered, and
+    non-trivial in length — the SCOPE_RULE:/SCOPE_EXEMPT_ROW-namespace mirror
+    of test_disposition_rule_anchors_present above.
+    """
+    MIN_SCOPE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
+
+    found: set[tuple[str, str]] = set()
+    for skill_md_path in _all_skill_md_paths():
+        text = skill_md_path.read_text()
+        skill_name = skill_md_path.parent.name
+
+        marker_names = {f"SCOPE_RULE:{m.group(1)}" for m in _SCOPE_RULE_ANCHOR_RE.finditer(text)}
+        if _SCOPE_EXEMPT_ROW_ANCHOR_RE.search(text):
+            marker_names.add("SCOPE_EXEMPT_ROW")
+
+        for marker_name in marker_names:
+            found.add((skill_name, marker_name))
+            enclosed = _extract_scope_anchor_region(skill_md_path, marker_name)
+            assert len(enclosed) >= MIN_SCOPE_TEXT_CHARS, (
+                f"{skill_md_path}: {marker_name} encloses only {len(enclosed)} "
+                f"non-whitespace chars after stripping — looks deleted or gutted"
+            )
+
+    assert found == _EXPECTED_SCOPE_ANCHORS, (
+        "Scope-boundary anchors drifted from the expected set — a region was "
+        "added, renamed, or deleted.\n"
+        f"  expected but missing: {sorted(_EXPECTED_SCOPE_ANCHORS - found)}\n"
+        f"  found but unexpected: {sorted(found - _EXPECTED_SCOPE_ANCHORS)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "skill_name,inner_marker,outer_marker",
+    [
+        ("code-review", "SCOPE_EXEMPT_ROW", "SCOPE_RULE:code-review-staged-diff-only"),
+        (
+            "code-review",
+            "SCOPE_RULE:code-review-causal-reach",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
+    ],
+)
+def test_nested_anchor_fully_contained_within_outer_rule(
+    skill_name: str, inner_marker: str, outer_marker: str
+) -> None:
+    """A nested anchor must be textually contained inside its outer
+    SCOPE_RULE's start/end pair, not merely present somewhere in the file
+    alongside it — the design (see the SCOPE_RULE region's own prose) is
+    that a nested anchor's narrowing lives inside the outer rule, not as an
+    unrelated sibling anchor. Checks both the inner start and the inner end
+    offset, not just the start — an inner end marker that drifts outside the
+    outer region while the inner start stays correctly nested would pass a
+    start-only check silently.
+    """
+    skill_md_path = _skill_file(skill_name)
+    # Validates presence and rejects a duplicated marker before offsets are
+    # computed below — text.find() alone would silently resolve a
+    # duplicated marker to its first occurrence.
+    _extract_scope_anchor_region(skill_md_path, outer_marker)
+    _extract_scope_anchor_region(skill_md_path, inner_marker)
+    text = skill_md_path.read_text()
+
+    outer_start = text.find(f"<!-- {outer_marker} start -->")
+    outer_end = text.find(f"<!-- {outer_marker} end -->")
+    inner_start = text.find(f"<!-- {inner_marker} start -->")
+    inner_end = text.find(f"<!-- {inner_marker} end -->")
+    assert outer_start < inner_start and inner_end < outer_end, (
+        f"{skill_md_path}: {inner_marker} (offsets {inner_start}-{inner_end}) is not fully "
+        f"contained inside {outer_marker} (offsets {outer_start}-{outer_end})"
+    )
+
+
+_PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
+    ("code-review", "SCOPE_RULE:code-review-causal-reach"): (
+        "A defect outside the boundary that the change causes, activates, or "
+        "newly reaches stays in scope for that spawn's flagging duty."
+    ),
+    ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
+        "This pass reviews the cumulative diff with no responsibility-boundary "
+        "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
+        "Per-commit findings from earlier in this branch's fix loop feed in as "
+        "context, not a substitute for this pass."
+    ),
+}
+
+
+def _normalized_anchor_text(skill_md_path: Path, marker_name: str) -> str:
+    """Whitespace-collapsed text of a SCOPE_RULE/SCOPE_EXEMPT_ROW anchor region.
+
+    Collapsing internal whitespace on both sides of a comparison keeps a
+    markdown reflow of the enclosed paragraph from false-failing an
+    exact-text pin against it.
+    """
+    return " ".join(_extract_scope_anchor_region(skill_md_path, marker_name).split())
+
+
+@pytest.mark.parametrize("skill_name,marker_name", sorted(_PINNED_SCOPE_CLAUSES))
+def test_pinned_scope_clause_matches_live_text(skill_name: str, marker_name: str) -> None:
+    """The pin is exact because a clause's mandatory-vs-advisory reading is not
+    deterministically derivable from its text, and the model-based check that
+    could derive it is local-only by cost. On failure, re-read the guarantee
+    and update the constant only if the new wording preserves it.
+    """
+    skill_md_path = _skill_file(skill_name)
+    live_text = _normalized_anchor_text(skill_md_path, marker_name)
+    pinned_text = " ".join(_PINNED_SCOPE_CLAUSES[(skill_name, marker_name)].split())
+    assert live_text == pinned_text, (
+        f"{skill_md_path}: {marker_name} no longer matches its pinned text.\n"
+        f"  live:   {live_text!r}\n"
+        f"  pinned: {pinned_text!r}"
+    )
+
+
+class TestNormalizedAnchorText:
+    """Direct coverage for _normalized_anchor_text's comparison machinery,
+    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. Both
+    live pinned regions currently sit on one unwrapped line, so neither the
+    mismatch nor the reflow path is exercised by the corpus-wide pin test
+    above.
+    """
+
+    _MARKER = "SCOPE_RULE:example"
+
+    def test_mismatched_text_fails_equality(self, tmp_path: Path) -> None:
+        """Confirms the extracted text matches exactly, not just
+        non-emptily — a truncated or partially-extracted result would
+        satisfy an inequality-only check against an unrelated string
+        while still defeating the pin test's equality comparison.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            f"<!-- {self._MARKER} start -->\nthe live clause\n<!-- {self._MARKER} end -->"
+        )
+        extracted = _normalized_anchor_text(path, self._MARKER)
+        assert extracted == "the live clause"
+        assert extracted != "a mismatched pinned clause"
+
+    def test_reflowed_text_normalizes_to_match(self, tmp_path: Path) -> None:
+        """Confirms whitespace-collapsing normalizes text reflowed across
+        multiple lines to match its single-line pinned form.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            f"<!-- {self._MARKER} start -->\nthe pinned\nclause  reflowed\nacross lines\n"
+            f"<!-- {self._MARKER} end -->"
+        )
+        assert (
+            _normalized_anchor_text(path, self._MARKER)
+            == "the pinned clause reflowed across lines"
+        )
+
+
+def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
+    """Left-column shorthand of every data row in the Change-type table.
+
+    Truncates a left-column cell at its first embedded `|`. Not exercised
+    by any current Change-type row. A future row using pipe-containing
+    inline-code shorthand would truncate here. At the current call sites
+    (`test_scope_exempt_row_resolves_to_real_change_type_row`,
+    `test_scope_exempt_row_excludes_security_controls_row`), a resulting
+    mismatch surfaces as a loud assertion failure, not silently.
+    """
+    lines = skill_md_path.read_text().splitlines()
+    header_index = next(
+        (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
+        None,
+    )
+    assert header_index is not None, f"{skill_md_path}: Change-type table header not found."
+
+    rows = []
+    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
+        if not line.startswith("|"):
+            break
+        rows.append(line.split("|")[1].strip())
+    return rows
+
+
+class TestChangeTypeTableLeftColumns:
+    """Direct coverage for _change_type_table_left_columns's `line.split("|")`
+    parse, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
+    """
+
+    def test_embedded_pipe_in_left_column_truncates(self, tmp_path: Path) -> None:
+        """A left-column cell containing inline code with an embedded `|`
+        (`` `a | b` ``) truncates at that first `|` — this documents the
+        helper's current split-based behavior rather than changing it.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "| Change type | Spawn / invoke |\n"
+            "|-------------|----------------|\n"
+            "| Uses inline code `a | b` in shorthand | `some-reviewer` |\n"
+        )
+        assert _change_type_table_left_columns(path) == ["Uses inline code `a"]
+
+
+def test_scope_exempt_row_resolves_to_real_change_type_row() -> None:
+    """SCOPE_EXEMPT_ROW's enclosed shorthand must exact-match a real
+    Change-type table row's left column — guards against silent drift if
+    that row is reworded without updating the anchor.
+    """
+    skill_md_path = _skill_file("code-review")
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    real_rows = _change_type_table_left_columns(skill_md_path)
+    assert exempt_shorthand in real_rows, (
+        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r} does not exact-match "
+        f"any Change-type table row in {skill_md_path}"
+    )
+
+
+def test_scope_exempt_row_excludes_security_controls_row() -> None:
+    """Guards against a future edit sliding the *Adds/modifies security
+    controls* row's shorthand into SCOPE_EXEMPT_ROW, which would narrow
+    security spawn decisions — the match-narrowing carve-out is prose-only
+    by design.
+    """
+    skill_md_path = _skill_file("code-review")
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    assert exempt_shorthand != _SECURITY_CONTROLS_ROW
+
+    real_rows = _change_type_table_left_columns(skill_md_path)
+    assert _SECURITY_CONTROLS_ROW in real_rows, (
+        f"{skill_md_path}: expected Change-type row {_SECURITY_CONTROLS_ROW!r} not "
+        "found — test fixture drifted from the table"
+    )
+
+
 _PLAN_REVIEW_REFERENCES_MD = _skill_file("plan-review").parent / "REFERENCES.md"
 
 _STEP4_HEADING = "## Step 4 — Design-fitness gate"
@@ -2304,7 +2707,7 @@ def _section_between(
 
     end_idx is exclusive, at the next line starting with '## ' (or len(lines)
     if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
-    extractor, EOF is not itself a failure here, since none of the three
+    extractor, EOF is not itself a failure here, since none of the four
     headings this module bounds is currently last in its file). The start
     heading is asserted found, not inferred — a renamed or deleted heading
     would otherwise extract as empty and compare equal to another empty
@@ -2322,6 +2725,30 @@ def _section_between(
             end_idx = j
             break
     return start_idx, end_idx
+
+
+_READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
+
+
+def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
+    """Structural regression for SCOPE_RULE:ready-for-review-cumulative-unnarrowed's
+    premise. Step 3 must always dispatch via `pr-diff-against-base.sh`. It must
+    never contain a `git diff --cached` invocation, so the diff it hands
+    `/code-review` can never satisfy the narrowing precondition's staged-diff
+    half. A fixture-based structural check, not a live model call.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+    assert "pr-diff-against-base.sh" in section_text, (
+        f"{skill_md_path}: Step 3 no longer dispatches via pr-diff-against-base.sh"
+    )
+    assert "git diff --cached" not in section_text, (
+        f"{skill_md_path}: Step 3 must never produce a staged-diff (git diff "
+        "--cached) review basis — that's the commit-gate pass's job, not the "
+        "cumulative sweep's"
+    )
 
 
 def _step4_tripwire_names() -> set[str]:
@@ -2526,6 +2953,8 @@ _MARKER_TRIPLE_SITES = [
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh activate memory-skill"),
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh deactivate memory-skill"),
     ("code-review", "~/.claude/scripts/marker.sh write code-review"),
+    ("handoff", "~/.claude/scripts/marker.sh activate handoff"),
+    ("handoff", "~/.claude/scripts/marker.sh deactivate handoff"),
 ]
 
 

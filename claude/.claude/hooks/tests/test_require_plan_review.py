@@ -6,10 +6,10 @@ import json
 import os
 import shutil
 import subprocess
+import textwrap
 import time
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
@@ -17,7 +17,6 @@ from helpers import (
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
-    build_no_realpath_m_path_env,
     edit_input,
     exitplanmode_input,
     extract_skill_command,
@@ -30,9 +29,28 @@ from helpers import (
     write_plan_review_marker,
 )
 
+from .conftest import _seed_session
+
 PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"
 
 REQUIRE_PLAN_REVIEW_HOOK = HOOKS_DIR / "require-plan-review.sh"
+
+# Forces _lib_realpath_m's manual fallback branch by shadowing both native
+# `realpath -m` and `grealpath` on PATH -- mirrors test_lib.py's
+# _FORCED_FALLBACK_REALPATH_SHIM, prepended rather than substituted for PATH
+# so jq/git/sha256sum/timeout stay resolvable for the rest of the hook.
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+_FORCED_FALLBACK_GREALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    exit 1
+""")
 
 
 @pytest.fixture
@@ -180,6 +198,112 @@ class TestRequirePlanReview:
                 cwd=repo,
             )
             == "allow"
+        )
+
+    def test_historical_plans_allows_and_skips_the_realpath_fast_path(self, tmp_path):
+        """.claude/plans/ holding only committed, unmodified (historical)
+        content and zero active files is this repo's own steady state --
+        every plan file here is committed and unmodified (`git status
+        --porcelain -- .claude/plans/` is empty). The guard must skip the
+        realpath-resolution block for this population, not just for an
+        absent or empty plans directory (test_no_plans_dir_allows /
+        test_empty_plans_dir_allows above). Proven by shimming `realpath`
+        to record its own invocation: the block calls _lib_realpath_m,
+        which tries native `realpath -m` first, so any call to the shim
+        means the block ran."""
+        repo = tmp_path / "historical-plans"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "shipped-plan.md").write_text("# Shipped plan\n\nAlready reviewed and merged.\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed historical plan"], cwd=repo, check=True)
+
+        real_realpath = shutil.which("realpath")
+        assert real_realpath, "test host must have a real realpath binary on PATH"
+        call_marker = tmp_path / "realpath-was-called"
+        shim_dir = tmp_path / "call_counting_shim"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            touch "{call_marker}"
+            exec "{real_realpath}" "$@"
+        """)
+        (shim_dir / "realpath").write_text(shim_script)
+        (shim_dir / "realpath").chmod(0o755)
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input(str(repo / "src" / "foo.py")),
+                cwd=repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
+        assert not call_marker.exists(), (
+            "realpath was invoked even though .claude/plans/ holds only historical "
+            "content -- the fast-path guard failed to skip the target-scope block"
+        )
+
+    def test_historical_plans_calls_active_plan_files_only_once(self, tmp_path):
+        """The fast-path guard's own _lib_active_plan_files call must not be
+        followed by a second, redundant call from the hash computation below
+        it -- the guard must exit 0 immediately once it has already learned
+        nothing is active, rather than falling through and re-deriving the
+        identical empty result via a second enumeration. Proven by shimming
+        `git` to log every `ls-files --others` invocation, the call
+        _lib_active_plan_files makes exactly once per call to itself, and
+        asserting it appears exactly once for this single hook invocation."""
+        repo = tmp_path / "historical-plans-call-count"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "shipped-plan.md").write_text("# Shipped plan\n\nAlready reviewed and merged.\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed historical plan"], cwd=repo, check=True)
+
+        real_git = shutil.which("git")
+        assert real_git, "test host must have a real git binary on PATH"
+        call_log = tmp_path / "ls-files-others-call-log"
+        stub_dir = tmp_path / "call_counting_git_stub"
+        stub_dir.mkdir()
+        stub_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            has_ls_files=0
+            has_others=0
+            for arg in "$@"; do
+              [ "$arg" = "ls-files" ] && has_ls_files=1
+              [ "$arg" = "--others" ] && has_others=1
+            done
+            if [ "$has_ls_files" = 1 ] && [ "$has_others" = 1 ]; then
+              echo call >> "{call_log}"
+            fi
+            exec "{real_git}" "$@"
+        """)
+        (stub_dir / "git").write_text(stub_script)
+        (stub_dir / "git").chmod(0o755)
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                write_input(str(repo / "src" / "foo.py")),
+                cwd=repo,
+                extra_env={"PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
+        call_count = len(call_log.read_text().splitlines()) if call_log.exists() else 0
+        assert call_count == 1, (
+            f"expected _lib_active_plan_files' ls-files --others call exactly once, "
+            f"got {call_count} -- the fast-path guard fell through to a redundant "
+            "second call instead of short-circuiting on 'nothing active'"
         )
 
     def test_bash_tool_allows_always(self, plan_review_repo):
@@ -743,25 +867,391 @@ class TestRequirePlanReview:
             == "allow"
         )
 
-    def test_unresolvable_target_path_still_denies(
-        self, plan_review_repo, plan_review_home, tmp_path
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_outside_repo_write_allows_when_in_repo_plan_unhashable(
+        self, plan_review_repo, plan_review_home
     ):
-        """A write target _lib_realpath_m cannot resolve (its fallback loop's
-        depth cap exhausted, e.g. on a system lacking both realpath -m and
-        grealpath) must still be denied -- an unresolved path must not be
-        read as proof the target is outside the repo and let the gate skip."""
-        deep_target = plan_review_repo
-        for i in range(11):
-            deep_target = deep_target / f"lvl{i}"
+        """An out-of-repo write is decided by path shape alone, before the
+        hash is computed, so it allows even when the in-repo active plan is
+        unhashable. The in-repo case (test_unreadable_plan_denies_write)
+        must keep denying under the same condition."""
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        plan.chmod(0o000)
+        try:
+            decision = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input("/tmp/scratch/foo.py"), "session_id": "session-scope-unhashable-outside"},
+                cwd=plan_review_repo,
+            )
+        finally:
+            plan.chmod(0o644)
+        assert decision == "allow"
+
+
+class TestPlanFileAuthoringExemption:
+    """A Write/Edit/MultiEdit whose own target is a plan file this gate
+    hashes is exempt -- authoring the plan is never what trips the gate that
+    exists to force that plan's review."""
+
+    def test_write_to_own_plan_file_allows(self, plan_review_repo, plan_review_home):
+        """A Write to the fixture's pre-seeded impl-plan.md, with the gate
+        already armed by that file -- /plan-it Step 1 editing an
+        already-drafted plan. See
+        test_write_to_second_new_plan_file_allows_while_first_is_unreviewed
+        for the new-path case."""
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
-                {**write_input(str(deep_target)), "session_id": "session-scope-unresolvable"},
+                {
+                    **write_input(str(plan_review_repo / ".claude" / "plans" / "impl-plan.md")),
+                    "session_id": "session-author-write",
+                },
                 cwd=plan_review_repo,
-                extra_env={"PATH": build_no_realpath_m_path_env(tmp_path)},
+            )
+            == "allow"
+        )
+
+    def test_edit_to_own_plan_file_allows(self, plan_review_repo, plan_review_home):
+        """An Edit to the same plan file a prior Write created -- the
+        /plan-it Step 5 case."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **edit_input(str(plan_review_repo / ".claude" / "plans" / "impl-plan.md")),
+                    "session_id": "session-author-edit",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_multiedit_to_own_plan_file_allows(self, plan_review_repo, plan_review_home):
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **multiedit_input(str(plan_review_repo / ".claude" / "plans" / "impl-plan.md")),
+                    "session_id": "session-author-multiedit",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_edit_allows_under_a_different_session_from_the_one_that_created_the_file(
+        self, plan_review_repo, plan_review_home
+    ):
+        """The restart case: a brand-new process (new session_id, no
+        active-bypass marker anywhere) resuming a half-drafted plan must
+        still be able to edit it. The exemption holds no per-session,
+        per-process, or per-file state, so this holds by construction.
+        Specification test: the exemption never reads SESSION_ID at all, so
+        this is currently redundant with the simpler single-call allow tests
+        above."""
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan)), "session_id": "session-original"},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        ), "precondition: the originating session's own write must allow"
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**edit_input(str(plan)), "session_id": "session-resumed-after-restart"},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_write_to_second_new_plan_file_allows_while_first_is_unreviewed(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A brand-new plan path allows even while a different plan file
+        (impl-plan.md, seeded by the fixture) is active and unreviewed."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / ".claude" / "plans" / "new-plan.md")),
+                    "session_id": "session-second-plan",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    def test_write_to_txt_plan_file_allows(self, plan_review_repo, plan_review_home):
+        """The exemption's other supported suffix -- every other allow test
+        in this class targets .md."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / ".claude" / "plans" / "notes.txt")),
+                    "session_id": "session-txt-plan",
+                },
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_write_to_unreadable_own_plan_file_allows(self, plan_review_repo, plan_review_home):
+        """The exemption block runs before the hash computation, so a Write
+        repairing the plan file itself must allow even while that same file
+        is unreadable -- the self-repair path the deny message elsewhere
+        points the user at."""
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        plan.chmod(0o000)
+        try:
+            decision = run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan)), "session_id": "session-repair-own-plan"},
+                cwd=plan_review_repo,
+            )
+        finally:
+            plan.chmod(0o644)
+        assert decision == "allow"
+
+    def test_symlinked_plan_file_denies_under_forced_realpath_fallback(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """A .claude/plans/x.md symlink whose target lies outside the repo
+        must not be exempted when _lib_realpath_m falls back to its manual
+        ancestor walk (neither native `realpath -m` nor `grealpath` on
+        PATH) -- see TestLibRealpathM's
+        test_forced_fallback_fails_closed_on_dangling_symlink in test_lib.py
+        for the underlying _lib.sh-level regression test."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        symlink_path = plan_review_repo / ".claude" / "plans" / "evil.md"
+        symlink_path.symlink_to(tmp_path / "outside" / "target.py")
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(symlink_path)), "session_id": "session-symlink-fallback"},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
             == "deny"
         )
+
+    def test_agent_reviews_symlink_denies_under_forced_realpath_fallback(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """The agent-reviews/ exemption shares the identical
+        fallback-then-glob-compare pattern as the plan-file exemption above
+        and the same dangling-symlink gap, but had no test of its own --
+        mirrors test_symlinked_plan_file_denies_under_forced_realpath_fallback."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        agent_reviews_dir = plan_review_repo / "agent-reviews"
+        agent_reviews_dir.mkdir()
+        symlink_path = agent_reviews_dir / "evil.md"
+        symlink_path.symlink_to(tmp_path / "outside" / "target.md")
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(symlink_path)), "session_id": "session-agent-reviews-symlink-fallback"},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_non_exempt_write_denies_under_forced_realpath_fallback_with_dangling_ancestor(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """The general repo-boundary check (neither exemption) shares the
+        same dangling-symlink gap when an ANCESTOR of the target, not the
+        target's own leaf, is the dangling symlink -- mirrors
+        test_symlinked_plan_file_denies_under_forced_realpath_fallback but
+        exercises the boundary check's own branch of the gated `if`, not
+        either named exemption's."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        dangling_ancestor = plan_review_repo / "dangling_ancestor"
+        dangling_ancestor.symlink_to(tmp_path / "outside" / "nonexistent-target")
+        target_path = dangling_ancestor / "nested" / "foo.py"
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(target_path)), "session_id": "session-dangling-ancestor-fallback"},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_own_plan_file_allows_under_forced_realpath_fallback(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """The happy path the plan-file-authoring exemption exists to serve,
+        under the same forced-fallback environment as the deny tests above.
+        Only the deny/security case was covered before this test: stock
+        macOS with no Homebrew coreutils lacks both native `realpath -m`
+        and `grealpath`, so this fallback branch is the ordinary path there,
+        not an edge case."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan)), "session_id": "session-own-plan-fallback-allow"},
+                cwd=plan_review_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
+
+    # -- Negative controls: the exemption must not overreach ----------------
+
+    def test_notes_rst_still_denies(self, plan_review_repo, plan_review_home):
+        """A .claude/plans/ file outside the .md/.txt suffix set the gate
+        hashes gets the same treatment as any other unrecognized in-repo
+        file."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / ".claude" / "plans" / "notes.rst")),
+                    "session_id": "session-notes-rst",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_nested_plan_file_still_denies(self, plan_review_repo, plan_review_home):
+        """bash's `case` glob matches `/`, unlike git's `:(glob)`, so a
+        nested .claude/plans/sub/*.md path -- which _lib_active_plan_hash
+        never hashes -- must not be exempted either."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / ".claude" / "plans" / "sub" / "nested.md")),
+                    "session_id": "session-nested-plan",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_non_plan_target_still_denies(self, plan_review_repo, plan_review_home):
+        """The carve-out must not have leaked into an ordinary in-repo write."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / "src" / "foo.py")),
+                    "session_id": "session-non-plan-target",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_top_level_md_outside_plans_dir_still_denies(self, plan_review_repo, plan_review_home):
+        """A .md file at repo root, outside .claude/plans/ entirely, exercises
+        _lib_is_repo_plan_file's `dirname` equality check rather than its
+        suffix match -- every other negative control here differs from the
+        true positive by suffix or depth while staying under .claude/plans/,
+        never by top-level directory alone."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {
+                    **write_input(str(plan_review_repo / "README.md")),
+                    "session_id": "session-top-level-md",
+                },
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_exitplanmode_still_denies(self, plan_review_repo, plan_review_home):
+        """ExitPlanMode carries no file_path, so it never reaches the
+        target-scope block the exemption lives in -- the carve-out must not
+        have leaked into plan presentation."""
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**exitplanmode_input(plan_file_path=""), "session_id": "session-epm-still-denies"},
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_exitplanmode_with_file_path_naming_a_plan_file_still_denies(
+        self, plan_review_repo, plan_review_home
+    ):
+        """Every other ExitPlanMode test in this suite goes through
+        exitplanmode_input(), which never sets tool_input.file_path -- so
+        none of them can detect the explicit
+        `[ "$TOOL_NAME" != "ExitPlanMode" ]` guard on the target-scope block
+        being removed. This hand-crafts a file_path naming a real plan file
+        to pin that guard's own necessity: the harness does not populate
+        file_path for ExitPlanMode today, but the guard must hold even if
+        it did."""
+        plan = plan_review_repo / ".claude" / "plans" / "impl-plan.md"
+        payload = {
+            **exitplanmode_input(plan_file_path=""),
+            "session_id": "session-epm-file-path-guard",
+        }
+        payload["tool_input"]["file_path"] = str(plan)
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                payload,
+                cwd=plan_review_repo,
+            )
+            == "deny"
+        )
+
+    def test_deny_message_names_the_plan_file_exemption(
+        self, plan_review_repo, plan_review_home
+    ):
+        """A non-plan-target deny must not leave the agent concluding the
+        plan itself is unfixable."""
+        reason = run_hook_reason(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {
+                **write_input(str(plan_review_repo / "src" / "foo.py")),
+                "session_id": "session-deny-message",
+            },
+            cwd=plan_review_repo,
+        )
+        assert reason is not None
+        assert "Editing the plan file itself is exempt from this gate" in reason
 
 
 class TestRequirePlanReviewHonorsConfigDir:
@@ -1456,6 +1946,40 @@ class TestRequirePlanReviewCrossWorktree:
                 cwd=sibling,
                 home=plan_review_home,
                 extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_failed_active_plan_files_enumeration_fails_closed(self, tmp_path, plan_review_home):
+        """A `git ls-files`/`git diff` failure inside _lib_active_plan_files
+        must deny end to end, not silently disarm the gate -- this function
+        now backs both the fast-path guard and the hash computation, so a
+        regression that flips its fail-closed polarity would open both call
+        sites at once. Mirrors test_failed_worktree_enumeration_fails_closed
+        above for the sibling git call this hook depends on."""
+        repo = _init_repo_with_plan(tmp_path / "enum-failure-repo")
+
+        real_git = shutil.which("git")
+        assert real_git, "test host must have a real git binary on PATH"
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "ls-files" ]; then exit 1; fi\n'
+            "done\n"
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(repo / "src" / "foo.py")), "session_id": "s"},
+                cwd=repo,
+                home=plan_review_home,
+                extra_env={"PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}"},
             )
             == "deny"
         )

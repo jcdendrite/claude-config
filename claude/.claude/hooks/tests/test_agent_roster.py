@@ -56,7 +56,7 @@ CANARY_AGENTS = sorted(
 NON_REVIEWER_AGENTS = [
     "code-writer.md",           # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
     "Explore.md",               # same-named override of the harness built-in; read-only search, not a reviewer
-    "plan-architect.md",        # non-reviewer planning agent; dispatched by /plan-it Step 5 for design synthesis
+    "plan-architect.md",        # non-reviewer planning agent; design synthesis plus ad hoc Opus consults on explicit ask
     "review-orchestrator.md",   # runs a review skill to completion in a disposable context; returns a summary
 ]
 
@@ -92,6 +92,8 @@ NON_REVIEWER_MODELS = {
 # document's plausibility, not executable behavior the way /code-review's test
 # suite backstops code-writer's diffs. A strategically wrong but well-written
 # design can still read as plausible and clear that review (design-decisions.md §24, §30).
+# Its consult-mode dispatches have no downstream review at all, which strengthens
+# the same xhigh-over-high argument (design-decisions.md §37).
 EXPECTED_EFFORT = {
     "Explore.md": "low",
     "comment-discipline-reviewer.md": "medium",
@@ -555,10 +557,10 @@ class TestNoGateReleaseRosterSync:
     hand at review time, and the second is pinned as a closed exemption set.
 
     One test below guards a tool-absence boundary outside this scope:
-    plan-architect isn't in `_LIB_NO_GATE_RELEASE_AGENTS` (its gate is
-    require-plan-review.sh's Write-deny on `.claude/plans/`, not
-    enforce-marker-script-shape.sh), so it gets no roster-wide coverage from
-    the tests above — its own exact-tools test is its sole guard.
+    plan-architect isn't in `_LIB_NO_GATE_RELEASE_AGENTS` (require-plan-review.sh
+    exempts a write targeting a `.claude/plans/` file and gates other in-repo
+    writes while an unreviewed plan is active), so it gets no roster-wide
+    coverage from the tests above — its own exact-tools test is its sole guard.
     """
 
     def test_roster_members_have_agent_files_or_are_named_builtins(self):

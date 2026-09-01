@@ -13,12 +13,21 @@ The harness runs `claude -p` as a subprocess using your existing Claude Code
 subscription auth. This means:
 
 - **No `ANTHROPIC_API_KEY` required.** Max-plan OAuth auth is used automatically.
-- **No per-token charge** beyond your subscription.
-- **No CI wiring.** Both methods produce a probabilistic model classification,
-  not a deterministic computation. A single-sample binary pass/fail produces a
-  flaky CI signal; the harness treats output as a human-read pass-rate report
-  (`triggered 7/10`), not a gate. Running it in CI would also require
-  `--dangerously-skip-permissions` on a public repo — a security footgun.
+- **No per-token charge** beyond your subscription. `claude -p` accepts an
+  `ANTHROPIC_API_KEY` and would authenticate fine in CI — cost, not
+  reachability, is the actual reason this stays local:
+  - Every sample is a full headless session.
+  - Cost scales as K samples × cases per skill.
+  - `disposition-fidelity` adds about four `claude -p` calls per sample on
+    top of that (see "Runtime cost" below).
+  - All of it bills per token, off-subscription.
+- **No CI wiring.** Every method (see [Measurement
+  methods](#measurement-methods)) produces a probabilistic model
+  classification, not a deterministic computation. A single-sample binary
+  pass/fail produces a flaky CI signal. The harness treats output as a
+  human-read pass-rate report (`triggered 7/10`), not a gate. Running it in
+  CI would also require `--dangerously-skip-permissions` on a public repo —
+  a security footgun.
 
 This rationale applies equally to `measure_subagent_model_resolution.py` (see
 [below](#subagent-model-resolution-experiment)) — same subscription-auth

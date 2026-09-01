@@ -5,7 +5,7 @@
 # nested-dispatch gap require-review-orchestrator-bash.sh's own Bash
 # restriction leaves open (which agent may be dispatched).
 # This is not a guarantee that every allowed target's OWN Bash restriction is
-# airtight — see docs/design-decisions.md §31 for the residual it does not
+# airtight — see docs/design-decisions.md §39 for the residual it does not
 # close.
 # tool_name for sub-agent spawning is "Agent" (verified from session
 # transcripts — see require-routing-read.sh, which gates the same tool).

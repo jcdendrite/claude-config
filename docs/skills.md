@@ -171,7 +171,7 @@ Stowed skills from claude-config use a small fraction of the skill-listing budge
 
 `.claude/settings.local.json` overrides `settings.json` at the same (repository) scope, so this raise applies only to that one project without forking the stowed config — there is no untracked settings file at the user's home config directory to raise it globally in. Reference: [Claude Code settings — skillListingBudgetFraction](https://code.claude.com/docs/en/settings).
 
-Tools have an analogous per-tool lever — `disableArtifact`/`disableWorkflows` — for the two largest eagerly-loaded built-in tool schemas, though the right place to set them is different: see `design-decisions.md` §28.
+Tools have an analogous per-tool lever — `disableArtifact`/`disableWorkflows` — for the two largest eagerly-loaded built-in tool schemas, both disabled by default in the shared `settings.json`: see `design-decisions.md` §31.
 
 ## Project-specific layers
 

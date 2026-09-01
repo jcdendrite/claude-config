@@ -4,11 +4,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
@@ -21,6 +22,8 @@ from helpers import (
     run_hook,
     run_skill_command,
 )
+
+from .conftest import _seed_session
 
 READY_FOR_REVIEW_HOOK = HOOKS_DIR / "require-ready-for-review.sh"
 READY_FOR_REVIEW_SKILL = SKILLS_DIR / "ready-for-review" / "SKILL.md"
@@ -381,6 +384,53 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
+    @pytest.mark.timing
+    def test_current_head_git_timeout_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path
+    ):
+        """The CURRENT_HEAD `git rev-parse HEAD` call's _lib_capped exit
+        status must fail closed on timeout. This mirrors how an unresolvable
+        HEAD already denies per the completion-marker check's own
+        fail-closed comment. A stalled filesystem must not hang the gate
+        indefinitely. Seeds a completion marker for the branch's real HEAD,
+        so an uncapped, fully-resolved CURRENT_HEAD would match it and
+        allow. That seeding is what makes `decision == "deny"` actually
+        discriminate a working cap (empty CURRENT_HEAD, no match) from a
+        broken one, rather than passing on every path because no marker
+        exists at all."""
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        sid = "s"
+        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+
+        fake_git = tmp_path / "git"
+        fake_git.write_text(
+            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        decision = run_hook(
+            READY_FOR_REVIEW_HOOK,
+            bash_input("git push origin feature", session_id=sid),
+            cwd=repo_on_feature_branch,
+            extra_env=env,
+        )
+        elapsed = time.monotonic() - start
+        assert decision == "deny"
+        assert elapsed > 4, (
+            f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s "
+            f"if it does not), took only {elapsed:.1f}s"
+        )
+
     def test_other_sessions_completion_marker_authorizes_at_same_head(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
@@ -614,6 +664,65 @@ class TestRequireReadyForReview:
                 bash_input(
                     "git push --dry-run && gh pr create", session_id="s"
                 ),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "eval git push --dry-run && gh pr create",
+            "GIT_DIR=/tmp/example.git git push --dry-run && gh pr create",
+        ],
+    )
+    def test_wrapped_dry_run_chained_bypass_matches_known_gap(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
+    ):
+        """A *wrapped* invocation of the --dry-run-chained bypass above.
+
+        Proves the wrapped case resolves to the same allow outcome as the
+        plain-literal case. This fixture uses a real repo with no
+        completion marker. A broken wrapped-shape tokenizer would
+        therefore fall through to the gh-pr-create arm's marker check and
+        produce deny, not allow. That makes this test genuinely
+        discriminating, unlike a bare non-git tmp_path cwd, where the
+        hook's "not a git repo" fallback already allows regardless of
+        whether the tokenizer detects anything.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/usr/bin/gh pr create",
+            "/usr/bin/gh pr ready",
+        ],
+    )
+    def test_full_path_gh_invocation_bypasses_detection(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A full-path `gh` invocation is a documented gap (see hook
+        header). Both arms detect via plain-text regex on the literal
+        `gh pr ready`/`gh pr create` tokens. `/usr/bin/gh` doesn't match
+        because `gh` there isn't preceded by whitespace or start-of-string.
+
+        fake_gh_pr_exists (a real open PR) and no completion marker are the
+        strictest available inputs: if detection ever started matching this
+        shape, the same command would deny here instead of allow. Proves
+        this gap is risk-neutral by test, not only by header prose.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
                 cwd=repo_on_feature_branch,
             )
             == "allow"

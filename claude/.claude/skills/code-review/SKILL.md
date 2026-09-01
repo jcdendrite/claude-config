@@ -28,6 +28,24 @@ If a project-specific layer exists for this skill, load it now. Glob for `.claud
 
 Before forming any ripple judgment in Step 1 or the checklist, enumerate every row in the Change-type table (under *Ripple effect triage*) that matches the diff. Hold the list in working memory through the rest of the review — each row is an anchor the spawn decision must address. This step exists because the table is the institutional memory; the parent's first-pass judgment is not. Form judgment *against* the table, not in lieu of it. For compound diffs that match multiple rows, narrow the diff scope per spawn — pass each specialist only the file(s) within their lane, not the full diff, so their findings stay in-scope.
 
+<!-- SCOPE_RULE:code-review-staged-diff-only start -->
+When the diff under review is the currently-staged diff and `HEAD` is not the default branch, every spawned row's responsibility is bounded to that diff. The default branch is resolved via the same mechanism `require-ready-for-review.sh` uses: `git symbolic-ref --quiet refs/remotes/origin/HEAD`, falling back to checking `main`/`master`/`develop` as candidates only when that ref is unset. A spawn's exhaustive-enumeration duty covers only the boundary. <!-- SCOPE_RULE:code-review-causal-reach start -->A defect outside the boundary that the change causes, activates, or newly reaches stays in scope for that spawn's flagging duty.<!-- SCOPE_RULE:code-review-causal-reach end --> The boundary is passed as file paths with added/modified line ranges, not a ref expression, because not every reviewer carries `Bash`. This narrows only speculative, undirected search for unrelated defects — it never suppresses disclosure of a defect a spawn already noticed during the full-file read required elsewhere in this skill. Two exceptions stay in scope regardless of the boundary:
+
+- A matched Change-type row's own directed causal-reach instruction (e.g. "verify all consumers," "trace all auth paths").
+- Checklist item 14's duty to always flag a pre-existing issue you notice, which is unconditional and unaffected by this rule.
+
+Every other context enumerates and is responsible for the full diff, unnarrowed:
+
+- The cumulative PR-vs-base pass.
+- A presentation-path review.
+- An ad-hoc review.
+- A commit to the default branch.
+
+These are illustrative examples of contexts that typically fail the test above, not a separate trigger-based rule. The discriminator is always whether the diff actually under review is exactly `git diff --cached` on a `HEAD` that is not the default branch, not which of these triggers fired.
+
+The row <!-- SCOPE_EXEMPT_ROW start -->Adds or modifies a comment or durable-doc prose beyond a hygiene tweak (code comments, docstrings, `REFERENCES.md`, doc files, README sections, skill/agent bodies)<!-- SCOPE_EXEMPT_ROW end --> is additionally match-narrowed on top of this: it does not spawn at all when the boundary carries no comment/durable-doc prose.
+<!-- SCOPE_RULE:code-review-staged-diff-only end -->
+
 ## Step 1 — Implementation-fitness gate
 
 Before reviewing for gaps, answer: **is the implementation appropriately sized for what the change needed to accomplish?** Gap-finding on an over-elaborate change elaborates it further, and the checklist won't surface "the whole implementation is the wrong shape."
@@ -209,6 +227,8 @@ Follow with a mandatory **Spawn decisions:** line. For every Change-type table r
 
 When no Change-type rows match the diff, write: *"Spawn decisions: no Change-type rows matched the diff."* This makes the absence affirmative, not silent. Empty rationale is the under-spawn failure mode this format closes; visible rationale is reviewable.
 
+The **Spawn decisions:** line also states whether the staged-diff responsibility boundary applied to this invocation, with a short tag naming the specific reason it did or didn't — e.g., `scope: staged-diff (narrowed)` when it applied, or `scope: cumulative diff (unnarrowed — RFR cumulative pass)` / `scope: cumulative diff (unnarrowed — default-branch guard)` when it didn't — not a restatement of the whole rule.
+
 **Project-layer scope:** the mandatory Spawn decisions format is base-skill-only. Project-layer skills (`code-review-*/SKILL.md`, loaded at Step 0.5) compose by extending checklists — they do not override the output format. A project layer that wants to add fields should do so via an additive section, not by replacing the base format.
 
 For each finding, state:
@@ -254,13 +274,13 @@ The Change type column keys on what the change *does* for an operator or consume
 | Adds or changes CDC / change-stream / ETL/ELT pipeline / warehouse ingestion connector | `staff-data-engineer` (transport, schema-drift, observability) + `staff-platform-engineer` (operational footprint) |
 | Modifies CI/CD pipelines or deploy config | `staff-platform-engineer` + `staff-backend-engineer` — verify pipelines and environment consistency |
 | Adds or modifies a comment or durable-doc prose beyond a hygiene tweak (code comments, docstrings, `REFERENCES.md`, doc files, README sections, skill/agent bodies) | `comment-discipline-reviewer` — enumerate every site violating CLAUDE.md §Code Comments, Documentation, and Prose (comment verbosity, multi-fact comment structure, wrong-altitude prose, PR-defined terminology, "used to be X" framing, durable-doc self-test failures); Step 1.5's inline "Non-durable comment" tripwire still runs unconditionally regardless of this spawn |
-| Adds or modifies a skill, agent, instruction-file rule, or hook | **Invoke** (via the Skill tool — these are skills, not agents; do not spawn them) `skill-review`, `agent-review`, `ai-instruction-and-memory-files`, or `claude-hook-review`, per the dispatcher (Domain: Claude Code config). **Separately, spawn** a `staff-*` agent only when the edit demonstrably changes the *output* or *decision* that lane's specialist would review — not merely because the lane's name appears in the edited rule (e.g., a rule change that alters when `staff-backend-engineer` is consulted → spawn `staff-backend-engineer`; a typo or formatting fix in the same rule → do not spawn). For substantive routing-table edits specifically, defer to the *Reshapes reviewer ownership* row below, which has the precise pre/post-edit-union spawn rule. |
+| Adds or modifies a skill, agent, instruction-file rule, or hook | **Invoke** (via the Skill tool — these are skills, not agents; do not spawn them) `skill-review`, `agent-review`, `ai-instruction-and-memory-files`, or `claude-hook-review`, per the dispatcher (Domain: Claude Code config). **Separately, spawn** a `staff-*` agent only when the edit demonstrably changes the *output* or *decision* that lane's specialist would review — not merely because the lane's name appears in the edited rule (e.g., a rule change that alters when `staff-backend-engineer` is consulted → spawn `staff-backend-engineer`; a typo or formatting fix in the same rule → do not spawn). Apply that test to every lane the edited artifact governs, not only lanes whose own files appear in the diff: an agent file left untouched while the skill governing its behavior changed is still in scope. For substantive routing-table edits specifically, defer to the *Reshapes reviewer ownership* row below, which has the precise pre/post-edit-union spawn rule. |
 | Changes runtime config (env vars, secrets, feature flags) | `staff-platform-engineer` + `ciso-reviewer` — verify config is consistent across environments, check for leaked secrets |
 | Reshapes reviewer ownership (substantive edits to plan-review/code-review skill routing tables, or scope language in `agents/*.md`) | Spawn every persona named in the pre- or post-edit table — each evaluates whether their row (or its removal) is accurate, scoped, and not bleeding into another lane. The pre/post union ensures a row deletion still spawns the affected persona. For an `agents/*.md` edit, spawn the edited persona plus their Item-ownership co-owners. Skip whitespace / typo / copy-edit-only diffs. |
 
 **Invalid skip rationales.** These look like the DEFER criteria below but apply to a different decision — the spawn-dispatch step, not the finding-disposition step. They are five instances of one class — no rationale asserting that non-specialist scrutiny substitutes for the dispatch is valid, whether or not it matches the wording below verbatim. Do not use any of them, or a paraphrase of one, to skip a matched row:
 
-- **"Prior reviewer covered this."** — Prior spawns covered prior diffs; the current `/code-review` runs against the current staged diff. If prior findings are still relevant, pass them to the new spawn as prior context — do not substitute for the spawn.
+- **"Prior reviewer covered this."** — Prior spawns covered prior diffs; the current `/code-review` runs against the current staged diff. If prior findings are still relevant, pass them to the new spawn as prior context — do not substitute for the spawn. The staged-diff responsibility boundary above changes what a spawned row is responsible for flagging, never whether it is spawned.
 - **"Self-review sufficient."** — The orchestrator's self-review supplements specialist depth — it does not replace it.
 - **"Verified inline."** — Inline orchestrator verification is the generalist read the spawn exists to escalate from, not a substitute for specialist scrutiny.
 - **"New helper, not a modification."** — `Modifies shared utilities` covers additions to and extensions of the shared module that introduce new caller dependencies — not only edits to existing utility files.
@@ -405,7 +425,15 @@ This writes the hash of the currently staged diff into `<config-dir>/code-review
 
 Run the command standalone, or chained only as `marker.sh write code-review && git commit …` — the invocation-shape gate denies every other chain tail. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
-For a multi-line message use `git commit -F <file>` (not `-m` with a heredoc or command substitution, which the invocation-shape gate rejects), and keep that file outside any UUID-shaped path — e.g. not the session scratchpad — since the redaction gate's long-hex-identifier check denies a `-F` argument pointing there.
+**Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the gates, which resolve the argument statically and fail closed on it.
+
+Never author the message any of these ways:
+
+- **A shell heredoc.** An unquoted `<<EOF` parses embedded backticks and `$(...)` as shell substitution before either gate ever sees the content — use the `Write` tool instead.
+- **`-F` pointed at `-`, `/dev/stdin`, `/dev/fd/*`, or any other pseudo-file.** Both the PII gate and the redaction gate read the `-F` file before git runs; neither can read the stdin of a process that hasn't started, so a pseudo-file source is denied outright rather than scanned.
+- **`-m "$(cat …)"` command substitution.** The gates scan only the literal command string, so the real message would reach the commit unscanned.
+
+Keep the file out of `$HOME` and out of any UUID-shaped or 32-plus-hex-character path — e.g. not the session scratchpad. The redaction gate scans the commit command string itself. Its home-rooted-path and long-hex-identifier detectors both match on the `-F` argument.
 
 **Do NOT write the marker if:**
 

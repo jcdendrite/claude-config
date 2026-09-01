@@ -15,7 +15,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import (
+from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
+
+from .conftest import (
     _agent_use,
     _asst,
     _audit_routing_args,
@@ -37,7 +39,6 @@ from conftest import (
     _write_subagent_jsonl,
     _write_use,
 )
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -380,6 +381,77 @@ class TestHelpers:
         with pytest.raises(argparse.ArgumentTypeError):
             _mod._iso_date("garbage")
 
+    def test_strip_task_notifications_multiline_envelope_removed(self):
+        text = "<task-notification>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"
+        assert _mod._strip_task_notifications(text) == " "
+
+    def test_strip_task_notifications_two_envelopes_both_removed(self):
+        text = "<task-notification>first</task-notification> and <task-notification>second</task-notification>"
+        assert _mod._strip_task_notifications(text) == "  and  "
+
+    def test_strip_task_notifications_adjacent_envelopes_both_removed(self):
+        text = "<task-notification>a</task-notification><task-notification>b</task-notification>"
+        assert _mod._strip_task_notifications(text) == "  "
+
+    def test_strip_task_notifications_envelope_free_string_unchanged(self):
+        text = "just a plain user prompt with no envelope"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_does_not_weld_words_across_envelope_boundary(self):
+        """Single-space substitution keeps 'try' and 'again' separated across a stripped envelope boundary."""
+        text = "...try <task-notification>still failing</task-notification>again..."
+        result = _mod._strip_task_notifications(text)
+        assert "try again" not in result
+        assert result == "...try  again..."
+
+    def test_strip_task_notifications_unterminated_opener_left_in_place(self):
+        text = "<task-notification><summary>no closing tag here"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_unterminated_opener_preserves_trailing_turn_content(self):
+        text = "<task-notification><summary>no closing tag here" + "\nuser: please retry the deploy"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_orphan_closer_with_no_opener_left_in_place(self):
+        text = "no opener here</task-notification>"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_orphan_closer_adjacent_to_real_envelope(self):
+        """A match requires the opener literal first, so the stray closer with no preceding
+        opener is inert. Only the well-formed envelope after it is stripped to a single space."""
+        text = "stray</task-notification> then <task-notification><summary>real</summary></task-notification> after"
+        assert _mod._strip_task_notifications(text) == "stray</task-notification> then   after"
+
+    def test_strip_task_notifications_nested_self_quoting_stops_at_first_closer(self):
+        """A `<summary>` field quotes a full envelope inline. The non-greedy match stops at the
+        first `</task-notification>` (the inner envelope's own closer), leaving the outer envelope's
+        closing tags dangling in the remainder."""
+        text = (
+            "<task-notification><summary>Sample record: "
+            "<task-notification><summary>inner</summary></task-notification>"
+            "</summary></task-notification>"
+        )
+        assert _mod._strip_task_notifications(text) == " </summary></task-notification>"
+
+    def test_strip_task_notifications_preserves_non_ascii_text_around_envelope(self):
+        text = (
+            "café 🎉 —before "
+            "<task-notification><summary>結果: café</summary></task-notification>"
+            " after— 北京 😀"
+        )
+        result = _mod._strip_task_notifications(text)
+        assert result == "café 🎉 —before   after— 北京 😀"
+
+    def test_strip_task_notifications_empty_string_unchanged(self):
+        assert _mod._strip_task_notifications("") == ""
+
+    def test_strip_task_notifications_case_sensitive_uppercase_unchanged(self):
+        """Case-sensitive match is deliberate: an uppercase-tagged string is left in
+        place rather than trading a hypothetical miss for a real over-strip of
+        user-typed text."""
+        text = "<TASK-NOTIFICATION><summary>shout-cased</summary></TASK-NOTIFICATION>"
+        assert _mod._strip_task_notifications(text) == text
+
 
 class TestParseSinceNdArg:
     """The shared --since Nd parser behind cmd_audit_routing, _cost_report,
@@ -405,6 +477,37 @@ class TestParseSinceNdArg:
             _mod._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
         assert exc_info.value.code == 1
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
+
+
+class TestParseAbsoluteWindowArgs:
+    """The shared inclusive-day absolute --since/--until DATE parser extracted
+    from cmd_user_input/cmd_review_trace/cmd_judgment_pair/cmd_subagent_mix's
+    identical six-line conversion."""
+
+    def test_default_attrs_parse_since_and_until_as_inclusive_day_bounds(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since="2026-05-01", until="2026-05-03"), "review-trace",
+        )
+        assert since_ts == _mod._parse_ts("2026-05-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-05-03T00:00:00Z") + 86400
+
+    def test_absent_since_and_until_returns_none_for_both(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since=None, until=None), "review-trace",
+        )
+        assert since_ts is None
+        assert until_ts is None
+
+    def test_parameterized_attrs_read_subagent_mix_since_date_until_date(self):
+        """cmd_subagent_mix's own dest names (since_date/until_date) resolve
+        through the same helper as the default since/until attrs -- the
+        parameterized call cmd_subagent_mix's own call site uses."""
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since_date="2026-07-01", until_date="2026-07-02"), "subagent-mix",
+            since_attr="since_date", until_attr="until_date",
+        )
+        assert since_ts == _mod._parse_ts("2026-07-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-07-02T00:00:00Z") + 86400
 
 
 # ---------------------------------------------------------------------------
@@ -2226,13 +2329,7 @@ def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | N
     """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
     boundary conversion, so a test calling _review_trace_session_events directly
     passes boundaries in the same form the CLI itself would compute."""
-    since_ts = _mod._parse_ts(f"{since}T00:00:00Z") if since else None
-    until_epoch = None
-    if until:
-        day_start = _mod._parse_ts(f"{until}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
-    return since_ts, until_epoch
+    return _mod._parse_absolute_window_args(argparse.Namespace(since=since, until=until), "review-trace")
 
 
 class TestDropDenialCommandFlagValues:
@@ -7163,7 +7260,7 @@ def _reviewer_dispatch_records(
     ]
     _write_subagent_dispatch(
         proj, session_id, f"agent-{tool_id}", tool_id,
-        [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": verdict_text}])],
+        [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": verdict_text}])],
         agent_type=subagent_type,
     )
     return records
@@ -7247,7 +7344,20 @@ class TestCostLedgerReadMode:
         )
         assert _mod._format_cost_ledger_read_row(row) == (
             "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
-            "        7      -3.2pp  rolled out F3 fix"
+            "        7       -3.2pp  rolled out F3 fix"
+        )
+
+    def test_format_read_row_renders_insufficient_sentinel_in_gap_column(self):
+        """The insufficient sentinel fills the widened 12-char GapPP column
+        as a single whitespace-delimited token, same as a numeric gap."""
+        row = _cost_ledger_row(
+            week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
+            ge200k_pct=12.3, denials=7, reviewer_gap_pp=_mod._REVIEWER_YIELD_INSUFFICIENT,
+            note="rolled out F3 fix",
+        )
+        assert _mod._format_cost_ledger_read_row(row) == (
+            "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
+            "        7 insufficient  rolled out F3 fix"
         )
 
     def test_read_mode_still_returns_union_with_two_declared_roots(
@@ -7298,6 +7408,16 @@ class TestCostLedgerSerializationRoundTrip:
         round-trip through the markdown line format unchanged."""
         row = _cost_ledger_row(usd=0.0, context_pct=0.0, opus_pct=0.0, ge200k_pct=0.0,
                                 denials=0, reviewer_gap_pp=None, note="")
+        line = _mod._format_cost_ledger_row(row)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
+        assert rows == [row]
+
+    def test_insufficient_gap_sentinel_round_trips(self):
+        """The below-floor insufficient sentinel round-trips through the
+        markdown line format unchanged, distinct from an unmeasured (None)
+        gap -- both are non-numeric, but only one has a nonzero Active
+        denominator on either side."""
+        row = _cost_ledger_row(reviewer_gap_pp=_mod._REVIEWER_YIELD_INSUFFICIENT)
         line = _mod._format_cost_ledger_row(row)
         _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
@@ -7376,6 +7496,29 @@ class TestCostLedgerParserHostility:
         with pytest.raises(_mod._CostLedgerParseError, match="malformed note"):
             _mod._parse_cost_ledger_file_text(self._table(row))
 
+    def test_gap_sentinel_case_variant_rejected(self):
+        """A case-variant near-miss of the "insufficient" sentinel doesn't
+        silently match it -- it falls through to the trailing-'pp' check and
+        is rejected like any other malformed value."""
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | Insufficient |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected a trailing 'pp'"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_missing_trailing_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | 5.0 |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected a trailing 'pp'"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_non_finite_after_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | nanpp |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-finite reviewer_gap_pp"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_empty_prefix_before_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | pp |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-numeric reviewer_gap_pp"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
     def test_unresolved_merge_conflict_marker_rejected(self):
         text = (
             _mod._COST_LEDGER_HEADER_LINE + "\n"
@@ -7388,6 +7531,46 @@ class TestCostLedgerParserHostility:
         )
         with pytest.raises(_mod._CostLedgerParseError, match="merge-conflict marker"):
             _mod._parse_cost_ledger_file_text(text)
+
+
+class TestReviewerGapPPFloor:
+    """_reviewer_gap_pp's under-floor guard, exercised directly on
+    agg2-shaped dicts rather than through a corpus fixture."""
+
+    @staticmethod
+    def _agg2(*, findings_active: int, findings_edited: int, zero_active: int, zero_edited: int) -> dict:
+        return {
+            ("staff-backend-engineer", _mod._REVIEWER_VERDICT_FINDINGS_FOUND): {
+                "cited": findings_active, "active": findings_active, "edited": findings_edited,
+            },
+            ("staff-backend-engineer", _mod._REVIEWER_VERDICT_ZERO_FINDING): {
+                "cited": zero_active, "active": zero_active, "edited": zero_edited,
+            },
+        }
+
+    def test_both_arms_below_floor_returns_insufficient(self):
+        agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=9, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_both_arms_at_floor_returns_a_numeric_gap(self):
+        agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=10, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == pytest.approx(100.0)
+
+    def test_zero_finding_arm_under_floor_returns_insufficient_even_when_findings_arm_clears_it(self):
+        agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=9, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_findings_arm_under_floor_returns_insufficient_even_when_zero_arm_clears_it(self):
+        agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=10, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_above_floor(self):
+        agg2 = self._agg2(findings_active=20, findings_edited=10, zero_active=0, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) is None
+
+    def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_below_floor(self):
+        agg2 = self._agg2(findings_active=5, findings_edited=2, zero_active=0, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) is None
 
 
 class TestCostLedgerRecordParity:
@@ -7404,18 +7587,25 @@ class TestCostLedgerRecordParity:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
             _hook_deny("require-code-review", ts="2026-06-02T10:00:00.000Z"),
         ]
-        records += _reviewer_dispatch_records(
-            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
-            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
-        )
-        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
-                              content=[_edit_use("ef1", path="src/foo.py")]))
-        records += _reviewer_dispatch_records(
-            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
-            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
-        )
-        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
-                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        # Below _REVIEWER_YIELD_ACTIVE_FLOOR (10) dispatches per arm, reviewer_gap_pp
+        # reports "insufficient" instead of a numeric gap -- this fixture uses ten
+        # per arm to clear the floor.
+        for i in range(10):
+            records += _reviewer_dispatch_records(
+                proj, session_id, f"f{i}", "staff-backend-engineer",
+                f"Found 1 issue in src/foo{i}.py needing a fix",
+                dispatch_ts=f"2026-06-01T09:{i:02d}:00.000Z", result_ts=f"2026-06-01T09:{i:02d}:30.000Z",
+            )
+            records.append(_asst("claude-opus-4-7", ts=f"2026-06-01T09:{i:02d}:40.000Z",
+                                  content=[_edit_use(f"ef{i}", path=f"src/foo{i}.py")]))
+        for i in range(10):
+            records += _reviewer_dispatch_records(
+                proj, session_id, f"z{i}", "staff-backend-engineer",
+                f"Found 0 issues in src/other{i}.py after review",
+                dispatch_ts=f"2026-06-01T10:{i:02d}:00.000Z", result_ts=f"2026-06-01T10:{i:02d}:30.000Z",
+            )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T10:15:00.000Z",
+                              content=[_edit_use("ez-final", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
 
         _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
@@ -7452,10 +7642,42 @@ class TestCostLedgerRecordParity:
         assert row["denials"] == sum(deny_data["hook_counts"].values())
         assert row["denials"] == 1
 
-        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
         assert row["reviewer_gap_pp"] == pytest.approx(_mod._reviewer_gap_pp(reviewer_data["agg2"]))
         assert row["reviewer_gap_pp"] == pytest.approx(100.0)  # findings-found 100% edited vs. zero-finding 0%
+
+    def test_record_row_carries_insufficient_sentinel_under_the_active_floor(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """A week with fewer than _REVIEWER_YIELD_ACTIVE_FLOOR Active
+        dispatches on either arm records the "insufficient" sentinel, not a
+        percentage-point figure computed from an underpowered sample."""
+        proj = fake_projects
+        session_id = "sess-parity-small"
+        records = [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ]
+        records += _reviewer_dispatch_records(
+            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
+            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
+                              content=[_edit_use("ef1", path="src/foo.py")]))
+        records += _reviewer_dispatch_records(
+            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
+            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
+                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        capsys.readouterr()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert rows[0]["reviewer_gap_pp"] == _mod._REVIEWER_YIELD_INSUFFICIENT
 
     def test_denial_at_next_weeks_monday_boundary_excluded_from_this_weeks_row(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
@@ -10093,6 +10315,45 @@ class TestCmdStruggle:
             f"'stale cache' should not register as a struggle signal; branch appeared in output: {out!r}"
         )
 
+    def test_task_notification_envelope_produces_no_struggle_signal(self, fake_projects, capsys):
+        """A forwarded <task-notification> record whose <summary> contains a struggle
+        phrase is the subagent's own prose, not human input — it must not register."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "<task-notification><status>completed</status>"
+                "<summary>Background task still failing, incorrect output</summary>"
+                "</task-notification>",
+                branch="feat",
+            ),
+        ])
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
+        _mod.cmd_struggle(args)
+        out = capsys.readouterr().out
+        assert "feat" not in out, (
+            f"a task-notification's forwarded <summary> should not register as a struggle signal; got {out!r}"
+        )
+
+    def test_task_notification_mixed_turn_struggle_phrase_outside_envelope_still_counts(self, fake_projects, capsys):
+        """A struggle phrase sitting outside the envelope in the same turn still counts,
+        even though the envelope in that same turn is excluded from matching."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "that's incorrect. also: "
+                "<task-notification><summary>still failing</summary></task-notification>",
+                branch="feat",
+            ),
+        ])
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
+        _mod.cmd_struggle(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Opus", row_contains="feat")
+        total_signals = sum(int(cols[k]) for k in ["Opus", "Sonnet", "Haiku", "Other", "Unknown"])
+        assert total_signals == 1, (
+            f"expected exactly 1 struggle signal (from 'incorrect' outside the envelope); got cols={cols}"
+        )
+
     @pytest.mark.parametrize(
         "phrase,text",
         [
@@ -10185,6 +10446,64 @@ class TestCmdUserInput:
             '**[? · EXPLICIT_CORRECTION · sonnet]** (matched: "hallucinat")\n'
             "~~~text\nI think you hallucinated about this\n~~~"
         ) in out
+
+    def test_task_notification_not_explicit_correction_but_text_displayed_verbatim(self, fake_projects, capsys):
+        """A forwarded <task-notification> whose <summary> contains a struggle phrase is
+        not classified EXPLICIT_CORRECTION, since it's subagent prose rather than human
+        input. The ~~~text block still renders the full unstripped envelope. Display and
+        scoring are separate copies of the same string."""
+        envelope = (
+            "<task-notification><status>completed</status>"
+            "<summary>Background command still failing, incorrect output</summary>"
+            "</task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(envelope, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "EXPLICIT_CORRECTION" not in out
+        assert f"~~~text\n{envelope}\n~~~" in out
+
+    def test_task_notification_followup_leaves_fresh_prompt_and_followup_counts_unchanged(self, fake_projects, capsys):
+        """A task-notification record still counts as one fresh prompt and one followup,
+        same as any other non-matching FOLLOWUP. The phrase-matching exclusion affects
+        only EXPLICIT_CORRECTION classification, not the fresh-prompt/followup tally."""
+        envelope = (
+            "<task-notification><status>completed</status>"
+            "<summary>Background command still failing, incorrect output</summary>"
+            "</task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(envelope, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "- Fresh prompts: 2" in out
+        assert "- Followups (quiet redirects): 1" in out
+
+    def test_task_notification_mixed_turn_still_explicit_correction_on_outside_phrase(self, fake_projects, capsys):
+        """A struggle phrase outside the envelope in the same turn still classifies
+        EXPLICIT_CORRECTION, even though the envelope portion of that turn is excluded."""
+        text = (
+            "that's incorrect. also: <task-notification>"
+            "<summary>still failing</summary></task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(text, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert '**[? · EXPLICIT_CORRECTION · sonnet]** (matched: "incorrect")' in out
 
     def test_corrections_only_excludes_initial(self, fake_projects, capsys):
         """--corrections-only drops INITIAL prompts but keeps FOLLOWUP/EXPLICIT_CORRECTION."""
@@ -12504,6 +12823,52 @@ class TestFrictionCount:
         signals = json.loads(capsys.readouterr().out)
         assert signals["struggle_turns"] == 1
 
+    def test_task_notification_only_transcript_zero_struggle_turns(self, fake_projects, capsys):
+        """A transcript containing only a forwarded <task-notification> record whose
+        <summary> has a struggle phrase counts zero struggle turns."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "<task-notification><summary>still failing, try again</summary></task-notification>",
+                branch="feat",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["struggle_turns"] == 0
+
+    def test_task_notification_mixed_turn_still_counts_outside_phrase(self, fake_projects, capsys):
+        """A struggle phrase outside the envelope in the same turn still counts one
+        struggle turn, even though the envelope portion is excluded from matching."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "no not that, try again. also: "
+                "<task-notification><summary>still failing</summary></task-notification>",
+                branch="feat",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["struggle_turns"] == 1
+
+    def test_unterminated_envelope_with_embedded_phrase_still_counts(self, fake_projects, capsys):
+        """A struggle phrase inside an envelope missing its closing tag still counts: the
+        unterminated opener is left in place rather than swallowing the rest of the turn."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "<task-notification><summary>still failing, try again",
+                branch="feat",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["struggle_turns"] == 1
+
     def test_isSidechain_records_skipped(self, fake_projects, capsys):
         """isSidechain denial/failed-test/struggle records are excluded from every signal."""
         path = fake_projects / "sess.jsonl"
@@ -14607,6 +14972,122 @@ class TestParseNudgeLogEntries:
              "window": 1000000, "event": "PostToolBatch", "action": "block"},
         ]
 
+    def test_ignored_and_skills_fields_are_captured_when_present(self, tmp_path):
+        """A telemetry-era nudged line carries ignored=/skills= -- captured
+        as typed fields (ignored as int, skills as the raw comma-joined
+        string), the same optional-key style action= already uses."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch "
+            "ignored=3 skills=handoff,memory-skill action=block\n"
+        )
+        assert _mod._parse_nudge_log_entries(log_path) == [
+            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
+             "window": 1000000, "event": "PostToolBatch", "action": "block",
+             "ignored": 3, "skills": "handoff,memory-skill"},
+        ]
+
+    def test_pre_telemetry_line_parses_without_ignored_or_skills_keys(self, tmp_path):
+        """A `nudged` line written before the ignored=/skills= telemetry
+        addition carries neither field -- the returned dict has no
+        "ignored" or "skills" key at all, distinguishable from a live
+        session with nothing active (skills=-, ignored=0) rather than
+        conflated with it."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        assert "ignored" not in entries[0]
+        assert "skills" not in entries[0]
+
+    def test_malformed_ignored_field_drops_only_that_key(self, tmp_path):
+        """A non-integer ignored= value doesn't discard the whole entry --
+        only the "ignored" key is left unset, matching how a pre-telemetry
+        line (missing the key entirely) is already handled. skills= is
+        unaffected, confirming the malformed field is isolated from its
+        sibling."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop "
+            "ignored=not-an-int skills=-\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        assert len(entries) == 1
+        assert "ignored" not in entries[0]
+        assert entries[0]["skills"] == "-"
+
+
+class TestParseNudgeLogEntriesRealHookLineContract:
+    """Fires the real nudge-handoff-near-context-cap.sh hook and feeds its
+    emitted `nudged` line straight into _parse_nudge_log_entries, rather than
+    a hand-written fixture line on each side -- a field-ordering or delimiter
+    drift between the hook's printf format and this parser could otherwise
+    pass both suites while breaking the real pipeline."""
+
+    _NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
+
+    @staticmethod
+    def _usage_record(total: int, *, model: str = "claude-sonnet-5") -> dict:
+        """An assistant record whose four usage fields sum to `total`,
+        matching nudge-handoff-near-context-cap.sh's own ESTIMATE
+        computation (cache_read + cache_creation + input + output tokens)."""
+        rec = _asst(model)
+        rec["message"]["usage"] = {
+            "cache_read_input_tokens": total,
+            "cache_creation_input_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        return rec
+
+    def _fire(self, tmp_path: Path, transcript: Path, env: dict) -> subprocess.CompletedProcess:
+        payload = {
+            "session_id": "contract-session",
+            "transcript_path": str(transcript),
+            "hook_event_name": "PostToolBatch",
+        }
+        return subprocess.run(
+            [str(self._NUDGE_HOOK)], input=json.dumps(payload),
+            capture_output=True, text=True, env=env, check=False,
+        )
+
+    def test_real_hard_block_line_parses_with_ignored_and_skills_correctly_typed(self, tmp_path):
+        # claude-sonnet-5's 1M window caps its threshold at
+        # HANDOFF_NUDGE_ABS_CAP's shipped default (150000); block_at is one
+        # rearm-spacing hop past that, so the second fire is both a qualifying
+        # rearm and past the block point.
+        threshold = 150_000
+        block_at = threshold + 80_000
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        for var in ("HANDOFF_NUDGE_ABS_CAP", "HANDOFF_NUDGE_REARM_SPACING", "HANDOFF_NUDGE_BLOCK_AFTER"):
+            env.pop(var, None)
+        env["HANDOFF_NUDGE_BLOCK_AT"] = str(block_at)
+
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [self._usage_record(threshold)])
+        first = self._fire(tmp_path, transcript, env)
+        assert first.returncode == 0  # first-ever crossing: always advisory
+
+        with transcript.open("a") as f:
+            f.write(json.dumps(self._usage_record(block_at)) + "\n")
+        second = self._fire(tmp_path, transcript, env)
+        assert second.returncode == 2, f"estimate reaches HANDOFF_NUDGE_BLOCK_AT={block_at}"
+
+        log_path = tmp_path / ".claude" / ".handoff-nudge.log"
+        nudged_lines = [line for line in log_path.read_text().splitlines() if line.startswith("nudged")]
+        # Pre-parse sanity tripwire on the raw log line; the parser-based
+        # assertions below are what actually validate the contract.
+        assert nudged_lines[-1].endswith("action=block")
+
+        entries = _mod._parse_nudge_log_entries(log_path)
+        block_entry = entries[-1]
+        assert block_entry["action"] == "block"
+        assert block_entry["ignored"] == 1
+        assert isinstance(block_entry["ignored"], int)
+        assert block_entry["skills"] == "-"
+
 
 class TestOperatorResponseLagFromLog:
     def test_exact_match_join_measures_lag_past_the_fire_point(self):
@@ -16029,6 +16510,89 @@ class TestGhDiscoverMergedPrsPagination:
         limit_value = int(argv[argv.index("--limit") + 1])
         assert limit_value == _mod._PR_COST_GH_PR_LIST_LIMIT
         assert limit_value > 30  # gh pr list's own truncating default
+
+
+class TestGhDiscoverClosedUnmergedPrBranches:
+    """_gh_discover_closed_unmerged_pr_branches: same gh pr list call shape
+    as _gh_discover_merged_prs, --state closed instead of --state merged --
+    workstream-cost's own sibling discovery call."""
+
+    def test_passes_state_closed_and_explicit_limit(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        argv = captured["cmd"]
+        assert argv[argv.index("--state") + 1] == "closed"
+        assert "--limit" in argv
+        assert int(argv[argv.index("--limit") + 1]) == _mod._PR_COST_GH_PR_LIST_LIMIT
+
+    def test_returns_headref_name_set_from_closed_prs(self, monkeypatch):
+        """Returns a set of branch names (headRefName), not the raw PR dict
+        list _gh_discover_merged_prs returns -- workstream-cost only needs
+        set membership for its merged/closed-unmerged/no-match classification."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2, "headRefName": "abandoned-b"},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a", "abandoned-b"}
+
+    def test_entry_with_no_headref_name_filtered_out_of_result(self, monkeypatch):
+        """An entry with no headRefName key (or an empty one) is dropped
+        from the returned set -- mirrors the `if pr.get("headRefName")`
+        truthy filter guarding each entry."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2},
+            {"number": 3, "headRefName": ""},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a"}
+
+    def test_gh_call_failure_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A failed gh pr list (closed) call aborts the whole run via
+        _pr_cost_abort_on_gh_failure. Discovery has no per-row granularity
+        to degrade into, so it does not return a partial or empty set
+        silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "not logged into any GitHub hosts\n",
+            })()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "gh pr list (closed) failed" in capsys.readouterr().err
+
+    def test_malformed_json_stdout_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A successful gh call (returncode 0) whose stdout is not valid
+        JSON aborts via sys.exit(1) rather than raising JSONDecodeError
+        uncaught or returning a partial/empty set silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {"returncode": 0, "stdout": "not json", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "unparseable JSON" in capsys.readouterr().err
 
 
 class TestAppendPrCostLedgerRow:

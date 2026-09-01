@@ -41,3 +41,17 @@ The **Fragile Test** smell includes the **Overspecified Software** root cause: *
 **Applies to the rule as:** The runtime-output variant (regex over log lines, JSON, XML) is a Fragile Test via Overspecified Software; the fix is to call the production parse/validate path and assert on the parsed result, eliminating the duplicate logic.
 
 **Note on "use a parser for structured formats":** There is no single canonical primary document for the general "don't parse structured formats with regex" principle as a *testing* rule. The rule follows as a corollary from the two sources above: a regex on structured output is both logic-in-tests (Source 1) and duplicated-SUT-logic (Source 2). The theoretical basis — that structured formats like JSON and XML are context-free languages and regex matches only regular languages — is formal language theory (Chomsky 1956), but that framing is too abstract for a code-review rule. Ground it via Sources 1 and 2 instead.
+
+## Declaring a non-import cross-domain test dependency explicitly
+
+Grounds the "Test double seams by dependency type" bullet's rule on
+declaring a subprocess-call or file-path-read edge that reaches outside a
+test's own domain. Applies to tooling that maps domains to tests by import
+or directory.
+
+**Nx devkit reference — `ImplicitDependency`**
+URL: https://nx.dev/docs/reference/devkit/ImplicitDependency
+
+Verbatim: an implicit dependency is "a connection without an explicit reference in code" between two projects, and declaring one manually is "the best way to manually set up a dependency between two projects that Nx is not able to detect automatically."
+
+**Applies to the rule as:** Nx's own affected-project graph is built primarily from static imports. `ImplicitDependency` is Nx's own escape hatch for a real dependency that graph can't see. A test that shells into another domain's script or reads its file by path — rather than importing it — is the same shape: invisible to both import-based and directory-based selection unless declared explicitly.

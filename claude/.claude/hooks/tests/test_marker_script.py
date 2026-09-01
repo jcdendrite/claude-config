@@ -9,7 +9,6 @@ import subprocess
 import time
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     CANARY_CONTENT,
     HOOKS_DIR,
@@ -29,6 +28,8 @@ from helpers import (
     write_plan_review_marker,
     write_skill_review_marker,
 )
+
+from .conftest import _seed_session
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
@@ -53,10 +54,12 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
     ["activate", "ready-for-review"],
     ["activate", "respond-pr"],
     ["activate", "memory-skill"],
+    ["activate", "handoff"],
     ["deactivate", "plan-review"],
     ["deactivate", "ready-for-review"],
     ["deactivate", "respond-pr"],
     ["deactivate", "memory-skill"],
+    ["deactivate", "handoff"],
     ["status"],
 ]
 
@@ -277,6 +280,24 @@ class TestMarkerScriptHappyPath:
         active_dir.mkdir(parents=True)
         (active_dir / sid).touch()
         result = _run(["deactivate", "memory-skill"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not (active_dir / sid).exists()
+
+    def test_activate_handoff_creates_active_marker(self, isolated_home, git_repo):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        result = _run(["activate", "handoff"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        active_file = isolated_home / ".claude" / ".handoff-active.d" / sid
+        assert active_file.exists()
+
+    def test_deactivate_handoff_removes_active_marker(self, isolated_home, git_repo):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        active_dir = isolated_home / ".claude" / ".handoff-active.d"
+        active_dir.mkdir(parents=True)
+        (active_dir / sid).touch()
+        result = _run(["deactivate", "handoff"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert not (active_dir / sid).exists()
 
@@ -1652,8 +1673,8 @@ class TestMarkerScriptStatusCompletionMarkers:
 
 class TestMarkerScriptStatusActiveBypass:
     """`marker.sh status` reports each active-bypass marker (plan-review,
-    ready-for-review, respond-pr, memory-skill) for this session as live,
-    stale, or absent."""
+    ready-for-review, respond-pr, memory-skill, handoff) for this session as
+    live, stale, or absent."""
 
     SID = "test-session-status-bypass"
 
@@ -1662,6 +1683,7 @@ class TestMarkerScriptStatusActiveBypass:
         ("ready-for-review", ".ready-for-review-active.d"),
         ("respond-pr", ".respond-pr-active.d"),
         ("memory-skill", ".memory-skill-active.d"),
+        ("handoff", ".handoff-active.d"),
     ]
 
     @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)

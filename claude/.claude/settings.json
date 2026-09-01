@@ -13,14 +13,14 @@
       "Bash(~/.claude/scripts/marker.sh deactivate respond-pr)",
       "Bash(~/.claude/scripts/marker.sh activate memory-skill)",
       "Bash(~/.claude/scripts/marker.sh deactivate memory-skill)",
+      "Bash(~/.claude/scripts/marker.sh activate handoff)",
+      "Bash(~/.claude/scripts/marker.sh deactivate handoff)",
       "Bash(~/.claude/scripts/marker.sh resolve-session-id)",
       "Bash(~/.claude/scripts/marker.sh status)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
-      "Bash(cleanup-idle-open-pr-worktrees --dry-run)",
-      "Bash(pytest claude/.claude/)",
-      "Bash(ruff check claude/.claude/)"
+      "Bash(cleanup-idle-open-pr-worktrees --dry-run)"
     ],
     "ask": [
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
@@ -67,6 +67,8 @@
     ]
   },
   "model": "sonnet",
+  "disableArtifact": true,
+  "disableWorkflows": true,
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
@@ -257,19 +259,6 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-ready-for-review.sh",
-            "if": "Bash(git push *)",
-            "statusMessage": "Checking ready-for-review gate..."
-          },
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/require-ready-for-review.sh",
-            "if": "Bash(gh pr ready *)",
-            "statusMessage": "Checking ready-for-review gate..."
-          },
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/require-ready-for-review.sh",
-            "if": "Bash(gh pr create *)",
             "statusMessage": "Checking ready-for-review gate..."
           },
           {

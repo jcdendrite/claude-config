@@ -5,7 +5,7 @@ fixtures stay with their class in the per-hook test file. `_seed_session`
 is a plain helper function rather than a fixture (matching
 scripts/tests/conftest.py's convention) since callers need to pass a
 per-test session id, not a fixed injected value; import it directly with
-`from conftest import _seed_session`.
+`from .conftest import _seed_session`.
 """
 from __future__ import annotations
 
@@ -45,10 +45,11 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
 
 def _dead_pid() -> int:
     """Return a pid that is guaranteed not to be running. Mirrors
-    scripts/tests/conftest.py's helper of the same name (separate pytest
-    rootdir, so not importable directly) — spawns and reaps a real process
-    so the returned pid is a genuine, just-exited one rather than a guessed
-    high number that might collide with something still alive."""
+    scripts/tests/conftest.py's helper of the same name, duplicated rather
+    than shared so neither test tree's conftest imports the other's —
+    spawns and reaps a real process so the returned pid is a genuine,
+    just-exited one rather than a guessed high number that might collide
+    with something still alive."""
     proc = subprocess.Popen(["true"])
     proc.wait()
     return proc.pid
@@ -239,8 +240,9 @@ def opted_in_with_worktree(opted_in_repo, tmp_path, isolated_home):
     """Opted-in repo with a linked worktree at a path that does NOT contain
     '/worktrees/' — verifies the hook's worktree check reads git-dir rather
     than pattern-matching the working-tree path. Seeds a session file so
-    _lib_worktree_collision_guard (which every allow-into-a-worktree path now
-    runs through) can resolve this test process's own PID as the lock owner."""
+    _lib_worktree_collision_guard can resolve this test process's own PID as
+    the lock owner. Every write into this worktree runs the guard. A read
+    runs it only when the worktree's lock is already present."""
     wt_path = tmp_path / "feature-tree"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt_path)],

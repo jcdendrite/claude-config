@@ -9,14 +9,32 @@ govern any contribution (human or agent).
 ```bash
 ./install.sh                                                 # first-time setup (stow + plugin registration)
 ./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
-.venv/bin/pytest claude/.claude/                             # test suite (hooks + skills)
+.venv/bin/python3 claude/.claude/scripts/select-tests.py     # test suite, scoped to the domains your changes touch
+.venv/bin/pytest claude/.claude/                             # full test suite (hooks + skills)
 .venv/bin/ruff check claude/.claude/                         # lint (Python)
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
 ```
 
-See README.md's Tests section for ShellCheck flag sourcing,
-`pytest-xdist` debugging flags, and the worktree-relative `.venv`
-paths.
+Agents: run `select-tests.py`, not the full suite — including in
+`/ready-for-review`. Running the full suite per agent doesn't scale
+when many agents run in parallel on one machine. CI runs the full
+suite on every push.
+
+Two cases still legitimately need a full-suite run by hand:
+
+1. `select-tests.py` itself selected the full suite for this diff — you
+   don't need to run it by hand, `select-tests.py` already widens on its
+   own.
+2. Something in this PR — a plan's Verification step, or `/pr-description`'s
+   own accuracy check — genuinely calls for a whole-repo claim, where a
+   scoped pass would overstate what was verified.
+
+Anything else — including a path `select-tests.py` cannot map — is a bug
+in its rule table, not a licence to widen the run by hand.
+
+See README.md's Tests section for `select-tests.py`'s domain-mapping
+mechanism, ShellCheck flag sourcing, `pytest-xdist` debugging flags, and
+the worktree-relative `.venv` paths.
 
 ## Working in this repo
 
@@ -95,14 +113,24 @@ tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or
 project/org names (including the owner's own private projects),
 codenames, internal URLs/project domains on a TLD other than the
 always-on list above, non-home-rooted filesystem paths embedding
-project names, env var names encoding a project, and person names
-other than the repo owner's commit-author identity. Default: if in
-doubt, strip it.
+project names, env var names encoding a project, and person names. The
+blocklist is user-populated with no default entries, so the repo
+owner's own commit-author identity is covered only if deliberately
+added. Default: if in doubt, strip it.
 
-**Reviewer discipline only — hook doesn't catch these:** internal
-tool/product names not generally known in open source; commit SHAs or
-PR numbers from private repos; structural fingerprints and
-private-corpus provenance (see below).
+**Reviewer discipline only — hook doesn't catch these:**
+
+- Internal tool/product names not generally known in open source.
+- Commit SHAs or PR numbers from private repos.
+- Structural fingerprints and private-corpus provenance (see below).
+- The owner's own email address — the blocklist above has no default
+  entries, so nothing catches the owner's own `mailto:` in
+  `SECURITY.md`, a PR body, or similar:
+  - Route security reports to GitHub private vulnerability reporting.
+  - Route other contact to the maintainer's published business site
+    (linked from README.md).
+  - If a template genuinely demands a `mailto:`, propose a role
+    mailbox and confirm before committing.
 
 ### Also redact structural fingerprints and provenance
 

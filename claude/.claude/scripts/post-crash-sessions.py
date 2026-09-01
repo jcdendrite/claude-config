@@ -3,7 +3,7 @@
 unclean shutdown and print a resume command for each one that is recoverable.
 
 Read-only, always: writes no file, creates no directory, emits only to
-stdout/stderr. Three evidence sources are cross-referenced per session id:
+stdout/stderr. Four evidence sources are cross-referenced per session id:
 
   A. The session registry (<config-dir>/sessions/<pid>.json) — Claude Code's
      own first-party, undocumented record of interactive sessions.
@@ -15,19 +15,43 @@ stdout/stderr. Three evidence sources are cross-referenced per session id:
   C. The transcript corpus (<config-dir>/projects/*/*.jsonl and
      */*/subagents/*.jsonl) — resolves whether a session id has any
      transcript at all, and supplies its cwd/gitBranch/last-activity.
+  D. capture-session-id.sh's <config-dir>/sessions/<pid> bare lookup files —
+     a session_id/pid mapping written at every SessionStart/SubagentStart
+     and never swept on a clean exit. Admitted as evidence only when the
+     file's own mtime sits within the crash-evidence window
+     (--crash-window-hours), since an unwindowed dead pid here is the
+     routine tail every session ever run leaves behind. This is the source
+     that survives a non-reboot crash once Claude Code has already pruned
+     source A.
 
-Freshness caveat: after a reboot, process ids restart low, so a freshly
-launched session can overwrite a crashed session's registry entry at the same
-pid — run this before starting new Claude Code sessions post-reboot. Every
-row's classification is anchored against boot time specifically so it stays
-correct regardless of whether Claude Code itself sweeps stale entries at
-startup (unverified either way; the boot-time anchor makes it moot).
+A dead pid's weight as crash evidence tracks whether its source deletes the
+entry on a clean exit:
+
+  - A and B are self-pruning first-party sources, so any surviving dead
+    entry there is anomalous on its own.
+  - D is never swept, so only its recency is meaningful, never its mere
+    existence.
+  - Boot time narrows classification where it's informative: a dead A/B
+    entry that predates the last boot is definitively unclean, since the
+    reboot explains the death.
+  - A dead entry postdating boot, or a source-C/D session with no reboot in
+    between it and now, is not thereby ruled non-actionable — both surface
+    as "possible crash" rather than "unknown", since an application-level
+    crash that never rebooted Linux looks exactly like an
+    otherwise-unexplained death on a machine that stayed up.
+
+Run this before starting new Claude Code sessions post-reboot regardless:
+process ids restart low after a reboot, so a freshly launched session can
+overwrite a crashed session's registry entry at the same pid.
 
 Both the registry and the lock file are undocumented first-party formats,
 observed on one machine at one CLI version — every field beyond the required
 core (sessionId + pid) is read with .get() and a default, matching this
 repo's existing posture for undocumented Claude Code state (see
-statusline-command.sh's account-info block).
+statusline-command.sh's account-info block). The registry's procStart field
+is platform-variant too: a `ps -o lstart=`-format date string on Darwin, an
+all-digits /proc/<pid>/stat tick count on Linux — parsed by the stored
+value's own shape, not by platform.
 
 Env overrides:
   POST_CRASH_SESSIONS_FIND_ROOT   root for the scheduled_tasks.lock filesystem
@@ -65,6 +89,11 @@ _MAX_TRANSCRIPT_RECORDS = 12
 # capture can round independently, so exact equality is too strict.
 _PROC_START_TOLERANCE_SECONDS = 2.0
 
+# proc(5) field 22 (starttime), 1-indexed; minus 3 to land at index 19 of the
+# post-comm field list: pid and comm are consumed by the rpartition(")")
+# split (2 fields), and the remainder is 0-indexed (1 more).
+_PROC_STAT_STARTTIME_INDEX = 19
+
 # Empirically measured at ~18.9s for a full $HOME sweep on one Darwin
 # machine; this bounds a hang on a slower disk or a large home tree, it does
 # not guarantee the sweep completes within it on every machine.
@@ -77,10 +106,18 @@ _SUBPROCESS_TIMEOUT_SECONDS = 5.0
 # Sized to "was this session plausibly still open when the crash happened,"
 # not write latency: an empirical sample of 11 crash-orphaned transcripts had
 # gaps between last activity and boot ranging 29min-2h45m, so 4h covers that
-# range with margin. Only used to decide whether a transcript with no
-# registry or lock entry at all is worth surfacing as corroborating-only
-# evidence.
-_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS = 14400.0
+# range with margin. Governs how far back any of this tool's crash evidence
+# reaches: a boot-anchored transcript with no other corroboration, a
+# now-anchored transcript with no reboot in between, and how recent a
+# never-swept Source D lookup file's mtime must be to count as evidence
+# rather than routine tail.
+_CRASH_EVIDENCE_WINDOW_SECONDS = 14400.0
+
+# Sized to one screenful on a typical terminal. Unlike token-analyzer.py's
+# and analyze-context.py's uncapped-by-note [:N] truncations, this list
+# drives a destructive rm command, so a truncation note is required rather
+# than silent.
+_LEGACY_DEAD_LIST_CAP = 20
 
 # CLI versions this registry/lock schema has actually been read against.
 # A version outside this set doesn't change how anything is parsed (every
@@ -139,6 +176,21 @@ class LockEntry:
     acquired_at: float | None
     mtime: float | None
     path: Path
+
+
+@dataclass
+class LookupEntry:
+    """capture-session-id.sh's <config-dir>/sessions/<pid> lookup file --
+    never swept on a clean exit, so admission is mtime-windowed at read time
+    rather than trusted unconditionally like the registry and lock sources."""
+    session_id: str
+    pid: int
+    proc_start: str | None
+    mtime: float | None
+    path: Path
+    # Derived from path's own <config_dir>/sessions/<pid> location -- never
+    # None in practice, since every caller passes sessions/-rooted paths.
+    config_dir: Path | None = None
 
 
 @dataclass
@@ -297,11 +349,30 @@ def _ps_usable(*, ps_lstart=_ps_lstart, self_pid: int | None = None) -> bool:
     return ps_lstart(pid) is not None
 
 
+def _proc_starttime_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Linux-only: field 22 (starttime) of /proc/<pid>/stat, a count of
+    clock ticks since boot — proc(5): 'the time the process started after
+    system boot ... expressed in clock ticks'. comm (field 2) is
+    parenthesized and may itself contain spaces and closing parens, so the
+    split happens after the last ")" in the line, never the first. Missing
+    or unreadable file, or a line shorter than expected, yields None
+    (indeterminate) rather than raising."""
+    try:
+        text = (proc_root / str(pid) / "stat").read_text()
+    except OSError:
+        return None
+    fields = text.rpartition(")")[2].split()
+    try:
+        return int(fields[_PROC_STAT_STARTTIME_INDEX])
+    except (IndexError, ValueError):
+        return None
+
+
 def _parse_lstart(raw: str | None, tz: timezone) -> datetime | None:
     """Pure parse of one ps -o lstart=-format string. tz is a parameter, never
     read from the process clock, so this never depends on the ambient
     environment — only on what the caller passes in."""
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         return None
     try:
         return datetime.strptime(raw.strip(), _LSTART_FORMAT).replace(tzinfo=tz)
@@ -326,14 +397,66 @@ def _same_process(
     return abs((stored - live).total_seconds()) <= tolerance_seconds
 
 
-def _entry_liveness(pid: int, proc_start: str | None, *, ps_lstart, ps_usable: bool) -> str:
-    """Return 'live', 'dead', or 'indeterminate' for one registry/lock entry."""
+def _proc_start_is_numeric(proc_start: str | None) -> bool:
+    """True when the stored procStart is a Linux /proc/<pid>/stat field-22
+    tick count (all-digits) rather than a Darwin/BSD `ps -o lstart=` date
+    string — dispatches on the stored value's own shape, not on
+    platform.system(), so this stays correct if a future CLI version
+    changes format again on either platform."""
+    return isinstance(proc_start, str) and proc_start.isdigit()
+
+
+def _proc_start_comparable(mtime: float | None, boot_time: float | None) -> bool:
+    """A numeric procStart's ticks are an offset from *a* boot, so they are
+    only meaningfully comparable to a live process's current ticks when both
+    were captured under the same boot — true whenever the entry's own file
+    mtime postdates the last boot. Unknown boot_time or mtime is not
+    comparable, matching _safe_mtime's None-means-unknown contract."""
+    return boot_time is not None and mtime is not None and mtime >= boot_time
+
+
+def _same_process_by_proc_starttime(
+    stored_proc_start: str | None, pid: int, *, proc_starttime_ticks,
+) -> bool | None:
+    """Exact-integer-equality compare of a Linux /proc/<pid>/stat field-22
+    tick count against the live pid's own current value — no tolerance,
+    since both sides are the same integer clock with no unit conversion or
+    independent rounding to reconcile."""
+    if not _proc_start_is_numeric(stored_proc_start):
+        return None
+    live_ticks = proc_starttime_ticks(pid)
+    if live_ticks is None:
+        return None
+    return int(stored_proc_start) == live_ticks
+
+
+def _entry_liveness(
+    pid: int,
+    proc_start: str | None,
+    *,
+    ps_lstart,
+    ps_usable: bool,
+    proc_starttime_ticks=_proc_starttime_ticks,
+    proc_start_comparable: bool = False,
+) -> str:
+    """Return 'live', 'dead', or 'indeterminate' for one registry/lock/lookup
+    entry. A numeric (Linux ticks) proc_start dispatches to the ticks
+    comparison only when proc_start_comparable is True; otherwise it's
+    indeterminate rather than compared against a possibly-stale pre-boot
+    value. A non-numeric proc_start takes the lstart-string comparison
+    path."""
     if not ps_usable:
         return "indeterminate"
     live_lstart = ps_lstart(pid)
     if live_lstart is None:
         return "dead"
-    same = _same_process(proc_start, live_lstart)
+    if _proc_start_is_numeric(proc_start):
+        same = (
+            _same_process_by_proc_starttime(proc_start, pid, proc_starttime_ticks=proc_starttime_ticks)
+            if proc_start_comparable else None
+        )
+    else:
+        same = _same_process(proc_start, live_lstart)
     if same is True:
         return "live"
     if same is False:
@@ -651,24 +774,76 @@ def _scan_transcripts(
     return transcripts, cwds
 
 
-def _near_boot_transcript_only_ids(
+# ---------------------------------------------------------------------------
+# Source D — capture-session-id.sh lookup files (never swept on clean exit)
+# ---------------------------------------------------------------------------
+
+def _read_lookup_entries(
+    paths: list[Path], *, now: float | None, window_seconds: float = _CRASH_EVIDENCE_WINDOW_SECONDS,
+) -> list[LookupEntry]:
+    """Parse capture-session-id.sh's <config-dir>/sessions/<pid> lookup
+    files: line 1 is the session id, line 2 (when present) is a
+    `ps -o lstart=`-format start time. This corpus is never swept on a
+    clean exit (capture-session-id.sh's own documented posture), so a file
+    is admitted as evidence only when its mtime sits within window_seconds
+    of now — every older file is the routine tail every session ever run
+    leaves behind, not crash evidence. now=None (build_report's fail-closed
+    default) admits nothing.
+    """
+    if now is None:
+        return []
+    entries: list[LookupEntry] = []
+    for path in paths:
+        pid = _coerce_pid(path.name)
+        if pid is None:
+            continue
+        mtime = _safe_mtime(path)
+        if mtime is None or now - mtime > window_seconds:
+            continue
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        if not lines:
+            continue
+        session_id = _sanitize_for_terminal(lines[0])
+        if not session_id:
+            continue
+        # A file with fewer than two lines is not an error: proc_start=None
+        # only makes a *live* pid's liveness indeterminate; a dead pid is
+        # still dead regardless (_entry_liveness checks ps before proc_start).
+        proc_start = lines[1] if len(lines) > 1 else None
+        entries.append(LookupEntry(
+            session_id=session_id, pid=pid, proc_start=proc_start, mtime=mtime,
+            path=path, config_dir=path.parent.parent,
+        ))
+    return entries
+
+
+def _recent_transcript_only_ids(
     transcripts: dict[str, TranscriptInfo],
     known_session_ids: set[str],
     boot_time: float | None,
     *,
-    window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
+    window_seconds: float = _CRASH_EVIDENCE_WINDOW_SECONDS,
+    now: float | None = None,
 ) -> list[str]:
-    """Session ids with a transcript but no registry or lock entry at all,
-    whose last activity sits just before boot — corroborating-only evidence
+    """Session ids with a transcript but no registry, lock, or lookup entry
+    at all, admitted on either of two disjuncts: last activity sits just
+    before boot (a reboot may have killed it), or last activity sits
+    recently regardless of boot (a same-day, non-reboot crash is never
+    separated from now by a reboot at all) — corroborating-only evidence
     that a crash may have happened without leaving any other trace."""
-    if boot_time is None:
-        return []
-    return [
-        sid for sid, info in transcripts.items()
-        if sid not in known_session_ids
-        and info.has_main
-        and boot_time - window_seconds <= (info.last_activity or 0.0) <= boot_time
-    ]
+    ids = []
+    for sid, info in transcripts.items():
+        if sid in known_session_ids or not info.has_main:
+            continue
+        last_activity = info.last_activity if info.last_activity is not None else 0.0
+        boot_anchored = boot_time is not None and boot_time - window_seconds <= last_activity <= boot_time
+        now_anchored = now is not None and last_activity >= now - window_seconds
+        if boot_anchored or now_anchored:
+            ids.append(sid)
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -706,16 +881,21 @@ def _classify_session(
     boot_time: float | None,
     ps_lstart,
     ps_usable: bool,
-    near_boot_window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
+    proc_starttime_ticks=_proc_starttime_ticks,
+    near_boot_window_seconds: float = _CRASH_EVIDENCE_WINDOW_SECONDS,
+    lookup_entries: tuple[LookupEntry, ...] = (),
+    now: float | None = None,
 ) -> SessionRow:
-    entry_count = len(registry_entries) + len(lock_entries)
+    entry_count = len(registry_entries) + len(lock_entries) + len(lookup_entries)
     has_main_transcript = transcript is not None and transcript.has_main
     # A scheduled-task lock's path lives under the session's own cwd, not
     # under any declared config dir, so it carries no account attribution;
-    # prefer the transcript's config dir, falling back to the registry's.
+    # prefer the transcript's config dir, falling back to the registry's,
+    # falling back to the lookup file's own <config_dir>/sessions/ location.
     row_config_dir = (
         transcript.config_dir if transcript is not None
-        else (registry_entries[0].config_dir if registry_entries else None)
+        else (registry_entries[0].config_dir if registry_entries
+              else (lookup_entries[0].config_dir if lookup_entries else None))
     )
     subagent_note = ""
     if transcript is not None and transcript.subagent_count and not has_main_transcript:
@@ -734,10 +914,13 @@ def _classify_session(
         )
 
     liveness: dict[tuple[str, int], str] = {}
-    for e in registry_entries:
-        liveness[("registry", e.pid)] = _entry_liveness(e.pid, e.proc_start, ps_lstart=ps_lstart, ps_usable=ps_usable)
-    for e in lock_entries:
-        liveness[("lock", e.pid)] = _entry_liveness(e.pid, e.proc_start, ps_lstart=ps_lstart, ps_usable=ps_usable)
+    for source_name, entries in (("registry", registry_entries), ("lock", lock_entries), ("lookup", lookup_entries)):
+        for e in entries:
+            liveness[(source_name, e.pid)] = _entry_liveness(
+                e.pid, e.proc_start, ps_lstart=ps_lstart, ps_usable=ps_usable,
+                proc_starttime_ticks=proc_starttime_ticks,
+                proc_start_comparable=_proc_start_comparable(e.mtime, boot_time),
+            )
 
     if "live" in liveness.values():
         cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
@@ -789,11 +972,24 @@ def _classify_session(
 
         if dead_after_boot:
             newest = max(dead_after_boot, key=lambda e: e.mtime)
+            boot_note = (
+                f"registry entry written {_fmt_ts(newest.mtime)}, after boot ({_fmt_ts(boot_time)}) — "
+                "the process's death is unexplained by a reboot, which is what an unclean application "
+                "crash looks like, but a deliberate clean exit looks identical."
+            )
+            if has_main_transcript:
+                cwd = transcript.cwd or newest.cwd
+                branch = transcript.git_branch
+                last_activity = transcript.last_activity
+                return SessionRow(
+                    session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
+                    f"{boot_note} A transcript exists for this session.",
+                    entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+                )
             cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
             return SessionRow(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
-                f"registry entry written {_fmt_ts(newest.mtime)}, after boot ({_fmt_ts(boot_time)}) — "
-                "not evidence of surviving a crash.",
+                f"{boot_note} No main transcript was found for this session.{subagent_note}",
                 entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
 
@@ -810,6 +1006,40 @@ def _classify_session(
         return SessionRow(
             session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
             "registry procStart could not be parsed; this session's pid liveness could not be confirmed.",
+            entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+        )
+
+    if lookup_entries:
+        dead_lookups = [e for e in lookup_entries if liveness[("lookup", e.pid)] == "dead"]
+        indeterminate_lookups = [e for e in lookup_entries if liveness[("lookup", e.pid)] == "indeterminate"]
+        if dead_lookups and not indeterminate_lookups:
+            cwd = transcript.cwd if has_main_transcript else None
+            branch = transcript.git_branch if has_main_transcript else None
+            last_activity = (
+                transcript.last_activity if transcript is not None
+                else max((e.mtime or 0.0) for e in dead_lookups)
+            )
+            # This source is never swept on a clean exit, so a dead pid alone
+            # is the routine end state of every session that ever ran, including
+            # cleanly-exited ones -- it bounds *when* the session ended, not *how*,
+            # so it never promotes to Resumable the way a self-pruning source does.
+            if has_main_transcript:
+                return SessionRow(
+                    session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
+                    "a capture-session-id.sh lookup file's pid is dead and its mtime sits within the "
+                    "crash-evidence window; a transcript exists for this session.",
+                    entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+                )
+            return SessionRow(
+                session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
+                f"a capture-session-id.sh lookup file's pid is dead and its mtime sits within the "
+                f"crash-evidence window, but no main transcript was found for this session.{subagent_note}",
+                entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+            )
+        cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
+        return SessionRow(
+            session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
+            "a capture-session-id.sh lookup file's liveness could not be confirmed for this session.",
             entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
         )
 
@@ -841,15 +1071,35 @@ def _classify_session(
             entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
         )
 
-    # No registry, no lock entry — reached only for a near-boot transcript-only session.
+    # No registry, lock, or lookup entry -- reached only for a session admitted solely
+    # via _recent_transcript_only_ids's boot-anchored or now-anchored disjunct.
     cwd = transcript.cwd if transcript is not None else None
     branch = transcript.git_branch if transcript is not None else None
     last_activity = transcript.last_activity if transcript is not None else None
+    activity_for_anchor = last_activity if last_activity is not None else 0.0
+    boot_anchored = (
+        boot_time is not None
+        and boot_time - near_boot_window_seconds <= activity_for_anchor <= boot_time
+    )
+    now_anchored = now is not None and activity_for_anchor >= now - near_boot_window_seconds
+    if boot_anchored:
+        anchor_note = f"its last activity sits within {near_boot_window_seconds / 3600:g}h before the last boot"
+    elif now_anchored:
+        # No reboot separates last activity from now -- the non-reboot-crash
+        # shape this anchor exists to catch.
+        anchor_note = (
+            f"its last activity sits within {near_boot_window_seconds / 3600:g}h of now, "
+            "with no reboot in between to explain the gap"
+        )
+    else:
+        # Reached with neither disjunct matching: only possible when this
+        # function is called directly rather than through build_report's own
+        # admission gate (_recent_transcript_only_ids).
+        anchor_note = "its last activity could not be dated against either the last boot or now"
     return SessionRow(
         session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
-        f"only a transcript exists, with no registry or lock entry; its last activity sits within "
-        f"{near_boot_window_seconds / 3600:g}h before the last boot, but with no registry or "
-        "lock corroboration this cannot confirm the session was still open at crash time.",
+        f"only a transcript exists, with no registry, lock, or lookup-file entry; {anchor_note}, but "
+        "with no other corroboration this cannot confirm the session was still open at crash time.",
         entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
     )
 
@@ -864,7 +1114,9 @@ def build_report(
     find_root: Path,
     ps_lstart=_ps_lstart,
     boot_time_fn=_boot_time,
-    near_boot_window_seconds: float = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS,
+    proc_starttime_ticks_fn=_proc_starttime_ticks,
+    near_boot_window_seconds: float = _CRASH_EVIDENCE_WINDOW_SECONDS,
+    now: float | None = None,
 ) -> Report:
     boot_time = boot_time_fn()
 
@@ -884,12 +1136,19 @@ def build_report(
         else:
             lock_entries.append(entry)
 
+    lookup_entries = _read_lookup_entries(
+        legacy_bare_pid_paths, now=now, window_seconds=near_boot_window_seconds,
+    )
+
     registry_by_session: dict[str, list[RegistryEntry]] = {}
     for e in registry_entries:
         registry_by_session.setdefault(e.session_id, []).append(e)
     lock_by_session: dict[str, list[LockEntry]] = {}
     for e in lock_entries:
         lock_by_session.setdefault(e.session_id, []).append(e)
+    lookup_by_session: dict[str, list[LookupEntry]] = {}
+    for e in lookup_entries:
+        lookup_by_session.setdefault(e.session_id, []).append(e)
 
     # One batched `ps` call for every pid this run needs a liveness answer
     # for — registry, lock, and legacy bare-pid entries, plus our own pid for
@@ -906,24 +1165,35 @@ def build_report(
 
     ps_usable = _ps_usable(ps_lstart=resolved_ps_lstart)
 
-    known_session_ids = set(registry_by_session) | set(lock_by_session)
-    near_boot_only = _near_boot_transcript_only_ids(
-        transcripts, known_session_ids, boot_time, window_seconds=near_boot_window_seconds,
+    # Source D's ids join known_session_ids too, so a session with only a
+    # lookup entry still reads as "known" rather than re-surfacing through
+    # the transcript-only fallback below with weaker (no-pid) evidence.
+    known_session_ids = set(registry_by_session) | set(lock_by_session) | set(lookup_by_session)
+    recent_only = _recent_transcript_only_ids(
+        transcripts, known_session_ids, boot_time, window_seconds=near_boot_window_seconds, now=now,
     )
-    all_session_ids = known_session_ids | set(near_boot_only)
+    all_session_ids = known_session_ids | set(recent_only)
 
     rows = [
         _classify_session(
             sid, registry_by_session.get(sid, []), lock_by_session.get(sid, []),
             transcripts.get(sid), boot_time=boot_time, ps_lstart=resolved_ps_lstart, ps_usable=ps_usable,
+            proc_starttime_ticks=proc_starttime_ticks_fn,
             near_boot_window_seconds=near_boot_window_seconds,
+            lookup_entries=tuple(lookup_by_session.get(sid, [])), now=now,
         )
         for sid in sorted(all_session_ids)
     ]
 
+    # A dead-pid legacy file admitted as Source D evidence (in-window) must
+    # never also appear in the deletion list -- deleting it would destroy the
+    # very record just cited as evidence.
+    lookup_paths_in_window = {e.path for e in lookup_entries}
     legacy_dead: list[Path] = []
     if ps_usable:
         for path in legacy_bare_pid_paths:
+            if path in lookup_paths_in_window:
+                continue
             pid = _coerce_pid(path.name)
             if pid is not None and resolved_ps_lstart(pid) is None:
                 legacy_dead.append(path)
@@ -1002,9 +1272,10 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
     else:
         lines.append(f"Config directories scanned: {len(report.config_dirs)}{scanned_dirs_note}")
     lines.append(
-        "Freshness: a dead pid in the registry is only crash evidence until that pid is reused — "
-        "run this before starting new Claude Code sessions after a reboot, since a fresh session can "
-        "silently overwrite a crashed one's entry at the same pid."
+        "Freshness: a dead pid in the registry or a scheduled-task lock is crash evidence only until "
+        "that pid is reused, and a lookup file's dead pid is evidence only within the crash-evidence "
+        "window — run this before starting new Claude Code sessions after a reboot, since a fresh "
+        "session can silently overwrite a crashed one's registry entry at the same pid."
     )
     lines.append(
         f"Last boot: {_fmt_ts(report.boot_time)}" if report.boot_time is not None
@@ -1101,7 +1372,7 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
         lines.append("")
 
     render_resume_section(CLASS_RESUMABLE, "Resumable")
-    render_resume_section(CLASS_POSSIBLE_CRASH, "Possible crash — transcript only")
+    render_resume_section(CLASS_POSSIBLE_CRASH, "Possible crash — process gone, clean exit not ruled out")
 
     other_groups = (
         (CLASS_CRASHED_NO_TRANSCRIPT, "Crashed, no transcript"),
@@ -1127,17 +1398,27 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
         lines.append("")
 
     if report.legacy_bare_pid_dead:
-        lines.append(f"## Legacy bare-pid lookup files with a dead pid ({len(report.legacy_bare_pid_dead)})")
+        total_legacy_dead = len(report.legacy_bare_pid_dead)
+        # Oldest first: the oldest files are the safest cleanup candidates and
+        # this gives a stable, incrementally-progressing queue across re-runs.
+        sorted_legacy_dead = sorted(report.legacy_bare_pid_dead, key=lambda p: _safe_mtime(p) or 0.0)
+        shown_legacy_dead = sorted_legacy_dead[:_LEGACY_DEAD_LIST_CAP]
+        lines.append(f"## Legacy bare-pid lookup files with a dead pid ({total_legacy_dead})")
         lines.append("")
         lines.append(
             "These are capture-session-id.sh's session_id<->pid lookup files, not the session registry "
             "above — active infrastructure the require-* hook gates depend on. Only dead-pid files are "
             "listed here; do not delete a live one."
         )
-        for path in report.legacy_bare_pid_dead:
+        for path in shown_legacy_dead:
             lines.append(f"  {path.name if not show_raw_config_dirs else path}")
+        if total_legacy_dead > _LEGACY_DEAD_LIST_CAP:
+            lines.append(
+                f"  (showing {_LEGACY_DEAD_LIST_CAP} of {total_legacy_dead} oldest — re-run after deleting "
+                "these to see the rest.)"
+            )
         if show_raw_config_dirs:
-            lines.append("  rm -- " + " ".join(shlex.quote(str(p)) for p in report.legacy_bare_pid_dead))
+            lines.append("  rm -- " + " ".join(shlex.quote(str(p)) for p in shown_legacy_dead))
         elif not redact:
             lines.append(
                 "  (rm command omitted: these paths span declared accounts not passed via an explicit"
@@ -1206,12 +1487,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--near-boot-hours", type=float, metavar="HOURS", default=None,
+        "--crash-window-hours", "--near-boot-hours", type=float, metavar="HOURS", default=None,
+        dest="crash_window_hours",
         help=(
-            f"How far before the last boot a transcript's last activity can sit and still surface "
-            f"under 'Possible crash' when it has no registry or lock corroboration (default "
-            f"{_NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS / 3600:g}h). Widen this to recover sessions from "
-            "an older crash, e.g. --near-boot-hours 72 for three days."
+            f"How far back this tool's crash evidence reaches: how long before the last boot a "
+            f"boot-anchored transcript's last activity can sit, how recently a now-anchored "
+            f"transcript or a never-swept sessions/<pid> lookup file can have last run, and still "
+            f"surface under 'Possible crash' (default {_CRASH_EVIDENCE_WINDOW_SECONDS / 3600:g}h). "
+            "Widen this to recover sessions from an older crash, e.g. --crash-window-hours 72 for "
+            "three days. --near-boot-hours is accepted as an alias."
         ),
     )
     return parser
@@ -1259,23 +1543,27 @@ def main(argv: list[str] | None = None) -> int:
 
     find_root = Path(os.environ.get(_FIND_ROOT_ENV_VAR, str(Path.home())))
 
-    near_boot_window_seconds = _NEAR_BOOT_TRANSCRIPT_WINDOW_SECONDS
-    if args.near_boot_hours is not None:
+    near_boot_window_seconds = _CRASH_EVIDENCE_WINDOW_SECONDS
+    if args.crash_window_hours is not None:
         # math.isfinite rejects nan/inf: a bare `<= 0` check lets `nan` through (NaN
         # comparisons are always False), silently disabling near-boot detection.
-        if not math.isfinite(args.near_boot_hours) or args.near_boot_hours <= 0:
+        if not math.isfinite(args.crash_window_hours) or args.crash_window_hours <= 0:
             print(
-                f"post-crash-sessions: --near-boot-hours must be positive, got {args.near_boot_hours!r}",
+                f"post-crash-sessions: --crash-window-hours (--near-boot-hours) must be positive, "
+                f"got {args.crash_window_hours!r}",
                 file=sys.stderr,
             )
             return 2
-        near_boot_window_seconds = args.near_boot_hours * 3600
+        near_boot_window_seconds = args.crash_window_hours * 3600
 
+    # Captured once so build_report's now-anchored admission window and
+    # render_report's age annotation never disagree about "now".
+    now = time.time()
     report = build_report(
-        config_dirs=config_dirs, find_root=find_root, near_boot_window_seconds=near_boot_window_seconds,
+        config_dirs=config_dirs, find_root=find_root, near_boot_window_seconds=near_boot_window_seconds, now=now,
     )
     print(render_report(
-        report, redact=args.redact, config_dirs_explicit=bool(args.extra_config_dirs), now=time.time(),
+        report, redact=args.redact, config_dirs_explicit=bool(args.extra_config_dirs), now=now,
     ))
     return 0
 

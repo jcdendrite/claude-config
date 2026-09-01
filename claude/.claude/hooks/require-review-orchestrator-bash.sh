@@ -4,7 +4,7 @@
 # a closed read-only/verification allowlist since Bash alone could mutate the
 # tree despite no Edit/Write.
 # require-review-orchestrator-agent-target.sh closes the nested-dispatch gap
-# this leaves open — see docs/design-decisions.md §31 for the fuller
+# this leaves open — see docs/design-decisions.md §39 for the fuller
 # rationale.
 #
 # This hook is an allowlist (deny-by-default): a standalone `export
@@ -95,7 +95,7 @@ ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 #   ancestor to walk to) leaves CANONICAL_MARKER_SH/CANONICAL_REVIEW_LEDGER_SH/
 #   CANONICAL_ORCHESTRATOR_CHECKPOINT_SH empty. The checks below treat an
 #   empty canonical path as "nothing can match," not as "skip this check."
-# - CANONICAL_GIT is the one exception: see docs/design-decisions.md §31 for
+# - CANONICAL_GIT is the one exception: see docs/design-decisions.md §39 for
 #   why its bare-word `git` match is accepted without a realpath resolution.
 CANONICAL_GIT=$(command -v git 2>/dev/null || true)
 CANONICAL_MARKER_SH=""

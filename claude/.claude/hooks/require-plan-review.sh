@@ -2,7 +2,12 @@
 # hook-class: gate
 # PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified
 # plan file exists in .claude/plans/ and no plan-review marker covering that
-# exact plan state can be found.
+# exact plan state can be found. Three exemptions release a Write/Edit/
+# MultiEdit before that check runs: (1) a write outside this repo, (2) a
+# write into the gitignored agent-reviews/ findings directory, and (3) a
+# write whose own target is one of the gated plan files, so authoring a plan
+# across multiple calls (including a resumed session) is never blocked by
+# the gate that exists to force that plan's review.
 #
 # Globally applied (no opt-in), consistent with require-code-review.sh,
 # require-ready-for-review.sh, and require-respond-pr.sh.
@@ -131,6 +136,63 @@ Plan presentation stays blocked until this is fixed — an unreadable plan-mode 
   fi
 fi
 
+# Scope the deny to writes inside this repo. Writes targeting user-home
+# directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
+# intent — the gate guards this repo's code, not all files on disk.
+# Guarded by TOOL_NAME too, so the exclusion is structural rather than
+# relying on ExitPlanMode's payload never carrying file_path.
+# - Guards on _lib_active_plan_files, not directory existence, so an
+#   all-committed repo also skips the realpath forks too.
+# - Runs before the hash computation since path shape alone decides the
+#   common case.
+# - Also the gate's full disarm fast path: nothing active exits 0
+#   immediately here.
+# - Because this runs before the hash computation, an unhashable in-repo
+#   active plan does not block an out-of-repo write.
+if [ -n "$TARGET_PATH" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
+  ACTIVE_PLAN_FILES=$(_lib_active_plan_files "$REPO_ROOT")
+  ACTIVE_PLAN_FILES_STATUS=$?
+  if [ "$ACTIVE_PLAN_FILES_STATUS" -eq 0 ] && [ -z "$ACTIVE_PLAN_FILES" ]; then
+    # Nothing active: the hash computation below would independently reach
+    # this same empty result via its own call to _lib_active_plan_files, so
+    # short-circuit here instead of paying for a second enumeration.
+    exit 0
+  fi
+  # When a plan IS active, this block's own _lib_active_plan_files call
+  # above is a second enumeration in addition to the one _lib_active_plan_hash
+  # makes below -- accepted rather than threaded through, since every git
+  # call on both sides is already _lib_capped-bounded and this is the
+  # session's own local repo. Revisit if per-write latency in this state is
+  # ever measured to matter.
+  # - Both a failed enumeration and a non-empty active-file list fall through
+  #   to here; a failed enumeration fails closed by proceeding into the checks
+  #   below rather than skipping them.
+  # - A failed _lib_realpath_m resolution must not feed either check below,
+  #   since an empty REAL_TARGET would otherwise satisfy the negative
+  #   boundary match and wrongly allow.
+  # - On resolution failure the whole block is skipped, falling through to the
+  #   hash computation.
+  if REAL_REPO=$(_lib_realpath_m "$REPO_ROOT") && REAL_TARGET=$(_lib_realpath_m "$TARGET_PATH"); then
+    # Reviewer findings writes are exempt — they land in the gitignored
+    # agent-reviews/ directory and are never staged. Blocking them forces the
+    # reviewer into a full-inline fallback that loses all context savings.
+    # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
+    # _lib_realpath_m resolves both ".." components and symlinks (existing- or dangling-target) to their true filesystem location. REAL_REPO/REAL_TARGET are therefore already canonical here and in the repo-boundary check below, so a symlinked repo path or a symlink aliasing into agent-reviews/ cannot spoof either check.
+    if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
+      exit 0
+    fi
+    # A write whose own target is a plan file this gate hashes is authoring
+    # the plan the gate demands a review of. (ExitPlanMode never reaches this
+    # block -- see the TARGET_PATH guard above.)
+    if _lib_is_repo_plan_file "$REAL_REPO" "$REAL_TARGET"; then
+      exit 0
+    fi
+    if [[ "$REAL_TARGET" != "$REAL_REPO/"* ]]; then
+      exit 0
+    fi
+  fi
+fi
+
 # Compute the content-addressed hash of the active plan file set (paths +
 # contents; see _lib_active_plan_hash in _lib.sh for the full contract). A
 # plan file that is tracked and identical to HEAD is historical (its PR
@@ -253,34 +315,6 @@ if WORKTREE_LIST=$(_lib_capped git -C "$REPO_ROOT" worktree list --porcelain 2>/
   fi
 fi
 
-# Scope the deny to writes inside this repo. Writes targeting user-home
-# directories (~/.claude/plans/), /tmp, or other repos are outside the gate's
-# intent — the gate guards this repo's code, not all files on disk.
-# ExitPlanMode carries no file_path, so TARGET_PATH is always empty for it;
-# this block is skipped and ExitPlanMode reaches emit_deny unconditionally.
-if [ -n "$TARGET_PATH" ]; then
-  REAL_REPO=$(_lib_realpath_m "$REPO_ROOT")
-  REAL_TARGET=$(_lib_realpath_m "$TARGET_PATH")
-  # An empty REAL_TARGET means _lib_realpath_m could not resolve the write
-  # target (its fallback loop's depth cap can exhaust on a system lacking
-  # both realpath -m and grealpath). Skip the exemption and boundary checks
-  # below and fall through to the deny path instead of reading an
-  # unresolved path as proof the target is outside the repo.
-  if [ -n "$REAL_TARGET" ]; then
-    # Reviewer findings writes are exempt — they land in the gitignored
-    # agent-reviews/ directory and are never staged. Blocking them forces the
-    # reviewer into a full-inline fallback that loses all context savings.
-    # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
-    # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
-    if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
-      exit 0
-    fi
-    if [[ "$REAL_TARGET" != "$REAL_REPO/"* ]]; then
-      exit 0
-    fi
-  fi
-fi
-
 if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
   emit_deny "Plan presentation blocked by the plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found.
 
@@ -288,7 +322,7 @@ if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
 
   If no plan covers this session yet → run /plan-it first. It authors the plan and hands off to /plan-review."
 else
-  emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found. A review from an earlier session still counts — the gate matches on the plan's content, not on which session reviewed it — so this means the plan set has changed since its last review, or has never been reviewed. Committed, unmodified plan files are treated as historical and do not arm the gate. Next step depends on whether a plan covers this change:
+  emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found. A review from an earlier session still counts — the gate matches on the plan's content, not on which session reviewed it — so this means the plan set has changed since its last review, or has never been reviewed. Committed, unmodified plan files are treated as historical and do not arm the gate. Editing the plan file itself is exempt from this gate — this deny is for a different, non-plan target, so the plan is still editable. Next step depends on whether a plan covers this change:
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 

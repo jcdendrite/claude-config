@@ -30,6 +30,7 @@ Maintained by [Cordova Strategy](https://cordovastrategy.com).
   - [Auto mode](#auto-mode)
   - [Output preferences](#output-preferences)
   - [Machine-specific overrides](#machine-specific-overrides)
+  - [Artifact and Workflow disabled by default](#artifact-and-workflow-disabled-by-default)
 - [Context management](#context-management)
 - [Tests](#tests)
 - [Acknowledgments](#acknowledgments)
@@ -71,7 +72,7 @@ The README below is organized by feature surface (hooks, skills, plugins, script
 - **Post-compaction authorization boundary restatement** — `restore-authorization-boundary-on-compact.sh` matches `compact` only, re-injecting the irreversible-action confirmation boundary the harness-generated compact summary's "Optional Next Step" section carries no trace of. See [Context management](#context-management).
 - **Read-before-dispatch routing gate** — `require-routing-read.sh` blocks subagent spawn during `/plan-review` until `ROUTING.md` is read; a PostToolUse companion records the read per session. See [`docs/hooks.md`](docs/hooks.md).
 - **Self-consuming continuity files** — `/handoff`/`/brief` write to a durable `~/.claude/` directory, not `/tmp`, so they survive a reboot; a `PostToolUse` `Read` hook mechanically consumes the file the moment it's read directly (the same-session `/clear`-then-read path), while `resume-context.sh` covers the fresh-process path. Owner-only permissions come from `./install.sh`'s one-time hardening, not a per-skill chmod. See [`docs/hooks.md`](docs/hooks.md) (`consume-durable-continuity-file-on-read.sh`), [`docs/design-decisions.md`](docs/design-decisions.md), and [Context management](#context-management).
-- **Post-crash session recovery** — `post-crash-sessions` cross-references Claude Code's own session registry, scheduled-task lock files, and the transcript corpus against last-boot time to find sessions an unclean shutdown orphaned, printing a `cd <cwd> && claude --resume <id>` for each recoverable one — no manual transcript-corpus spelunking required. See [`docs/scripts.md`](docs/scripts.md).
+- **Post-crash session recovery** — `post-crash-sessions` cross-references four session-liveness sources, including a never-swept lookup corpus that survives a same-day crash with no reboot, to find and resume crash-orphaned sessions. See [`docs/scripts.md`](docs/scripts.md).
 - **Project-layer composition by glob + Skill-tool dispatch** — `/plan-it`, `/plan-review`, `/code-review`, and `/test-conventions` glob for `.claude/skills/<parent>-<project>/SKILL.md` at runtime; consuming repos extend the base skill without forking. Description-based auto-trigger was empirically tested and rejected (it doesn't fire from inside a running skill). Add-on skills on the project side should set `disable-model-invocation: true` — the parent invokes them via the Skill tool, so their description doesn't need to be in the always-loaded skill-listing budget. See [docs/skills.md](docs/skills.md) and `docs/design-decisions.md` decision 8.
 - **Three-tier redaction** — always-on tracker-ID regex, opt-in user-local blocklist, reviewer discipline for structural fingerprints and private-corpus provenance. See [Private-project redaction](#private-project-redaction).
 - **Multi-account transcript corpus scope** — `transcript-analysis.py`, `post-crash-sessions`, `analyze-context.py`, and `token-analyzer.py` default to the union of every root in `~/.claude/transcript-config-dirs`, except `cost --summary` (active account only) — each subcommand's resolved-scope header states the root count so scope is never silently narrower than it looks. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md) for the per-subcommand mechanics.
@@ -125,7 +126,7 @@ Linear pipeline: plan-it → plan-review → code → code-review → commit →
 ```mermaid
 flowchart LR
     A[/plan-it/] --> B[/plan-review/]
-    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists"| EPM([ExitPlanMode / present to user])
+    B -->|"require-plan-review.sh\ngates ExitPlanMode + Write/Edit while plan exists\n(exempt: writes to the plan file itself)"| EPM([ExitPlanMode / present to user])
     EPM --> C([Write code])
     C --> D[/code-review/]
     D -->|"require-code-review.sh\ngates git commit"| E([git commit])
@@ -154,7 +155,7 @@ flowchart LR
 
 | Hook | Gates | Cleared by |
 |---|---|---|
-| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/` | `/plan-review` marker covering the current plan set |
+| `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
@@ -171,7 +172,7 @@ flowchart LR
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
 | `capture-session-id.sh` | — (SessionStart, no gate) | Writes session-id so marker filenames are per-session |
-| `nudge-handoff-near-context-cap.sh` | — (UserPromptSubmit + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
+| `nudge-handoff-near-context-cap.sh` | — (PostToolBatch + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
 | `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
@@ -239,9 +240,9 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, and settings.json conventions.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, settings.json conventions, and test-tree packaging.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra and SQL/DDL conventions that apply across every repo the user opens, not just this one.
-- **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model; the escalation path for Opus planning is `plan-architect`, dispatched automatically by `/plan-it` Step 5 (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+- **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo` and secret-file reads (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
 ### Scripts
 
@@ -257,7 +258,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
-Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid; a worktree whose holder has since exited is diagnosed as such, with a manual `git worktree unlock <path>` remedy rather than an automatic one.
+Worktrees only isolate each session's state if each session gets its own — two sessions that independently anchor into the *same* linked worktree are back to that same race. Both hooks close that gap too: a write into a worktree a live session already holds (tracked via an atomic `O_EXCL` create against the worktree's own `<git-dir>/locked` file, not `git worktree lock` — see `_lib_worktree_collision_guard` in `_lib.sh`) is denied for a second session, naming the holder's pid. A worktree whose holder has since exited has its lock automatically reclaimed and re-acquired for the current caller within the same hook invocation — no manual `git worktree unlock` step, no retry. This lets a background subagent dispatch clear it itself with no human in the loop. Reclaim is a once-only right per lock identity; see `docs/design-decisions.md` §36 for the eviction-claim mechanism and its failure-mode fallback.
 
 #### Activating enforcement on a repo
 
@@ -438,9 +439,9 @@ For plan and model requirements, activation, the full hard-floor deny table, the
 
 ### Output preferences
 
-To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Output Preferences" section.
+To customize response tone, formatting, and communication style, create `<config-dir>/output-preferences.md`. This file is user-local and never committed to this repo. It is loaded via an instruction in `claude/.claude/CLAUDE.md`'s "Prose and Output Format" section. That section also carries the non-personal prose rules — response shape, concision, sentence craft — and those apply to every session and subagent whether or not this file exists.
 
-**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Avoid duplicating rules already in the global CLAUDE.md — they apply regardless, and duplicate entries waste context budget.
+**Cap:** keep it under 50 lines — content beyond that competes with project context for the 200-line CLAUDE.md budget. Keep it to personal tone and style — rules already in the global CLAUDE.md apply regardless, and a second copy here costs context budget and drifts from the original.
 
 **Template:**
 
@@ -448,18 +449,21 @@ To customize response tone, formatting, and communication style, create `<config
 # Output preferences
 
 - Tone: direct and calibrated — state things plainly; match certainty to evidence (no overclaiming, no hedging filler).
-- Length: concise. Include the why when non-obvious; skip narration of internal process.
 - Avoid emoji unless explicitly asked.
-- Prefer plain prose over bullet lists when the answer is a single concept.
 ```
 
 ### Machine-specific overrides
 
-Personal permission overrides belong in a repository's own `.claude/settings.local.json` (untracked, gitignored automatically) — Claude Code scopes this file to the repository root, not the user's home directory, so there is no single file that covers every repo on the machine at once. For a preference that should apply everywhere, use an environment variable exported from your shell profile instead (see the next section for an example).
+Personal permission overrides belong in a repository's own `.claude/settings.local.json` (untracked, gitignored automatically) — Claude Code scopes this file to the repository root, not the user's home directory, so there is no single file that covers every repo on the machine at once. For a preference that should apply everywhere, use an environment variable exported from your shell profile instead — see the `ANTHROPIC_MODEL`/`CLAUDE_CODE_EFFORT_LEVEL` example in [Configuration files](#configuration-files) above. This does not apply to `disableArtifact`/`disableWorkflows`, which are a shared repo-wide default rather than a personal preference — see the next section for how to override those two specifically.
 
-### Context budget: disabling Artifact/Workflow
+### Artifact and Workflow disabled by default
 
-The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt — roughly 7,200 tokens combined (schema size is measured; the actual reclaim from disabling is not yet independently confirmed — see [`docs/design-decisions.md` §28](docs/design-decisions.md)). Both have a documented disable setting with an environment-variable equivalent, `CLAUDE_CODE_DISABLE_ARTIFACT=1` / `CLAUDE_CODE_DISABLE_WORKFLOWS=1`. This repo doesn't set either — publishing Artifacts and running multi-agent Workflows are legitimate for many stow consumers, so it isn't a default this shared config should impose. If you don't use one or both tools, export the corresponding variable from your own shell profile to reclaim that budget across every repo on the machine.
+The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt, so `settings.json` sets `disableArtifact`/`disableWorkflows` to `true` by default; see [`docs/design-decisions.md` §31](docs/design-decisions.md) for the measurement. Two commands re-enable one tool for a single session, taking CLI-scope precedence over the shared default:
+
+- **`claude-workflow`** — starts a session with the `Workflow` tool enabled (Artifact stays off). Takes the same flags and positional prompt as `claude`.
+- **`claude-artifact`** — same, for the `Artifact` tool.
+
+To flip the default itself rather than opting back in per session, set `disableWorkflows: false` (or `disableArtifact: false`) in a repository's own `.claude/settings.json` or `.claude/settings.local.json` — both outrank the User-scope default this repo ships.
 
 ## Context management
 
@@ -484,6 +488,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 ### Threshold reference
 
 - 150000 tokens (default): the absolute-token cap for `/handoff`'s suggested threshold — this repo's own chosen ceiling, not a vendor-specified figure, overridable via `HANDOFF_NUDGE_ABS_CAP`. `nudge-handoff-near-context-cap.sh` computes the actual per-session threshold as the lesser of 40% of the resolved model's context window (200k or 1M, model-dependent) and this cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for the per-model table and known limitations.
+- 470000 tokens (default): `HANDOFF_NUDGE_BLOCK_AT`, the absolute token position past which a further re-arm hard-blocks (stderr + exit 2) instead of staying advisory, independent of how many re-arms preceded it. Overridable via `HANDOFF_NUDGE_BLOCK_AT`; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) for why this point and the surviving exits from a block.
 - ~83.5%: auto-compact trigger (community-reported; configurable via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
 - Run `analyze-context` to inspect token usage for the current session.
 
@@ -506,7 +511,24 @@ The `.venv` lives only in the main worktree root. Linked worktrees live at `.cla
 
 The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
 
+Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
+
+`-n auto` resolves to the machine's logical CPU count. To cap it:
+
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/` and `select-tests.py`.
+- Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
+- When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
+- Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
+
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
+
+For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence falls back to running the full suite:
+
+```bash
+.venv/bin/python3 claude/.claude/scripts/select-tests.py
+```
+
+Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push.
 
 ## Acknowledgments
 

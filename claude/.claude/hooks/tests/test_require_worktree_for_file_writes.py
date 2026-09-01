@@ -6,16 +6,18 @@ import os
 import subprocess
 
 import pytest
-from conftest import _dead_pid, _worktree_lock_reason
 from helpers import (
     HOOKS_DIR,
     bash_input,
     edit_input,
     multiedit_input,
     run_hook,
+    run_hook_context,
     run_hook_reason,
     write_input,
 )
+
+from .conftest import _dead_pid, _worktree_lock_reason
 
 FILE_WRITES_HOOK = HOOKS_DIR / "require-worktree-for-file-writes.sh"
 
@@ -406,24 +408,21 @@ class TestWorktreeCollisionGuard:
         assert str(foreign_pid) in reason
         assert "live" in reason
 
-    def test_foreign_dead_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
-        """A lock naming a pid that is no longer running denies, naming that
-        pid and pointing at the manual `git worktree unlock` remedy — and
-        the worktree is still locked afterward, confirming the hook itself
-        never ran that unlock (no auto-eviction)."""
+    def test_foreign_dead_lock_auto_evicted_and_reclaimed(self, isolated_home, opted_in_with_worktree):
+        """A lock naming a pid that is no longer running is auto-evicted
+        and re-acquired for this session within the same hook invocation
+        -- reversing the "hook must not auto-evict a dead-pid lock"
+        invariant a prior design iteration pinned here. See
+        docs/design-decisions.md §36."""
         _, worktree = opted_in_with_worktree
         dead_pid = _dead_pid()
-        _lock_worktree(worktree, f"claude-code pid {dead_pid}")
+        _lock_worktree(worktree, f"claude-code pid {dead_pid} session foreign-dead-their-session")
 
         path = str(worktree / "file.txt")
-        reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
+        assert run_hook(FILE_WRITES_HOOK, edit_input(path)) == "allow"
+        reason = _worktree_lock_reason(worktree)
         assert reason is not None
-        assert str(dead_pid) in reason
-        assert "no longer running" in reason
-        assert "git worktree unlock" in reason
-        assert _worktree_lock_reason(worktree) is not None, (
-            "hook must not auto-evict a dead-pid lock"
-        )
+        assert f"pid {os.getpid()}" in reason
 
     def test_unparseable_reason_lock_denies_with_manual_remedy(self, isolated_home, opted_in_with_worktree):
         """A lock reason with no parseable pid (e.g. a human ran `git
@@ -438,4 +437,36 @@ class TestWorktreeCollisionGuard:
         assert "git worktree unlock" in reason
         assert _worktree_lock_reason(worktree) is not None, (
             "hook must not auto-evict an unparseable-reason lock"
+        )
+
+    def test_fresh_acquire_via_write_carries_context(self, isolated_home, opted_in_with_worktree):
+        """A write into a virgin (never-locked) worktree that freshly
+        acquires the lock carries an additionalContext note explaining the
+        reacquisition, alongside the allow."""
+        _, worktree = opted_in_with_worktree
+        assert _worktree_lock_reason(worktree) is None, "fixture worktree must start unlocked"
+        path = str(worktree / "file.txt")
+
+        context = run_hook_context(FILE_WRITES_HOOK, edit_input(path))
+        assert context is not None, "expected an allow-with-context payload"
+        assert str(worktree) in context
+        assert "git worktree unlock" in context
+
+        assert _worktree_lock_reason(worktree) is not None, (
+            "the guard's own call is expected to lock the worktree"
+        )
+
+    def test_self_lock_reentry_allows_silently_with_no_context(self, isolated_home, opted_in_with_worktree):
+        """A second write in the same session recognizes its own
+        already-held lock and allows with no additionalContext -- the
+        informational note fires only when THIS call is the one that
+        acquired the lock, not on every self-lock allow. Companion to
+        test_self_lock_reentry_is_idempotent, which pins the lock-state
+        side effect. This test pins the messaging behavior."""
+        _, worktree = opted_in_with_worktree
+        assert run_hook(FILE_WRITES_HOOK, edit_input(str(worktree / "file.txt"))) == "allow"
+
+        context = run_hook_context(FILE_WRITES_HOOK, write_input(str(worktree / "other.txt")))
+        assert context is None, (
+            "self-lock reentry must allow silently, with no additionalContext"
         )

@@ -277,7 +277,7 @@ class TestResolveWorktreeForBranch:
     script), against a real repo built from the shared conftest helpers."""
 
     def test_branch_with_worktree_resolves_path(self, tmp_path):
-        from conftest import _make_feature_branch, _make_repo_with_remote, _make_worktree
+        from .conftest import _make_feature_branch, _make_repo_with_remote, _make_worktree
 
         local, _ = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/has-worktree")
@@ -295,7 +295,7 @@ echo "locked:$WORKTREE_LOCKED"
         assert "locked:0" in result.stdout
 
     def test_branch_without_worktree_resolves_empty(self, tmp_path):
-        from conftest import _make_feature_branch, _make_repo_with_remote
+        from .conftest import _make_feature_branch, _make_repo_with_remote
 
         local, _ = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/no-worktree")
@@ -315,7 +315,7 @@ echo "path:[$WORKTREE_PATH]"
         function does independently of either consumer script's full-run
         tests (which exercise this only incidentally, via cleanup-merged-
         branches.sh's own locked-worktree scenarios)."""
-        from conftest import _dead_pid, _make_feature_branch, _make_repo_with_remote, _make_worktree
+        from .conftest import _dead_pid, _make_feature_branch, _make_repo_with_remote, _make_worktree
 
         local, _ = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/locked-direct")

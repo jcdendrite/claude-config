@@ -3,10 +3,12 @@ import importlib.util
 import json
 import signal
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import (
+
+from .conftest import (
     _agent_use,
     _asst,
     _edit_use,
@@ -58,7 +60,7 @@ def _n_cited_reviewer_dispatches(
         records.append(_user_msg([_tool_result(tool_id, "ok")], ts=result_ts))
         _write_subagent_dispatch(
             proj, session_id, f"agent-{tool_id}", tool_id,
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": f"Found 1 issue in {cited_path} needing a fix"},
             ])],
             agent_type=subagent_type,
@@ -88,7 +90,10 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No comment-discipline concerns**"}])],
+            [_asst(
+                "claude-sonnet-4-6", sidechain=True,
+                content=[{"type": "text", "text": "**No comment-discipline concerns**"}],
+            )],
             agent_type="comment-discipline-reviewer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -110,7 +115,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -127,7 +132,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Request changes\n- No test covers the retry path."},
             ])],
             agent_type="staff-sdet",
@@ -147,7 +152,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "**Approve with concerns**\n- Rotate the leaked token."},
             ])],
             agent_type="ciso-reviewer",
@@ -169,7 +174,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Wrote findings to /tmp/x.md. Found 1 issue. Missing null check."},
             ])],
             agent_type="staff-backend-engineer",
@@ -190,7 +195,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Wrote findings to /tmp/x.md. Found 3 issues. Coverage gaps."},
             ])],
             agent_type="staff-sdet",
@@ -212,7 +217,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "FOUND 2 ISSUES IN THE PIPELINE CONFIG."},
             ])],
             agent_type="staff-platform-engineer",
@@ -234,7 +239,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 5 issues."}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Found 5 issues."}])],
             agent_type="general-purpose",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -263,7 +268,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}])],
             agent_type="staff-sdet",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -281,7 +286,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "distinctive-session-id", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -298,7 +303,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args(redact=False))
@@ -318,6 +323,30 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            agent_type="ciso-reviewer",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a2", "a2",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
+        out = capsys.readouterr().out
+        assert "ciso-reviewer" not in out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
+        assert cols["Dispatches"] == "1"
+
+    def test_until_boundary_includes_last_moment_excludes_next_day(self, fake_projects, capsys):
+        """--until 2026-06-15 includes a dispatch at the last sub-second moment
+        of that day and excludes one at the very first moment of the next day
+        -- the inclusive-day boundary at sub-second precision."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-06-15T23:59:59.999Z", content=[_agent_use("a1", "ciso-reviewer")]),
+            _asst("claude-opus-4-7", ts="2026-06-16T00:00:00.000Z", content=[_agent_use("a2", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
             [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
@@ -326,11 +355,219 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
         out = capsys.readouterr().out
+        assert "staff-sdet" not in out
+        cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True, occurrence=1)
+        assert cols["Dispatches"] == "1"
+
+    def test_until_and_since_epoch_partition_sum_to_unbounded_count(self, fake_projects, capsys):
+        """Splitting the corpus at the --until boundary (--until B, and a
+        direct since_ts=B's exclusive epoch call for the complement) recovers
+        the unbounded dispatch count exactly -- the additivity invariant an
+        inclusive-day boundary must satisfy with no gap or overlap."""
+        boundary_date = "2026-06-15"
+        until_epoch = _mod._parse_ts(f"{boundary_date}T00:00:00Z") + 86400
+        timestamps = [
+            "2026-06-14T12:00:00.000Z",  # before the boundary day
+            "2026-06-15T00:00:00.000Z",  # first moment of the boundary day
+            "2026-06-15T23:59:59.999Z",  # last moment of the boundary day
+            "2026-06-16T00:00:00.000Z",  # first moment of the day after
+            "2026-06-20T00:00:00.000Z",  # well after
+        ]
+        records = []
+        for i, ts in enumerate(timestamps):
+            tool_id = f"b{i}"
+            records.append(_asst("claude-opus-4-7", ts=ts, content=[_agent_use(tool_id, "staff-sdet")]))
+            _write_subagent_dispatch(
+                fake_projects, "sess", f"agent-{tool_id}", tool_id,
+                [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+                agent_type="staff-sdet",
+            )
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        until_out = capsys.readouterr().out
+        until_cols = _table_cols(
+            until_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
+        )
+        until_count = int(until_cols["Dispatches"])
+
+        roots = _mod._resolve_scan_roots(_reviewer_yield_args())
+        rest_iter, _scope_label = _mod._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
+        rest_data = _mod._compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
+        rest_count = rest_data["agg"]["staff-sdet"]["dispatches"]
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        unbounded_out = capsys.readouterr().out
+        unbounded_cols = _table_cols(
+            unbounded_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
+        )
+        unbounded_count = int(unbounded_cols["Dispatches"])
+
+        assert until_count == 3
+        assert rest_count == 2
+        assert until_count + rest_count == unbounded_count == 5
+
+    def test_untimestamped_dispatch_counted_unbounded_dropped_from_both_bounded_runs(self, fake_projects, capsys):
+        """A dispatch with no parseable timestamp is silently counted in the
+        unbounded run (compute_reviewer_yield_data only timestamp-filters when
+        a bound is actually passed) and dropped from both the --until run and
+        its since-epoch complement -- a known delta, not additivity, since it
+        belongs to neither half once any bound is applied."""
+        boundary_date = "2026-06-15"
+        until_epoch = _mod._parse_ts(f"{boundary_date}T00:00:00Z") + 86400
+        dated_ts = "2026-06-10T00:00:00.000Z"  # before the boundary
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts=dated_ts, content=[_agent_use("c1", "staff-sdet")]),
+            _asst("claude-opus-4-7", content=[_agent_use("c2", "staff-sdet")]),  # no timestamp field at all
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-c1", "c1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-c2", "c2",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        unbounded_out = capsys.readouterr().out
+        unbounded_cols = _table_cols(
+            unbounded_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
+        )
+        unbounded_count = int(unbounded_cols["Dispatches"])
+        assert unbounded_count == 2  # both counted -- no bound means no timestamp check at all
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        until_out = capsys.readouterr().out
+        until_cols = _table_cols(
+            until_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
+        )
+        until_count = int(until_cols["Dispatches"])
+        assert until_count == 1  # only the dated dispatch -- the untimestamped one is dropped
+
+        roots = _mod._resolve_scan_roots(_reviewer_yield_args())
+        rest_iter, _scope_label = _mod._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
+        rest_data = _mod._compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
+        rest_count = rest_data["agg"].get("staff-sdet", {}).get("dispatches", 0)
+        assert rest_count == 0  # the dated dispatch is before the boundary; the untimestamped one is dropped here too
+
+        assert until_count + rest_count == unbounded_count - 1
+
+    @pytest.mark.timing
+    def test_combined_since_nd_and_until_date_applies_both_bounds_as_and(self, fake_projects, capsys):
+        """--since 35d and --until DATE both apply independently (argparse
+        does not block passing both) -- a dispatch must satisfy both to be
+        counted, not either alone."""
+        now = datetime.now(UTC)
+        until_date = (now - timedelta(days=10)).strftime("%Y-%m-%d")
+        ts_both = (now - timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # within 35d, before until date
+        ts_since_only = (now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # within 35d, after until date
+        ts_until_only = (now - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # before until date, outside 35d
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts=ts_both, content=[_agent_use("d1", "staff-sdet")]),
+            _asst("claude-opus-4-7", ts=ts_since_only, content=[_agent_use("d2", "ciso-reviewer")]),
+            _asst("claude-opus-4-7", ts=ts_until_only, content=[_agent_use("d3", "skill-fidelity-reviewer")]),
+        ])
+        for tool_id, agent_type in (("d1", "staff-sdet"), ("d2", "ciso-reviewer"), ("d3", "skill-fidelity-reviewer")):
+            _write_subagent_dispatch(
+                fake_projects, "sess", f"agent-{tool_id}", tool_id,
+                [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+                agent_type=agent_type,
+            )
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="35d", until=until_date))
+        out = capsys.readouterr().out
+        assert "staff-sdet" in out
         assert "ciso-reviewer" not in out
+        assert "skill-fidelity-reviewer" not in out
+
+    def test_until_filtered_table_one_output_matches_expected_verdict_breakdown(self, fake_projects, capsys):
+        """Regression pin on table 1's actual printed row after --until
+        filtering: Found/Zero/Findings reflect only the in-window dispatch,
+        not merely a Dispatches-count check."""
+        boundary_date = "2026-06-15"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-06-10T00:00:00.000Z", content=[_agent_use("e1", "staff-sdet")]),
+            _asst("claude-opus-4-7", ts="2026-06-20T00:00:00.000Z", content=[_agent_use("e2", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-e1", "e1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 3 issues. Details."}])],
+            agent_type="staff-sdet",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-e2", "e2",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
         assert cols["Dispatches"] == "1"
+        assert cols["Found"] == "1"
+        assert cols["Zero"] == "0"
+        assert cols["Findings"] == "3"
+
+    def test_empty_corpus_with_until_prints_no_dispatches_message(self, fake_projects, capsys):
+        """--until against a corpus with zero sessions doesn't crash and
+        prints the same no-dispatches message as the unbounded empty-corpus
+        case."""
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
+        out = capsys.readouterr().out
+        assert "No reviewer-agent dispatches found." in out
+
+    def test_until_flag_adds_title_suffix_and_table_two_caveat(self, fake_projects, capsys):
+        """--until appends ", through <until>" to table 1's title and prints a
+        caveat under table 2's heading noting table 2 is not --until-bounded;
+        neither appears when --until is absent."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-06-10T00:00:00.000Z", content=[_agent_use("e1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-e1", "e1",
+            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 1 issue. Details."}])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
+        until_out = capsys.readouterr().out
+        assert ", through 2026-06-15" in until_out
+        assert "does not bound this table" in until_out
+
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        unbounded_out = capsys.readouterr().out
+        assert ", through" not in unbounded_out
+        assert "does not bound this table" not in unbounded_out
+
+    def test_edit_after_until_boundary_still_counts_toward_active_and_edited(self, fake_projects, capsys):
+        """--until bounds table 1's dispatch-detection loop only. A cited
+        dispatch inside the --until window whose parent Edit lands after the
+        --until boundary still shows nonzero Active/Edited under --until,
+        proving table 2's own tool-result/edit indexes have no upper bound
+        and diverge from table 1's windowing."""
+        boundary_date = "2026-06-15"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-06-10T00:00:00.000Z", content=[_agent_use("f1", "staff-sdet")]),
+            _user_msg([_tool_result("f1", "ok")], ts="2026-06-10T00:00:30.000Z"),
+            _asst("claude-opus-4-7", ts="2026-06-20T00:00:00.000Z", content=[_edit_use("e1", path="src/foo.py")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-f1", "f1",
+            [_asst("claude-sonnet-4-6", content=[
+                {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        out = capsys.readouterr().out
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
+        )
+        assert cols["Active"] == "1"
+        assert cols["Edited"] == "1"
 
     def test_same_agent_type_dispatched_twice_accumulates_not_overwrites(self, fake_projects, capsys):
         """Two dispatches of the same subagent_type within one aggregation run
@@ -341,12 +578,12 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 2 issues. Missing checks."}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Found 2 issues. Missing checks."}])],
             agent_type="ciso-reviewer",
         )
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a2", "a2",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 3 issues. Leaked token."}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Found 3 issues. Leaked token."}])],
             agent_type="ciso-reviewer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -385,7 +622,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
         subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
@@ -435,7 +672,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -459,7 +696,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -485,14 +722,14 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
         )
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a2", "a2",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -512,7 +749,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Reviewed the code."}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Reviewed the code."}])],
             agent_type="staff-sdet",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -572,7 +809,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -596,7 +833,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -618,7 +855,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -642,7 +879,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -665,7 +902,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -691,7 +928,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -717,7 +954,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -744,7 +981,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -771,7 +1008,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in nb/analysis.ipynb needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -783,13 +1020,12 @@ class TestReviewerYield:
         )
         assert cols["Edited"] == "1"
 
-    def test_subagent_authored_edit_never_counts_under_parent_only_index(self, fake_projects, capsys):
-        """Pins the shipped parent-only-index behavior: an edit made inside a
-        code-writer subagent transcript does not count toward Active/Edited
-        even though it followed the reviewer dispatch. This does not exercise
-        a subagent_type-based reviewer-write exclusion — no such mechanism
-        exists in the shipped code (removed by the cost-gate fallback); the
-        edit index simply never reads subagent transcripts at all."""
+    def test_code_writer_subagent_edit_counts_toward_active_and_edited(self, fake_projects, capsys):
+        """An edit made inside a code-writer subagent transcript
+        (isSidechain: true) after a reviewer dispatch's tool_result counts
+        toward Active/Edited — the edit index is session-wide, and
+        code-writer is not a reviewer subagent type, so none of its writes
+        are excluded."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
@@ -797,14 +1033,17 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
         )
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-cw1", "cw1",
-            [_asst("claude-sonnet-4-6", ts="2026-05-19T11:05:00.000Z", content=[_edit_use("e1", path="src/foo.py")])],
+            [_asst(
+                "claude-sonnet-4-6", sidechain=True, ts="2026-05-19T11:05:00.000Z",
+                content=[_edit_use("e1", path="src/foo.py")],
+            )],
             agent_type="code-writer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -812,17 +1051,15 @@ class TestReviewerYield:
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
         )
-        assert cols["Active"] == "0"
-        assert cols["Edited"] == "0"
+        assert cols["Active"] == "1"
+        assert cols["Edited"] == "1"
 
-    def test_sibling_reviewer_findings_write_never_counts_under_parent_only_index(self, fake_projects, capsys):
-        """Pins the shipped parent-only-index behavior: a sibling reviewer
-        dispatched after a zero-finding dispatch writes only its own findings
-        file, and that write does not satisfy Active for the zero-finding
-        dispatch. This does not exercise a subagent_type-based reviewer-write
-        exclusion — no such mechanism exists in the shipped code (removed by
-        the cost-gate fallback); the edit index simply never reads subagent
-        transcripts at all, reviewer or otherwise."""
+    def test_sibling_reviewer_findings_write_excluded_from_active(self, fake_projects, capsys):
+        """A sibling reviewer dispatched after a zero-finding dispatch writes
+        only its own findings file, timestamped after the zero-finding
+        dispatch's own tool_result — the reviewer-write exclusion keeps that
+        write out of the edit index, so Active stays 0 rather than being
+        satisfied by a sibling's routine bookkeeping."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
             _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
@@ -831,14 +1068,14 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "**No concerns** src/foo.py is clean"},
             ])],
             agent_type="ciso-reviewer",
         )
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a2", "a2",
-            [_asst("claude-sonnet-4-6", ts="2026-05-19T11:05:00.000Z", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, ts="2026-05-19T11:05:00.000Z", content=[
                 _write_use("w1", "No issues found.", path="/scratch/sibling-findings.md"),
                 {"type": "text", "text": "**No testing concerns**"},
             ])],
@@ -851,6 +1088,131 @@ class TestReviewerYield:
         )
         assert cols["Cited"] == "1"
         assert cols["Active"] == "0"
+
+    def test_reviewer_write_excluded_even_when_its_own_dispatch_is_nested_on_a_sidechain_record(
+        self, fake_projects, capsys
+    ):
+        """A reviewer dispatch whose own Agent/Task tool_use sits on an
+        isSidechain record (nested inside another subagent's transcript) —
+        the dispatch-detection loop skips that record entirely (so this
+        nested dispatch never appears in either table), but the pre-pass
+        that builds the exclusion set applies no isSidechain filter, so its
+        write is still excluded from an unrelated dispatch's Active."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "ciso-reviewer")]),
+            _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
+            _asst("claude-sonnet-4-6", sidechain=True, ts="2026-05-19T10:15:00.000Z", content=[
+                _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
+                {"type": "text", "text": "**No concerns** src/foo.py is clean"},
+            ])],
+            agent_type="ciso-reviewer",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a2", "a2",
+            [_asst("claude-sonnet-4-6", sidechain=True, ts="2026-05-19T11:00:00.000Z", content=[
+                _write_use("w1", "No issues found.", path="/scratch/nested-findings.md"),
+                {"type": "text", "text": "**No testing concerns**"},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        assert "staff-sdet" not in out  # nested dispatch never detected as its own row
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains=("ciso-reviewer", "zero-finding"), occurrence=2,
+        )
+        assert cols["Cited"] == "1"
+        assert cols["Active"] == "0"
+
+    def test_reviewer_write_excluded_even_when_its_own_dispatch_falls_outside_the_since_window(
+        self, fake_projects, capsys
+    ):
+        """A reviewer dispatch whose own Agent/Task tool_use falls outside
+        the --since window is excluded from both tables (the dispatch-
+        detection loop is since_ts-bounded), but the pre-pass that builds
+        the exclusion set applies no window filter, so its write — itself
+        timestamped inside the window — is still excluded from an unrelated,
+        in-window dispatch's Active."""
+        old_ts = "2020-01-01T00:00:00.000Z"
+        new_ts = "2099-12-31T00:00:00.000Z"
+        new_result_ts = "2099-12-31T00:00:30.000Z"
+        out_of_window_write_ts = "2099-12-31T01:00:00.000Z"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts=new_ts, content=[_agent_use("a1", "ciso-reviewer")]),
+            _user_msg([_tool_result("a1", "ok")], ts=new_result_ts),
+            _asst("claude-opus-4-7", ts=old_ts, content=[_agent_use("a2", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
+                {"type": "text", "text": "**No concerns** src/foo.py is clean"},
+            ])],
+            agent_type="ciso-reviewer",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a2", "a2",
+            [_asst("claude-sonnet-4-6", sidechain=True, ts=out_of_window_write_ts, content=[
+                _write_use("w1", "No issues found.", path="/scratch/out-of-window-findings.md"),
+                {"type": "text", "text": "**No testing concerns**"},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
+        out = capsys.readouterr().out
+        assert "staff-sdet" not in out  # a2's own dispatch record falls outside --since
+        cols = _table_cols(
+            out, header_contains="AgentType", row_contains=("ciso-reviewer", "zero-finding"), occurrence=2,
+        )
+        assert cols["Cited"] == "1"
+        assert cols["Active"] == "0"
+
+    def test_unreadable_reviewer_transcript_does_not_corrupt_scoring_for_another_dispatch(
+        self, fake_projects, capsys
+    ):
+        """A reviewer dispatch whose subagent transcript is unreadable
+        increments the read-error line, but an unrelated, healthy reviewer
+        dispatch's own Active/Edited scoring is unaffected — the pre-pass's
+        per-dispatch read failure does not propagate into
+        _reviewer_write_tool_use_ids' shared exclusion set."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+            _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
+            _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("a2", "ciso-reviewer")]),
+            _user_msg([_tool_result("a2", "ok")], ts="2026-05-19T11:00:30.000Z"),
+            _asst("claude-opus-4-7", ts="2026-05-19T12:00:00.000Z", content=[_edit_use("e1", path="src/bar.py")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
+                {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
+            ])],
+            agent_type="staff-sdet",
+        )
+        (fake_projects / "sess" / _mod.SUBAGENT_SUBDIR / "agent-a1.jsonl").unlink()
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a2", "a2",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
+                {"type": "text", "text": "Found 1 issue in src/bar.py needing a fix"},
+            ])],
+            agent_type="ciso-reviewer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        out = capsys.readouterr().out
+        cols1 = _table_cols(
+            out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
+        )
+        assert cols1["Unclass"] == "1"
+        assert "(1 reviewer transcripts failed to read, excluded from Cited)" in out
+        cols2 = _table_cols(
+            out, header_contains="AgentType", row_contains=("ciso-reviewer", "findings-found"), occurrence=2,
+        )
+        assert cols2["Active"] == "1"
+        assert cols2["Edited"] == "1"
 
     def test_dispatch_own_write_target_excluded_from_cited(self, fake_projects, capsys):
         """The dispatch's own findings-file Write target, later echoed in
@@ -865,7 +1227,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 _write_use("w1", "No issues found.", path="/scratch/my-findings.md"),
                 {"type": "text", "text": "**No concerns** Findings written to /scratch/my-findings.md, nothing else found"},
             ])],
@@ -896,7 +1258,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 _write_use("w1", "Missing null check.", path="/scratch/findings.md"),
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
@@ -925,7 +1287,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [{**_asst("claude-sonnet-4-6", content=[
+            [{**_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
              ]), "cwd": "/repo"}],
             agent_type="staff-sdet",
@@ -948,7 +1310,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[{
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{
                 "type": "text",
                 "text": "**No concerns** See ~/.claude/plans/foo.md and .claude/plans/bar.md for context",
             }])],
@@ -972,7 +1334,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 2 issues in src/foo.py and src/bar.py needing review"},
             ])],
             agent_type="staff-sdet",
@@ -996,7 +1358,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 _write_use("w1", "Reviewed src/foo.py, no issues found."),
                 {"type": "text", "text": "**No concerns**"},
             ])],
@@ -1021,7 +1383,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 _write_use("w1", "Reviewed src/foo.py, confirmed the issue."),
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
@@ -1048,14 +1410,14 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": "Found 1 issue in src/foo.py needing a fix"},
             ])],
             agent_type="staff-sdet",
         )
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a2", "a2",
-            [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No CISO concerns**"}])],
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
         _mod.cmd_reviewer_yield(_reviewer_yield_args())
@@ -1080,7 +1442,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 {"type": "text", "text": f"Found 1 issue in {sentinel_path} needing a fix"},
             ])],
             agent_type="staff-sdet",
@@ -1106,7 +1468,7 @@ class TestReviewerYield:
         ])
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a1", "a1",
-            [_asst("claude-sonnet-4-6", content=[
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
                 _write_use("w1", f"Reviewed {sentinel_path}, confirmed the issue."),
                 {"type": "text", "text": "**No concerns**"},
             ])],
@@ -1116,6 +1478,54 @@ class TestReviewerYield:
         captured = capsys.readouterr()
         assert sentinel_path not in captured.out
         assert sentinel_path not in captured.err
+
+    def test_drift_warning_emitted_when_spawns_but_no_sidechain_turns(self, fake_projects, capsys):
+        """cmd_reviewer_yield's own subagent_spawns/sidechain_turns
+        accumulation (fed to pricing._warn_if_subagent_format_drift) fires
+        the drift canary the same way cache-efficiency's call site does."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[
+                _agent_use("a1", "staff-backend-engineer"),
+            ]),
+        ])
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        assert "WARNING" in capsys.readouterr().err
+
+    def test_subagent_sourced_edit_does_not_leak_a_client_named_path(self, fake_projects, capsys):
+        """The include_subagents=True edit index this diff adds must not leak
+        a raw path any more than the pre-existing parent-only index did — a
+        code-writer subagent editing a client-named path stays digest-only in
+        the captured output, even though the edit itself is genuinely counted."""
+        sentinel_path = "clients/acme-corp-engagement/src/billing.py"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+            _user_msg([_tool_result("a1", "ok")], ts="2026-05-19T10:00:30.000Z"),
+            _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("cw1", "code-writer")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a1", "a1",
+            [_asst("claude-sonnet-4-6", sidechain=True, content=[
+                {"type": "text", "text": f"Found 1 issue in {sentinel_path} needing a fix"},
+            ])],
+            agent_type="staff-sdet",
+        )
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-cw1", "cw1",
+            [_asst(
+                "claude-sonnet-4-6", sidechain=True, ts="2026-05-19T11:05:00.000Z",
+                content=[_edit_use("e1", path=sentinel_path)],
+            )],
+            agent_type="code-writer",
+        )
+        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        captured = capsys.readouterr()
+        assert sentinel_path not in captured.out
+        assert sentinel_path not in captured.err
+        cols = _table_cols(
+            captured.out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
+        )
+        assert cols["Active"] == "1"
+        assert cols["Edited"] == "1"
 
 
 class TestExtractCitedPaths:
@@ -1343,9 +1753,33 @@ class TestBuildToolResultTsMap:
         assert result == {}
 
 
-class TestIndexParentEdits:
-    """_index_parent_edits(records, since_ts) -> {normalized_key: latest_ts}:
-    the parent-main-thread edit side of reviewer-yield's overlap join."""
+class TestScanReviewerTranscripts:
+    """_scan_reviewer_transcripts(records, dispatch_index) ->
+    {dispatch_id: _ReviewerTranscriptScan}: the pre-pass behind
+    _reviewer_write_tool_use_ids' edit-index exclusion set."""
+
+    def test_unreadable_transcript_scans_to_empty_code_write_ids(self, tmp_path):
+        """A reviewer dispatch resolvable through dispatch_index whose own
+        .jsonl is unreadable scans to read_error=True with an empty
+        code_write_tool_use_ids — it contributes nothing to
+        _reviewer_write_tool_use_ids' union, rather than corrupting it with
+        a spurious id."""
+        missing_jsonl = tmp_path / "missing.jsonl"
+        dispatch_index = {"a1": (missing_jsonl, None)}
+        records = [
+            _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
+        ]
+        scans = _mod.reviewer_yield._scan_reviewer_transcripts(records, dispatch_index)
+        assert scans["a1"].read_error is True
+        assert scans["a1"].code_write_tool_use_ids == frozenset()
+        assert _mod.reviewer_yield._reviewer_write_tool_use_ids(scans) == frozenset()
+
+
+class TestIndexSessionEdits:
+    """_index_session_edits(records, since_ts, *, reviewer_write_tool_use_ids)
+    -> {normalized_key: latest_ts}: the session-wide edit side of
+    reviewer-yield's overlap join, minus every reviewer-typed subagent's own
+    code-write."""
 
     def test_write_tool_use_produces_keyed_entry(self):
         ts = "2026-05-19T11:00:00.000Z"
@@ -1353,7 +1787,7 @@ class TestIndexParentEdits:
             {**_asst("claude-opus-4-7", ts=ts, content=[_write_use("w1", "content", path="src/foo.py")]),
              "cwd": "/repo"},
         ]
-        result = _mod._index_parent_edits(records, since_ts=None)
+        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
         key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
         assert result == {key: _mod._parse_ts(ts)}
 
@@ -1362,7 +1796,7 @@ class TestIndexParentEdits:
         records = [
             {**_asst("claude-opus-4-7", ts=ts, content=[_edit_use("e1", path="src/foo.py")]), "cwd": "/repo"},
         ]
-        result = _mod._index_parent_edits(records, since_ts=None)
+        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
         key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
         assert result == {key: _mod._parse_ts(ts)}
 
@@ -1372,7 +1806,7 @@ class TestIndexParentEdits:
             "file_path": "src/foo.py", "edits": [{"old_string": "a", "new_string": "b"}],
         }}
         records = [{**_asst("claude-opus-4-7", ts=ts, content=[multiedit]), "cwd": "/repo"}]
-        result = _mod._index_parent_edits(records, since_ts=None)
+        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
         key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
         assert result == {key: _mod._parse_ts(ts)}
 
@@ -1384,7 +1818,7 @@ class TestIndexParentEdits:
             "notebook_path": "nb/analysis.ipynb",
         }}
         records = [{**_asst("claude-opus-4-7", ts=ts, content=[notebook_edit]), "cwd": "/repo"}]
-        result = _mod._index_parent_edits(records, since_ts=None)
+        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
         key = _mod._normalize_cited_path("nb/analysis.ipynb", cwd="/repo")
         assert result == {key: _mod._parse_ts(ts)}
 
@@ -1396,8 +1830,42 @@ class TestIndexParentEdits:
             {**_asst("claude-opus-4-7", ts=new_ts, content=[_edit_use("e2", path="src/new.py")]), "cwd": "/repo"},
         ]
         since_ts = _mod._parse_ts("2050-01-01T00:00:00.000Z")
-        result = _mod._index_parent_edits(records, since_ts)
+        result = _mod._index_session_edits(records, since_ts, reviewer_write_tool_use_ids=frozenset())
         assert list(result) == [_mod._normalize_cited_path("src/new.py", cwd="/repo")]
+
+    def test_reviewer_write_id_skipped_other_id_on_same_record_indexed(self):
+        """A code-write block whose id is in reviewer_write_tool_use_ids is
+        skipped; an otherwise-identical block with a different id, on the
+        same record, is indexed — the exclusion is keyed on tool_use id, not
+        on the write's shape or its record."""
+        ts = "2026-05-19T11:00:00.000Z"
+        excluded_write = _write_use("w1", "findings", path="src/foo.py")
+        other_write = _write_use("w2", "content", path="src/bar.py")
+        records = [
+            {**_asst("claude-opus-4-7", ts=ts, content=[excluded_write, other_write]), "cwd": "/repo"},
+        ]
+        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
+        assert list(result) == [_mod._normalize_cited_path("src/bar.py", cwd="/repo")]
+
+    def test_excluded_write_does_not_erase_code_writer_edit_at_the_same_path_key(self):
+        """A reviewer-write id excluded via reviewer_write_tool_use_ids and a
+        code-writer edit sharing the same normalized path key, in the same
+        session: the recorded timestamp reflects the code-writer edit, not
+        the excluded (and later-timestamped) write. Distinguishes the
+        tool_use-id-set mechanism, which drops only the excluded block, from
+        a path-key-subtraction alternative, which would have dropped the key
+        entirely regardless of which block wrote it."""
+        code_writer_ts = "2026-05-19T10:00:00.000Z"
+        excluded_write_ts = "2026-05-19T11:00:00.000Z"
+        code_writer_edit = _edit_use("e1", path="src/foo.py")
+        excluded_write = _write_use("w1", "findings", path="src/foo.py")
+        records = [
+            {**_asst("claude-opus-4-7", ts=code_writer_ts, content=[code_writer_edit]), "cwd": "/repo"},
+            {**_asst("claude-opus-4-7", ts=excluded_write_ts, content=[excluded_write]), "cwd": "/repo"},
+        ]
+        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
+        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: _mod._parse_ts(code_writer_ts)}
 
 
 class TestReviewerYieldCitedKeys:

@@ -75,9 +75,9 @@ Bash output truncates at 30 KB — well above typical check-suite size —
 so an inline heavy run costs the parent only the ~2 KB failure tail,
 not the full suite output, with no follow-up read needed.
 
-- **Enumerate check commands and run them one at a time** (e.g., `pytest
-  claude/.claude/`, then `ruff check claude/.claude/`) or as a single chained
-  command when they share a working directory.
+- **Enumerate check commands and run them one at a time** (test, then lint,
+  then typecheck) or as a single chained command when they share a working
+  directory.
 - **Set an explicit working directory** before running — always run from an
   absolute path you've anchored with `cd` or `Bash(cd ... && ...)`.
 - **Setup and state-mutating commands run inline too** (db resets, migrations,
