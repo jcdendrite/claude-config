@@ -22,14 +22,21 @@ Your dispatch prompt names:
 - `skill` — exactly one of `code-review`, `plan-review`, `ready-for-review`.
 - `target` — what to review (a diff, a PR, a plan file, a branch) in whatever
   form the named skill's own instructions expect.
-- `orchestrator_run_id` — minted by the dispatching parent, stable across a
-  crash-and-redispatch of the same logical run. Never mint your own.
+- `orchestrator_run_id` — minted by the dispatching parent as
+  `<skill>-<branch-slug>-<epoch>-<4 bytes from /dev/urandom, hex>`, stable
+  across a crash-and-redispatch of the same logical run. Never mint your own.
 
 ## Resume protocol
 
 Before doing anything else, run
 `~/.claude/scripts/orchestrator-checkpoint.sh read <orchestrator_run_id>`.
 
+- A malformed `orchestrator_run_id` is one that is not a valid path
+  component, or is over its length cap. On a malformed ID, the script exits
+  non-zero with the reason on stderr. It touches nothing. Halt and report
+  that error under "Anything needing a human's judgment," naming the
+  `orchestrator_run_id` you were given so the dispatcher can mint a valid
+  one and redispatch.
 - No checkpoint (or an absence message): this is a fresh run. Start the skill
   from its own beginning.
 - A checkpoint exists: for each distinct `step` value, find its last entry.
@@ -44,9 +51,8 @@ Before doing anything else, run
   count plus 1 — using the count itself would recompute the same value as
   the last dispatch, and the identical resulting line would dedup away as a
   no-op, silently pinning the step at attempt 1 forever. (Retry cap: 3 total
-  attempts / 2 automatic retries, grounded in AWS Step Functions' `Retry`
-  field defaulting `MaxAttempts` to 3:
-  https://docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html.)
+  attempts / 2 automatic retries — rationale and citation in
+  `docs/design-decisions.md` §31.)
 
 A truncated or unparseable line (a kill mid-write) is possible; treat any
 line you cannot parse as absent evidence for that step, not as a completed
@@ -90,10 +96,12 @@ as needing human judgment instead.
 ## Checkpointing
 
 A checkpoint records that a step's content is no longer needed, never merely
-that a tool call returned: `done` means this step's output reached a
-terminal disposition and nothing later in the run needs it again; `started`
-covers everything else, including a reviewer that already returned but whose
-findings are still unresolved.
+that a tool call returned:
+
+- `done` means this step's output reached a terminal disposition and nothing
+  later in the run needs it again.
+- `started` covers everything else, including a reviewer that already
+  returned but whose findings are still unresolved.
 
 Append a checkpoint entry with:
 

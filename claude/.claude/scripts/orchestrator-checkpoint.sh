@@ -72,16 +72,6 @@ _validate_run_id() {
   fi
 }
 
-_resolve_repo_root() {
-  local root
-  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
-  if [ -z "$root" ]; then
-    printf 'orchestrator-checkpoint.sh: not inside a git repository\n' >&2
-    return 2
-  fi
-  printf '%s' "$root"
-}
-
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -109,7 +99,7 @@ RUN_ID="$1"
 shift
 _validate_run_id "$RUN_ID" || exit 2
 
-REPO_ROOT=$(_resolve_repo_root) || exit 2
+REPO_ROOT=$(_lib_resolve_repo_root "orchestrator-checkpoint.sh") || exit 2
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 CHECKPOINT_FILE="$CHECKPOINT_DIR/$REPO_HASH.$RUN_ID.jsonl"
 LOCK_FILE="$CHECKPOINT_FILE.lock"

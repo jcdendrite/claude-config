@@ -831,7 +831,7 @@ class TestKnownGapBypass:
         tracked file) is not mechanically gated. This is also the composed
         two-hop path require-review-orchestrator-agent-target.sh's own
         allowlist does not close for a review-orchestrator-dispatched
-        reviewer persona -- see docs/design-decisions.md §29. Pin the
+        reviewer persona -- see docs/design-decisions.md §31. Pin the
         accepted allow so a future narrowing of this gap is visible."""
         assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "allow"
 

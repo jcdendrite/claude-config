@@ -14,12 +14,12 @@ import json
 import os
 import re
 import subprocess
-import textwrap
 import time
 from pathlib import Path
 
 import pytest
 from conftest import _dead_pid
+from helpers import FORCED_FALLBACK_REALPATH_SHIM
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -47,7 +47,7 @@ def _run_harness(stdin_text: str, env: dict | None = None) -> subprocess.Complet
     )
 
 
-def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
+def _run_lib_call(call: str, env: dict, cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Source _lib.sh, then run one statement that calls a helper directly."""
     harness = f". {_LIB_SH}; {call}"
     return subprocess.run(
@@ -56,6 +56,7 @@ def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
         text=True,
         check=False,
         env=env,
+        cwd=cwd,
     )
 
 
@@ -332,6 +333,61 @@ def test_lib_capped_for_aborts_on_unset_seconds_argument() -> None:
     assert "SHOULD_NOT_REACH" not in result.stdout, repr(result.stdout)
     assert "should-not-run" not in result.stdout, repr(result.stdout)
     assert "_lib_capped_for requires a seconds argument" in result.stderr, repr(result.stderr)
+
+
+@pytest.mark.timing
+def test_lib_resolve_repo_root_denied_within_timeout_on_hung_git(tmp_path: Path) -> None:
+    """A hung `git rev-parse --show-toplevel` inside _lib_resolve_repo_root
+    must not block a caller indefinitely -- _lib_capped's 5s backstop kills
+    it and the function returns its not-inside-a-git-repository failure
+    within that bound rather than hanging. The fake `git` shim itself needs
+    a real `sleep` to actually hang -- prepending the shim's directory onto
+    the real PATH (rather than replacing PATH with a hand-picked tool list)
+    keeps `sleep` reachable, so this measures the timeout backstop instead
+    of an instant "command not found" from a missing `sleep`."""
+    import shutil
+
+    if not shutil.which("timeout"):
+        pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+    fake_git = tmp_path / "git"
+    fake_git.write_text("#!/bin/bash\nsleep 10\n")
+    fake_git.chmod(0o755)
+
+    env = {"PATH": f"{tmp_path}:{os.environ['PATH']}", "HOME": str(tmp_path)}
+    start = time.monotonic()
+    result = _run_lib_call('_lib_resolve_repo_root "test-caller"', env=env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 2, repr(result)
+    assert "test-caller: not inside a git repository" in result.stderr, repr(result.stderr)
+    assert elapsed < 6, f"hung git rev-parse took {elapsed:.1f}s — the timeout backstop did not fire"
+
+
+def test_lib_resolve_repo_root_returns_toplevel_with_no_trailing_newline(git_repo: Path) -> None:
+    """Success path: prints the repo's top-level directory with the
+    trailing newline `git rev-parse --show-toplevel` appends already
+    stripped."""
+    expected = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=git_repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")}
+    result = _run_lib_call('_lib_resolve_repo_root "test-caller"', env=env, cwd=git_repo)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == expected
+    assert not result.stdout.endswith("\n")
+
+
+def test_lib_resolve_repo_root_denied_outside_git_repository(tmp_path: Path) -> None:
+    """Not-a-repo path: returns 2 with the caller-named error on stderr,
+    pinned directly at this function's own definition site rather than only
+    indirectly through a consumer script."""
+    non_repo_dir = tmp_path / "not-a-repo"
+    non_repo_dir.mkdir()
+    env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")}
+    result = _run_lib_call('_lib_resolve_repo_root "test-caller"', env=env, cwd=non_repo_dir)
+    assert result.returncode == 2, repr(result)
+    assert result.stderr.strip() == "test-caller: not inside a git repository", repr(result.stderr)
 
 
 def test_missing_emit_deny_loud_fail() -> None:
@@ -668,6 +724,56 @@ def test_strict_readonly_git_subcmds_is_exact_set_difference() -> None:
     assert set(_strict_readonly_git_subcmds()) == base - excluded
 
 
+# --- _lib_strip_word_quotes ---------------------------------------------------
+#
+# Shared by every fragment/word scanner below that compares a word against a
+# flag literal, so an interior-spliced quote character or backslash-escape --
+# not just a boundary pair -- is collapsed before the comparison runs.
+#
+# Run under /bin/bash specifically (not a PATH-resolved "bash"), the same
+# precedent TestLibCollapseDotSegments below documents: this repo's CI never
+# exercises real bash 3.2, and every call site (require-review-orchestrator-
+# bash.sh and this file's other fragment scanners) runs under that specific
+# interpreter via its own #!/bin/bash shebang.
+
+
+def _strip_word_quotes(word: str) -> str:
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_strip_word_quotes "$1"; printf "%s" "$_LIB_STRIPPED_WORD"',
+            "bash",
+            word,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout
+
+
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="/bin/bash not present on this system")
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("--git-di'r=/outside/path/.git'", "--git-dir=/outside/path/.git"),
+        ("-'c'", "-c"),
+        ("-'-no-index'", "--no-index"),
+        ('"sudo"', "sudo"),
+        ("--output-indicator-new=+", "--output-indicator-new=+"),  # no quotes present: unchanged
+        ("\\--output=/tmp/pwned.txt", "--output=/tmp/pwned.txt"),  # backslash-escape splice
+        ("\\-c", "-c"),
+        ("\\--no-index", "--no-index"),
+        ("\\--textconv", "--textconv"),
+        ("$'--textconv'", "--textconv"),  # ANSI-C quote opener
+        ('$"--textconv"', "--textconv"),  # locale quote opener
+    ],
+)
+def test_strip_word_quotes_removes_every_quote_character_and_backslash_escape(word: str, expected: str) -> None:
+    assert _strip_word_quotes(word) == expected
+
+
 # --- _lib_fragment_has_command_invoking_git_flag / --------------------------
 # --- _lib_fragment_has_env_assignment_before_git -----------------------------
 #
@@ -676,11 +782,18 @@ def test_strict_readonly_git_subcmds_is_exact_set_difference() -> None:
 # Called directly here (subprocess-isolated, same pattern as
 # _valid_session_id_component above) rather than through hook-level
 # JSON/subprocess plumbing.
+#
+# _fragment_has_command_invoking_git_flag routes every word through
+# _lib_strip_word_quotes, so its tests run under /bin/bash specifically (not
+# a PATH-resolved "bash") for the same reason _strip_word_quotes's own tests
+# above do. _fragment_has_env_assignment_before_git doesn't call
+# _lib_strip_word_quotes at all, so it keeps the PATH-resolved "bash" every
+# other _lib.sh function test in this file uses.
 
 
 def _fragment_has_command_invoking_git_flag(fragment: str) -> bool:
     result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_command_invoking_git_flag "$1"', "bash", fragment],
+        ["/bin/bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_command_invoking_git_flag "$1"', "bash", fragment],
         capture_output=True,
         text=True,
         check=False,
@@ -698,28 +811,35 @@ def _fragment_has_env_assignment_before_git(fragment: str) -> bool:
     return result.returncode == 0
 
 
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="/bin/bash not present on this system")
 @pytest.mark.parametrize(
     "fragment",
     [
         "git -c core.pager=less log",
         "git '-c' core.pager=less log",  # quoted -c: caught directly by this scan, not just incidentally
+        "git -'c' core.pager='!evil' log",  # interior-spliced quote: boundary-only stripping missed this
         "git diff --ext-diff",
         "git show --textconv HEAD:file.bin",
+        "git show \\--textconv HEAD:file.bin",  # backslash-escape splice: reassembles to --textconv at exec time
         "git log --open-files-in-pager=sh",
         "git grep -O'less' the README.md",
         "git log --config-env=core.pager=SOME_ENV_VAR",
+        "git log $'--textconv'",  # ANSI-C quote opener: reassembles to --textconv at exec time
+        'git log $"--textconv"',  # locale quote opener: reassembles to --textconv at exec time
     ],
 )
 def test_fragment_has_command_invoking_git_flag_true_for_each_unsafe_flag_shape(fragment: str) -> None:
     assert _fragment_has_command_invoking_git_flag(fragment)
 
 
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="/bin/bash not present on this system")
 @pytest.mark.parametrize(
     "fragment",
     [
         "git log --oneline",
         "git status",
         "git diff HEAD",
+        "git log -- $'README.md'",  # benign ANSI-C-quoted pathspec must not false-deny
     ],
 )
 def test_fragment_has_command_invoking_git_flag_false_for_plain_commands(fragment: str) -> None:
@@ -754,11 +874,15 @@ def test_fragment_has_env_assignment_before_git_false_for_no_leading_assignment(
 # and deny-reviewer-tree-mutation.sh: `--output`/`--output-directory` write a
 # read-only git subcommand's own content to a caller-chosen path with no
 # shell redirect character for a `<`/`>` scan to see.
+#
+# Routes every word through _lib_strip_word_quotes, so its tests run under
+# /bin/bash specifically for the same reason _strip_word_quotes's own tests
+# above do.
 
 
 def _fragment_has_git_write_target_flag(fragment: str) -> bool:
     result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_git_write_target_flag "$1"', "bash", fragment],
+        ["/bin/bash", "-c", f'. {_LIB_SH}; _lib_fragment_has_git_write_target_flag "$1"', "bash", fragment],
         capture_output=True,
         text=True,
         check=False,
@@ -766,20 +890,28 @@ def _fragment_has_git_write_target_flag(fragment: str) -> bool:
     return result.returncode == 0
 
 
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="/bin/bash not present on this system")
 @pytest.mark.parametrize(
     "fragment",
     [
         "git diff --output=/tmp/x HEAD~1..HEAD",
         "git diff --output /tmp/x HEAD~1..HEAD",  # space-separated form
+        "git diff --outp'ut'=/tmp/x HEAD~1..HEAD",  # interior-spliced quote: boundary-only stripping missed this
+        "git log \\--output=/tmp/pwned.txt",  # backslash-escape splice: reassembles to --output at exec time
         "git log --output=/tmp/x",
         "git show --output=/tmp/x HEAD",
         "git diff-tree --output=/tmp/x HEAD",
+        "git format-patch --output-directory=/tmp/x HEAD~1..HEAD",
+        "git format-patch --output-directory /tmp/x HEAD~1..HEAD",  # space-separated form
+        "git log $'--output=/tmp/pwned.txt'",  # ANSI-C quote opener: reassembles to --output=... at exec time
+        'git log $"--output=/tmp/pwned.txt"',  # locale quote opener: reassembles to --output=... at exec time
     ],
 )
 def test_fragment_has_git_write_target_flag_true_for_each_write_target_shape(fragment: str) -> None:
     assert _fragment_has_git_write_target_flag(fragment)
 
 
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="/bin/bash not present on this system")
 @pytest.mark.parametrize(
     "fragment",
     [
@@ -788,6 +920,7 @@ def test_fragment_has_git_write_target_flag_true_for_each_write_target_shape(fra
         # Confound-free companion: a real git flag sharing the "--output"
         # prefix but writing nothing anywhere must not false-deny.
         "git log --output-indicator-new=+",
+        "git log -- $'README.md'",  # benign ANSI-C-quoted pathspec must not false-deny
     ],
 )
 def test_fragment_has_git_write_target_flag_false_for_unrelated_flags(fragment: str) -> None:
@@ -1442,15 +1575,6 @@ class TestFragmentHasToken:
 # actually lives. Without this, `command -v grealpath` would still find it
 # and the fallback branch under test would never run.
 
-_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
-    #!/bin/bash
-    if [ "$1" = "-m" ]; then
-      echo "realpath: illegal option -- m" >&2
-      exit 1
-    fi
-    exec /bin/realpath "$@"
-""")
-
 
 def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
@@ -1459,7 +1583,7 @@ def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path |
         shim_dir = tmp_path / "realpath_shim"
         shim_dir.mkdir(exist_ok=True)
         shim = shim_dir / "realpath"
-        shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        shim.write_text(FORCED_FALLBACK_REALPATH_SHIM)
         shim.chmod(0o755)
         env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
     script = f'set -uo pipefail; . {_LIB_SH}; _lib_realpath_m "$1"'
@@ -1517,6 +1641,153 @@ class TestLibRealpathM:
         resolved = result.stdout.strip()
         assert resolved == target
         assert "//" not in resolved
+
+    def test_forced_fallback_resolves_at_depth_budget_boundary(self, tmp_path: Path) -> None:
+        """Regression test for the walked-ancestor depth cap (10): a target
+        needing exactly 10 unresolved components to reach tmp_path (the
+        nearest existing ancestor) must still resolve -- the cap must not
+        clip a legitimate multi-level path sitting right at the boundary."""
+        target = tmp_path
+        for i in range(10):
+            target = target / f"lvl{i}"
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(target)
+
+    def test_forced_fallback_denies_past_depth_budget_dos_guard(self, tmp_path: Path) -> None:
+        """Regression test for a DoS-shaped exposure: with neither
+        realpath -m nor grealpath available, the fallback loop spawns one
+        basename+dirname pair per unresolved path component. A caller that
+        routes untrusted text through this function (e.g. a Bash-fragment
+        command word) must not let a crafted, deeply-nested nonexistent
+        path drive unbounded subprocess spawns. One component past the
+        depth budget (10) must fail closed instead."""
+        target = tmp_path
+        for i in range(11):
+            target = target / f"lvl{i}"
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0 or not result.stdout.strip(), (
+            f"expected fail-closed (empty/nonzero) past the depth budget, "
+            f"got stdout={result.stdout!r} rc={result.returncode}"
+        )
+
+
+# --- _lib_collapse_dot_segments -----------------------------------------
+#
+# Run under /bin/bash specifically (not a PATH-resolved "bash") because
+# macOS's system /bin/bash is bash 3.2, where "${path//\/.\//\/}" mis-renders
+# the replacement side as a literal backslash instead of collapsing the
+# segment -- a regression the current prefix/suffix-expansion implementation
+# must not reintroduce.
+
+
+def _run_collapse_dot_segments(path: str) -> subprocess.CompletedProcess:
+    script = f'. {_LIB_SH}; _lib_collapse_dot_segments "$1"'
+    return subprocess.run(
+        ["/bin/bash", "-c", script, "bash", path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(not Path("/bin/bash").exists(), reason="/bin/bash not present on this system")
+class TestLibCollapseDotSegments:
+    def test_collapses_mid_path_dot_segment(self) -> None:
+        result = _run_collapse_dot_segments("/a/./b")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a/b"
+        assert "\\" not in result.stdout
+
+    def test_collapses_leading_absolute_dot_segment(self) -> None:
+        result = _run_collapse_dot_segments("/./a")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a"
+        assert "\\" not in result.stdout
+
+    def test_collapses_multiple_dot_segments(self) -> None:
+        result = _run_collapse_dot_segments("/a/./b/./c")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a/b/c"
+        assert "\\" not in result.stdout
+
+    def test_path_with_no_dot_segments_is_unchanged(self) -> None:
+        result = _run_collapse_dot_segments("/a/b/c")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a/b/c"
+
+    def test_trailing_slash_after_collapsed_segment_preserved(self) -> None:
+        result = _run_collapse_dot_segments("/a/./b/")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a/b/"
+        assert "\\" not in result.stdout
+
+    def test_relative_leading_dot_without_slash_prefix_is_unchanged(self) -> None:
+        """A relative "./a/b" has no leading "/", so it never matches the
+        "/./" pattern this function collapses -- ".." handling and
+        relative-path normalization stay _lib_realpath_m's job, per this
+        function's own header comment."""
+        result = _run_collapse_dot_segments("./a/b")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "./a/b"
+
+    def test_empty_string_is_unchanged(self) -> None:
+        result = _run_collapse_dot_segments("")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_all_dot_segments_collapses_to_single_slash(self) -> None:
+        result = _run_collapse_dot_segments("/./")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/"
+
+    def test_relative_path_with_interior_dot_segment_collapses(self) -> None:
+        """Unlike a leading "./", an interior "/./" in a relative path still
+        matches the pattern this function collapses regardless of whether
+        the path itself is absolute."""
+        result = _run_collapse_dot_segments("a/./b")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "a/b"
+
+    def test_trailing_dot_with_no_trailing_slash_is_unchanged(self) -> None:
+        """A trailing "/a/." has no "/./" (no slash after the final ".")
+        for the pattern to match, so it is left untouched -- consistent
+        with this function's stated no-op-on-"." scope."""
+        result = _run_collapse_dot_segments("/a/.")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a/."
+
+    def test_doubled_slash_adjacent_to_dot_segment_collapses_the_dot_only(self) -> None:
+        result = _run_collapse_dot_segments("/a//./b")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/a//b"
+
+    def test_pathological_dot_segment_chain_fails_closed_within_budget(self) -> None:
+        """A long chain of "/./" segments past the iteration cap must deny
+        (nonzero exit, no stdout) rather than hang or return a
+        partially-collapsed path -- regression guard for the quadratic
+        blowup this cap fixes."""
+        pathological = "/./".join(["a"] * 5000)
+        result = _run_collapse_dot_segments(pathological)
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_dot_segment_count_at_iteration_cap_still_collapses(self) -> None:
+        """20 "/./" segments -- _lib_collapse_dot_segments's collapse_budget
+        -- must still fully collapse; the cap must not reject legitimate
+        input at its own boundary."""
+        path = "/./".join(["a"] * 21)  # 21 elements join into 20 "/./" segments
+        result = _run_collapse_dot_segments(path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "/".join(["a"] * 21)
+
+    def test_dot_segment_count_one_past_iteration_cap_fails_closed(self) -> None:
+        """One "/./" segment beyond the cap must deny rather than silently
+        return a partially-collapsed path."""
+        path = "/./".join(["a"] * 22)  # 22 elements join into 21 "/./" segments
+        result = _run_collapse_dot_segments(path)
+        assert result.returncode != 0
+        assert result.stdout == ""
 
 
 def _run_config_dir(env: dict) -> subprocess.CompletedProcess:

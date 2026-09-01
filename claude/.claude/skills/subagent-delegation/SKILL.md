@@ -178,10 +178,13 @@ Sonnet; keeps the dispatched work off Opus when the parent is not).
 
 ## Step 3 — Wait for a dispatch without polling
 
-After dispatching, do not write a Bash `sleep N`-then-recheck loop to wait on it. End the turn, or continue
-other work, and let the harness's automatic `<task-notification>` delivery arrive — it fires even after the
-dispatching turn has already ended, so there is nothing to poll for.
+After dispatching, do not write a Bash `sleep N`-then-recheck loop to
+wait on it. End the turn, or continue other work, and let the
+harness's automatic `<task-notification>` delivery arrive — it fires
+even after the dispatching turn has already ended, so there is
+nothing to poll for.
 
-If you need inline confirmation before proceeding, check `ListAgents` once — never in a loop. For a
-cross-session peer that wants proactive notice instead of polling its own inbox, use `SendMessage`'s
+If you need inline confirmation before proceeding, check `ListAgents`
+once — never in a loop. For a cross-session peer that wants proactive
+notice instead of polling its own inbox, use `SendMessage`'s
 `notify_when_idle` instead.

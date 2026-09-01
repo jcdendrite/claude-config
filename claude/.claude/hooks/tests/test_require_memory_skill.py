@@ -12,6 +12,7 @@ from helpers import (
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
+    build_no_realpath_m_path_env,
     edit_input,
     extract_skill_command,
     multiedit_input,
@@ -81,6 +82,26 @@ class TestRequireMemorySkill:
         assert not Path(new_topic).exists()
         payload = _memory_input(write_input(new_topic), "sess-new-topic")
         assert run_hook(HOOK_PATH, payload) == "deny"
+
+    def test_unresolvable_new_topic_file_path_denied(
+        self, isolated_home, memory_tree, tmp_path
+    ):
+        """A new-topic-file path _lib_realpath_m cannot resolve (its fallback
+        loop's depth cap exhausted, e.g. on a system lacking both
+        realpath -m and grealpath) must still be denied -- an unresolved
+        path must not be read as proof the target isn't a memory file and
+        let the gate skip."""
+        deep_target = memory_tree
+        for i in range(11):
+            deep_target = deep_target / f"lvl{i}"
+        assert not deep_target.exists()
+        payload = _memory_input(write_input(str(deep_target)), "sess-unresolvable")
+        decision = run_hook(
+            HOOK_PATH,
+            payload,
+            extra_env={"PATH": build_no_realpath_m_path_env(tmp_path)},
+        )
+        assert decision == "deny"
 
     def test_existing_topic_file_edit_allowed(self, isolated_home, memory_tree):
         """Edit on an existing topic file passes through (only new files are gated)."""

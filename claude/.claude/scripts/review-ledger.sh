@@ -58,20 +58,11 @@ _resolve_session_id() {
   printf '%s' "$sid"
 }
 
-_resolve_repo_root() {
-  local root
-  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
-  if [ -z "$root" ]; then
-    printf 'review-ledger.sh: not inside a git repository\n' >&2
-    return 2
-  fi
-  printf '%s' "$root"
-}
-
-# Locking (noclobber-lock + PID-liveness-eviction + single-EXIT-trap) and the
-# stale-file sweep live in _lib.sh (_lib_append_line_locked,
-# _lib_sweep_stale_files) — shared with orchestrator-checkpoint.sh so this
-# repo doesn't hold a second near-identical copy of either mechanism.
+# Locking (noclobber-lock + PID-liveness-eviction + single-EXIT-trap), the
+# stale-file sweep, and repo-root resolution live in _lib.sh
+# (_lib_append_line_locked, _lib_sweep_stale_files, _lib_resolve_repo_root) —
+# shared with orchestrator-checkpoint.sh so this repo doesn't hold a second
+# near-identical copy of any of the three.
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
@@ -162,7 +153,7 @@ case "$SUBCOMMAND" in
     fi
 
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_resolve_repo_root) || exit 2
+    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 
     if ! mkdir -p "$LEDGER_DIR" 2>/dev/null; then
@@ -196,7 +187,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_resolve_repo_root) || exit 2
+    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
     LEDGER_FILE="$LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl"
     if [ ! -s "$LEDGER_FILE" ]; then

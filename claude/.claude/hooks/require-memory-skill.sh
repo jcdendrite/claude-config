@@ -89,8 +89,17 @@ IS_CANDIDATE=0
 CONFIG_DIR=$(_lib_config_dir) && REAL_PROJECTS_DIR=$(_lib_realpath_m "$CONFIG_DIR/projects") || REAL_PROJECTS_DIR=""
 
 if [ -n "$REAL_PROJECTS_DIR" ]; then
+  if [ -z "$REAL_PATH" ]; then
+    # _lib_realpath_m could not resolve FILE_PATH -- its fallback loop's
+    # depth cap can exhaust on a system lacking both realpath -m and
+    # grealpath. Fail closed: an unresolvable target could be a
+    # not-yet-existing memory file, so it is gated rather than read as proof
+    # it sits outside the memory tree.
+    IS_CANDIDATE=1
+  fi
+
   # Class (a): MEMORY.md index — always gated regardless of tool or existence.
-  if [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"*"/memory/MEMORY.md" ]]; then
+  if [ "$IS_CANDIDATE" -eq 0 ] && [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"*"/memory/MEMORY.md" ]]; then
     IS_CANDIDATE=1
   fi
 

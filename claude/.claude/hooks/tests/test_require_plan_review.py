@@ -17,6 +17,7 @@ from helpers import (
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
+    build_no_realpath_m_path_env,
     edit_input,
     exitplanmode_input,
     extract_skill_command,
@@ -740,6 +741,26 @@ class TestRequirePlanReview:
                 cwd=plan_review_repo,
             )
             == "allow"
+        )
+
+    def test_unresolvable_target_path_still_denies(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """A write target _lib_realpath_m cannot resolve (its fallback loop's
+        depth cap exhausted, e.g. on a system lacking both realpath -m and
+        grealpath) must still be denied -- an unresolved path must not be
+        read as proof the target is outside the repo and let the gate skip."""
+        deep_target = plan_review_repo
+        for i in range(11):
+            deep_target = deep_target / f"lvl{i}"
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(deep_target)), "session_id": "session-scope-unresolvable"},
+                cwd=plan_review_repo,
+                extra_env={"PATH": build_no_realpath_m_path_env(tmp_path)},
+            )
+            == "deny"
         )
 
 

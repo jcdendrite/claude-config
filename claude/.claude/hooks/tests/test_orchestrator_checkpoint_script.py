@@ -47,6 +47,29 @@ def _popen(args: list[str], cwd, home) -> subprocess.Popen:
     )
 
 
+def _c_utf8_locale_available() -> bool:
+    """True iff LC_ALL=C.UTF-8 is installed and bash counts a multi-byte
+    UTF-8 character as one codepoint under it. Mirrors test_marker_lib.py's
+    _find_case_insensitive_collation_locale probe-then-behaviorally-verify
+    pattern -- a locale name appearing in `locale -a` doesn't by itself
+    guarantee bash's ${#VAR} treats it as UTF-8."""
+    try:
+        installed = subprocess.run(
+            ["locale", "-a"], capture_output=True, text=True, check=True
+        ).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    if not any(name.lower().replace("-", "") == "c.utf8" for name in installed):
+        return False
+    result = subprocess.run(
+        ["bash", "-c", 'printf %s "${#1}"', "_", "é"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LC_ALL": "C.UTF-8"},
+    )
+    return result.returncode == 0 and result.stdout == "1"
+
+
 def _checkpoint_path(home: Path, repo: Path, run_id: str = RUN_ID) -> Path:
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
     return home / ".claude" / "orchestrator-checkpoints" / f"{repo_hash}.{run_id}.jsonl"
@@ -97,6 +120,16 @@ class TestOrchestratorCheckpointAppendReadRoundTrip:
         checkpoint = _checkpoint_path(isolated_home, git_repo)
         record = json.loads(checkpoint.read_text().splitlines()[0])
         assert record["attempt"] == "1"
+
+    def test_append_accepts_attempt_zero(self, isolated_home, git_repo):
+        """--attempt 0 passes the numeric-only validation (the script's own
+        comment notes it accepts 0 even though review-orchestrator.md's
+        1-indexed <n> computation never produces it as a caller value)."""
+        result = _run(_append_args(attempt="0"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        checkpoint = _checkpoint_path(isolated_home, git_repo)
+        record = json.loads(checkpoint.read_text().splitlines()[0])
+        assert record["attempt"] == "0"
 
     def test_missing_step_rejected(self, isolated_home, git_repo):
         args = ["append", RUN_ID, "--status", "done"]
@@ -184,6 +217,33 @@ class TestOrchestratorCheckpointFieldCapsAllowAtExactBoundary:
         assert result.returncode == 0, result.stderr
 
 
+class TestOrchestratorCheckpointFieldCapCodepointVsByteAmbiguity:
+    """${#VAR} counts codepoints under a UTF-8 locale but bytes under
+    C/POSIX (the script's own header comment) -- an ASCII-only fixture can't
+    exercise the difference, since codepoint count equals byte count for
+    ASCII. A 2-byte UTF-8 character does: 200 of them is exactly at the
+    --step cap by codepoint count but 400 bytes, twice the cap."""
+
+    @pytest.mark.skipif(
+        not _c_utf8_locale_available(), reason="LC_ALL=C.UTF-8 not installed on this system"
+    )
+    def test_two_hundred_two_byte_codepoints_allowed_under_a_utf8_locale(self, isolated_home, git_repo):
+        step = "é" * 200
+        args = ["append", RUN_ID, "--step", step, "--status", "done"]
+        result = _run(args, cwd=git_repo, home=isolated_home, extra_env={"LC_ALL": "C.UTF-8"})
+        assert result.returncode == 0, result.stderr
+
+    def test_same_two_hundred_two_byte_codepoints_rejected_under_the_c_locale(self, isolated_home, git_repo):
+        """Same input as above, run under a byte-counting locale instead --
+        pins that the effective cap genuinely tracks the invoking locale
+        rather than a fixed codepoint or byte count."""
+        step = "é" * 200
+        args = ["append", RUN_ID, "--step", step, "--status", "done"]
+        result = _run(args, cwd=git_repo, home=isolated_home, extra_env={"LC_ALL": "C"})
+        assert result.returncode == 2
+        assert not _checkpoint_path(isolated_home, git_repo).exists()
+
+
 class TestOrchestratorCheckpointAttemptFieldValidation:
     """--attempt must be numeric-only -- it feeds review-orchestrator's own
     retry-cap comparison, so a non-numeric value must be rejected rather than
@@ -221,7 +281,7 @@ class TestOrchestratorCheckpointOutsideGitRepo:
         args = _append_args()
         result = _run(args, cwd=non_repo, home=isolated_home)
         assert result.returncode == 2
-        assert "not inside a git repository" in result.stderr
+        assert result.stderr == "orchestrator-checkpoint.sh: not inside a git repository\n"
         checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
         stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
         assert stray == [], f"must not write a checkpoint file outside a git repo: {stray}"
@@ -231,7 +291,7 @@ class TestOrchestratorCheckpointOutsideGitRepo:
         non_repo.mkdir()
         result = _run(["read", RUN_ID], cwd=non_repo, home=isolated_home)
         assert result.returncode == 2
-        assert "not inside a git repository" in result.stderr
+        assert result.stderr == "orchestrator-checkpoint.sh: not inside a git repository\n"
 
 
 class TestOrchestratorCheckpointNoCheckpointYet:

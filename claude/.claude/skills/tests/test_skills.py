@@ -1209,15 +1209,10 @@ class TestReviewOrchestratorRetryCapLanguage:
             in self._normalized_body()
         )
 
-    def test_retry_cap_is_three_total_attempts_grounded_in_aws_step_functions(self):
+    def test_retry_cap_is_three_total_attempts_cites_design_decisions_grounding(self):
         assert (
-            "Retry cap: 3 total attempts / 2 automatic retries, grounded "
-            "in AWS Step Functions' `Retry` field defaulting `MaxAttempts` "
-            "to 3"
-            in self._normalized_body()
-        )
-        assert (
-            "docs.aws.amazon.com/step-functions/latest/dg/concepts-error-handling.html"
+            "Retry cap: 3 total attempts / 2 automatic retries — rationale "
+            "and citation in `docs/design-decisions.md` §31."
             in self._normalized_body()
         )
 

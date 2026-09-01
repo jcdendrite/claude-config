@@ -261,16 +261,23 @@ fi
 if [ -n "$TARGET_PATH" ]; then
   REAL_REPO=$(_lib_realpath_m "$REPO_ROOT")
   REAL_TARGET=$(_lib_realpath_m "$TARGET_PATH")
-  # Reviewer findings writes are exempt — they land in the gitignored
-  # agent-reviews/ directory and are never staged. Blocking them forces the
-  # reviewer into a full-inline fallback that loses all context savings.
-  # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
-  # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
-  if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
-    exit 0
-  fi
-  if [[ "$REAL_TARGET" != "$REAL_REPO/"* ]]; then
-    exit 0
+  # An empty REAL_TARGET means _lib_realpath_m could not resolve the write
+  # target (its fallback loop's depth cap can exhaust on a system lacking
+  # both realpath -m and grealpath). Skip the exemption and boundary checks
+  # below and fall through to the deny path instead of reading an
+  # unresolved path as proof the target is outside the repo.
+  if [ -n "$REAL_TARGET" ]; then
+    # Reviewer findings writes are exempt — they land in the gitignored
+    # agent-reviews/ directory and are never staged. Blocking them forces the
+    # reviewer into a full-inline fallback that loses all context savings.
+    # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
+    # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
+    if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
+      exit 0
+    fi
+    if [[ "$REAL_TARGET" != "$REAL_REPO/"* ]]; then
+      exit 0
+    fi
   fi
 fi
 

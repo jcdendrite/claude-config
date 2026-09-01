@@ -47,8 +47,9 @@ _lib_capped_for() {
   fi
 }
 
-# Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
-# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
+# Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist.
+# BSD/macOS realpath has no -m, so this falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
+# Every external call below (realpath, grealpath, and the fallback loop's basename/dirname) is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly. The fallback loop additionally caps its own walked-ancestor depth; see that loop's own comment for why.
 _lib_realpath_m() {
   local target="$1"
   local resolved
@@ -61,7 +62,11 @@ _lib_realpath_m() {
     printf '%s\n' "$resolved"
     return 0
   fi
-  local suffix="" current="$target" suffix_component
+  # Caps the walk's basename/dirname spawns at 10 -- a wide margin over
+  # legitimate 1-3-level unresolved depth -- so a crafted deeply-nested
+  # nonexistent path can't drive subprocess count arbitrarily.
+  local unresolved_depth_budget=10
+  local suffix="" current="$target" suffix_component depth=0
   while true; do
     if [ -e "$current" ]; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
@@ -77,7 +82,11 @@ _lib_realpath_m() {
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
     fi
-    suffix_component=$(basename -- "$current")
+    if [ "$depth" -ge "$unresolved_depth_budget" ]; then
+      return 1  # fail closed: budget exhausted before reaching an existing ancestor
+    fi
+    depth=$((depth + 1))
+    suffix_component=$(_lib_capped basename -- "$current") || return 1
     case "$suffix_component" in
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
@@ -88,8 +97,44 @@ _lib_realpath_m() {
     else
       suffix="$suffix_component/$suffix"
     fi
-    current=$(dirname -- "$current")
+    current=$(_lib_capped dirname -- "$current") || return 1
   done
+}
+
+# Collapses every interior "/./" segment in $1 down to a single "/", purely
+# by string substitution -- no filesystem access, so this never spawns a
+# subprocess. A "." path component is always a no-op, so this can never
+# change what path $1 refers to. It never touches ".." segments: unlike
+# ".", a ".." component's meaning depends on what its preceding component
+# resolves to, so _lib_realpath_m keeps sole responsibility for those.
+# Callers use this to fold syntactically-padded-but-identical spellings of
+# the same path onto one _lib_realpath_m call and cache entry before
+# spending a resolve-budget slot on them.
+#
+# Each iteration's prefix/suffix parameter expansion rescans the whole
+# (growing-by-recombination) string, so the loop is quadratic in the number
+# of "/./" segments -- a crafted 1000-segment input costs ~10s without this
+# cap. Legitimate input -- a real fragment command word, or a
+# decoy spelling padded with a few extra "/./" segments -- has nowhere near
+# 20 such segments, the same generous-margin-over-legitimate-use reasoning as
+# _lib_realpath_m's unresolved_depth_budget above. Past the cap, this returns
+# 1 with no stdout rather than a partially-collapsed path -- fail closed,
+# same as every other budget in this file.
+_lib_collapse_dot_segments() {
+  local path="$1"
+  local collapse_budget=20
+  # Bash 3.2 (macOS's /bin/bash) mis-renders "\/" on the replacement side of
+  # "${path//\/.\//\/}" as a literal backslash instead of collapsing the
+  # segment, so this collapses one "/./" per iteration via prefix/suffix
+  # parameter expansion instead of a substitution operator.
+  while [[ "$path" == *"/./"* ]]; do
+    if [ "$collapse_budget" -le 0 ]; then
+      return 1  # fail closed: budget exhausted before every "/./" segment collapsed
+    fi
+    collapse_budget=$((collapse_budget - 1))
+    path="${path%%/./*}/${path#*/./}"
+  done
+  printf '%s' "$path"
 }
 
 # Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
@@ -483,6 +528,33 @@ _lib_extract_git_subcmd() {
   printf '%s' "$subcmd"
 }
 
+# _lib_strip_word_quotes WORD
+# Sets _LIB_STRIPPED_WORD to WORD with quoting removed the way bash's own
+# quote removal would produce it for the common case: drops each ANSI-C
+# ($'...') and locale ($"...") opener's leading $, then strips every
+# backslash and every remaining quote character. e.g. --git-di'r=x', -'c',
+# \--output, and $'--textconv' all read as the flag they'd become once bash
+# actually parses the word. This does not decode a $'...' region's own
+# multi-character escapes (\xHH, \NNN, \uHHHH/\UHHHHHHHH) -- see
+# docs/design-decisions.md §31's accepted-residual entry for that gap.
+# Pure bash parameter expansion (no sed/tr/subshell) because this runs once
+# per word inside the hot `for word in $fragment` loops below and in
+# require-review-orchestrator-bash.sh -- an uncapped-word-count fragment
+# would otherwise cost extra subprocess spawns per word, unlike
+# _lib_strip_shell_quotes's own once-per-command-string call pattern. Sets a
+# global rather than returning captured $() output, so every existing
+# per-word caller below keeps its established `_lib_strip_word_quotes
+# "$word"; case "$_LIB_STRIPPED_WORD" in ...` shape.
+_lib_strip_word_quotes() {
+  local word="$1"
+  word="${word//\$\'/}"
+  word="${word//\$\"/\"}"
+  word="${word//\\/}"
+  word="${word//\'/}"
+  word="${word//\"/}"
+  _LIB_STRIPPED_WORD="$word"
+}
+
 # True iff a git-invoking fragment carries a flag that execs an arbitrary
 # command as a side effect of git's own argument parsing, independent of the
 # subcommand: a bare -c (config override, e.g. core.pager/diff.external/
@@ -493,20 +565,28 @@ _lib_extract_git_subcmd() {
 # configured external diff/textconv command). A subcommand-word-only check
 # treats `git grep -O'sh -c "..."'` as safe because `grep` is read-only; this
 # scans every word in the fragment, not just the subcommand, to catch the
-# flag regardless of which subcommand it rides on. Strips one layer of
-# surrounding quote characters from each word before matching, so a quoted
-# flag (`git '-c' core.pager=x log`) is caught directly by this scan rather
-# than only incidentally, via _lib_extract_git_subcmd failing to resolve a
-# subcommand from the quoted token.
+# flag regardless of which subcommand it rides on. Strips every quote
+# character, backslash-escape, and ANSI-C/locale ($'...'/$"...") quote opener
+# from each word via _lib_strip_word_quotes before matching, so a quoted,
+# interior-spliced, backslash-escaped, or ANSI-C/locale-quoted flag
+# (`git '-c' core.pager=x log`, `git -'c' core.pager=x log`,
+# `git show \--textconv HEAD:file.bin`, `git log $'--textconv'`) is caught
+# directly by this scan rather than only incidentally, via
+# _lib_extract_git_subcmd failing to resolve a subcommand from the quoted
+# token.
+# This scan runs independent of any `--` pathspec boundary in the fragment,
+# so a real pathspec that collides with a flag literal after `--` (e.g.
+# `git log -- -c`, a file genuinely named `-c`) is denied too. Every caller
+# of this function denies on a match, so this conservative false positive is
+# accepted rather than adding `--`-boundary tracking to this scan.
 _lib_fragment_has_command_invoking_git_flag() {
   local fragment="$1"
   local saved_opts=$-
   set -f
-  local found=false word stripped
+  local found=false word
   for word in $fragment; do
-    stripped="${word#[\'\"]}"
-    stripped="${stripped%[\'\"]}"
-    case "$stripped" in
+    _lib_strip_word_quotes "$word"
+    case "$_LIB_STRIPPED_WORD" in
       -c|--ext-diff|--textconv|--config-env*) found=true; break ;;
       -O*|--open-files-in-pager*) found=true; break ;;
     esac
@@ -525,18 +605,19 @@ _lib_fragment_has_command_invoking_git_flag() {
 # rev-list, and shortlog, truncating an existing target file to zero bytes
 # even when those three don't write real content there. `--output-directory`
 # is format-patch's equivalent (not on either read-only allowlist today, kept
-# here as a forward guard). Matched the same way as the flags above: strip one
-# layer of quoting, then compare the whole word so `--output-indicator-new`
-# and friends (legitimate, write nothing) are not caught by a prefix match.
+# here as a forward guard). Matched the same way as the flags above: strips
+# every quote character, backslash-escape, and ANSI-C/locale quote opener
+# from the word via _lib_strip_word_quotes, then compares the whole result so
+# `--output-indicator-new` and friends (legitimate, write nothing) are not
+# caught by a prefix match.
 _lib_fragment_has_git_write_target_flag() {
   local fragment="$1"
   local saved_opts=$-
   set -f
-  local found=false word stripped
+  local found=false word
   for word in $fragment; do
-    stripped="${word#[\'\"]}"
-    stripped="${stripped%[\'\"]}"
-    case "$stripped" in
+    _lib_strip_word_quotes "$word"
+    case "$_LIB_STRIPPED_WORD" in
       --output|--output=*|--output-directory|--output-directory=*) found=true; break ;;
     esac
   done
@@ -575,21 +656,11 @@ _lib_fragment_has_env_assignment_before_git() {
 }
 
 # True iff a fragment carries a shell environment-variable assignment
-# (WORD=value) anywhere before its resolved command word -- tool-name-
-# agnostic generalization of _lib_fragment_has_env_assignment_before_git
-# above, for an allowlist branch that admits a command by exact name (e.g.
-# marker.sh) rather than by git subcommand. _lib_fragment_command_word
-# deliberately skips past both a leading assignment AND a runner/wrapper
-# prefix (env, sudo, xargs, python, ...) to resolve the command word for
-# tool-name matching, but an assignment anywhere in that skipped span still
-# takes effect in the same shell once the command actually runs -- e.g. both
-# `CLAUDE_CONFIG_DIR=/tmp/x marker.sh` and `env CLAUDE_CONFIG_DIR=/tmp/x
-# marker.sh` redirect where the sanctioned helper script reads or writes.
-# Stopping the scan at the already-resolved command word (rather than
-# re-deriving "is this word a wrapper" independently) keeps this in lockstep
-# with _lib_fragment_command_word's own wrapper list by construction -- the
-# two checks drifting apart, as a first-word-only version of this function
-# once did, is exactly how a wrapper-prefixed assignment would slip through.
+# (WORD=value) anywhere before _lib_fragment_command_word's resolved command
+# word -- reusing that word as the scan boundary, rather than an
+# independently re-derived wrapper list, keeps this in lockstep with
+# _lib_fragment_command_word's own wrapper handling so a wrapper-prefixed
+# assignment (env FOO=bar marker.sh) can't slip past undetected.
 _lib_fragment_has_leading_env_assignment() {
   local fragment="$1"
   local cmd
@@ -1272,31 +1343,60 @@ _lib_worktree_collision_guard() {
   return 1
 }
 
+# _lib_resolve_repo_root CALLER_NAME
+# Prints the current git repo's top-level directory with no trailing
+# newline, or returns 2 and prints "CALLER_NAME: not inside a git
+# repository" to stderr. The `tr -d '\n'` strip is load-bearing: git
+# rev-parse appends a trailing newline that require-* hooks' matching hash
+# (`printf '%s' "$REPO_ROOT"`, no newline) omits, so stripping it here keeps
+# both sides' sha256 aligned.
+# Shared by every caller that needs the repo root, so the resolution logic
+# has one authoritative home instead of being duplicated per script.
+# CALLER_NAME is caller-supplied (rather than derived from "$0") so the
+# error message names the script the caller actually is, not this file.
+# Wrapped in _lib_capped, like every other git spawn in this file, so a hung
+# git rev-parse can't block a caller (e.g. a PreToolUse gate) indefinitely.
+_lib_resolve_repo_root() {
+  local caller_name="$1" root
+  root=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
+  if [ -z "$root" ]; then
+    printf '%s: not inside a git repository\n' "$caller_name" >&2
+    return 2
+  fi
+  printf '%s' "$root"
+}
+
 # _lib_append_line_locked TARGET_FILE LOCK_FILE LINE RETRIES
 # Generic noclobber-lock + PID-liveness-eviction + single-EXIT-trap append
-# primitive, extracted from review-ledger.sh's original
-# _append_ledger_line_locked so orchestrator-checkpoint.sh can share it
-# instead of duplicating a correctness-sensitive concurrency algorithm.
-# Acquires a same-directory noclobber lock (bash `set -o noclobber`, the
-# idiom _lib_worktree_collision_guard above already establishes) around the
-# check-then-append critical section: no-ops if LINE already exists verbatim
-# in TARGET_FILE, else appends it. The lock file's content is the holder's
-# PID; a lock whose PID is dead is evicted and retried immediately, the same
-# PID-liveness eviction _lib_active_bypass_marker_live uses for its own
-# markers, rather than waiting out every retry against a crashed holder.
-# Falls through to an unlocked append after RETRIES failed acquisitions
-# rather than blocking — a duplicate line from a lost race is a
-# low-consequence outcome (an inflated count, or a resumed step re-recorded),
-# not data loss. RETRIES is caller-supplied so each caller's own constant
-# (e.g. review-ledger.sh's _LEDGER_LOCK_RETRIES) stays visible at its own call
-# site rather than buried in this shared function.
+# primitive, shared by every caller that needs this correctness-sensitive
+# concurrency algorithm instead of duplicating it per script.
+# - Acquires a same-directory noclobber lock (bash `set -o noclobber`, the
+#   idiom _lib_worktree_collision_guard above already establishes) around the
+#   check-then-append critical section.
+# - No-ops if LINE already exists verbatim in TARGET_FILE, else appends it.
+# - The lock file's content is the holder's PID.
+# - A lock whose PID is dead is evicted and retried immediately rather than
+#   waiting out every retry against a crashed holder, the same PID-liveness
+#   eviction _lib_active_bypass_marker_live uses for its own markers.
+# - Falls through to an unlocked append after RETRIES failed acquisitions
+#   rather than blocking. A duplicate line from a lost race is a
+#   low-consequence outcome (an inflated count, or a resumed step
+#   re-recorded), not data loss.
+# - RETRIES is caller-supplied so each caller's own constant (e.g.
+#   review-ledger.sh's _LEDGER_LOCK_RETRIES) stays visible at its own call
+#   site rather than buried in this shared function.
 #
 # CALLER CONTRACT: this function sets the global $_LIB_APPEND_LOCK_PATH
-# (deliberately not `local`: the EXIT trap it installs evaluates that
+# (deliberately not `local`, since the EXIT trap it installs evaluates that
 # variable lazily at script-exit time, after this function has already
-# returned) and installs the lock-release EXIT trap. A caller must not set
-# its own EXIT trap after calling this — a second `trap ... EXIT` silently
-# overwrites the first and leaks the lock file.
+# returned). It also installs a `trap ... EXIT` for lock release. `trap` on a
+# given signal always replaces the previous handler for that signal rather
+# than composing with it, so a caller must not install its own EXIT trap
+# either before or after calling this function:
+# - Before: silently discarded when this function's own trap replaces it,
+#   losing the caller's own cleanup.
+# - After: silently discards this function's trap in turn, leaking the lock
+#   file.
 _lib_append_line_locked() {
   local target_file="$1" line="$3" retries="$4"
   _LIB_APPEND_LOCK_PATH="$2"
@@ -1833,7 +1933,7 @@ _lib_is_no_gate_release_agent() {
 # Separate from _LIB_REVIEW_ONLY_AGENTS/_LIB_NO_GATE_RELEASE_AGENTS above:
 # review-orchestrator needs Bash-call restriction but must keep gate-release
 # capability, so the two properties can't share one array here — see
-# docs/design-decisions.md §29.
+# docs/design-decisions.md §31.
 _LIB_BASH_MUTATION_RESTRICTED_AGENTS=(
   review-orchestrator
 )
