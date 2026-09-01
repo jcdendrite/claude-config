@@ -562,7 +562,7 @@ The stow-source `claude/.claude/settings.json` deliberately carries no matching 
 
 Renaming or relocating `claude/.claude/CLAUDE.md` to dodge the duplicate was rejected: Stow links each immediate child of `claude/.claude/` individually (§5), so moving the file breaks the 1:1 install mapping every consumer runs.
 
-Whether `claudeMdExcludes` also matches a symlink's target path is undocumented for CLAUDE.md files (only for `.claude/rules/`), so this pattern's correctness — including whether it additionally suppresses the user-scope load — was unverified until a fresh session confirmed the user-scope load survives and the pattern does not over-suppress; see the plan's assumption ledger (`.claude/plans/exclude-nested-claude-md-duplicate.md`) for the full ledger row.
+Whether `claudeMdExcludes` also matches a symlink's target path is undocumented for CLAUDE.md files (only for `.claude/rules/`), so this pattern's correctness was unverified until a fresh session confirmed it empirically. That fresh session confirmed both that the user-scope load survives and that the pattern does not over-suppress. See the plan's assumption ledger (`.claude/plans/exclude-nested-claude-md-duplicate.md`) for the full ledger row.
 
 ### Sources
 
