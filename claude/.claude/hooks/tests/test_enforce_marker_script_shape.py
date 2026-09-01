@@ -393,6 +393,11 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh check"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_check_code_review_extra_arg_denied(self):
+        """check code-review with a trailing arg must be denied."""
+        cmd = "~/.claude/scripts/marker.sh check code-review extra"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_handoff_extra_arg_denied(self):
         """activate handoff with a trailing arg must be denied."""
         cmd = "~/.claude/scripts/marker.sh activate handoff extra"

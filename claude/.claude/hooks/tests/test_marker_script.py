@@ -2113,3 +2113,7 @@ class TestMarkerScriptCheck:
         result = _run(["check", "skill-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
         assert "code-review" in result.stderr
+
+    def test_check_code_review_extra_arg_exits_2(self, isolated_home, git_repo):
+        result = _run(["check", "code-review", "extra"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2

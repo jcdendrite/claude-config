@@ -463,7 +463,10 @@ class TestNudgeLongTurnSubagent:
         real hook fire would also exercise. The hook's own explicit
         release on every return path scopes the lock to the read-scan-
         write sequence itself, not the rest of the script through exit,
-        so the probe here is expected to succeed."""
+        so the probe here is expected to succeed. The probe polls for a
+        bounded window rather than trying once, so subprocess-spawn
+        latency under machine load only changes how long this test takes
+        to pass, not whether it does."""
         if not shutil.which("timeout"):
             pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
         transcript = tmp_path / "t.jsonl"
@@ -502,10 +505,15 @@ class TestNudgeLongTurnSubagent:
         assert scan_state.exists(), "the scan must complete before the stubbed jq -n sleep starts"
 
         lock_dir = scan_state.parent / f"{scan_state.name}.lock"
-        probe = subprocess.run(["mkdir", str(lock_dir)], stderr=subprocess.DEVNULL)
-        probe_succeeded = probe.returncode == 0
-        if probe_succeeded:
-            lock_dir.rmdir()
+        probe_succeeded = False
+        probe_deadline = time.monotonic() + 2.0
+        while time.monotonic() < probe_deadline:
+            probe = subprocess.run(["mkdir", str(lock_dir)], stderr=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                probe_succeeded = True
+                lock_dir.rmdir()
+                break
+            time.sleep(0.05)
 
         stalled_thread.join()
         assert result_holder["r"].returncode == 0

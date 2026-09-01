@@ -20,53 +20,28 @@
 # Fail-open everywhere: any unexpected error (missing jq, missing _lib.sh,
 # malformed input) exits 0 with no stdout.
 #
-# Known gaps:
-# - A stalled or hung dispatch producing zero new turns is NOT detected --
-#   this nudge only fires on turn *count* crossing the threshold, never on a
-#   dispatch stalling without advancing turns. See
-#   .claude/plans/prevent-runaway-subagent-cost.md and
-#   docs/design-decisions.md §40 for the fuller rationale.
-# - Registered system-wide on every subagent dispatch. This is unlike
-#   nudge-handoff-near-context-cap.sh's main-session-only registration. That
-#   widens the pre-existing `_lib_capped_for` timeout-absent exposure
-#   (docs/handoff-nudge.md, docs/commit-stall-block.md) to every subagent
-#   dispatch.
-# - A record whose own line exceeds MAX_SCAN_WINDOW_BYTES force-advances the
-#   offset past it, undercounting that record's turn (see
-#   _scan_turn_count_cached for the resync mechanics).
+# Known gaps (see docs/hooks.md's Known limitations entry for this hook for
+# the full list):
+# - A stalled or hung dispatch producing zero new turns is not detected
+#   (docs/design-decisions.md §40,
+#   .claude/plans/prevent-runaway-subagent-cost.md).
+# - Registered on every subagent dispatch, unlike
+#   nudge-handoff-near-context-cap.sh's main-session-only registration,
+#   widening that hook's pre-existing timeout-absent exposure
+#   (docs/handoff-nudge.md, docs/commit-stall-block.md) accordingly.
+# - An oversized record's own line force-advances the scan offset past it,
+#   undercounting that record's turn.
 # - A jq timeout driven by content rather than backlog size retries the
-#   identical window forever (2s _lib_capped_for cap on every retry).
-# - MAX_SCAN_WINDOW_BYTES / SAMPLE_CADENCE (200,000 bytes) is the average
-#   per-fire transcript-growth rate above which a dispatch permanently
-#   outpaces the scan. A single sampled fire's own catch-up capacity is the
-#   full MAX_SCAN_WINDOW_BYTES, since only one fire in SAMPLE_CADENCE
-#   actually scans. This rate isn't validated against real transcript
-#   growth, so TURN_COUNT can end up chronically undercounted with no
-#   visible signal.
-# - A losing fire during lock contention contributes nothing at all to
-#   that fire's scan, not a partial scan.
-# - This stacks with the backlog-vs-window-size undercounting risk above
-#   under a burst of same-session fires.
-# - A same-session fire killed (SIGKILL, not any trappable signal) while
-#   holding _scan_turn_count_cached's scan lock:
-#   - Leaks the lock directory; only the periodic MARKER_DIR sweep
-#     reclaims it, up to 30 days.
-#   - The likely root cause is an unwrapped rmdir/mktemp hang hitting
-#     a harness execution timeout -- see docs/hooks.md's known-limitations
-#     entry for this hook.
-#   - Every later sampled fire for that dispatch fails to scan while the
-#     lock is leaked, blinding the nudge for the rest of the dispatch.
-#   - In practice that's far under the 30-day reclaim window, since a
-#     dispatch rarely runs anywhere near that long.
-# - The same lock directory can also be orphaned by the 2s
-#   _lib_capped_for timeout on its own mkdir: if mkdir(2) completes after
-#   the timeout's SIGTERM fires, the caller sees exit 124 and treats
-#   acquisition as failed while the directory persists, subject to the
-#   same 30-day reclaim as the SIGKILL case above.
-#   - The same leak also happens if a trappable signal lands in the single
-#     statement between mkdir "$lock_dir" succeeding and LOCK_DIR being
-#     assigned, since the EXIT trap closes over LOCK_DIR while it's still
-#     empty at that instant.
+#   identical window forever.
+# - MAX_SCAN_WINDOW_BYTES/SAMPLE_CADENCE's rate isn't validated against
+#   real transcript growth.
+# - A losing fire during lock contention contributes nothing to that
+#   fire's scan.
+# - Undercounting from an outpaced scan rate compounds across a burst of
+#   same-session fires.
+# - A SIGKILL while holding the scan lock can orphan the lock directory.
+# - A mkdir racing its own timeout's SIGTERM, or a trap-ordering race
+#   around LOCK_DIR's assignment, can also orphan the lock directory.
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
@@ -192,7 +167,10 @@ _scan_turn_count_cached() {
 
   local new_turns=0 jq_ok=1 new_offset="$scan_from" new_misaligned="$misaligned"
   if [ "$scan_window_end" -gt "$scan_from" ] 2>/dev/null; then
-    WINDOW_FILE=$(mktemp -t long-turn-nudge-scan.XXXXXX 2>/dev/null) || WINDOW_FILE=""  # GNU mktemp requires the XXXXXX suffix to substitute; BSD's mktemp accepts the same template (appending its own suffix regardless of content).
+    # GNU mktemp requires the XXXXXX suffix to substitute a temp name.
+    # BSD mktemp accepts the same template but appends its own suffix
+    # regardless of the template's content.
+    WINDOW_FILE=$(_lib_capped_for 2 mktemp -t long-turn-nudge-scan.XXXXXX 2>/dev/null) || WINDOW_FILE=""
     if [ -n "$WINDOW_FILE" ]; then
       _lib_capped_for 2 tail -c +$((scan_from + 1)) "$transcript_path" 2>/dev/null \
         | head -c "$(( scan_window_end - scan_from ))" > "$WINDOW_FILE" 2>/dev/null
