@@ -219,11 +219,14 @@ were sometimes squashed into fewer commits than the round count implied.
 signal in user turns, split by model family. Unlike `review-trace`/
 `commit_count`, it is a live in-session signal, not a post-hoc commit or
 review artifact. It also isn't subject to `subagent-mix`'s redaction:
-`cmd_struggle` has no root-scoping redaction logic at all. Run as
+`cmd_struggle` has no root-scoping redaction logic at all
+(`docs/transcript-analysis.md:47`). Run as
 `transcript-analysis.py struggle --this-repo` (2026-09-01), which scopes
 to this repo's own worktrees by identity — the same fail-closed scoping
-every other `--this-repo` subcommand uses — so the reported figures below
-are this repo's own public branch history, not a wider, unscoped scan.
+every other `--this-repo` subcommand uses (`docs/transcript-analysis.md:112`,
+`transcript_analysis/scope.py`'s `_repo_scoped_project_slugs`) — so the
+reported figures below are this repo's own public branch history, not a
+wider, unscoped scan.
 
 Two findings. First, only 10 of the 29 tail branches carry any
 correction-phrase signal at all, and the branches classified `oscillation`
@@ -257,7 +260,10 @@ wrong?" consult stronger, not weaker.
 The recommended trigger point is **entry to round 3**, not round 1. Firing
 after round 1 would catch roughly half of all PRs to address a 14% tail.
 The signal that identifies a tail PR — repetition, a fix that spawns a new
-finding — only exists once round 2 has already run. This
+finding — only exists once round 2 has already run. The trigger should be
+hook-enforced, not instruction-enforced: this repo's own convention holds
+that memory and skill instructions cannot fulfill an automatic-trigger
+request, and every comparable gate in this repo is a hook. This
 recommendation is not built here; it is out of this plan's scope by the
 same "no `transcript-analysis.py`/hook changes" boundary the original plan
 set, and ships as its own separately-scoped `/plan-it` run.
@@ -274,16 +280,11 @@ set, and ships as its own separately-scoped `/plan-it` run.
   coverage is treated as a confirmed zero-round PR or excluded as unknown
   — a single-PR margin in either direction moves it. IQR is stable; the
   median is not a number to lean on precisely.
-- **G1's round-count proxy can overcount.** The follow-up diagnostic below
-  found one tail-bucket PR (#613) that `review-trace` counted as 3 rounds
-  but that independent verification showed had only 2 commits and a single
-  `"lgtm"` review — no evidence of real rework. Literal `/code-review`
-  Skill-invocation counting doesn't distinguish a re-invocation that finds
-  nothing from one that finds a real defect. This is a modest, not large,
-  overcount: one PR out of 29 in the tail bucket, found by manual
-  spot-check rather than a systematic audit. It means every round count
-  in this study is an upper bound on real rework rounds, not an exact
-  count.
+- **G1's round-count proxy can overcount.** Round counts are an upper
+  bound on real rework, not an exact count — `review-trace` cannot
+  distinguish a re-invocation that finds nothing from one that finds a
+  real defect (confirmed once, PR #613: 3 counted rounds vs. 2 commits and
+  a single `"lgtm"` review; see the follow-up diagnostic below).
 - **Unrandomized assignment.** Every treatment value in every arm
   (`plan_file_added`, `opus_dollar_share_pct`, harness plan-mode slippage)
   was decided historically by the engineer and by harness behavior, not
