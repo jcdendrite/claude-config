@@ -157,6 +157,23 @@ sessions, 90d, this repo: only 33% of handoff §3 sections named
 `code-writer`, 35% of sessions were inline-only with zero delegation
 attempt).
 
+**Narrowed further 2026-09-01.** The fix that follows `code-review`,
+`ready-for-review`, or `respond-pr` feedback is also delegated by
+default now: `subagent-delegation`'s "Implementation work →
+`code-writer`" section dispatches one `code-writer` per review round,
+carrying the round's ADDRESS rows verbatim. This supersedes the prior
+paragraph's "fixing a diff" example of a legitimate inline edit — a
+reviewer-dispositioned fix is no longer one of the cases a hard deny
+couldn't distinguish from plan implementation, since it is itself
+delegated-by-construction. The general case — inline code-writing
+outside an approved plan or a review disposition — stays advisory for
+the same reason above: the routing rule still cannot be hook-enforced.
+The 90-day inline-vs-dispatch measurement in
+`.claude/plans/handoff-code-writer-delegation.md` predates both
+narrowings for all but a handful of its days, so it cannot serve as a
+remeasurement of either; a windowed remeasurement keyed to each
+narrowing's own merge date is needed instead.
+
 The name `code-writer` is job-shaped — an action-noun (like `code-review`)
 describing the work the agent does — not a persona job title.
 Anthropic's subagent documentation treats the agent `name` as a pure
