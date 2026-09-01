@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **This repo's own `.claude/settings.json` now excludes `claude/.claude/CLAUDE.md` from nested-CLAUDE.md discovery.** A session working in this repo, and every subagent it dispatches, previously loaded the global-instructions file twice: once at user scope through the `~/.claude/CLAUDE.md` stow symlink, and again as a fresh system-reminder block the first time anything under `claude/.claude/**` was read. The `claudeMdExcludes` pattern `**/claude/.claude/CLAUDE.md` covers both a main-checkout session and a worktree-anchored one. See `docs/design-decisions.md` §39.
 - **`struggle`, `user-input`, and `friction-count` no longer score a forwarded `<task-notification>` envelope's text against `STRUGGLE_PHRASES`.** On this repo's own corpus (`user-input --projects '*claude-config*' --corrections-only`), "Explicit corrections" drops from 82 to 25. Two residuals are left standing on purpose:
   - A notification record still appears in `user-input --corrections-only` output as a `FOLLOWUP` entry, since that filter drops only `INITIAL`.
   - A friction checkpoint already in progress keeps whatever `struggle_turns` total it accumulated under the old rule until the checkpoint file self-evicts at 30 days.
