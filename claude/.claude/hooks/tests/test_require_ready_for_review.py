@@ -4,9 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -23,7 +21,7 @@ from helpers import (
     run_skill_command,
 )
 
-from .conftest import _seed_session
+from .conftest import _seed_session, assert_cap_engaged
 
 READY_FOR_REVIEW_HOOK = HOOKS_DIR / "require-ready-for-review.sh"
 READY_FOR_REVIEW_SKILL = SKILLS_DIR / "ready-for-review" / "SKILL.md"
@@ -756,7 +754,7 @@ class TestRequireReadyForReview:
 
     @pytest.mark.timing
     def test_current_head_git_timeout_denies(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, tmp_path
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
     ):
         """The CURRENT_HEAD `git rev-parse HEAD` call's _lib_capped exit
         status must fail closed on timeout. This mirrors how an unresolvable
@@ -768,38 +766,155 @@ class TestRequireReadyForReview:
         discriminate a working cap (empty CURRENT_HEAD, no match) from a
         broken one, rather than passing on every path because no marker
         exists at all."""
-        real_git = shutil.which("git")
-        if not real_git:
-            pytest.skip("git not found in PATH")
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-
         sid = "s"
         marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(head_sha(repo_on_feature_branch) + "\n")
 
-        fake_git = tmp_path / "git"
-        fake_git.write_text(
-            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        fake_git.chmod(0o755)
-
-        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        decision = run_hook(
-            READY_FOR_REVIEW_HOOK,
-            bash_input("git push origin feature", session_id=sid),
-            cwd=repo_on_feature_branch,
-            extra_env=env,
-        )
-        elapsed = time.monotonic() - start
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
         assert decision == "deny"
-        assert elapsed > 4, (
-            f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s "
-            f"if it does not), took only {elapsed:.1f}s"
+
+    @pytest.mark.timing
+    def test_repo_root_git_timeout_allows(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Required regression test for a fail-open path: the header
+        documents REPO_ROOT's git-timeout as the only one of this hook's
+        rev-parse/symbolic-ref timeout paths that allows directly rather
+        than falling through to the gate below. A timed-out `git rev-parse
+        --show-toplevel` leaves REPO_ROOT empty, matching the
+        `[ -z "$REPO_ROOT" ]` early exit — inverting the baseline deny this
+        fixture combination otherwise produces."""
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_current_branch_git_timeout_arms_the_gate(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        Timing out CURRENT_BRANCH's `git rev-parse --abbrev-ref HEAD` leaves
+        it empty, withholding the default-branch bypass and falling through
+        to the gate below.
+
+        The match condition targets `$1 = "rev-parse"` and
+        `$2 = "--abbrev-ref"` specifically so it doesn't also shadow the
+        CURRENT_HEAD call's `git rev-parse HEAD`.
+
+        With an open PR and no completion marker, the gate then denies."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--abbrev-ref" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_default_branch_symbolic_ref_timeout_still_allows_via_candidate_loop(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        Timing out DEFAULT_BRANCH's direct `git symbolic-ref --quiet
+        refs/remotes/origin/HEAD` lookup does not, by itself, withhold the
+        default-branch bypass. The candidate-loop fallback's `git rev-parse
+        --verify origin/main` still resolves quickly against the plain
+        `refs/remotes/origin/main` ref repo_on_feature_branch sets up, so
+        DEFAULT_BRANCH still gets set and the bypass still fires.
+
+        `fake_output` gives a broken cap a decision-flipping outcome: if the
+        cap fails, the full sleep completes and the shim emits this
+        un-stripped `refs/remotes/origin/...` value (the hook's own `sed`
+        strips the prefix afterward), producing `DEFAULT_BRANCH="wrong-branch"`
+        which mismatches CURRENT_BRANCH and withholds the bypass instead of
+        allowing — versus a working cap, where the shim is killed mid-sleep,
+        this call stays empty, and the candidate loop still recovers "main"."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim(
+            '[ "$1" = "symbolic-ref" ]', fake_output="refs/remotes/origin/wrong-branch"
         )
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_candidate_loop_exhausted_arms_the_gate(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        DEFAULT_BRANCH's direct `symbolic-ref` lookup already fails to
+        resolve on its own (repo_on_feature_branch configures no
+        `refs/remotes/origin/HEAD`), so timing out the candidate loop's
+        `git rev-parse --verify origin/main` — the only candidate with a ref
+        to resolve against, since `master` and `develop` have none — exhausts
+        the whole loop and leaves DEFAULT_BRANCH empty, withholding the
+        default-branch bypass.
+
+        With an open PR and no completion marker, the gate then denies."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "origin/main" ]'
+        )
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_gh_pr_view_timeout_allows(
+        self, isolated_home, repo_on_feature_branch, gh_timeout_shim
+    ):
+        """The `gh pr view` network call's own `_lib_capped` cap must actually
+        engage.
+
+        A hung `gh` leaves PR_NUMBER empty, matching the `[ -z "$PR_NUMBER" ]`
+        fail-open check the same way an outright `gh` failure does (see
+        test_gh_failure_fails_open).
+
+        `fake_output` gives a broken cap a decision-flipping outcome: if the
+        cap fails, the full sleep completes and the shim emits a
+        plausible-but-wrong PR number instead of the real `gh` call's own
+        empty result, so PR_NUMBER is non-empty and the hook proceeds to the
+        completion-marker check — with no marker, that denies instead of
+        allowing."""
+        env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="999")
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "allow"
 
     def test_other_sessions_completion_marker_authorizes_at_same_head(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
@@ -1243,6 +1358,26 @@ class TestRequireReadyForReview:
                 cwd=repo_on_feature_branch,
             )
             == "allow"
+        )
+
+    def test_full_path_git_push_invocation_detected(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Unlike the gh-pr-ready/gh-pr-create arms above, the git-push arm
+        detects via `_lib_fragment_invokes_git`'s token-walking tokenizer,
+        not a plain-text regex on the literal `git push` tokens — so a
+        full-path `/usr/bin/git push` is still caught (see hook header).
+        Pins the header's documented asymmetry in both directions, not just
+        the gap side test_full_path_gh_invocation_bypasses_detection above
+        already covers.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("/usr/bin/git push origin feature", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
         )
 
     @pytest.mark.parametrize(
