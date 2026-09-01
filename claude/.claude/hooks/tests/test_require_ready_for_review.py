@@ -905,27 +905,22 @@ class TestRequireReadyForReview:
             "GIT_DIR=/tmp/example.git git push --dry-run && gh pr create",
         ],
     )
-    def test_wrapped_dry_run_chained_bypass_matches_known_gap(
+    def test_wrapped_dry_run_chained_before_pr_create_denies(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
     ):
-        """A *wrapped* invocation of the --dry-run-chained bypass above.
-
-        Proves the wrapped case resolves to the same allow outcome as the
-        plain-literal case. This fixture uses a real repo with no
-        completion marker. A broken wrapped-shape tokenizer would
-        therefore fall through to the gh-pr-create arm's marker check and
-        produce deny, not allow. That makes this test genuinely
-        discriminating, unlike a bare non-git tmp_path cwd, where the
-        hook's "not a git repo" fallback already allows regardless of
-        whether the tokenizer detects anything.
-        """
+        """A *wrapped* invocation of the --dry-run push exempts only its own
+        fragment, so the chained gh pr create still gates — the wrapped-shape
+        counterpart to test_gh_pr_create_chained_after_dry_run_push_denies.
+        This fixture uses a real repo with no completion marker, so the
+        assertion actually exercises the gh-pr-create arm's marker check
+        rather than passing via the hook's "not a git repo" fallback."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input(command, session_id="s"),
                 cwd=repo_on_feature_branch,
             )
-            == "allow"
+            == "deny"
         )
 
     @pytest.mark.parametrize(
