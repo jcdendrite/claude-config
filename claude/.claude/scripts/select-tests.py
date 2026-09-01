@@ -131,6 +131,10 @@ ROOT_RULES_DIR = ".claude/rules"
 # alongside SKILLS_DIR and plugins/*/skills/*/SKILL.md.
 ROOT_SKILLS_DIR = ".claude/skills"
 
+# test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads this exact file's
+# claudeMdExcludes entry by path.
+ROOT_SETTINGS_JSON = ".claude/settings.json"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
@@ -303,8 +307,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # DOCS_DIR blanket below.
 # DOCS_DIR, README_MD, INSTALL_SH, and CLAUDE_SETTINGS_JSON: see each
 # constant's own comment above for its citation.
-# GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, and ROOT_SKILLS_DIR: see
-# each constant's own comment above for its citation.
+# GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
+# ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -329,6 +333,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
 )
 
 
