@@ -10,6 +10,7 @@ per-test session id, not a fixed injected value; import it directly with
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -108,15 +109,30 @@ def _worktree_lock_reason(worktree: Path) -> str | None:
 
 
 def _write_conditional_sleep_shim(
-    bin_dir: Path, binary_name: str, real_binary: str, match_condition: str
+    bin_dir: Path,
+    binary_name: str,
+    real_binary: str,
+    match_condition: str,
+    fake_output: str | None = None,
 ) -> None:
     """Write a fake `binary_name` under bin_dir that sleeps
     TIMEOUT_SHIM_SLEEP_SECONDS past the 5s _lib_capped cap when
     `match_condition` matches, and execs `real_binary` otherwise. Shared
-    conditional-sleep logic behind git_timeout_shim and gh_timeout_shim."""
+    conditional-sleep logic behind git_timeout_shim and gh_timeout_shim.
+
+    When `fake_output` is set, it replaces the exec-real-binary fallback
+    after the sleep completes, so a broken cap is observably distinct from
+    a working one instead of both converging on the real binary's result."""
+    post_sleep = (
+        f"  echo {shlex.quote(fake_output)}\n  exit 0\n" if fake_output is not None else ""
+    )
     fake_binary = bin_dir / binary_name
     fake_binary.write_text(
-        f"#!/bin/bash\nif {match_condition}; then sleep {TIMEOUT_SHIM_SLEEP_SECONDS}; fi\n"
+        f"#!/bin/bash\n"
+        f"if {match_condition}; then\n"
+        f"  sleep {TIMEOUT_SHIM_SLEEP_SECONDS}\n"
+        f"{post_sleep}"
+        f"fi\n"
         f'exec {real_binary} "$@"\n'
     )
     fake_binary.chmod(0o755)
@@ -141,6 +157,10 @@ def git_timeout_shim(tmp_path):
     prepends its own bin dir via `monkeypatch.setenv` beforehand (e.g.
     fake_gh_pr_exists) must call `monkeypatch.setenv` before calling
     `install`, so that ordering is preserved.
+
+    `install`'s optional `fake_output` passes through to
+    _write_conditional_sleep_shim, for a call site whose real, uncapped
+    result would otherwise coincidentally match the timed-out result.
     """
     real_git = shutil.which("git")
     if not real_git:
@@ -148,8 +168,8 @@ def git_timeout_shim(tmp_path):
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
-    def install(match_condition: str) -> dict[str, str]:
-        _write_conditional_sleep_shim(tmp_path, "git", real_git, match_condition)
+    def install(match_condition: str, fake_output: str | None = None) -> dict[str, str]:
+        _write_conditional_sleep_shim(tmp_path, "git", real_git, match_condition, fake_output)
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     return install
@@ -161,6 +181,10 @@ def gh_timeout_shim(tmp_path):
     conditional-sleep contract as git_timeout_shim, for regression tests
     against require-ready-for-review.sh's `gh pr view` call. Same skip
     conditions as git_timeout_shim, checking `gh` in place of `git`.
+
+    `install`'s optional `fake_output` passes through to
+    _write_conditional_sleep_shim, for a call site whose real, uncapped
+    result would otherwise coincidentally match the timed-out result.
     """
     real_gh = shutil.which("gh")
     if not real_gh:
@@ -168,8 +192,8 @@ def gh_timeout_shim(tmp_path):
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
-    def install(match_condition: str) -> dict[str, str]:
-        _write_conditional_sleep_shim(tmp_path, "gh", real_gh, match_condition)
+    def install(match_condition: str, fake_output: str | None = None) -> dict[str, str]:
+        _write_conditional_sleep_shim(tmp_path, "gh", real_gh, match_condition, fake_output)
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     return install

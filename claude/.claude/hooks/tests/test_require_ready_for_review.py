@@ -839,9 +839,19 @@ class TestRequireReadyForReview:
         default-branch bypass. The candidate-loop fallback's `git rev-parse
         --verify origin/main` still resolves quickly against the plain
         `refs/remotes/origin/main` ref repo_on_feature_branch sets up, so
-        DEFAULT_BRANCH still gets set and the bypass still fires."""
+        DEFAULT_BRANCH still gets set and the bypass still fires.
+
+        `fake_output` gives a broken cap a decision-flipping outcome: if the
+        cap fails, the full sleep completes and the shim emits this
+        un-stripped `refs/remotes/origin/...` value (the hook's own `sed`
+        strips the prefix afterward), producing `DEFAULT_BRANCH="wrong-branch"`
+        which mismatches CURRENT_BRANCH and withholds the bypass instead of
+        allowing — versus a working cap, where the shim is killed mid-sleep,
+        this call stays empty, and the candidate loop still recovers "main"."""
         subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
-        env = git_timeout_shim('[ "$1" = "symbolic-ref" ]')
+        env = git_timeout_shim(
+            '[ "$1" = "symbolic-ref" ]', fake_output="refs/remotes/origin/wrong-branch"
+        )
         with assert_cap_engaged():
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -852,14 +862,51 @@ class TestRequireReadyForReview:
         assert decision == "allow"
 
     @pytest.mark.timing
+    def test_candidate_loop_exhausted_arms_the_gate(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        DEFAULT_BRANCH's direct `symbolic-ref` lookup already fails to
+        resolve on its own (repo_on_feature_branch configures no
+        `refs/remotes/origin/HEAD`), so timing out the candidate loop's
+        `git rev-parse --verify origin/main` — the only candidate with a ref
+        to resolve against, since `master` and `develop` have none — exhausts
+        the whole loop and leaves DEFAULT_BRANCH empty, withholding the
+        default-branch bypass.
+
+        With an open PR and no completion marker, the gate then denies."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "origin/main" ]'
+        )
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
     def test_gh_pr_view_timeout_allows(
         self, isolated_home, repo_on_feature_branch, gh_timeout_shim
     ):
-        """The `gh pr view` network call's own _lib_capped cap must actually
-        engage: a hung `gh` leaves PR_NUMBER empty, matching the
-        `[ -z "$PR_NUMBER" ]` fail-open check the same way an outright `gh`
-        failure already does (see test_gh_failure_fails_open)."""
-        env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]')
+        """The `gh pr view` network call's own `_lib_capped` cap must actually
+        engage.
+
+        A hung `gh` leaves PR_NUMBER empty, matching the `[ -z "$PR_NUMBER" ]`
+        fail-open check the same way an outright `gh` failure does (see
+        test_gh_failure_fails_open).
+
+        `fake_output` gives a broken cap a decision-flipping outcome: if the
+        cap fails, the full sleep completes and the shim emits a
+        plausible-but-wrong PR number instead of the real `gh` call's own
+        empty result, so PR_NUMBER is non-empty and the hook proceeds to the
+        completion-marker check — with no marker, that denies instead of
+        allowing."""
+        env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="999")
         with assert_cap_engaged():
             decision = run_hook(
                 READY_FOR_REVIEW_HOOK,
