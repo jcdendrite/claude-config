@@ -119,20 +119,18 @@ _fragment_invokes_canonical_git() {
 
 # True iff FRAGMENT invokes sudo or doas anywhere. _lib_fragment_command_word
 # treats both as transparent wrappers it walks past to reach the real
-# command, correct for its denylist callers since `sudo rm -rf` must still
-# resolve to "rm" to get caught. That's wrong for this hook's allowlist
-# direction: walking past sudo/doas here would let `sudo git log` match the
-# same canonical-git allow arm as an unprivileged `git log`, executing as
-# root on any machine with passwordless sudo for git. Scans every word,
-# not just the resolved command word, so a wrapper-of-a-wrapper form
-# (`env sudo git log`) is caught too. Strips every quote character,
-# backslash-escape, and ANSI-C/locale ($'...'/$"...") quote opener from each
-# word via _lib_strip_word_quotes before matching, so a quoted,
-# interior-spliced, backslash-escaped, or ANSI-C/locale-quoted wrapper name
-# (`'sudo' git log`, `su'do' git log`, `\sudo git log`, `$'sudo' git log`) is
-# caught directly rather than relying on _lib_fragment_command_word's own
-# (equally quote-blind) wrapper resolution to fail this fragment closed for
-# an unrelated reason.
+# command -- correct for its denylist callers (`sudo rm -rf` must still
+# resolve to "rm" to get caught), but wrong for this hook's allowlist
+# direction, where walking past sudo/doas would let `sudo git log` match the
+# same canonical-git allow arm as an unprivileged `git log` and execute as
+# root on any machine with passwordless sudo for git.
+# Scans every word in the fragment, not just the resolved command word, so a
+# wrapper-of-a-wrapper form (`env sudo git log`) is caught too.
+# Strips every quote character, backslash-escape, and ANSI-C/locale
+# ($'...'/$"...") quote opener from each word via _lib_strip_word_quotes
+# before matching, catching a quoted or escaped wrapper name directly rather
+# than relying on _lib_fragment_command_word's own (equally quote-blind)
+# wrapper resolution to fail this fragment closed for an unrelated reason.
 _fragment_has_privilege_escalation_wrapper() {
   local fragment="$1" saved_opts=$- word stripped found=false
   set -f
@@ -147,19 +145,16 @@ _fragment_has_privilege_escalation_wrapper() {
   $found
 }
 
-# True iff FRAGMENT invokes `git grep --no-index`. --no-index turns git grep
-# into a plain filesystem search with no repository-boundary restriction at
-# all -- unlike an ordinary `git grep`, which git itself already scopes to
-# this repo's tracked/working-tree content, so no separate path-argument
-# check is needed there. --no-index makes this an unconditional
+# True iff FRAGMENT invokes `git grep --no-index`. Unlike an ordinary
+# `git grep`, which git itself already scopes to this repo's tracked/
+# working-tree content, --no-index turns git grep into a plain filesystem
+# search with no repository-boundary restriction -- an unconditional
 # arbitrary-file-read primitive regardless of what pathspec argument rides
 # along with it, so it is denied outright rather than validated per-path.
 # Strips every quote character, backslash-escape, and ANSI-C/locale
 # ($'...'/$"...") quote opener from each word via _lib_strip_word_quotes
-# before matching, so a quoted, interior-spliced, backslash-escaped, or
-# ANSI-C/locale-quoted flag (`git grep -'-no-index'`, `git grep \--no-index`,
-# `git grep $'--no-index'`) is caught directly rather than passing through as
-# an unmatched word.
+# before matching, catching a quoted or escaped flag directly rather than
+# passing through as an unmatched word.
 _fragment_has_git_grep_no_index_flag() {
   local fragment="$1" saved_opts=$- word found=false
   set -f
@@ -256,21 +251,18 @@ _resolve_repo_root_once() {
 }
 
 # True iff FRAGMENT carries -C, --git-dir, --work-tree, --namespace, or
-# --super-prefix with an argument that resolves outside REPO_ROOT. Each of
+# --super-prefix with an argument that resolves outside REPO_ROOT -- each of
 # these retargets which repository (or ref namespace) git operates against,
-# independent of the subcommand. A subcommand-word-only allowlist check
-# would treat `git -C /any/readable/path log` as the same safe read-only
-# `log` it would be against this repo, when it actually reads whatever repo
-# sits at that other path. Handles both the `--flag value`/`-C value` and
-# `--flag=value`/`-Cvalue` forms. Fails closed (denied) if REPO_ROOT itself
-# can't be resolved, or if a flag's argument can't be realpath-resolved.
-# Strips every quote character, backslash-escape, and ANSI-C/locale
-# ($'...'/$"...") quote opener from each word via _lib_strip_word_quotes
-# before matching the flag literal or capturing its argument, so an
-# interior-spliced quote, backslash-escape, or ANSI-C/locale-quoted opener
-# (e.g. `git --git-di'r=/outside/path/.git' log`, `git \--git-dir=/outside
-# log`, `git $'--git-dir=/outside' log`) is read as the flag/argument bash's
-# own quote removal would reconstruct.
+# independent of the subcommand.
+# A subcommand-word-only allowlist check would miss this: it would treat
+# `git -C /any/readable/path log` as the same safe read-only `log` it would
+# be against this repo, when it actually reads whatever repo sits at that
+# other path.
+# Fails closed (denied) if REPO_ROOT itself can't be resolved, or if a
+# flag's argument can't be realpath-resolved.
+# Handles both the `--flag value`/`-C value` and `--flag=value`/`-Cvalue`
+# forms, and strips quoting via _lib_strip_word_quotes before matching, the
+# same coverage documented on the sibling checks above.
 _fragment_has_git_path_flag_outside_repo_root() {
   local fragment="$1" saved_opts=$- past_git=false word stripped target found=false want_next=false
   set -f

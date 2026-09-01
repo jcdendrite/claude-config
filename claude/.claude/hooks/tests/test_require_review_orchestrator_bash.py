@@ -115,7 +115,7 @@ class TestExactResolvedGitPathMatching:
 
 
 class TestBareWordGitPathTrustAcceptedResidual:
-    """docs/design-decisions.md §31 accepts this: `_fragment_invokes_canonical_git`'s
+    """docs/design-decisions.md §40 accepts this: `_fragment_invokes_canonical_git`'s
     bare-word `git` arm allows any command word that is literally the string
     `git` without ever resolving it via realpath, unlike the byte-identical
     canonical-path comparison the marker.sh/review-ledger.sh/
@@ -813,7 +813,7 @@ class TestCommandInvokingGitFlagDenied:
         ANSI-C \\xHH hex escape ($'--tex\\x74conv' decodes \\x74 to 't' at
         exec time) reassembles the real --textconv flag, but
         _lib_strip_word_quotes does not decode multi-character ANSI-C
-        escapes -- see docs/design-decisions.md §31's accepted-residual
+        escapes -- see docs/design-decisions.md §40's accepted-residual
         entry for _lib_strip_word_quotes. Currently allowed, not denied;
         pins the gap as a reviewed decision rather than an unnoticed one."""
         command = "git log $'--tex\\x74conv' HEAD"
@@ -824,7 +824,7 @@ class TestCommandInvokingGitFlagDenied:
     def test_git_log_textconv_ansi_c_octal_escape_bypass_allowed(self):
         """Octal-escape variant of the hex-escape bypass above
         ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- same
-        documented residual, see docs/design-decisions.md §31's
+        documented residual, see docs/design-decisions.md §40's
         accepted-residual entry for _lib_strip_word_quotes."""
         command = "git log $'--tex\\164conv' HEAD"
         assert run_hook(

@@ -382,6 +382,26 @@ class TestCommandInvokingGitFlagDenied:
         ordinary read-only git subcommand with none of the unsafe flags."""
         assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
 
+    def test_git_log_textconv_ansi_c_hex_escape_bypass_allowed(self):
+        """Required regression test pinning a documented residual shared with
+        require-review-orchestrator-bash.sh: bash's ANSI-C \\xHH hex escape
+        ($'--tex\\x74conv' decodes \\x74 to 't' at exec time) reassembles the
+        real --textconv flag, but _lib_strip_word_quotes does not decode
+        multi-character ANSI-C escapes -- see docs/design-decisions.md §40's
+        accepted-residual entry for _lib_strip_word_quotes. Currently
+        allowed, not denied; pins the gap as a reviewed decision reaching
+        this hook's whole existing reviewer roster, not an unnoticed one."""
+        command = "git log $'--tex\\x74conv' HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    def test_git_log_textconv_ansi_c_octal_escape_bypass_allowed(self):
+        """Octal-escape variant of the hex-escape bypass above
+        ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- same
+        documented residual, see docs/design-decisions.md §40's
+        accepted-residual entry for _lib_strip_word_quotes."""
+        command = "git log $'--tex\\164conv' HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
 
 class TestBareAmpersandBackgroundingDenied:
     """A standalone `&` (shell backgrounding) is not `&&` and was not a
@@ -832,7 +852,7 @@ class TestKnownGapBypass:
         tracked file) is not mechanically gated. This is also the composed
         two-hop path require-review-orchestrator-agent-target.sh's own
         allowlist does not close for a review-orchestrator-dispatched
-        reviewer persona -- see docs/design-decisions.md §31. Pin the
+        reviewer persona -- see docs/design-decisions.md §40. Pin the
         accepted allow so a future narrowing of this gap is visible."""
         assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "allow"
 

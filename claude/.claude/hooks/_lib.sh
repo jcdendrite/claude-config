@@ -651,7 +651,7 @@ _lib_extract_git_subcmd_args() {
 # \--output, and $'--textconv' all read as the flag they'd become once bash
 # actually parses the word. This does not decode a $'...' region's own
 # multi-character escapes (\xHH, \NNN, \uHHHH/\UHHHHHHHH) -- see
-# docs/design-decisions.md §31's accepted-residual entry for that gap.
+# docs/design-decisions.md §40's accepted-residual entry for that gap.
 # Pure bash parameter expansion (no sed/tr/subshell) because this runs once
 # per word inside the hot `for word in $fragment` loops below and in
 # require-review-orchestrator-bash.sh -- an uncapped-word-count fragment
@@ -2155,7 +2155,7 @@ _lib_is_no_gate_release_agent() {
 # Separate from _LIB_REVIEW_ONLY_AGENTS/_LIB_NO_GATE_RELEASE_AGENTS above:
 # review-orchestrator needs Bash-call restriction but must keep gate-release
 # capability, so the two properties can't share one array here — see
-# docs/design-decisions.md §31.
+# docs/design-decisions.md §40.
 _LIB_BASH_MUTATION_RESTRICTED_AGENTS=(
   review-orchestrator
 )

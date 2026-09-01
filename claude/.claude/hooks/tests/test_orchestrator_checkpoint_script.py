@@ -294,6 +294,41 @@ class TestOrchestratorCheckpointOutsideGitRepo:
         assert result.stderr == "orchestrator-checkpoint.sh: not inside a git repository\n"
 
 
+class TestOrchestratorCheckpointUnresolvableConfigDir:
+    """Sibling of TestOrchestratorCheckpointOutsideGitRepo for the script's
+    other fail-closed guard: CONFIG_DIR built from an unresolvable
+    CLAUDE_CONFIG_DIR (here, a relative value) must abort before any path is
+    constructed, not fall through to a root-anchored path."""
+
+    def test_append_with_relative_config_dir_denied(self, isolated_home, git_repo):
+        args = _append_args()
+        result = _run(
+            args, cwd=git_repo, home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/config/dir"},
+        )
+        assert result.returncode == 2
+        assert result.stderr == (
+            "orchestrator-checkpoint.sh: could not resolve the Claude Code "
+            "config directory (CLAUDE_CONFIG_DIR is set to a relative path, "
+            "or $HOME is unset/empty). Abort without writing.\n"
+        )
+        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
+        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
+        assert stray == [], f"must not write a checkpoint file on an unresolvable config dir: {stray}"
+
+    def test_read_with_relative_config_dir_denied(self, isolated_home, git_repo):
+        result = _run(
+            ["read", RUN_ID], cwd=git_repo, home=isolated_home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative/config/dir"},
+        )
+        assert result.returncode == 2
+        assert result.stderr == (
+            "orchestrator-checkpoint.sh: could not resolve the Claude Code "
+            "config directory (CLAUDE_CONFIG_DIR is set to a relative path, "
+            "or $HOME is unset/empty). Abort without writing.\n"
+        )
+
+
 class TestOrchestratorCheckpointNoCheckpointYet:
     def test_read_reports_absence_for_a_brand_new_run_id(self, isolated_home, git_repo):
         result = _run(["read", "brand-new-run-id-0000"], cwd=git_repo, home=isolated_home)

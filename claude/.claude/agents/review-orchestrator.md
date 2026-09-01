@@ -95,6 +95,12 @@ as needing human judgment instead.
 
 ## Checkpointing
 
+A checkpoint entry is self-attested and unverified against the tree's actual
+state — it exists purely for crash-resume bookkeeping, never as an
+authorization signal. The gate release a run ultimately depends on is
+`marker.sh`'s own independent hash check, not any `--marker-hash`/`done`
+entry here.
+
 A checkpoint records that a step's content is no longer needed, never merely
 that a tool call returned:
 
