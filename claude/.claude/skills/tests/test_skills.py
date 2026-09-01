@@ -2257,6 +2257,7 @@ _SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->
 _EXPECTED_SCOPE_ANCHORS = {
     ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
     ("code-review", "SCOPE_EXEMPT_ROW"),
+    ("code-review", "SCOPE_RULE:code-review-causal-reach"),
     ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
 }
 
@@ -2390,213 +2391,124 @@ def test_scope_rule_anchors_present() -> None:
     )
 
 
-def test_scope_exempt_row_nested_within_outer_rule() -> None:
-    """SCOPE_EXEMPT_ROW must be textually nested inside
-    SCOPE_RULE:code-review-staged-diff-only's start/end pair, not merely
-    present somewhere in the file alongside it — the design (see the
-    SCOPE_RULE region's own prose) is that the exempt row's match-narrowing
-    carve-out lives inside the outer rule, not as an unrelated sibling anchor.
+@pytest.mark.parametrize(
+    "skill_name,inner_marker,outer_marker",
+    [
+        ("code-review", "SCOPE_EXEMPT_ROW", "SCOPE_RULE:code-review-staged-diff-only"),
+        (
+            "code-review",
+            "SCOPE_RULE:code-review-causal-reach",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
+    ],
+)
+def test_nested_anchor_fully_contained_within_outer_rule(
+    skill_name: str, inner_marker: str, outer_marker: str
+) -> None:
+    """A nested anchor must be textually contained inside its outer
+    SCOPE_RULE's start/end pair, not merely present somewhere in the file
+    alongside it — the design (see the SCOPE_RULE region's own prose) is
+    that a nested anchor's narrowing lives inside the outer rule, not as an
+    unrelated sibling anchor. Checks both the inner start and the inner end
+    offset, not just the start — an inner end marker that drifts outside the
+    outer region while the inner start stays correctly nested would pass a
+    start-only check silently.
     """
-    skill_md_path = _skill_file("code-review")
+    skill_md_path = _skill_file(skill_name)
+    # Validates presence and rejects a duplicated marker before offsets are
+    # computed below — text.find() alone would silently resolve a
+    # duplicated marker to its first occurrence.
+    _extract_scope_anchor_region(skill_md_path, outer_marker)
+    _extract_scope_anchor_region(skill_md_path, inner_marker)
     text = skill_md_path.read_text()
 
-    outer_start = text.find("<!-- SCOPE_RULE:code-review-staged-diff-only start -->")
-    outer_end = text.find("<!-- SCOPE_RULE:code-review-staged-diff-only end -->")
-    exempt_start = text.find("<!-- SCOPE_EXEMPT_ROW start -->")
-    assert -1 not in (outer_start, outer_end, exempt_start), (
-        f"{skill_md_path}: one of the SCOPE_RULE/SCOPE_EXEMPT_ROW start/end anchors is missing"
-    )
-    assert outer_start < exempt_start < outer_end, (
-        f"{skill_md_path}: SCOPE_EXEMPT_ROW (offset {exempt_start}) is not nested inside "
-        f"SCOPE_RULE:code-review-staged-diff-only (offsets {outer_start}-{outer_end})"
+    outer_start = text.find(f"<!-- {outer_marker} start -->")
+    outer_end = text.find(f"<!-- {outer_marker} end -->")
+    inner_start = text.find(f"<!-- {inner_marker} start -->")
+    inner_end = text.find(f"<!-- {inner_marker} end -->")
+    assert outer_start < inner_start and inner_end < outer_end, (
+        f"{skill_md_path}: {inner_marker} (offsets {inner_start}-{inner_end}) is not fully "
+        f"contained inside {outer_marker} (offsets {outer_start}-{outer_end})"
     )
 
 
-_CAUSAL_REACH_KEYWORDS = ("causes", "activates", "newly reaches")
-
-# Keyword presence alone would pass a reword that keeps all three verbs but
-# flips the clause from mandatory ("stays in scope") to advisory ("may
-# optionally be flagged") — the modal-verb and disqualifier checks below
-# catch that flip.
-_MANDATORY_MODAL_TOKENS = ("stays", "is", "remains")
-# Word-boundary regex, not a bare substring check — "is" as a raw substring
-# would match inside unrelated words ("this", "responsibility") and pass
-# almost any sentence regardless of actual modality.
-_MANDATORY_MODAL_RE = re.compile(
-    r"\b(?:" + "|".join(_MANDATORY_MODAL_TOKENS) + r")\b"
-)
-_ADVISORY_DISQUALIFIER_RE = re.compile(
-    r"may optionally|at\s+\S+'?s?\s+discretion|if\s+\S+\s+chooses", re.IGNORECASE
-)
-# Catches a reword that keeps the mandatory modal ("is", "stays") but negates
-# it into an exception, e.g. "...is not automatically in scope... unless
-# separately raised" — _ADVISORY_DISQUALIFIER_RE's discretionary-softening
-# phrasings don't match that shape.
-# The match is bound to the sentence's own mandatory modal (or a second
-# mandatory-shaped verb group for "does/do/will/would/can/may"), so a
-# negation attached to a trailing reinforcement clause is not a carve-out and
-# does not match. `unless` matches unbound, since any `unless` in this one
-# sentence makes the guarantee conditional regardless of where it sits.
-_NEGATION_DISQUALIFIER_RE = re.compile(
-    r"\b(?:" + "|".join(_MANDATORY_MODAL_TOKENS) + r"|does|do|will|would|can|may)\s+not\b"
-    r"|\bno longer\s+(?:" + "|".join(_MANDATORY_MODAL_TOKENS) + r"|in scope)\b"
-    r"|\bunless\b",
-    re.IGNORECASE,
-)
+_PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
+    ("code-review", "SCOPE_RULE:code-review-causal-reach"): (
+        "A defect outside the boundary that the change causes, activates, or "
+        "newly reaches stays in scope for that spawn's flagging duty."
+    ),
+    ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
+        "This pass reviews the cumulative diff with no responsibility-boundary "
+        "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
+        "Per-commit findings from earlier in this branch's fix loop feed in as "
+        "context, not a substitute for this pass."
+    ),
+}
 
 
-# Naive sentence-boundary regex that already mis-splits on abbreviations
-# like `(e.g.` elsewhere in the SCOPE_RULE region it parses. A future edit
-# adding a parenthetical inside the isolated causal-reach sentence could
-# corrupt this check.
-def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+def _normalized_anchor_text(skill_md_path: Path, marker_name: str) -> str:
+    """Whitespace-collapsed text of a SCOPE_RULE/SCOPE_EXEMPT_ROW anchor region.
 
-
-def test_scope_rule_region_states_causal_reach() -> None:
-    """The causal-reach guarantee is the one thing separating "boundary
-    bounds the sweep" from "boundary bounds everything" — the region-level
-    non-trivial-length check above would not by itself catch this guarantee
-    being deleted or reworded into weakness while the rest of the region
-    stays intact, so it needs its own content-level assertion. Checks for
-    the three causal verbs rather than the full sentence verbatim, so a
-    legitimate reword (a copy-edit pass, a clause reorder) does not
-    false-fail this test — see test_disposition_rule_anchors_present's
-    docstring for the same discipline applied to DISPOSITION_RULE anchors.
-    The mandatory-modal and advisory-disqualifier checks below are a narrow
-    tripwire for one anticipated reword shape (a discretionary softening),
-    not general grammatical-mood detection. Expect the disqualifier list
-    to need broadening as new phrasings surface.
+    Collapsing internal whitespace on both sides of a comparison keeps a
+    markdown reflow of the enclosed paragraph from false-failing an
+    exact-text pin against it.
     """
-    skill_md_path = _skill_file("code-review")
-    region = _extract_scope_anchor_region(skill_md_path, "SCOPE_RULE:code-review-staged-diff-only")
-    missing = [kw for kw in _CAUSAL_REACH_KEYWORDS if kw not in region]
-    assert not missing, (
-        f"{skill_md_path}: SCOPE_RULE:code-review-staged-diff-only no longer "
-        f"states the causal-reach guarantee — missing keyword(s) {missing!r}"
-    )
+    return " ".join(_extract_scope_anchor_region(skill_md_path, marker_name).split())
 
-    causal_reach_sentence = next(
-        (s for s in _sentences(region) if any(kw in s for kw in _CAUSAL_REACH_KEYWORDS)),
-        None,
-    )
-    assert causal_reach_sentence is not None, (
-        f"{skill_md_path}: could not isolate the sentence containing the "
-        "causal-reach keywords for modal-verb checking"
-    )
-    assert _MANDATORY_MODAL_RE.search(causal_reach_sentence), (
-        f"{skill_md_path}: causal-reach sentence {causal_reach_sentence!r} has no "
-        f"mandatory modal verb {_MANDATORY_MODAL_TOKENS!r} — it may have been "
-        "reworded from mandatory to advisory"
-    )
-    advisory_match = _ADVISORY_DISQUALIFIER_RE.search(causal_reach_sentence)
-    assert advisory_match is None, (
-        f"{skill_md_path}: causal-reach sentence contains advisory phrasing "
-        f"{advisory_match.group()!r} — the clause must stay mandatory, not discretionary"
-    )
-    negation_match = _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence)
-    assert negation_match is None, (
-        f"{skill_md_path}: causal-reach sentence contains negation phrasing "
-        f"{negation_match.group()!r} — the clause must stay affirmative, not carved "
-        "into an exception"
+
+@pytest.mark.parametrize("skill_name,marker_name", sorted(_PINNED_SCOPE_CLAUSES))
+def test_pinned_scope_clause_matches_live_text(skill_name: str, marker_name: str) -> None:
+    """The pin is exact because a clause's mandatory-vs-advisory reading is not
+    deterministically derivable from its text, and the model-based check that
+    could derive it is local-only by cost. On failure, re-read the guarantee
+    and update the constant only if the new wording preserves it.
+    """
+    skill_md_path = _skill_file(skill_name)
+    live_text = _normalized_anchor_text(skill_md_path, marker_name)
+    pinned_text = " ".join(_PINNED_SCOPE_CLAUSES[(skill_name, marker_name)].split())
+    assert live_text == pinned_text, (
+        f"{skill_md_path}: {marker_name} no longer matches its pinned text.\n"
+        f"  live:   {live_text!r}\n"
+        f"  pinned: {pinned_text!r}"
     )
 
 
-class TestNegationDisqualifierMatchesBypassPhrasing:
-    """Direct coverage for _NEGATION_DISQUALIFIER_RE's match branch, mirroring
-    TestChangeTypeTableLeftColumns's literal-fixture pattern — real SKILL.md
-    content never triggers this regex, so its positive-match path needs a
-    dedicated fixture.
+class TestNormalizedAnchorText:
+    """Direct coverage for _normalized_anchor_text's comparison machinery,
+    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. Both
+    live pinned regions currently sit on one unwrapped line, so neither the
+    mismatch nor the reflow path is exercised by the corpus-wide pin test
+    above.
     """
 
-    @pytest.mark.parametrize(
-        "carve_out_clause",
-        [
-            pytest.param(
-                "is not automatically in scope unless separately raised",
-                id="modal-negation-plus-unless",
-            ),
-            pytest.param(
-                "is not automatically in scope",
-                id="modal-negation-alone",
-            ),
-            pytest.param(
-                "is no longer in scope",
-                id="no-longer-alone",
-            ),
-            pytest.param(
-                "stays in scope, though it does not apply when separately configured",
-                id="does-not-modal-disjunct",
-            ),
-        ],
-    )
-    def test_negated_causal_reach_sentence_matches(self, tmp_path: Path, carve_out_clause: str) -> None:
-        """Pins the bypass this regex closes: a reworded clause that keeps
-        the mandatory modal and causal-reach keywords but negates them into
-        an exception. Each arm proves one negation shape independently,
-        rather than all of them passing through `unless` alone. The
-        `does-not-modal-disjunct` arm specifically exercises the
-        `does/do/will/would/can/may` branch, which none of
-        `_MANDATORY_MODAL_TOKENS`' own tokens reach.
+    _MARKER = "SCOPE_RULE:example"
+
+    def test_mismatched_text_fails_equality(self, tmp_path: Path) -> None:
+        """Confirms the extracted text matches exactly, not just
+        non-emptily — a truncated or partially-extracted result would
+        satisfy an inequality-only check against an unrelated string
+        while still defeating the pin test's equality comparison.
         """
         path = tmp_path / "SKILL.md"
         path.write_text(
-            "<!-- SCOPE_RULE:code-review-staged-diff-only start -->\n"
-            "A change that causes, activates, or newly reaches new behavior "
-            f"{carve_out_clause}.\n"
-            "<!-- SCOPE_RULE:code-review-staged-diff-only end -->"
+            f"<!-- {self._MARKER} start -->\nthe live clause\n<!-- {self._MARKER} end -->"
         )
-        region = _extract_scope_anchor_region(path, "SCOPE_RULE:code-review-staged-diff-only")
-        causal_reach_sentence = next(
-            (s for s in _sentences(region) if any(kw in s for kw in _CAUSAL_REACH_KEYWORDS)),
-            None,
-        )
-        assert causal_reach_sentence is not None
-        assert _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence) is not None
+        extracted = _normalized_anchor_text(path, self._MARKER)
+        assert extracted == "the live clause"
+        assert extracted != "a mismatched pinned clause"
 
-
-class TestNegationDisqualifierIgnoresReinforcementPhrasing:
-    """Direct coverage for _NEGATION_DISQUALIFIER_RE's non-match branch,
-    mirroring TestNegationDisqualifierMatchesBypassPhrasing's literal-fixture
-    pattern — a legitimate strengthening reword must survive the whole
-    three-check tripwire, not just this one regex.
-    """
-
-    @pytest.mark.parametrize(
-        "reinforcement_clause",
-        [
-            pytest.param("stays in scope, not merely as a suggestion", id="not-merely"),
-            pytest.param("stays in scope, no longer discretionary", id="no-longer-discretionary"),
-            pytest.param("stays in scope, not just for that spawn", id="not-just"),
-        ],
-    )
-    def test_reinforcement_reword_does_not_trip_the_tripwire(
-        self, tmp_path: Path, reinforcement_clause: str
-    ) -> None:
-        """A reword that uses "not"/"no longer" as reinforcement rather than
-        a carve-out must not fail any of the three tripwire checks.
+    def test_reflowed_text_normalizes_to_match(self, tmp_path: Path) -> None:
+        """Confirms whitespace-collapsing normalizes text reflowed across
+        multiple lines to match its single-line pinned form.
         """
         path = tmp_path / "SKILL.md"
         path.write_text(
-            "<!-- SCOPE_RULE:code-review-staged-diff-only start -->\n"
-            "A change that causes, activates, or newly reaches new behavior "
-            f"{reinforcement_clause}.\n"
-            "<!-- SCOPE_RULE:code-review-staged-diff-only end -->"
+            f"<!-- {self._MARKER} start -->\nthe pinned\nclause  reflowed\nacross lines\n"
+            f"<!-- {self._MARKER} end -->"
         )
-        region = _extract_scope_anchor_region(path, "SCOPE_RULE:code-review-staged-diff-only")
-        causal_reach_sentence = next(
-            (s for s in _sentences(region) if any(kw in s for kw in _CAUSAL_REACH_KEYWORDS)),
-            None,
-        )
-        assert causal_reach_sentence is not None
-        assert _MANDATORY_MODAL_RE.search(causal_reach_sentence), (
-            f"expected a mandatory modal in {causal_reach_sentence!r}"
-        )
-        assert _ADVISORY_DISQUALIFIER_RE.search(causal_reach_sentence) is None, (
-            f"reinforcement reword {causal_reach_sentence!r} must not read as discretionary"
-        )
-        assert _NEGATION_DISQUALIFIER_RE.search(causal_reach_sentence) is None, (
-            f"reinforcement reword {causal_reach_sentence!r} must not read as a carve-out"
+        assert (
+            _normalized_anchor_text(path, self._MARKER)
+            == "the pinned clause reflowed across lines"
         )
 
 
