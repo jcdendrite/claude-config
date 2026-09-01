@@ -47,8 +47,9 @@ _lib_capped_for() {
   fi
 }
 
-# Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist. BSD/macOS realpath has no -m; falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
-# Each external realpath/grealpath call below is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly.
+# Portable `realpath -m TARGET`: normalizes a path without requiring TARGET (a Write's not-yet-existing destination) or any ancestor to exist.
+# BSD/macOS realpath has no -m, so this falls back to grealpath, then to resolving the nearest existing ancestor and reattaching the unresolved suffix.
+# Every external call below (realpath, grealpath, and the fallback loop's basename/dirname) is wrapped individually in _lib_capped -- `timeout` can't wrap a shell function directly. The fallback loop additionally caps its own walked-ancestor depth; see that loop's own comment for why.
 _lib_realpath_m() {
   local target="$1"
   local resolved
@@ -61,7 +62,11 @@ _lib_realpath_m() {
     printf '%s\n' "$resolved"
     return 0
   fi
-  local suffix="" current="$target" suffix_component
+  # Caps the walk's basename/dirname spawns at 10 -- a wide margin over
+  # legitimate 1-3-level unresolved depth -- so a crafted deeply-nested
+  # nonexistent path can't drive subprocess count arbitrarily.
+  local unresolved_depth_budget=10
+  local suffix="" current="$target" suffix_component depth=0
   while true; do
     if [ -e "$current" ]; then
       resolved=$(_lib_capped realpath -- "$current" 2>/dev/null) || return 1
@@ -81,7 +86,11 @@ _lib_realpath_m() {
     if [ "$current" = "/" ] || [ "$current" = "." ]; then
       return 1
     fi
-    suffix_component=$(basename -- "$current")
+    if [ "$depth" -ge "$unresolved_depth_budget" ]; then
+      return 1  # fail closed: budget exhausted before reaching an existing ancestor
+    fi
+    depth=$((depth + 1))
+    suffix_component=$(_lib_capped basename -- "$current") || return 1
     case "$suffix_component" in
       ..)
         return 1  # a `..` here could defeat a caller's same-prefix boundary check, so fail closed instead of normalizing it.
@@ -92,8 +101,44 @@ _lib_realpath_m() {
     else
       suffix="$suffix_component/$suffix"
     fi
-    current=$(dirname -- "$current")
+    current=$(_lib_capped dirname -- "$current") || return 1
   done
+}
+
+# Collapses every interior "/./" segment in $1 down to a single "/", purely
+# by string substitution -- no filesystem access, so this never spawns a
+# subprocess. A "." path component is always a no-op, so this can never
+# change what path $1 refers to. It never touches ".." segments: unlike
+# ".", a ".." component's meaning depends on what its preceding component
+# resolves to, so _lib_realpath_m keeps sole responsibility for those.
+# Callers use this to fold syntactically-padded-but-identical spellings of
+# the same path onto one _lib_realpath_m call and cache entry before
+# spending a resolve-budget slot on them.
+#
+# Each iteration's prefix/suffix parameter expansion rescans the whole
+# (growing-by-recombination) string, so the loop is quadratic in the number
+# of "/./" segments -- a crafted 1000-segment input costs ~10s without this
+# cap. Legitimate input -- a real fragment command word, or a
+# decoy spelling padded with a few extra "/./" segments -- has nowhere near
+# 20 such segments, the same generous-margin-over-legitimate-use reasoning as
+# _lib_realpath_m's unresolved_depth_budget above. Past the cap, this returns
+# 1 with no stdout rather than a partially-collapsed path -- fail closed,
+# same as every other budget in this file.
+_lib_collapse_dot_segments() {
+  local path="$1"
+  local collapse_budget=20
+  # Bash 3.2 (macOS's /bin/bash) mis-renders "\/" on the replacement side of
+  # "${path//\/.\//\/}" as a literal backslash instead of collapsing the
+  # segment, so this collapses one "/./" per iteration via prefix/suffix
+  # parameter expansion instead of a substitution operator.
+  while [[ "$path" == *"/./"* ]]; do
+    if [ "$collapse_budget" -le 0 ]; then
+      return 1  # fail closed: budget exhausted before every "/./" segment collapsed
+    fi
+    collapse_budget=$((collapse_budget - 1))
+    path="${path%%/./*}/${path#*/./}"
+  done
+  printf '%s' "$path"
 }
 
 # Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
@@ -598,13 +643,223 @@ _lib_extract_git_subcmd_args() {
   printf '%s\n' "${argv#*$'\n'}"
 }
 
-# Split a shell command string into fragments on shell operators (;, &&, ||, |,
-# $(...), backticks). Each fragment may invoke a distinct command. Leading/
-# trailing parentheses are stripped from each fragment so that `(cd /x; git push)`
-# yields `git push` as a clean fragment rather than `git push)`.
+# _lib_strip_word_quotes WORD
+# Sets _LIB_STRIPPED_WORD to WORD with quoting removed the way bash's own
+# quote removal would produce it for the common case: drops each ANSI-C
+# ($'...') and locale ($"...") opener's leading $, then strips every
+# backslash and every remaining quote character. e.g. --git-di'r=x', -'c',
+# \--output, and $'--textconv' all read as the flag they'd become once bash
+# actually parses the word. This does not decode a $'...' region's own
+# multi-character escapes (\xHH, \NNN, \uHHHH/\UHHHHHHHH) -- see
+# docs/design-decisions.md §40's accepted-residual entry for that gap.
+# Pure bash parameter expansion (no sed/tr/subshell) because this runs once
+# per word inside the hot `for word in $fragment` loops below and in
+# require-review-orchestrator-bash.sh -- an uncapped-word-count fragment
+# would otherwise cost extra subprocess spawns per word, unlike
+# _lib_strip_shell_quotes's own once-per-command-string call pattern. Sets a
+# global rather than returning captured $() output, so every existing
+# per-word caller below keeps its established `_lib_strip_word_quotes
+# "$word"; case "$_LIB_STRIPPED_WORD" in ...` shape.
+_lib_strip_word_quotes() {
+  local word="$1"
+  word="${word//\$\'/}"
+  word="${word//\$\"/\"}"
+  word="${word//\\/}"
+  word="${word//\'/}"
+  word="${word//\"/}"
+  _LIB_STRIPPED_WORD="$word"
+}
+
+# True iff a git-invoking fragment carries a flag that execs an arbitrary
+# command as a side effect of git's own argument parsing, independent of the
+# subcommand: a bare -c (config override, e.g. core.pager/diff.external/
+# core.editor), --config-env (same config override, value sourced from an
+# env var instead of given literally; git(1): "--config-env=<name>=<envvar>"),
+# -O/--open-files-in-pager (execs its argument against matched files, with or
+# without an attached value), --ext-diff, or --textconv (both invoke a
+# configured external diff/textconv command). A subcommand-word-only check
+# treats `git grep -O'sh -c "..."'` as safe because `grep` is read-only; this
+# scans every word in the fragment, not just the subcommand, to catch the
+# flag regardless of which subcommand it rides on. Strips every quote
+# character, backslash-escape, and ANSI-C/locale ($'...'/$"...") quote opener
+# from each word via _lib_strip_word_quotes before matching, so a quoted,
+# interior-spliced, backslash-escaped, or ANSI-C/locale-quoted flag
+# (`git '-c' core.pager=x log`, `git -'c' core.pager=x log`,
+# `git show \--textconv HEAD:file.bin`, `git log $'--textconv'`) is caught
+# directly by this scan rather than only incidentally, via
+# _lib_extract_git_subcmd failing to resolve a subcommand from the quoted
+# token.
+# This scan runs independent of any `--` pathspec boundary in the fragment,
+# so a real pathspec that collides with a flag literal after `--` (e.g.
+# `git log -- -c`, a file genuinely named `-c`) is denied too. Every caller
+# of this function denies on a match, so this conservative false positive is
+# accepted rather than adding `--`-boundary tracking to this scan.
+_lib_fragment_has_command_invoking_git_flag() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    _lib_strip_word_quotes "$word"
+    case "$_LIB_STRIPPED_WORD" in
+      -c|--ext-diff|--textconv|--config-env*) found=true; break ;;
+      -O*|--open-files-in-pager*) found=true; break ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a git-invoking fragment carries a flag that writes the command's
+# own output to a caller-chosen filesystem path, independent of the
+# subcommand and with no shell redirect character for a `<`/`>` scan to see.
+# `--output=<file>` / `--output <file>` is documented on git-diff(1) and
+# shared by every subcommand built on the same diff-generate-patch machinery
+# (diff, log, show, diff-tree, diff-files, diff-index, whatchanged,
+# range-diff); empirically it is also honored -- undocumented -- by blame,
+# rev-list, and shortlog, truncating an existing target file to zero bytes
+# even when those three don't write real content there. `--output-directory`
+# is format-patch's equivalent (not on either read-only allowlist today, kept
+# here as a forward guard). Matched the same way as the flags above: strips
+# every quote character, backslash-escape, and ANSI-C/locale quote opener
+# from the word via _lib_strip_word_quotes, then compares the whole result so
+# `--output-indicator-new` and friends (legitimate, write nothing) are not
+# caught by a prefix match.
+_lib_fragment_has_git_write_target_flag() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    _lib_strip_word_quotes "$word"
+    case "$_LIB_STRIPPED_WORD" in
+      --output|--output=*|--output-directory|--output-directory=*) found=true; break ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a git-invoking fragment carries a shell environment-variable
+# assignment (WORD=value) before the git word itself. Git's own
+# GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism
+# (git-config(1) "ENVIRONMENT") sets arbitrary config -- including
+# diff.external, core.pager, core.editor -- entirely from env vars, with no
+# CLI flag token for _lib_fragment_has_command_invoking_git_flag's scan to
+# catch. No restricted agent has a legitimate reason to prefix a git
+# invocation with an env-var assignment, so this is a blanket deny on the
+# shape (any assignment, not just GIT_-prefixed names) rather than an
+# enumeration of individual config-injection env vars -- an open-ended,
+# git-version-dependent moving target. Same assignment regex as
+# _lib_fragment_command_word's leading-env-var skip.
+_lib_fragment_has_env_assignment_before_git() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    if [[ "$word" == "git" || "$word" == */git ]]; then
+      break
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      found=true
+      break
+    fi
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a fragment carries a shell environment-variable assignment
+# (WORD=value) anywhere before _lib_fragment_command_word's resolved command
+# word -- reusing that word as the scan boundary, rather than an
+# independently re-derived wrapper list, keeps this in lockstep with
+# _lib_fragment_command_word's own wrapper handling so a wrapper-prefixed
+# assignment (env FOO=bar marker.sh) can't slip past undetected.
+_lib_fragment_has_leading_env_assignment() {
+  local fragment="$1"
+  local cmd
+  cmd=$(_lib_fragment_command_word "$fragment")
+  local saved_opts=$-
+  set -f
+  local found=false word
+  for word in $fragment; do
+    if [[ -n "$cmd" && ( "$word" == "$cmd" || "$word" == */"$cmd" ) ]]; then
+      break
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      found=true
+      break
+    fi
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $found
+}
+
+# True iff a fragment consists ENTIRELY of one or more environment-variable
+# assignments (WORD=value), each optionally preceded by the `export`
+# keyword, with no other command word. Closes the path a git-command-word
+# check alone misses: splitting `export GIT_CONFIG_KEY_0=diff.external`
+# out into its own fragment (via `;`) from the eventual `git` invocation
+# means that fragment never mentions git at all, so
+# _lib_fragment_has_env_assignment_before_git's git-anchored scan never
+# fires on it -- yet it still exports a config-injection variable into the
+# same shell process a later fragment's `git` execs in. Denying the bare-
+# assignment SHAPE itself, independent of any git mention, closes that gap.
+# Same word-splitting caveat as every other fragment scanner in this file:
+# an assignment whose value contains unquoted-looking whitespace splits
+# across multiple words like any other word, so it will not always present
+# as bare here -- callers rely on the leading assignment in a chain (e.g.
+# `export GIT_CONFIG_COUNT=1`) being single-word and caught directly.
+_lib_fragment_is_bare_env_assignment() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local word is_bare=true saw_assignment=false
+  for word in $fragment; do
+    if [[ "$word" == "export" ]]; then
+      continue
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+      saw_assignment=true
+      continue
+    fi
+    is_bare=false
+    break
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  $is_bare && $saw_assignment
+}
+
+# Split a shell command string into fragments on shell operators (;, &&, ||,
+# |, |&, a standalone & backgrounding operator, $(...), backticks). Each
+# fragment may invoke a distinct command. Leading/trailing parentheses are
+# stripped from each fragment so that `(cd /x; git push)` yields `git push`
+# as a clean fragment rather than `git push)`.
+#
+# `|&` (combined stdout+stderr pipe) invokes two distinct commands exactly
+# like a plain `|` does, so it is a full split point in the same pass as
+# `;`/`&&`/`||`/`|`, ordered before the bare-`&` and bare-`|` rules so it
+# consumes the whole two-byte token in one match rather than leaving a
+# stray `&` glued onto the next fragment for either rule to mishandle.
+#
+# The bare-`&` split must not fire on a `&` that is part of a genuine
+# redirect operator riding inside an otherwise-unsplit fragment (`>&`/`<&`
+# fd duplication, e.g. `2>&1`; `&>`/`&>>` combined stdout+stderr redirect)
+# -- callers like deny-network-installs.sh depend on that glued token
+# surviving as one word. Every such `&` is immediately adjacent (no
+# whitespace) to `>` or `<`, so it is protected with a one-byte placeholder
+# (a non-printable byte unlikely to occur in real command text, same
+# convention as _lib_parse_tool_input_or_deny's 0x1f jq delimiter) before
+# the `&`/`&&` split step runs, then restored afterward. A `&` that is part
+# of `&&` is consumed by that split point first and never reaches the
+# bare-`&` step either.
 _lib_split_fragments() {
+  local amp_marker=$'\x01'
   printf '%s' "$1" \
-    | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
+    | sed -E "s/(>|<)&/\\1${amp_marker}/g; s/&(>>?)/${amp_marker}\\1/g" \
+    | sed -E 's/;/\n/g; s/\|&/\n/g; s/&&/\n/g; s/&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
+    | sed -E "s/${amp_marker}/\\&/g" \
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
 }
 
@@ -1310,6 +1565,122 @@ _lib_worktree_collision_guard() {
   return 1
 }
 
+# _lib_resolve_repo_root CALLER_NAME
+# Prints the current git repo's top-level directory with no trailing
+# newline, or returns 2 and prints "CALLER_NAME: not inside a git
+# repository" to stderr. The `tr -d '\n'` strip is load-bearing: git
+# rev-parse appends a trailing newline that require-* hooks' matching hash
+# (`printf '%s' "$REPO_ROOT"`, no newline) omits, so stripping it here keeps
+# both sides' sha256 aligned.
+# Shared by every caller that needs the repo root, so the resolution logic
+# has one authoritative home instead of being duplicated per script.
+# CALLER_NAME is caller-supplied (rather than derived from "$0") so the
+# error message names the script the caller actually is, not this file.
+# Wrapped in _lib_capped, like every other git spawn in this file, so a hung
+# git rev-parse can't block a caller (e.g. a PreToolUse gate) indefinitely.
+_lib_resolve_repo_root() {
+  local caller_name="$1" root
+  root=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
+  if [ -z "$root" ]; then
+    printf '%s: not inside a git repository\n' "$caller_name" >&2
+    return 2
+  fi
+  printf '%s' "$root"
+}
+
+# _lib_append_line_locked TARGET_FILE LOCK_FILE LINE RETRIES
+# Generic noclobber-lock + PID-liveness-eviction + single-EXIT-trap append
+# primitive, shared by every caller that needs this correctness-sensitive
+# concurrency algorithm instead of duplicating it per script.
+# - Acquires a same-directory noclobber lock (bash `set -o noclobber`, the
+#   idiom _lib_worktree_collision_guard above already establishes) around the
+#   check-then-append critical section.
+# - No-ops if LINE already exists verbatim in TARGET_FILE, else appends it.
+# - The lock file's content is the holder's PID.
+# - A lock whose PID is dead is evicted and retried immediately rather than
+#   waiting out every retry against a crashed holder, the same PID-liveness
+#   eviction _lib_active_bypass_marker_live uses for its own markers.
+# - Falls through to an unlocked append after RETRIES failed acquisitions
+#   rather than blocking. A duplicate line from a lost race is a
+#   low-consequence outcome (an inflated count, or a resumed step
+#   re-recorded), not data loss.
+# - RETRIES is caller-supplied so each caller's own constant (e.g.
+#   review-ledger.sh's _LEDGER_LOCK_RETRIES) stays visible at its own call
+#   site rather than buried in this shared function.
+#
+# CALLER CONTRACT: this function sets the global $_LIB_APPEND_LOCK_PATH
+# (deliberately not `local`, since the EXIT trap it installs evaluates that
+# variable lazily at script-exit time, after this function has already
+# returned). It also installs a `trap ... EXIT` for lock release. `trap` on a
+# given signal always replaces the previous handler for that signal rather
+# than composing with it, so a caller must not install its own EXIT trap
+# either before or after calling this function:
+# - Before: silently discarded when this function's own trap replaces it,
+#   losing the caller's own cleanup.
+# - After: silently discards this function's trap in turn, leaking the lock
+#   file.
+_lib_append_line_locked() {
+  local target_file="$1" line="$3" retries="$4"
+  _LIB_APPEND_LOCK_PATH="$2"
+  local attempt=0 stored_pid
+  while [ "$attempt" -lt "$retries" ]; do
+    if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
+      trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
+      break
+    fi
+    stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
+      # Dead holder: evict now and retry acquisition on the very next
+      # iteration, with no sleep -- this is what makes eviction prompt
+      # rather than waiting out the remaining retries.
+      rm -f "$_LIB_APPEND_LOCK_PATH" 2>/dev/null
+      attempt=$((attempt + 1))
+      continue
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.05
+  done
+  if [ -f "$target_file" ] && grep -qFx -e "$line" -- "$target_file" 2>/dev/null; then
+    # A dedup no-op must still count as activity on TARGET_FILE's own mtime,
+    # or a long-running caller's later no-op append leaves a stale mtime for
+    # a directory-wide sweep to delete out from under it.
+    touch -- "$target_file" 2>/dev/null
+    return 0
+  fi
+  printf '%s\n' "$line" >> "$target_file"
+}
+
+# _lib_sweep_stale_files DIR DRY_RUN REPORT
+# Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
+# *.lock file under DIR older than 30 days by mtime, across every repo-hash —
+# extracted from review-ledger.sh's original _sweep_stale_ledger_files so
+# orchestrator-checkpoint.sh can share it. Mirrors
+# nudge-handoff-near-context-cap.sh's directory-wide `find ... -mtime +30
+# -delete` sweep of .handoff-nudge-fired.d. REPORT=1 prints per-file and
+# summary lines (an explicit clear-stale-style invocation); REPORT=0 is
+# silent (a best-effort sweep run alongside an ordinary append).
+_lib_sweep_stale_files() {
+  local dir="$1" dry_run="$2" report="$3"
+  [ -d "$dir" ] || return 0
+  local evicted=0 entry
+  while IFS= read -r -d '' entry; do
+    evicted=$((evicted + 1))
+    if [ "$dry_run" -eq 1 ]; then
+      [ "$report" -eq 1 ] && printf '  evict (dry-run): %s\n' "$(basename "$entry")"
+    else
+      rm -f "$entry" 2>/dev/null
+      [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
+    fi
+  done < <(find "$dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime +30 -print0 2>/dev/null)
+  if [ "$report" -eq 1 ]; then
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'clear-stale: would evict %d file(s)\n' "$evicted"
+    else
+      printf 'clear-stale: evicted %d file(s)\n' "$evicted"
+    fi
+  fi
+}
+
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
@@ -1606,6 +1977,8 @@ _LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^(])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
 # security surface, so new entries are added deliberately (a subcommand
 # proven read-only against git's own docs), not accreted via "etc./like".
+# A new entry here should prompt checking whether _LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS
+# below needs it added too, for callers with a zero-mutation/zero-egress invariant.
 _LIB_READONLY_GIT_SUBCMDS=(
   blame
   branch           # "git branch" lists; creating/deleting takes flags
@@ -1655,6 +2028,36 @@ _LIB_READONLY_GIT_SUBCMDS=(
 )
 _lib_readonly_git_subcmds() {
   printf '%s\n' "${_LIB_READONLY_GIT_SUBCMDS[@]}"
+}
+
+# Stricter than _LIB_READONLY_GIT_SUBCMDS above: this excludes every
+# subcommand that can mutate git state or issue network egress under its own
+# bare/listing form (branch/tag/symbolic-ref ref mutation, fetch/remote/
+# ls-remote network egress, fsck/reflog/worktree destructive recovery or
+# checkout operations), for a caller whose invariant is zero git-state
+# mutation and zero network egress rather than working-tree-race safety.
+# Sourced by require-review-orchestrator-bash.sh. A new entry added to
+# _LIB_READONLY_GIT_SUBCMDS above should prompt checking whether it needs
+# excluding here too.
+_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS=(
+  branch
+  fetch
+  fsck
+  ls-remote
+  reflog
+  remote
+  symbolic-ref
+  tag
+  worktree
+)
+_lib_strict_readonly_git_subcmds() {
+  local subcmd
+  for subcmd in "${_LIB_READONLY_GIT_SUBCMDS[@]}"; do
+    case " ${_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS[*]} " in
+      *" $subcmd "*) continue ;;
+    esac
+    printf '%s\n' "$subcmd"
+  done
 }
 
 # Single source of truth for review-only agent identities: the eight
@@ -1742,6 +2145,33 @@ _lib_is_no_gate_release_agent() {
   [ -n "$agent_type" ] || return 1
   local candidate
   for candidate in "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"; do
+    [ "$agent_type" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Agent identities whose Bash tool calls are restricted to a closed
+# verification/read-only allowlist. Sourced by require-review-orchestrator-bash.sh.
+# Separate from _LIB_REVIEW_ONLY_AGENTS/_LIB_NO_GATE_RELEASE_AGENTS above:
+# review-orchestrator needs Bash-call restriction but must keep gate-release
+# capability, so the two properties can't share one array here — see
+# docs/design-decisions.md §40.
+_LIB_BASH_MUTATION_RESTRICTED_AGENTS=(
+  review-orchestrator
+)
+_lib_bash_mutation_restricted_agents() {
+  printf '%s\n' "${_LIB_BASH_MUTATION_RESTRICTED_AGENTS[@]}"
+}
+
+# _lib_is_bash_mutation_restricted_agent AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_BASH_MUTATION_RESTRICTED_AGENTS. Empty input (agent_type absent from
+# the PreToolUse payload, e.g. the main session) never matches.
+_lib_is_bash_mutation_restricted_agent() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  local candidate
+  for candidate in "${_LIB_BASH_MUTATION_RESTRICTED_AGENTS[@]}"; do
     [ "$agent_type" = "$candidate" ] && return 0
   done
   return 1

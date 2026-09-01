@@ -1188,6 +1188,104 @@ class TestHandoffCollectStepPinsLoadBearingClauses:
         )
 
 
+class TestSubagentDelegationWaitWithoutPollingSection:
+    """Pin the wait-without-polling section, so a future edit can't silently
+    drop the no-`sleep`-loop guidance or the ListAgents/notify_when_idle
+    fallbacks without a test failing.
+
+    Whitespace-normalized so a benign rewrap of the prose doesn't fail
+    these for an unrelated reason.
+    """
+
+    def _normalized_body(self):
+        return " ".join(_skill_file("subagent-delegation").read_text().split())
+
+    def test_has_step_3_wait_without_polling_heading(self):
+        assert (
+            "## Step 3 — Wait for a dispatch without polling"
+            in self._normalized_body()
+        )
+
+    def test_forbids_sleep_then_recheck_loop(self):
+        assert (
+            "do not write a Bash `sleep N`-then-recheck loop"
+            in self._normalized_body()
+        )
+
+    def test_directs_to_task_notification_delivery(self):
+        assert "automatic `<task-notification>` delivery" in self._normalized_body()
+
+    def test_allows_single_listagents_check_never_a_loop(self):
+        assert (
+            "check `ListAgents` once — never in a loop" in self._normalized_body()
+        )
+
+    def test_cross_session_peer_uses_notify_when_idle(self):
+        assert (
+            "`SendMessage`'s `notify_when_idle` instead" in self._normalized_body()
+        )
+
+
+class TestReviewOrchestratorRetryCapLanguage:
+    """Pin review-orchestrator's retry-cap and wait-without-polling language,
+    so a future edit can't silently drop the attempt-counting rule, the
+    grounded cap value, the checkpoint --attempt append, the retry-cap
+    enumeration under "Anything needing a human's judgment", or the
+    sleep-loop prohibition without a test failing.
+
+    Whitespace-normalized so a benign rewrap of the prose doesn't fail
+    these for an unrelated reason.
+    """
+
+    def _normalized_body(self):
+        return " ".join(_agent_body("review-orchestrator").split())
+
+    def test_resume_protocol_counts_started_entries_for_next_attempt(self):
+        assert (
+            "count that step's `started` entries in the checkpoint"
+            in self._normalized_body()
+        )
+        assert (
+            "its next `--attempt` value is that count plus 1"
+            in self._normalized_body()
+        )
+
+    def test_retry_cap_is_three_total_attempts_cites_design_decisions_grounding(self):
+        assert (
+            "Retry cap: 3 total attempts / 2 automatic retries — rationale "
+            "and citation in `docs/design-decisions.md` §40."
+            in self._normalized_body()
+        )
+
+    def test_step_at_cap_is_not_redispatched(self):
+        assert (
+            "A step already at 3 `started` entries has hit the retry cap: "
+            "do not redispatch it again"
+            in self._normalized_body()
+        )
+
+    def test_checkpointing_appends_attempt_on_started(self):
+        assert (
+            "Append `--step reviewer:<name> --status started --attempt <n>` "
+            "before dispatching"
+            in self._normalized_body()
+        )
+
+    def test_return_format_enumerates_retry_cap_case(self):
+        assert (
+            "This includes a step that hit the Resume protocol's retry "
+            "cap: name the step, its attempt count (3), and that automatic "
+            "redispatch stopped"
+            in self._normalized_body()
+        )
+
+    def test_forbids_sleep_then_recheck_loop_while_waiting_on_nested_dispatch(self):
+        assert (
+            "do not write a Bash `sleep`-then-recheck loop"
+            in self._normalized_body()
+        )
+
+
 class TestModelInvokableSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
 

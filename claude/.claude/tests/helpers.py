@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import yaml
@@ -996,3 +997,34 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# Shims out `realpath -m` and `grealpath -m` so _lib_realpath_m falls back to
+# its walked-ancestor loop -- shared by every hook test that needs to force
+# that fallback path, prepended to the real PATH rather than replacing it so
+# the hook's other tool lookups (jq, git, timeout, etc.) still resolve
+# normally.
+FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    if [ "$1" = "-m" ]; then
+      echo "realpath: illegal option -- m" >&2
+      exit 1
+    fi
+    exec /bin/realpath "$@"
+""")
+FORCED_FALLBACK_GREALPATH_SHIM = textwrap.dedent("""\
+    #!/bin/bash
+    echo "grealpath: illegal option -- m" >&2
+    exit 1
+""")
+
+
+def build_no_realpath_m_path_env(tmp_path: Path) -> str:
+    """Build a PATH value with realpath -m and grealpath -m shimmed out."""
+    shim_dir = tmp_path / "realpath_shim"
+    shim_dir.mkdir(exist_ok=True)
+    (shim_dir / "realpath").write_text(FORCED_FALLBACK_REALPATH_SHIM)
+    (shim_dir / "realpath").chmod(0o755)
+    (shim_dir / "grealpath").write_text(FORCED_FALLBACK_GREALPATH_SHIM)
+    (shim_dir / "grealpath").chmod(0o755)
+    return f"{shim_dir}:{os.environ['PATH']}"

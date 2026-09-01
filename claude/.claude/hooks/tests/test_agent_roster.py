@@ -54,9 +54,10 @@ CANARY_AGENTS = sorted(
 # When a new non-reviewer agent is added, add it here; the
 # test_no_uncategorized_agents test will fail until it is categorized.
 NON_REVIEWER_AGENTS = [
-    "code-writer.md",     # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
-    "Explore.md",         # same-named override of the harness built-in; read-only search, not a reviewer
-    "plan-architect.md",  # non-reviewer planning agent; design synthesis plus ad hoc Opus consults on explicit ask
+    "code-writer.md",           # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
+    "Explore.md",               # same-named override of the harness built-in; read-only search, not a reviewer
+    "plan-architect.md",        # non-reviewer planning agent; design synthesis plus ad hoc Opus consults on explicit ask
+    "review-orchestrator.md",   # runs a review skill to completion in a disposable context; returns a summary
 ]
 
 # Maximum description length for agent frontmatter.
@@ -72,9 +73,10 @@ AGENT_DESCRIPTION_MAX_CHARS = 1000
 # above AND add its expected model here — test_expected_model_map_is_complete
 # will fail until both are updated.
 NON_REVIEWER_MODELS = {
-    "code-writer.md": "sonnet",       # implementer
-    "Explore.md": "sonnet",           # same-named built-in override
-    "plan-architect.md": "opus",      # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
+    "code-writer.md": "sonnet",           # implementer
+    "Explore.md": "sonnet",               # same-named built-in override
+    "plan-architect.md": "opus",          # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
+    "review-orchestrator.md": "opus",     # parent-dispatcher orchestration (CLAUDE.md Model & Effort Routing)
 }
 
 # Expected effort tier per agent. Mirrors NON_REVIEWER_MODELS's role for
@@ -98,6 +100,7 @@ EXPECTED_EFFORT = {
     "skill-fidelity-reviewer.md": "medium",
     "ciso-reviewer.md": "xhigh",
     "code-writer.md": "high",
+    "review-orchestrator.md": "high",
     "staff-analytics-engineer.md": "xhigh",
     "staff-backend-engineer.md": "xhigh",
     "staff-data-engineer.md": "xhigh",
@@ -697,3 +700,68 @@ class TestNoGateReleaseRosterSync:
             "coverage. Confirm the new name is genuinely a harness built-in with "
             "no agents/*.md file, then update this assertion deliberately."
         )
+
+
+def _bash_mutation_restricted_agents() -> list[str]:
+    """Read _LIB_BASH_MUTATION_RESTRICTED_AGENTS from _lib.sh — the shipping source of truth."""
+    lib = HOOKS_DIR / "_lib.sh"
+    result = subprocess.run(
+        ["bash", "-c", f". {lib}; _lib_bash_mutation_restricted_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _review_only_agents() -> list[str]:
+    """Read _LIB_REVIEW_ONLY_AGENTS from _lib.sh — the shipping source of truth."""
+    lib = HOOKS_DIR / "_lib.sh"
+    result = subprocess.run(
+        ["bash", "-c", f". {lib}; _lib_review_only_agents"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+class TestReviewOrchestratorRosterPlacement:
+    """review-orchestrator's roster placement is a load-bearing decoupling: it
+    may release a review gate (it genuinely runs the review skill itself) but
+    its Bash calls must still be mutation-restricted, since it carries Bash
+    but no Edit/Write. Conflating the two properties into one array — as
+    every existing _LIB_REVIEW_ONLY_AGENTS member does — would either strip
+    its gate-release capability or loosen a reviewer persona's restriction.
+    """
+
+    def test_tools_exclude_edit_and_write(self):
+        fm = parse_frontmatter(AGENTS_DIR / "review-orchestrator.md")
+        tools = {t.strip() for t in fm["tools"].split(",")}
+        assert "Edit" not in tools and "Write" not in tools, (
+            "review-orchestrator must carry neither Edit nor Write — every "
+            "tree change must go through a nested code-writer dispatch, per "
+            "its own generic-substitution rule."
+        )
+
+    def test_present_in_bash_mutation_restricted_agents(self):
+        assert "review-orchestrator" in _bash_mutation_restricted_agents(), (
+            "review-orchestrator must be in _LIB_BASH_MUTATION_RESTRICTED_AGENTS "
+            "(_lib.sh) so require-review-orchestrator-bash.sh actually restricts "
+            "its Bash calls — without this it could mutate the tree directly "
+            "via Bash despite carrying no Edit/Write tool."
+        )
+
+    def test_absent_from_no_gate_release_agents(self):
+        """review-orchestrator genuinely runs the review skill it is dispatched
+        for, so — unlike every _LIB_NO_GATE_RELEASE_AGENTS member — it may
+        release the gate that skill's marker guards. Adding it there would
+        silently strip the capability the whole design depends on."""
+        assert "review-orchestrator" not in _no_gate_release_agents()
+
+    def test_absent_from_review_only_agents(self):
+        """_LIB_REVIEW_ONLY_AGENTS also drives _LIB_NO_GATE_RELEASE_AGENTS, so
+        adding review-orchestrator there would re-couple exactly the two
+        properties _LIB_BASH_MUTATION_RESTRICTED_AGENTS exists to keep
+        independent."""
+        assert "review-orchestrator" not in _review_only_agents()

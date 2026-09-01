@@ -2,10 +2,12 @@
 # hook-class: gate
 # PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified
 # plan file exists in .claude/plans/ and no plan-review marker covering that
-# exact plan state can be found. Exempt: a Write/Edit/MultiEdit whose own
-# target is one of those same plan files, so authoring a plan across
-# multiple calls (including a resumed session) is never blocked by the gate
-# that exists to force that plan's review.
+# exact plan state can be found. Three exemptions release a Write/Edit/
+# MultiEdit before that check runs: (1) a write outside this repo, (2) a
+# write into the gitignored agent-reviews/ findings directory, and (3) a
+# write whose own target is one of the gated plan files, so authoring a plan
+# across multiple calls (including a resumed session) is never blocked by
+# the gate that exists to force that plan's review.
 #
 # Globally applied (no opt-in), consistent with require-code-review.sh,
 # require-ready-for-review.sh, and require-respond-pr.sh.
@@ -156,6 +158,12 @@ if [ -n "$TARGET_PATH" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
     # short-circuit here instead of paying for a second enumeration.
     exit 0
   fi
+  # When a plan IS active, this block's own _lib_active_plan_files call
+  # above is a second enumeration in addition to the one _lib_active_plan_hash
+  # makes below -- accepted rather than threaded through, since every git
+  # call on both sides is already _lib_capped-bounded and this is the
+  # session's own local repo. Revisit if per-write latency in this state is
+  # ever measured to matter.
   # - Both a failed enumeration and a non-empty active-file list fall through
   #   to here; a failed enumeration fails closed by proceeding into the checks
   #   below rather than skipping them.
@@ -169,7 +177,7 @@ if [ -n "$TARGET_PATH" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
     # agent-reviews/ directory and are never staged. Blocking them forces the
     # reviewer into a full-inline fallback that loses all context savings.
     # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
-    # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
+    # _lib_realpath_m resolves both ".." components and symlinks (existing- or dangling-target) to their true filesystem location. REAL_REPO/REAL_TARGET are therefore already canonical here and in the repo-boundary check below, so a symlinked repo path or a symlink aliasing into agent-reviews/ cannot spoof either check.
     if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
       exit 0
     fi

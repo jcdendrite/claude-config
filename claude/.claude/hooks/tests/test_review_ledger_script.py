@@ -133,6 +133,32 @@ class TestReviewLedgerSessionIdValidation:
         )
 
 
+class TestReviewLedgerOutsideGitRepo:
+    """Mirrors test_orchestrator_checkpoint_script.py's
+    TestOrchestratorCheckpointOutsideGitRepo: the shared
+    `_lib_resolve_repo_root` helper must fail closed with an exact error
+    message when review-ledger.sh runs outside a git repository."""
+
+    def test_append_outside_git_repo_denied(self, isolated_home, tmp_path):
+        _seed_session(isolated_home, SID)
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        result = _run(_append_args(), cwd=non_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert result.stderr == "review-ledger.sh: not inside a git repository\n"
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        stray = list(ledger_dir.iterdir()) if ledger_dir.exists() else []
+        assert stray == [], f"must not write a ledger file outside a git repo: {stray}"
+
+    def test_show_outside_git_repo_denied(self, isolated_home, tmp_path):
+        _seed_session(isolated_home, SID)
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        result = _run(["show"], cwd=non_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert result.stderr == "review-ledger.sh: not inside a git repository\n"
+
+
 class TestReviewLedgerAppendHappyPath:
     def test_append_creates_ledger_with_expected_fields(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)

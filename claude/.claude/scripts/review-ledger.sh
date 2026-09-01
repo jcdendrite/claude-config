@@ -58,93 +58,11 @@ _resolve_session_id() {
   printf '%s' "$sid"
 }
 
-_resolve_repo_root() {
-  local root
-  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
-  if [ -z "$root" ]; then
-    printf 'review-ledger.sh: not inside a git repository\n' >&2
-    return 2
-  fi
-  printf '%s' "$root"
-}
-
-# _sweep_stale_ledger_files LEDGER_DIR DRY_RUN REPORT
-# Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
-# *.lock file under LEDGER_DIR older than 30 days by mtime, across every
-# repo-hash — mirrors nudge-handoff-near-context-cap.sh's directory-wide
-# `find ... -mtime +30 -delete` sweep of .handoff-nudge-fired.d. REPORT=1
-# prints per-file and summary lines (clear-stale); REPORT=0 is silent (the
-# best-effort sweep append performs on every invocation).
-_sweep_stale_ledger_files() {
-  local ledger_dir="$1" dry_run="$2" report="$3"
-  [ -d "$ledger_dir" ] || return 0
-  local evicted=0 entry
-  while IFS= read -r -d '' entry; do
-    evicted=$((evicted + 1))
-    if [ "$dry_run" -eq 1 ]; then
-      [ "$report" -eq 1 ] && printf '  evict (dry-run): %s\n' "$(basename "$entry")"
-    else
-      rm -f "$entry" 2>/dev/null
-      [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
-    fi
-  done < <(find "$ledger_dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime +30 -print0 2>/dev/null)
-  if [ "$report" -eq 1 ]; then
-    if [ "$dry_run" -eq 1 ]; then
-      printf 'clear-stale: would evict %d file(s)\n' "$evicted"
-    else
-      printf 'clear-stale: evicted %d file(s)\n' "$evicted"
-    fi
-  fi
-}
-
-# _append_ledger_line_locked LEDGER_FILE LOCK_FILE LINE
-# Acquires a same-directory noclobber lock (bash `set -o noclobber`, the
-# idiom _lib_worktree_collision_guard already establishes in this repo)
-# around the check-then-append critical section: no-ops if LINE already
-# exists verbatim in LEDGER_FILE, else appends it. The lock file's content is
-# the holder's PID; a lock whose PID is dead is evicted and retried
-# immediately, the same PID-liveness eviction _lib_active_bypass_marker_live
-# (_lib.sh) uses for its own markers, rather than waiting out every retry
-# against a crashed holder. Falls through to an unlocked append after
-# _LEDGER_LOCK_RETRIES failed acquisitions rather than blocking — a duplicate
-# line from a lost race is a low-consequence outcome (an inflated count in a
-# summary), not data loss. The lock is released via an EXIT trap, so it
-# clears whether the append succeeds or fails — this is the only trap this
-# script sets.
-_append_ledger_line_locked() {
-  local ledger_file="$1" line="$3"
-  # Deliberately not `local`: the EXIT trap below evaluates $_LEDGER_LOCK_PATH
-  # lazily at script-exit time, after this function has already returned and
-  # any `local` binding of the same name would be out of scope.
-  _LEDGER_LOCK_PATH="$2"
-  local attempt=0 stored_pid
-  while [ "$attempt" -lt "$_LEDGER_LOCK_RETRIES" ]; do
-    if (set -o noclobber; printf '%s\n' "$$" > "$_LEDGER_LOCK_PATH") 2>/dev/null; then
-      trap 'rm -f "$_LEDGER_LOCK_PATH"' EXIT
-      break
-    fi
-    stored_pid=$(cat "$_LEDGER_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
-      # Dead holder: evict now and retry acquisition on the very next
-      # iteration, with no sleep -- this is what makes eviction prompt
-      # rather than waiting out the remaining retries.
-      rm -f "$_LEDGER_LOCK_PATH" 2>/dev/null
-      attempt=$((attempt + 1))
-      continue
-    fi
-    attempt=$((attempt + 1))
-    sleep 0.05
-  done
-  if [ -f "$ledger_file" ] && grep -qFx -e "$line" -- "$ledger_file" 2>/dev/null; then
-    # A dedup no-op must still count as activity on this session's own
-    # ledger file, or a long-running session's later no-op append leaves a
-    # stale mtime for the directory-wide sweep below to delete out from
-    # under it.
-    touch -- "$ledger_file" 2>/dev/null
-    return 0
-  fi
-  printf '%s\n' "$line" >> "$ledger_file"
-}
+# Locking (noclobber-lock + PID-liveness-eviction + single-EXIT-trap), the
+# stale-file sweep, and repo-root resolution live in _lib.sh
+# (_lib_append_line_locked, _lib_sweep_stale_files, _lib_resolve_repo_root) —
+# shared with orchestrator-checkpoint.sh so this repo doesn't hold a second
+# near-identical copy of any of the three.
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
@@ -235,7 +153,7 @@ case "$SUBCOMMAND" in
     fi
 
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_resolve_repo_root) || exit 2
+    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 
     if ! mkdir -p "$LEDGER_DIR" 2>/dev/null; then
@@ -258,10 +176,10 @@ case "$SUBCOMMAND" in
       exit 2
     fi
 
-    _append_ledger_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE"
+    _lib_append_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" "$_LEDGER_LOCK_RETRIES"
 
-    # Best-effort retention sweep on every append — see _sweep_stale_ledger_files.
-    _sweep_stale_ledger_files "$LEDGER_DIR" 0 0
+    # Best-effort retention sweep on every append — see _lib_sweep_stale_files.
+    _lib_sweep_stale_files "$LEDGER_DIR" 0 0
     ;;
   show)
     if [ $# -gt 0 ]; then
@@ -269,7 +187,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_resolve_repo_root) || exit 2
+    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
     LEDGER_FILE="$LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl"
     if [ ! -s "$LEDGER_FILE" ]; then
@@ -288,7 +206,7 @@ case "$SUBCOMMAND" in
       usage
       exit 2
     fi
-    _sweep_stale_ledger_files "$LEDGER_DIR" "$DRY_RUN" 1
+    _lib_sweep_stale_files "$LEDGER_DIR" "$DRY_RUN" 1
     ;;
   *)
     printf "review-ledger.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2

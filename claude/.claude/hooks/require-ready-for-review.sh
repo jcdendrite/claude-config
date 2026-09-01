@@ -53,14 +53,6 @@
 #   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
 #   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
 #   create`) bypasses detection for those two arms.
-# - _lib_split_fragments doesn't split fragments on a bare `&` (the shell
-#   background operator).
-# - The git-word scan it feeds locks onto the first `git` occurrence in a
-#   fragment, so `git status & git push origin feature` misclassifies the
-#   subcommand and the real push goes undetected.
-# - Not closed here: the fix touches the fragment splitter or the git-word
-#   scan, both shared by other hooks and outside this gate's cooperative
-#   threat model.
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.

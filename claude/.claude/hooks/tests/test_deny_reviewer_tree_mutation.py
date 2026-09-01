@@ -336,6 +336,182 @@ class TestBashGitWrites:
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="code-writer")) == "allow"
 
 
+class TestCommandInvokingGitFlagDenied:
+    """A subcommand-word-only allowlist check treats 'git grep -O...' as safe
+    because grep is otherwise read-only, while -O execs its argument as a
+    command unconditionally -- these flags must deny regardless of
+    subcommand for a review-only agent too."""
+
+    def test_git_grep_open_files_in_pager_short_form_denied(self):
+        command = 'git grep -O\'sh -c "touch /tmp/marker" #\' the README.md'
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_grep_open_files_in_pager_short_form_denied_with_no_embedded_dash_c(self):
+        """Confound-free companion to the fixture above: that payload's own
+        embedded 'sh -c "..."' produces a bare -c token that independently
+        satisfies the -c arm, so it doesn't pin -O short-form detection on
+        its own. This value carries no -c-shaped token anywhere."""
+        command = "git grep -O'less' the README.md"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_log_open_files_in_pager_long_form_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git log --open-files-in-pager=sh", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_log_bare_config_override_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git -c core.pager=less log", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_diff_ext_diff_denied(self):
+        assert run_hook(HOOK, bash_input("git diff --ext-diff", agent_type="staff-sdet")) == "deny"
+
+    def test_git_show_textconv_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git show --textconv HEAD:file.bin", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_config_env_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git log --config-env=core.pager=SOME_ENV_VAR", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_plain_readonly_git_log_with_no_unsafe_flag_still_allowed(self):
+        """Regression guard: the new flag scan must not false-deny an
+        ordinary read-only git subcommand with none of the unsafe flags."""
+        assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
+
+    def test_git_log_textconv_ansi_c_hex_escape_bypass_allowed(self):
+        """Required regression test pinning a documented residual shared with
+        require-review-orchestrator-bash.sh: bash's ANSI-C \\xHH hex escape
+        ($'--tex\\x74conv' decodes \\x74 to 't' at exec time) reassembles the
+        real --textconv flag, but _lib_strip_word_quotes does not decode
+        multi-character ANSI-C escapes -- see docs/design-decisions.md §40's
+        accepted-residual entry for _lib_strip_word_quotes. Currently
+        allowed, not denied; pins the gap as a reviewed decision reaching
+        this hook's whole existing reviewer roster, not an unnoticed one."""
+        command = "git log $'--tex\\x74conv' HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    def test_git_log_textconv_ansi_c_octal_escape_bypass_allowed(self):
+        """Octal-escape variant of the hex-escape bypass above
+        ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- same
+        documented residual, see docs/design-decisions.md §40's
+        accepted-residual entry for _lib_strip_word_quotes."""
+        command = "git log $'--tex\\164conv' HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+
+class TestBareAmpersandBackgroundingDenied:
+    """A standalone `&` (shell backgrounding) is not `&&` and was not a
+    _lib_split_fragments split point -- 'git diff & sed -i ...' never split
+    at all, so this hook's per-fragment denylist scan only ever inspected the
+    text before the `&` while the backgrounded mutating tail still executed."""
+
+    def test_allowed_prefix_with_backgrounded_mutating_tail_denied(self):
+        command = "git diff & sed -i s/a/b/ x.txt"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_double_ampersand_still_allowed(self):
+        """Confound-free companion: the bare-`&` fix must not regress `&&`
+        chaining of two otherwise-allowed read-only fragments."""
+        assert run_hook(HOOK, bash_input("git diff && git log", agent_type="staff-sdet")) == "allow"
+
+    def test_combined_pipe_ampersand_mutating_tail_denied(self):
+        """`|&` (combined stdout+stderr pipe) invokes two distinct commands
+        exactly like a plain `|` does. A prior version of the bare-`&`
+        protection only marked the `&` byte, leaving the `|` for the
+        pre-existing bare-pipe rule to split on anyway -- corrupting the
+        second fragment's leading byte and hiding the real command word
+        (`sed`) from the in-place-edit denylist check."""
+        command = "git status |& sed -i s/x/y/ evil.py"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+
+class TestGitWriteTargetFlagDenied:
+    """git diff/log/show (and the diff-machinery subcommands sharing their
+    option parser) accept --output=<file> / --output <file>, writing the
+    command's own content to a caller-chosen path with no shell redirect
+    character for a `<`/`>` scan to see."""
+
+    def test_git_diff_output_denied(self):
+        command = "git diff --output=src/tracked_file.py HEAD~1..HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_log_output_denied(self):
+        assert run_hook(
+            HOOK, bash_input("git log --output=src/tracked_file.py", agent_type="staff-sdet")
+        ) == "deny"
+
+    def test_git_show_output_denied(self):
+        command = "git show --output=src/tracked_file.py HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_git_log_output_indicator_flag_confound_free_companion_allowed(self):
+        """Confound-free companion: --output-indicator-new shares the
+        --output prefix but writes nothing anywhere -- must not false-deny."""
+        assert run_hook(
+            HOOK, bash_input("git log --output-indicator-new=+", agent_type="staff-sdet")
+        ) == "allow"
+
+
+class TestBareEnvAssignmentFragmentDenied:
+    """A fragment that is ITSELF purely an environment-variable assignment
+    denies regardless of whether it mentions git -- closing the cross-
+    fragment path where splitting an assignment out via `;` from its
+    eventual `git` invocation leaves neither fragment individually caught by
+    _lib_fragment_has_env_assignment_before_git's git-anchored scan."""
+
+    def test_git_config_env_var_mechanism_split_across_fragments_denied(self):
+        """The exact multi-fragment GIT_CONFIG_* attack: each `export ...`
+        fragment doesn't itself invoke git, and the final `git diff` fragment
+        carries no assignment of its own -- only a per-fragment bare-
+        assignment check catches this."""
+        command = (
+            "export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=diff.external; "
+            "export GIT_CONFIG_VALUE_0=x; git diff"
+        )
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_bare_export_fragment_alone_denied(self):
+        assert run_hook(HOOK, bash_input("export SOME_VAR=x", agent_type="staff-sdet")) == "deny"
+
+    def test_bare_assignment_fragment_without_export_denied(self):
+        assert run_hook(HOOK, bash_input("SOME_VAR=x", agent_type="staff-sdet")) == "deny"
+
+    def test_plain_command_with_no_bare_assignment_fragment_still_allowed(self):
+        """Regression guard: the new bare-assignment scan must not false-deny
+        a normal command with no env-assignment fragment anywhere."""
+        assert run_hook(HOOK, bash_input("git status", agent_type="staff-sdet")) == "allow"
+
+
+class TestEnvironmentVariableAssignmentBeforeGitDenied:
+    """Git's own GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n>
+    mechanism (git-config(1) ENVIRONMENT) sets arbitrary config -- including
+    diff.external -- with zero matching CLI flag token, entirely bypassing
+    the flag-token scan above. A leading env-var assignment before the git
+    word is denied as a blanket rule, not enumerated per variable name."""
+
+    def test_git_config_env_var_mechanism_denied(self):
+        command = (
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external "
+            "GIT_CONFIG_VALUE_0='touch /tmp/marker #' git diff"
+        )
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_non_git_prefixed_env_assignment_denied(self):
+        """The rule is a blanket one on the WORD=value shape, not scoped to
+        GIT_-prefixed names -- any env var could matter to some git
+        mechanism now or in the future."""
+        assert run_hook(HOOK, bash_input("FOO=bar git diff", agent_type="staff-sdet")) == "deny"
+
+    def test_plain_command_with_no_env_assignment_still_allowed(self):
+        """Regression guard: the new env-assignment scan must not false-deny
+        an ordinary git command with no leading env-var assignment."""
+        assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
+
+
 class TestBashGitModeDependentWrites:
     """The shared _LIB_READONLY_GIT_SUBCMDS admits branch/tag/worktree/remote/
     fetch/reflog/symbolic-ref as read-only for require-worktree-for-git-writes.sh's
@@ -661,6 +837,24 @@ class TestKnownGapBypass:
         # Same documented gap: GNU sed's `--in-place` long form starts `--i`,
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cp /tmp/malicious.txt claude/.claude/hooks/_lib.sh",
+            "printf malicious > claude/.claude/hooks/_lib.sh",
+            "echo malicious | tee claude/.claude/hooks/_lib.sh",
+        ],
+    )
+    def test_raw_bash_write_target_onto_tracked_file_allowed(self, command):
+        """Documented "Known gaps" miss (this hook's own header comment):
+        arbitrary Bash write-target resolution (cp/redirect/tee onto a
+        tracked file) is not mechanically gated. This is also the composed
+        two-hop path require-review-orchestrator-agent-target.sh's own
+        allowlist does not close for a review-orchestrator-dispatched
+        reviewer persona -- see docs/design-decisions.md §40. Pin the
+        accepted allow so a future narrowing of this gap is visible."""
+        assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "allow"
 
 
 class TestChainOperators:

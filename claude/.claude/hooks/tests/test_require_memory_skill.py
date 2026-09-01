@@ -12,6 +12,7 @@ from helpers import (
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
+    build_no_realpath_m_path_env,
     edit_input,
     extract_skill_command,
     multiedit_input,
@@ -100,6 +101,26 @@ class TestRequireMemorySkill:
         assert not Path(new_topic).exists()
         payload = _memory_input(write_input(new_topic), "sess-new-topic")
         assert run_hook(HOOK_PATH, payload) == "deny"
+
+    def test_unresolvable_new_topic_file_path_denied(
+        self, isolated_home, memory_tree, tmp_path
+    ):
+        """A new-topic-file path _lib_realpath_m cannot resolve (its fallback
+        loop's depth cap exhausted, e.g. on a system lacking both
+        realpath -m and grealpath) must still be denied -- an unresolved
+        path must not be read as proof the target isn't a memory file and
+        let the gate skip."""
+        deep_target = memory_tree
+        for i in range(11):
+            deep_target = deep_target / f"lvl{i}"
+        assert not deep_target.exists()
+        payload = _memory_input(write_input(str(deep_target)), "sess-unresolvable")
+        decision = run_hook(
+            HOOK_PATH,
+            payload,
+            extra_env={"PATH": build_no_realpath_m_path_env(tmp_path)},
+        )
+        assert decision == "deny"
 
     def test_existing_topic_file_edit_allowed(self, isolated_home, memory_tree):
         """Edit on an existing topic file passes through (only new files are gated)."""
@@ -215,19 +236,21 @@ class TestRequireMemorySkill:
             == "deny"
         )
 
-    def test_dangling_symlink_outside_memory_tree_allows_under_forced_realpath_fallback(
+    def test_dangling_symlink_outside_memory_tree_denies_under_forced_realpath_fallback(
         self, isolated_home, tmp_path
     ):
         """A dangling-symlink write target with no relationship to the
-        memory tree must not be swept into IS_CANDIDATE=1 just because
-        _lib_realpath_m's fallback also fails to resolve it. Reproduces the
-        false positive fixed alongside
-        test_memory_md_dangling_symlink_denies_under_forced_realpath_fallback:
-        before the reclassification was scoped to a raw path already shaped
-        like a memory-tree target, ANY dangling-symlink write under the
-        forced-fallback environment (no native `realpath -m`, no
-        `grealpath` -- the ordinary path on stock macOS) was denied with the
-        memory-skill message, regardless of target."""
+        memory tree is still denied when _lib_realpath_m's fallback also
+        fails to resolve it. This is an accepted over-broad-gating
+        trade-off, not a bug: a raw-path-shape narrowing was tried and
+        reverted after it let an obfuscated-but-real memory path (one
+        containing a literal ".." that trips the fallback loop, e.g.
+        "$CONFIG_DIR/decoy/../projects/abc123/memory/f.md") slip through as an
+        allow, because the raw string didn't start with the expected
+        literal prefix even though it denoted a genuine memory-tree
+        location. Once resolution has failed there is no reliable way to
+        distinguish that case from a truly unrelated dangling symlink, so
+        every resolution failure is gated."""
         shim_dir = tmp_path / "realpath_shim"
         shim_dir.mkdir()
         (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
@@ -249,7 +272,49 @@ class TestRequireMemorySkill:
                 payload,
                 extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
-            == "allow"
+            == "deny"
+        )
+
+    def test_obfuscated_memory_path_denied_under_forced_realpath_fallback(
+        self, isolated_home, memory_tree, tmp_path
+    ):
+        """A new-topic-file path that both (a) fails resolution under the
+        forced-fallback environment (the manual fallback loop returns
+        failure on encountering a literal ".." path component) and (b)
+        denotes a genuine memory-tree location once ".." is collapsed, but
+        whose raw spelling does not start with the literal
+        "$CONFIG_DIR/projects/" prefix, is still denied -- pins the
+        classification bypass a raw-path-shape narrowing previously
+        introduced and this suite's sibling test above documents as an
+        accepted trade-off."""
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+        (shim_dir / "realpath").chmod(0o755)
+        (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
+        (shim_dir / "grealpath").chmod(0o755)
+
+        obfuscated_target = (
+            isolated_home
+            / ".claude"
+            / "decoy"
+            / ".."
+            / "projects"
+            / "abc123"
+            / "memory"
+            / "newtopic.md"
+        )
+
+        payload = _memory_input(
+            write_input(str(obfuscated_target)), "sess-obfuscated-memory-path"
+        )
+        assert (
+            run_hook(
+                HOOK_PATH,
+                payload,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
         )
 
     def test_memory_md_dangling_symlink_allows_with_active_marker_under_forced_realpath_fallback(

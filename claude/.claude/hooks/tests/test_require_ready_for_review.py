@@ -1337,18 +1337,17 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
-    def test_git_invocation_before_a_bare_ampersand_defeats_push_detection(
+    def test_git_invocation_before_a_bare_ampersand_still_detects_push(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
-        """A documented gap (see hook header): a bare `&` isn't a fragment
-        boundary, so the git-word scan locks onto the earlier `git status`
-        instead of the real `git push` that follows it.
+        """_lib_split_fragments treats a bare `&` (the shell background
+        operator) as a fragment boundary, so a `git status` fragment ahead
+        of a real `git push` doesn't shield the push from detection.
 
         fake_gh_pr_exists (a real open PR) and no completion marker are the
-        strictest available inputs: if detection ever started matching this
-        shape, the same command would deny here instead of allow. Proves
-        this gap is risk-neutral by test, not only by header prose.
-        """
+        strictest available inputs: if fragment splitting regressed to
+        locking onto the earlier `git status`, this would allow instead of
+        deny."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -1357,7 +1356,7 @@ class TestRequireReadyForReview:
                 ),
                 cwd=repo_on_feature_branch,
             )
-            == "allow"
+            == "deny"
         )
 
     def test_full_path_git_push_invocation_detected(
