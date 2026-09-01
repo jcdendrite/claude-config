@@ -155,6 +155,113 @@ plausible channel to test it is instrumentally unreachable here."
 
 No `model:` pin is changed as a result of this study, per its own scope.
 
+## Follow-up diagnostic: why do 3+-round PRs need so many rounds?
+
+Reviewer fan-out is expensive, so a PR needing 3+ `/code-review` rounds
+signals a fundamental problem upstream of authoring quality, not a gradual
+quality gradient. That reading is supported by the
+round-bucket shape itself: mean `commit_count` moves 2.33 → 2.54 → 2.86
+through rounds 0–2 (a roughly linear ~0.27-commit marginal cost per round),
+then jumps to 6.31 at round 3+. A first-pass-authoring-quality deficit
+predicts a smooth continuation of that gradient; round 3 would land near
+3.1 commits, not 6.31. The discontinuity is the signature of a
+non-converging review loop, not weak authoring.
+
+A `plan-architect` consult (`MODE=consult`) was asked what to do about that
+tail before committing to a design, and recommended classifying the tail
+PRs' actual failure mode first, with a pre-registered decision rule: if one
+mode covers roughly half or more of the tail, specialize a corrective
+consult's prompt around it; if the tail splits evenly across three or more
+modes, ship a generic "is the foundation wrong?" consult unspecialized.
+
+**Method.** All 29 PRs in the round-bucket "3+" tail (identified via the
+same `review-trace` join used for G1 above) were classified into one of
+four failure modes from `gh pr view <N> --json commits,reviews,comments,
+additions,deletions,changedFiles` — commit-message sequence as the primary
+signal, since this repo's review gates are hook-enforced Skill invocations
+rather than human PR comments, so `reviews`/`comments` are usually sparse
+or empty:
+
+- **plan-quality** — round-3+ findings are design-level (placement,
+  naming, abstraction, wrong approach) rather than defect-level, or a
+  later round's fix undoes an earlier round's own fix.
+- **oscillation** — the same file/region is touched across 3+ consecutive
+  fix commits without converging, or two reviewer angles pull in different
+  directions across rounds.
+- **scope-growth** — the diff's file count or size grows materially
+  between the first review round and the merged state.
+- **context-loss** — a later round's finding restates one round 1 already
+  covered, or a long gap between commits suggests a session boundary
+  interrupted continuity.
+
+**Results.**
+
+| Failure mode | Count | Share |
+|---|---|---|
+| plan-quality | 11 | 39% |
+| oscillation | 8 | 29% |
+| context-loss | 8 | 29% |
+| scope-growth | 1 | 4% |
+
+One PR in the tail bucket, #613, was excluded from this tally (n=28
+effective): independent verification found only 2 commits and a single
+`"lgtm"` review, no evidence of 3+ real review rounds, despite
+`review-trace` counting 3 `/code-review` Skill invocations for that branch.
+Literal Skill-invocation counting can overcount real rounds — a re-invocation
+that finds nothing still counts. This is a data-quality caveat on G1's
+proxy, not a reason to revise the verdict above; it means the tail's true
+n is closer to 28 than 29. Four of the 28 classifications (PRs #546, #706,
+#711, #764) are flagged by the classifying pass as weak or closest-fit
+rather than clean matches, for the same underlying reason — review rounds
+were sometimes squashed into fewer commits than the round count implied.
+
+**Cross-check against `struggle`.** `struggle` is a correction-phrase
+signal in user turns, split by model family. Unlike `review-trace`/
+`commit_count`, it is a live in-session signal, not a post-hoc commit or
+review artifact. It also isn't subject to `subagent-mix`'s redaction:
+`cmd_struggle` has no root-scoping redaction logic at all. Run as
+`transcript-analysis.py struggle --this-repo` (2026-09-01), which scopes
+to this repo's own worktrees by identity — the same fail-closed scoping
+every other `--this-repo` subcommand uses — so the reported figures below
+are this repo's own public branch history, not a wider, unscoped scan.
+
+Two findings. First, only 10 of the 29 tail branches carry any
+correction-phrase signal at all, and the branches classified `oscillation`
+average the highest density (2.0 signals/branch) against `plan-quality`
+(1.5) and `context-loss` (1.25) — a small sample, weak corroboration, but
+in the expected direction: oscillation is repeated flailing, the pattern
+most likely to prompt a mid-session correction. Second, and more load-bearing:
+**zero** of the 29 tail branches carry any Opus-attributed correction
+signal, and only 4 hits exist machine-wide across the whole repo's history
+(2 on `main`, 2 on unrelated non-tail branches). This repo's main-thread
+work runs on Sonnet by default per its own routing convention; Opus only
+runs the main thread via the harness's plan-mode-forced phase or explicit
+`--model opus` anchoring. `struggle` shares no code path or redaction
+mechanism with `subagent-mix`, so this is an independent instrument
+reaching the same underlying conclusion G2 reached for a different reason:
+this corpus does not contain enough Opus-authored main-thread work to
+compare friction rates against, regardless of which tool is used to look.
+
+**Interpretation and recommendation.** No single failure mode reaches roughly half of the tail; the three real
+modes split close to evenly (39/29/29, scope-growth a negligible 4%).
+Under the pre-registered decision rule's "spread evenly" branch, this
+recommends a generic, unspecialized `plan-architect MODE=consult` dispatch
+rather than a mode-tailored prompt. One qualifier worth carrying into that follow-up's
+own design: `plan-quality` and `oscillation` together are 68% (19/28) of
+the tail, and are plausibly the same underlying failure at different
+visibility — oscillation is often what a wrong plan looks like in the
+commit log before anyone names it as a design problem outright. That
+reading, if it holds, would make the case for a generic "is the foundation
+wrong?" consult stronger, not weaker.
+
+The recommended trigger point is **entry to round 3**, not round 1. Firing
+after round 1 would catch roughly half of all PRs to address a 14% tail.
+The signal that identifies a tail PR — repetition, a fix that spawns a new
+finding — only exists once round 2 has already run. This
+recommendation is not built here; it is out of this plan's scope by the
+same "no `transcript-analysis.py`/hook changes" boundary the original plan
+set, and ships as its own separately-scoped `/plan-it` run.
+
 ## Limits of this result
 
 - **Ledger coverage and survivorship.** 186 of 365 merged PRs in the
@@ -167,6 +274,16 @@ No `model:` pin is changed as a result of this study, per its own scope.
   coverage is treated as a confirmed zero-round PR or excluded as unknown
   — a single-PR margin in either direction moves it. IQR is stable; the
   median is not a number to lean on precisely.
+- **G1's round-count proxy can overcount.** The follow-up diagnostic below
+  found one tail-bucket PR (#613) that `review-trace` counted as 3 rounds
+  but that independent verification showed had only 2 commits and a single
+  `"lgtm"` review — no evidence of real rework. Literal `/code-review`
+  Skill-invocation counting doesn't distinguish a re-invocation that finds
+  nothing from one that finds a real defect. This is a modest, not large,
+  overcount: one PR out of 29 in the tail bucket, found by manual
+  spot-check rather than a systematic audit. It means every round count
+  in this study is an upper bound on real rework rounds, not an exact
+  count.
 - **Unrandomized assignment.** Every treatment value in every arm
   (`plan_file_added`, `opus_dollar_share_pct`, harness plan-mode slippage)
   was decided historically by the engineer and by harness behavior, not
