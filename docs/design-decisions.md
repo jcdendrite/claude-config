@@ -168,10 +168,11 @@ couldn't distinguish from plan implementation, since it is itself
 delegated-by-construction. The general case — inline code-writing
 outside an approved plan or a review disposition — stays advisory for
 the same reason above: the routing rule still cannot be hook-enforced.
-Section C's 90-day window (`.claude/plans/handoff-code-writer-delegation.md`)
-predates both narrowings for all but a handful of its days, so it
-cannot serve as a remeasurement of either; a windowed remeasurement
-keyed to each narrowing's own merge date is needed instead.
+The 90-day inline-vs-dispatch measurement in
+`.claude/plans/handoff-code-writer-delegation.md` predates both
+narrowings for all but a handful of its days, so it cannot serve as a
+remeasurement of either; a windowed remeasurement keyed to each
+narrowing's own merge date is needed instead.
 
 The name `code-writer` is job-shaped — an action-noun (like `code-review`)
 describing the work the agent does — not a persona job title.

@@ -321,7 +321,7 @@ Disposition turns on complexity/risk/test coverage, never fix size — a small f
 
 Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 findings; a four-column table — Finding | Source | Disposition | Rationale — when there are 3+. The orchestrator's recommendation that follows can still propose grouping fixes into this PR vs follow-ups, but every finding has been seen, tagged, and either addressed or justified against the closed list.
 
-Follow the disposition with a mandatory **Fix route:** line, mirroring **Spawn decisions:** above: `code-writer` when every ADDRESS row is dispatched as one round per `subagent-delegation`'s "Implementation work → `code-writer`" rule, or `inline — <reason>` naming which of that rule's two carve-outs applies (a fix that isn't code, or a finding still being re-decided). DEFER rows carry no route — they produce no fix. As with Spawn decisions, an empty rationale is the failure mode this line closes.
+Follow the disposition with a mandatory **Fix route:** line, mirroring **Spawn decisions:** above. Write `code-writer` when every ADDRESS row is dispatched as one round per `subagent-delegation`'s "Implementation work → `code-writer`" rule. Otherwise write `inline — <reason>`, naming whichever of that rule's carve-outs applies. DEFER rows carry no route — they produce no fix. As with Spawn decisions, an empty rationale is the failure mode this line closes.
 
 **DEFER criteria (closed list).** A finding may be tagged DEFER only when it matches one of:
 

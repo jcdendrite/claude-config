@@ -158,14 +158,14 @@ that cleared `/plan-review` already fixed scope and approach, so condition
 (1) of the decision-made test above holds by construction — dispatch
 `code-writer` per phase, naming the plan path, the phase's steps, and its
 verification command. Two things stay with the parent: a step the plan
-deliberately left open for implementation-time discovery, and the review
-of what a dispatch returns — running the phase's verification command
-inline, reading the returned diff line by line, and applying a
-correction whose content the parent's own read of that diff — not a
-reviewer's disposition — already decided. Root-causing a failure the
-returned diff does not explain is not parent work: dispatch it as a
-**Debug-investigation probe** (above) and apply the fix the returned
-diagnosis specifies.
+deliberately left open for implementation-time discovery, and review of
+what a dispatch returns. That review means running the phase's
+verification command inline, reading the returned diff line by line, and
+applying only a correction the parent's own read of the diff decided —
+never one a reviewer's disposition decided instead. Root-causing a
+failure the returned diff does not explain is not parent work: dispatch
+it as a **Debug-investigation probe** (above) and apply the fix the
+returned diagnosis specifies.
 
 **The fix that follows `code-review`, `ready-for-review`, or `respond-pr`
 feedback is also delegated by default.** A reviewer's disposition already
@@ -178,10 +178,11 @@ runs on a dispatched one. The edit load still accumulates in the parent
 either way. A review round is the ADDRESS/DEFER disposition output of one
 `/code-review` or `/ready-for-review` invocation, not a span across
 multiple re-review loop iterations. Dispatch one `code-writer` per round,
-carrying every ADDRESS row verbatim (finding, `file:line`, suggested
-fix), the diff scope, and the verification command, with `model: sonnet`
-— never a DEFER row. The parent keeps the commit, the `/code-review`
-re-run, and the marker. Two further carve-outs, neither size-based:
+`model: sonnet`, carrying: every ADDRESS row verbatim (finding,
+`file:line`, suggested fix); the diff scope; and the verification
+command. Never dispatch a DEFER row. The parent keeps the commit, the
+`/code-review` re-run, and the marker. Two further carve-outs, neither
+size-based:
 
 - Not code (a `## Deferred review findings` block, a `respond-pr` reply,
   a plan-file edit) — stays inline.
