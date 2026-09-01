@@ -20,8 +20,9 @@
 # Fail-open everywhere: any unexpected error (missing jq, missing _lib.sh,
 # malformed input) exits 0 with no stdout.
 #
-# Known gaps (see docs/hooks.md's Known limitations entry for this hook for
-# the full list):
+# Known gaps. See docs/long-turn-nudge.md for elaboration on several of
+# these. That doc also covers additional operational-latency gaps this
+# list omits.
 # - A stalled or hung dispatch producing zero new turns is not detected
 #   (docs/design-decisions.md §41,
 #   .claude/plans/prevent-runaway-subagent-cost.md).
@@ -42,6 +43,11 @@
 # - A SIGKILL while holding the scan lock can orphan the lock directory.
 # - A mkdir racing its own timeout's SIGTERM, or a trap-ordering race
 #   around LOCK_DIR's assignment, can also orphan the lock directory.
+# - `_scan_turn_count_cached`'s windowed `head` read (line ~209) isn't
+#   wrapped in `_lib_capped_for`. Only the piped `jq -s` call is.
+#   Low severity: the unwrapped read targets a freshly-created,
+#   `MAX_SCAN_WINDOW_BYTES`-bounded temp file, not an unbounded or
+#   externally-controlled source.
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0

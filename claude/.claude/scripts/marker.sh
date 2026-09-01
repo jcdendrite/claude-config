@@ -636,31 +636,38 @@ case "$SUBCOMMAND" in
     case "$SKILL" in
       code-review)
         REPO_ROOT=$(_resolve_repo_root) || exit 2
-        # An empty staged diff never counts as a match. `/code-review` is
-        # also invoked with nothing staged from inside `ready-for-review`'s
-        # step 3, which reviews the cumulative PR diff, not the staged one.
-        # Matching an empty diff there against an unrelated marker some
-        # earlier empty-diff review left behind would silently skip that
-        # cumulative review.
+        # Same hash recipe as the `write code-review` arm. Read-only: no
+        # SESSION_ID needed since this never writes.
+        # A hash that can't be computed (`_hash_staged_diff` returns 1) must
+        # read as no-match, not match. This is the short-circuit
+        # /code-review consults before skipping its specialist panel, so
+        # failing open here would silently skip a real review.
         #
         # Capped unlike `write code-review`'s git calls, since `check` runs
         # on every `/code-review` invocation rather than only on a completed
-        # review; a timeout here degrades to no-match, never a false match.
-        if _lib_capped git -C "$REPO_ROOT" diff --cached --quiet; then
+        # review. A timeout here degrades to no-match, never a false match.
+        MARKER_VALUE=$(_hash_staged_diff capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
+        # Checked against the SHA-256 hash of an empty diff, computed here
+        # rather than hardcoded so no single line embeds the full hex
+        # digest. Not a separate `git diff --cached --quiet` probe. Two
+        # decoupled git calls can diverge under transient contention (index
+        # lock, background git process). A stale marker can then read as a
+        # match even though this call already proved the diff empty.
+        #
+        # This also covers `ready-for-review` step 3's invocation of
+        # `/code-review` with nothing staged, where a stale empty-diff
+        # marker from an unrelated earlier review could otherwise silently
+        # skip that cumulative-diff review.
+        EMPTY_DIFF_HASH=$(printf '' | sha256sum | awk '{print $1}')
+        if [ "$MARKER_VALUE" = "$EMPTY_DIFF_HASH" ]; then
           printf 'no-match\n'
           exit 1
         fi
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-        # Same hash recipe as the `write code-review` arm. Read-only: no
-        # SESSION_ID needed since this never writes.
-        # A hash that can't be computed (_hash_staged_diff returns 1) must
-        # read as no-match, not match -- this is the short-circuit
-        # /code-review consults before skipping its specialist panel, so
-        # failing open here would silently skip a real review. A hash match
-        # older than CODE_REVIEW_CHECK_MAX_AGE_SECONDS reads as no-match too.
-        # See docs/design-decisions.md for why this age bound applies only
-        # here, not to the write/commit-gate side.
-        if MARKER_VALUE=$(_hash_staged_diff capped "$REPO_ROOT") && _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH."; then
+        # A hash match older than CODE_REVIEW_CHECK_MAX_AGE_SECONDS reads as
+        # no-match too. See docs/design-decisions.md for why this age bound
+        # applies only here, not to the write/commit-gate side.
+        if _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH."; then
           _resolve_code_review_check_max_age_seconds
           if FRESH_AGE=$(_code_review_marker_fresh_age "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH." "$CODE_REVIEW_CHECK_MAX_AGE_SECONDS"); then
             printf 'match age_seconds=%s\n' "$FRESH_AGE"

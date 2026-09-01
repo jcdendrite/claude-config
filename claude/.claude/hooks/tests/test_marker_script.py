@@ -1873,7 +1873,7 @@ class TestMarkerScriptCheck:
         overridden bound with a slack margin wide enough to absorb the
         subprocess-invocation latency between `os.utime` and marker.sh's own
         `date +%s` read (a 1-second margin against the wall clock is not
-        reliable across a real subprocess call), mirroring
+        reliable across a real subprocess call). This mirrors
         nudge-long-turn-subagent.sh's own exact-boundary threshold test for
         its sibling malformed-value guard shape."""
         bound_seconds = 120
@@ -2038,11 +2038,13 @@ class TestMarkerScriptCheck:
         assert result.stdout.strip().startswith("no-match")
 
     @pytest.mark.timing
-    def test_diff_quiet_probe_times_out_to_no_match(self, isolated_home, git_repo, tmp_path):
-        """The empty-staged-diff probe (`git diff --cached --quiet`) is
-        capped via _lib_capped -- a stalled probe must not hang `check`
-        indefinitely, and a killed probe must fall through to no-match,
-        never a false match."""
+    def test_hash_computation_times_out_to_no_match(self, isolated_home, git_repo, tmp_path):
+        """The `_hash_staged_diff` call `check` makes is capped via
+        _lib_capped -- a stalled `git diff --cached` must not hang `check`
+        indefinitely, and a killed call must fall through to no-match,
+        never a false match. Mirrors `status`'s own
+        test_code_review_value_computation_times_out_gracefully for the
+        same underlying call."""
         if not shutil.which("timeout"):
             pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
@@ -2051,7 +2053,7 @@ class TestMarkerScriptCheck:
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
-            'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
             '  sleep 10\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
@@ -2072,6 +2074,61 @@ class TestMarkerScriptCheck:
         assert elapsed < 9.5, (
             f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
             f"it does not), took {elapsed:.1f}s"
+        )
+
+    def test_only_one_git_diff_invocation_on_the_check_path(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`check code-review` makes exactly one git call: `_hash_staged_diff`'s
+        `git diff --cached`. A second, separately-timed git call would
+        reintroduce a window where the two calls could observe different
+        index states under contention and produce a false match. A stub that
+        would hang on a `--quiet`-shaped invocation but answer normally
+        otherwise proves no `--quiet` call is made on this path. The
+        invocation log's single `diff --cached`-shaped line proves
+        `_hash_staged_diff` is only called once. A marker matching the real
+        staged diff is written first so the run also exercises the match
+        branch through this single-call path, rather than passing vacuously
+        the way an unconditional no-match would."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        invocation_log = tmp_path / "git-invocation-args"
+        stub.write_text(
+            '#!/bin/bash\n'
+            f'echo "$@" >> {invocation_log}\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+        invocations = invocation_log.read_text().splitlines() if invocation_log.exists() else []
+        assert not any("--quiet" in line for line in invocations), (
+            f"expected no --quiet-shaped git invocation on the check path, got: {invocations}"
+        )
+        diff_cached_invocations = [
+            line
+            for line in invocations
+            if re.match(r"^-C \S+ diff --cached$", line)
+        ]
+        assert len(diff_cached_invocations) == 1, (
+            f"expected exactly one `-C <root> diff --cached`-shaped git "
+            f"invocation on the check path, got: {invocations}"
         )
 
     def test_no_match_on_empty_staged_diff_even_if_marker_matches_empty_hash(
