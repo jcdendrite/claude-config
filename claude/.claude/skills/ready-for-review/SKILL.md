@@ -76,12 +76,12 @@ resolves through a dedicated script rather than an inline multi-statement Bash c
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Because the reviewed diff is not the staged diff, do NOT write the
-review-completion marker (per `/code-review`'s own rule). If findings
-are produced, fix them in a new commit; that commit goes through the
-normal staged-diff `/code-review` + marker gate, then return to
-step 2 and re-run fast checks. Do not re-run `/code-review` on its
-own output (loop risk).
+Because the reviewed diff is not the staged diff, do NOT write the review-completion
+marker (per `/code-review`'s own rule). If findings are produced, dispatch one
+`code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS
+row. The resulting fix commit goes through the standard staged-diff `/code-review` +
+marker gate — not step 3's own cumulative pass — before returning to step 2. Do not
+re-run `/code-review` on its own output (loop risk).
 
 Unskippable — markdown, skill, and config diffs benefit from the same pass.
 
@@ -100,7 +100,7 @@ Check that skills this branch invoked were executed, not silently abbreviated �
 
 Name the pipeline's own skills **out of scope** in the prompt (the agent body also excludes them) — `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `agent-review`, plus still-executing invocations — else the reviewer audits the gate running it. Exception: `code-review`'s Ripple effect triage spawn-dispatch obligation, checked only against the `review-trace` timeline, never `code-review`'s own reasoning.
 
-**Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar. Fix findings in a new commit (normal staged-diff `/code-review` + marker gate), then return to step 2; don't re-run this step on its own output.
+**Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar; that fix stays inline, prose only. A finding needing an actual code change follows step 3's `code-writer` route rather than a separate dispatch: fix it in a new commit (normal staged-diff `/code-review` + marker gate), then return to step 2; don't re-run this step on its own output.
 
 ## 5. PR description (unconditional; warn + fix)
 

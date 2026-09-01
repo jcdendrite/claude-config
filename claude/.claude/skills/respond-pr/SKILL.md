@@ -50,10 +50,10 @@ Fetch all review comments on the current branch's open pull request and address 
    *`EXPLAIN-DESIGN`:*
    > **[Claude Code]** The early return is intentional — when the session token is absent we want a fast 401 with no DB round-trip. The alternative (falling through to a null-check deeper in the stack) would silently succeed for unauthenticated callers in contexts where the token field is optional. `where-documented: auth/middleware.ts:42`
 
-6. For each unresolved comment:
+6. Dispatch one `code-writer` covering the whole `FIXED` set as a single batch, not one dispatch per comment — step 4's holistic triage is why the batch is the right unit. The parent keeps the commit (step 8) and every reply (step 7). Then, for each unresolved comment:
    - Read the referenced file and line to understand the context
    - Apply the classification from step 5
-   - If a code change is needed, make it; note it in the reply using the `FIXED` field template
+   - For a `FIXED` comment, note the fix in the reply using the `FIXED` field template
    - If it's design explanation, draft using the `EXPLAIN-DESIGN` template
 7. Post replies using the appropriate endpoint for each comment type — do **not** use `gh api .../pulls/comments/{id}` with `-F body=...`; that endpoint PATCHes the target comment in place and silently overwrites the author's text.
 

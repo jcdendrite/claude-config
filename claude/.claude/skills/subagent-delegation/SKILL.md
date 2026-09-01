@@ -161,10 +161,34 @@ verification command. Two things stay with the parent: a step the plan
 deliberately left open for implementation-time discovery, and the review
 of what a dispatch returns — running the phase's verification command
 inline, reading the returned diff line by line, and applying a
-correction whose content is already decided. Root-causing a failure the
+correction whose content the parent's own read of that diff — not a
+reviewer's disposition — already decided. Root-causing a failure the
 returned diff does not explain is not parent work: dispatch it as a
 **Debug-investigation probe** (above) and apply the fix the returned
 diagnosis specifies.
+
+**The fix that follows `code-review`, `ready-for-review`, or `respond-pr`
+feedback is also delegated by default.** A reviewer's disposition already
+names the finding, `file:line`, and a concrete suggested fix, so condition
+(1) holds by construction. Condition (2) commonly does not hold —
+locating one named finding is usually a single ranged `Read`. That
+doesn't gate this case, though: the fix is itself review-bearing work,
+since an inline fix would skip the re-review `ready-for-review` step 3
+runs on a dispatched one. The edit load still accumulates in the parent
+either way. A review round is the ADDRESS/DEFER disposition output of one
+`/code-review` or `/ready-for-review` invocation, not a span across
+multiple re-review loop iterations. Dispatch one `code-writer` per round,
+carrying every ADDRESS row verbatim (finding, `file:line`, suggested
+fix), the diff scope, and the verification command, with `model: sonnet`
+— never a DEFER row. The parent keeps the commit, the `/code-review`
+re-run, and the marker. Two further carve-outs, neither size-based:
+
+- Not code (a `## Deferred review findings` block, a `respond-pr` reply,
+  a plan-file edit) — stays inline.
+- Still being re-decided — fails condition (1), stays inline.
+
+A finding surviving a second dispatch stops being delegated — it is now
+a design question, not a fix.
 
 ### Everything else → `general-purpose`
 
