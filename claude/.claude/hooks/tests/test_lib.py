@@ -1152,6 +1152,94 @@ class TestFragmentHasToken:
         assert not _fragment_has_token("rsync -a /a /b", "--remove-source-files")
 
 
+# --- _lib_git_argv_from_subcmd / _lib_extract_git_subcmd /
+#     _lib_extract_git_subcmd_args -----------------------------------------
+#
+# Direct coverage arrives now because a second consumer of the word walk
+# (_lib_extract_git_subcmd_args) means _lib_extract_git_subcmd's contract can
+# no longer be inferred from its callers' black-box tests, the same
+# rationale as the _lib_fragment_command_word banner above.
+
+
+def _extract_git_subcmd(fragment: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_extract_git_subcmd "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _extract_git_subcmd_args(fragment: str) -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_extract_git_subcmd_args "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
+
+
+@pytest.mark.parametrize(
+    "fragment, expected",
+    [
+        ("git push", "push"),
+        ("git -C /wt push", "push"),
+        ("git -c user.name=x commit", "commit"),
+        ("git --git-dir=/wt/.git push", "push"),
+        ("git --git-dir /wt/.git push", "push"),
+        ("git --work-tree /wt push", "push"),
+        ("git --namespace ns push", "push"),
+        ("git --super-prefix /pre push", "push"),
+        ("git --config-env foo=BAR push", "push"),
+        ("git -c push.default=simple push origin feature", "push"),
+        ("git -C /wt -c user.name=x push --tags origin", "push"),
+        ("GIT_DIR=x git push", "push"),
+        ("/usr/bin/git status", "status"),
+        ("git push)", "push"),
+        ("git --version", ""),
+        ("", ""),
+    ],
+)
+class TestExtractGitSubcmd:
+    """Characterization tests: they pin _lib_extract_git_subcmd's observable
+    contract independent of its implementation."""
+
+    def test_extract_git_subcmd(self, fragment: str, expected: str) -> None:
+        assert _extract_git_subcmd(fragment) == expected
+
+
+@pytest.mark.parametrize(
+    "fragment, expected",
+    [
+        ("git push --tags origin", ["--tags", "origin"]),
+        ("git -C /wt push --tags origin feature", ["--tags", "origin", "feature"]),
+        ("git -c user.name=x push origin feature", ["origin", "feature"]),
+        ("git -c push.default=simple push origin feature", ["origin", "feature"]),
+        (
+            "git --git-dir=/wt/.git push --tags origin feature",
+            ["--tags", "origin", "feature"],
+        ),
+        (
+            "git -C /wt -c user.name=x push --tags origin",
+            ["--tags", "origin"],
+        ),
+        (
+            "git -C /wt push origin :old-branch new-feature:new-feature",
+            ["origin", ":old-branch", "new-feature:new-feature"],
+        ),
+        ("git push --tags origin feature)", ["--tags", "origin", "feature)"]),
+        ("git push", []),
+        ("git --version", []),
+        ("", []),
+    ],
+)
+class TestExtractGitSubcmdArgs:
+    def test_extract_git_subcmd_args(self, fragment: str, expected: list[str]) -> None:
+        assert _extract_git_subcmd_args(fragment) == expected
+
+
 # --- _lib_realpath_m ---------------------------------------------------
 #
 # GNU `realpath -m` is available natively in this test environment, so a
