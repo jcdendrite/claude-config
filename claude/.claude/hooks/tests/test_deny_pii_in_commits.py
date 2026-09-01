@@ -14,13 +14,12 @@ it.
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
-import time
 
 import pytest
 from helpers import HOOKS_DIR, bash_input, read_input, run_hook, run_hook_reason
+
+from .conftest import assert_cap_engaged
 
 DENY_PII_IN_COMMITS_HOOK = HOOKS_DIR / "deny-pii-in-commits.sh"
 
@@ -215,7 +214,7 @@ class TestDenyPiiInCommits:
         ) == "deny"
 
     @pytest.mark.timing
-    def test_staged_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+    def test_staged_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
         """Required regression test for a High-severity finding: `git diff
         --cached`'s _lib_capped exit status previously went unchecked, so a
         timeout silently left STAGED_DIFF empty/truncated and the always-on
@@ -223,103 +222,46 @@ class TestDenyPiiInCommits:
         scan, no error, no signal. Fails closed (deny) now instead. A fake
         `git` shadows only the `diff` subcommand (sleeping past the 5s cap)
         and passes every other subcommand through to the real binary."""
-        real_git = shutil.which("git")
-        if not real_git:
-            pytest.skip("git not found in PATH")
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-
-        fake_git = tmp_path / "git"
-        fake_git.write_text(f'#!/bin/bash\nif [ "$1" = "diff" ]; then sleep 10; fi\nexec {real_git} "$@"\n')
-        fake_git.chmod(0o755)
-
+        env = git_timeout_shim('[ "$1" = "diff" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged():
+            decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
-        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     @pytest.mark.timing
-    def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+    def test_work_tree_check_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
         """Required regression test: `git rev-parse --is-inside-work-tree`'s
         _lib_capped exit status must also fail closed on timeout (exit 124)
         rather than exiting 0 and skipping every scan tier, including the
         always-on credential-value one."""
-        real_git = shutil.which("git")
-        if not real_git:
-            pytest.skip("git not found in PATH")
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-
-        fake_git = tmp_path / "git"
-        fake_git.write_text(
-            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]; then sleep 10; fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        fake_git.chmod(0o755)
-
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged():
+            decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
-        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     @pytest.mark.timing
-    def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+    def test_head_rev_parse_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
         """Required regression test: `git rev-parse HEAD`'s _lib_capped exit
         status must fail closed on timeout, distinct from the legitimate
         no-HEAD-yet (unborn branch) skip. `git commit -a` triggers
         HEAD_SCAN_NEEDED so this call site is reached."""
-        real_git = shutil.which("git")
-        if not real_git:
-            pytest.skip("git not found in PATH")
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-
-        fake_git = tmp_path / "git"
-        fake_git.write_text(
-            f'#!/bin/bash\nif [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        fake_git.chmod(0o755)
-
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged():
+            decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
-        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     @pytest.mark.timing
-    def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, tmp_path):
+    def test_head_diff_git_timeout_denied(self, isolated_home, git_repo, git_timeout_shim):
         """Required regression test: `git diff HEAD`'s _lib_capped exit
         status must fail closed on timeout, mirroring the STAGED_DIFF fix
         for the HEAD-relative diff specifically."""
-        real_git = shutil.which("git")
-        if not real_git:
-            pytest.skip("git not found in PATH")
-        if not shutil.which("timeout"):
-            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
-
-        fake_git = tmp_path / "git"
-        fake_git.write_text(
-            f'#!/bin/bash\nif [ "$1" = "diff" ] && [ "$2" = "HEAD" ]; then sleep 10; fi\n'
-            f'exec {real_git} "$@"\n'
-        )
-        fake_git.chmod(0o755)
-
+        env = git_timeout_shim('[ "$1" = "diff" ] && [ "$2" = "HEAD" ]')
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
-        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
-        start = time.monotonic()
-        decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged():
+            decision = run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo, extra_env=env)
         assert decision == "deny"
-        assert elapsed < 9.5, f"expected the 5s _lib_capped timeout to fire (shim sleeps 10s if it does not), took {elapsed:.1f}s"
 
     # ------------------------------------------------------------------ #
     # Built-in generic patterns                                           #

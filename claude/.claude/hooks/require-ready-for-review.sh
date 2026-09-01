@@ -61,13 +61,22 @@
 # - Not closed here: the fix touches the fragment splitter or the git-word
 #   scan, both shared by other hooks and outside this gate's cooperative
 #   threat model.
-# Every git rev-parse/symbolic-ref call in this script is capped via
-# _lib_capped, so a stalled filesystem or locked index fails fast (5s)
-# instead of hanging indefinitely. REPO_ROOT, CURRENT_BRANCH/DEFAULT_BRANCH,
-# and the default-branch candidate loop fail OPEN on that timeout (see
-# guard-settings-session-keys.sh's identically named "fail-open posture" for
-# precedent). Only CURRENT_HEAD fails closed on that timeout (see its own
-# comment below).
+# Every git rev-parse/symbolic-ref call in this script, and the gh pr view
+# network call, are capped via _lib_capped, so a stalled filesystem, locked
+# index, or hanging gh fails fast (5s) instead of hanging indefinitely.
+# Two independent paths allow outright on timeout. A REPO_ROOT timeout
+# exits 0 immediately. A gh pr view timeout allows via the same
+# empty-output check that handles gh failing outright (see that call
+# site's own comment below).
+# A CURRENT_BRANCH timeout, or a candidate-loop timeout in isolation, does
+# not allow directly: it withholds the default-branch bypass and lets the
+# gate below decide, which can still deny.
+# DEFAULT_BRANCH resolves in two steps: a direct `git symbolic-ref` lookup,
+# then the main/master/develop candidate loop as fallback. A symbolic-ref
+# timeout alone only withholds the bypass if the candidate loop also fails
+# to resolve a value. If the loop still succeeds, DEFAULT_BRANCH is set
+# and the bypass still fires normally.
+# Only CURRENT_HEAD fails closed on that timeout (see its own comment below).
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —
 # intentional, because a prefix glob (`Bash(gh pr create *)`) cannot deliver
@@ -275,11 +284,14 @@ fi
 # Skipped for gh pr create — a PR being created by definition does not
 # exist yet, so this early-return would otherwise fail-open the one
 # command it needs to gate.
-# Network call — wrap in `timeout` so a hanging gh doesn't stall the
-# tool-call. On error/timeout, fail-open: the skill's prose triggers
-# still fire, and we don't want to brick offline / flaky-network work.
+# Network call, capped via _lib_capped so a hanging gh doesn't stall the tool-call.
+# On error or timeout, fail open — offline or flaky-network work must not brick.
+# Uses _lib_capped rather than a bare `timeout 5`: without GNU coreutils, bare
+# `timeout 5` is "command not found" (127), which silently fails this check open.
+# On a machine with neither timeout(1) nor gtimeout(1), _lib_capped runs this
+# call uncapped, governed only by the harness's own hook timeout.
 if ! $is_gh_pr_create; then
-  PR_NUMBER=$(cd "$CWD" 2>/dev/null && timeout 5 gh pr view --json number --jq '.number' 2>/dev/null)
+  PR_NUMBER=$(cd "$CWD" 2>/dev/null && _lib_capped gh pr view --json number --jq '.number' 2>/dev/null)
   if [ -z "$PR_NUMBER" ]; then
     exit 0
   fi

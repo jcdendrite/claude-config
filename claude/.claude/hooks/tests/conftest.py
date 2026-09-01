@@ -10,11 +10,24 @@ per-test session id, not a fixed injected value; import it directly with
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR
+
+# Shim sleep duration for the git/gh-timeout regression tests below: long
+# enough that a broken (uncapped) call site never returns before the
+# test's own timeout.
+TIMEOUT_SHIM_SLEEP_SECONDS = 10
+# Lower bound for asserting the 5s _lib_capped cap actually engaged.
+# Below the 5s cap, so cap-plus-overhead reliably clears it. Well above 0,
+# so a no-op shim (never invoked, or invoked without sleeping) can't pass
+# by accident.
+CAP_ENGAGED_FLOOR_SECONDS = 4
 
 
 def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
@@ -92,6 +105,91 @@ def _worktree_lock_reason(worktree: Path) -> str | None:
         elif line.startswith("locked") and in_target:
             return line
     return None
+
+
+def _write_conditional_sleep_shim(
+    bin_dir: Path, binary_name: str, real_binary: str, match_condition: str
+) -> None:
+    """Write a fake `binary_name` under bin_dir that sleeps
+    TIMEOUT_SHIM_SLEEP_SECONDS past the 5s _lib_capped cap when
+    `match_condition` matches, and execs `real_binary` otherwise. Shared
+    conditional-sleep logic behind git_timeout_shim and gh_timeout_shim."""
+    fake_binary = bin_dir / binary_name
+    fake_binary.write_text(
+        f"#!/bin/bash\nif {match_condition}; then sleep {TIMEOUT_SHIM_SLEEP_SECONDS}; fi\n"
+        f'exec {real_binary} "$@"\n'
+    )
+    fake_binary.chmod(0o755)
+
+
+@pytest.fixture
+def git_timeout_shim(tmp_path):
+    """`install(match_condition)` writes a `git` shim that sleeps past the 5s
+    _lib_capped cap when `match_condition` matches, execs the real binary
+    otherwise, and returns a PATH-override dict. Shared by
+    test_deny_pii_in_commits.py and test_require_ready_for_review.py.
+
+    `match_condition` is a `[ ... ]`/`[[ ... ]]` test expression, e.g.
+    `[ "$1" = "diff" ]` or `[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]`.
+
+    Skips when `git` is absent, or when neither `timeout(1)` nor
+    `gtimeout(1)` is available (stock macOS ships neither without Homebrew
+    coreutils).
+
+    The PATH dict is built inside `install`, not at fixture setup, so it
+    reads `os.environ["PATH"]` at the test's own call time. A caller that
+    prepends its own bin dir via `monkeypatch.setenv` beforehand (e.g.
+    fake_gh_pr_exists) must call `monkeypatch.setenv` before calling
+    `install`, so that ordering is preserved.
+    """
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    def install(match_condition: str) -> dict[str, str]:
+        _write_conditional_sleep_shim(tmp_path, "git", real_git, match_condition)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
+@pytest.fixture
+def gh_timeout_shim(tmp_path):
+    """`install(match_condition)` writes a `gh` shim with the same
+    conditional-sleep contract as git_timeout_shim, for regression tests
+    against require-ready-for-review.sh's `gh pr view` call. Same skip
+    conditions as git_timeout_shim, checking `gh` in place of `git`.
+    """
+    real_gh = shutil.which("gh")
+    if not real_gh:
+        pytest.skip("gh not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    def install(match_condition: str) -> dict[str, str]:
+        _write_conditional_sleep_shim(tmp_path, "gh", real_gh, match_condition)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
+@contextmanager
+def assert_cap_engaged():
+    """Time the wrapped block and assert it took longer than
+    CAP_ENGAGED_FLOOR_SECONDS — evidence the 5s _lib_capped timeout fired
+    rather than, say, the shim never being invoked at all. Deliberately no
+    upper bound: under `-n auto` parallel load, a passing run can take
+    arbitrarily longer than the shim's own sleep duration without the cap
+    having failed to engage."""
+    start = time.monotonic()
+    yield
+    elapsed = time.monotonic() - start
+    assert elapsed > CAP_ENGAGED_FLOOR_SECONDS, (
+        f"expected the 5s _lib_capped timeout to fire (shim sleeps "
+        f"{TIMEOUT_SHIM_SLEEP_SECONDS}s if it does not), took only {elapsed:.1f}s"
+    )
 
 
 @pytest.fixture(autouse=True)

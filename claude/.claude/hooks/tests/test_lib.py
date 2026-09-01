@@ -1240,6 +1240,41 @@ class TestExtractGitSubcmdArgs:
         assert _extract_git_subcmd_args(fragment) == expected
 
 
+# --- _lib_fragment_invokes_git ------------------------------------------
+#
+# Parametrized over _lib_fragment_invokes_git's own Accepts/Rejects doc
+# comment in _lib.sh, turning that comment into an executable spec rather
+# than inventing new cases.
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git log",
+        "sudo git commit",
+        "GIT_DIR=x git push",
+        "/usr/bin/git status",
+    ],
+)
+def test_lib_fragment_invokes_git_accepts_documented_invocations(fragment: str) -> None:
+    result = _run_lib_call(f'_lib_fragment_invokes_git "{fragment}"', env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "ls .github/",
+        "cat .gitignore",
+        "grep github.com",
+        "./git-foo",
+    ],
+)
+def test_lib_fragment_invokes_git_rejects_documented_look_alikes(fragment: str) -> None:
+    result = _run_lib_call(f'_lib_fragment_invokes_git "{fragment}"', env=dict(os.environ))
+    assert result.returncode != 0, result.stderr
+
+
 # --- _lib_realpath_m ---------------------------------------------------
 #
 # GNU `realpath -m` is available natively in this test environment, so a
