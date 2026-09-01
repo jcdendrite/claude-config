@@ -564,6 +564,10 @@ _lib_git_argv_from_subcmd() {
     fi
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
+      # Every git 2.43 global flag taking a separate-word value, per `git
+      # help --all`'s global-options list.
+      # A future git version adding another one needs this list updated by
+      # hand.
       -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
         skip_next=true ;;
       -*) ;;

@@ -53,6 +53,14 @@
 #   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
 #   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
 #   create`) bypasses detection for those two arms.
+# - _lib_split_fragments doesn't split fragments on a bare `&` (the shell
+#   background operator).
+# - The git-word scan it feeds locks onto the first `git` occurrence in a
+#   fragment, so `git status & git push origin feature` misclassifies the
+#   subcommand and the real push goes undetected.
+# - Not closed here: the fix touches the fragment splitter or the git-word
+#   scan, both shared by other hooks and outside this gate's cooperative
+#   threat model.
 # Every git rev-parse/symbolic-ref call in this script is capped via
 # _lib_capped, so a stalled filesystem or locked index fails fast (5s)
 # instead of hanging indefinitely. REPO_ROOT, CURRENT_BRANCH/DEFAULT_BRANCH,
@@ -121,26 +129,21 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
 
-# Print a git-push fragment's subcommand args, minus a bare `origin`/
-# `upstream` repository token — but only in the <repository> position.
-# `git push [<repository>] [<refspec>...]` means only the first non-flag
-# argument can be the repository; a later bare word is a refspec (pushes the
-# identically-named local branch), even when it is textually `origin`/
-# `upstream`. Excluding that token in every position, not just the first,
-# would let `git push origin :dummy origin` hide a real branch push behind a
-# second occurrence of the remote's own name. The six recognized flag
-# spellings below (--force, --force-with-lease[=...], --force-if-includes,
-# -u, --set-upstream, --tags) are passed through unfiltered and never
-# consume the repository-position slot, so each caller's own allowlist
-# still decides which of its own arm-specific flags are safe. Any other
-# flag is treated as the first non-flag word instead, which over-gates
-# (fails closed) rather than opening a bypass.
+# Strips a bare origin/upstream token only when it is the first non-flag word
+# (the <repository> slot per git-push's own grammar).
+# A later occurrence is a refspec, not the repository slot, so stripping it
+# would hide a real branch push behind a repeated remote name.
 push_fragment_args_after_repo() {
   local fragment="$1"
   local word seen_repo=false
   while IFS= read -r word; do
     [[ -z "$word" ]] && continue
     case "$word" in
+      # These flag spellings never consume the repository-position slot
+      # (checked above), so each caller's own allowlist still decides which
+      # of its own arm-specific flags are safe. Any other flag is treated as
+      # the first non-flag word instead, which over-gates (fails closed)
+      # rather than opening a bypass.
       --force | --force-with-lease | --force-with-lease=* | --force-if-includes | -u | --set-upstream | --tags)
         printf '%s\n' "$word"
         continue ;;
