@@ -111,7 +111,7 @@ Never skipped — markdown, skill, and config diffs benefit from the same pass.
 Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), plus the `## Deferred review findings` block
 if step 3's `/code-review` returned one (≥1 DEFER, no open PR). With a PR open
 it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
-body to a temp file and ends its report with a `BODY_FILE: <path>` line.
+body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Create PR if missing (skip if PR already exists)
 
