@@ -154,10 +154,14 @@ reviewed.
    the same property, and `_lib.sh:586-590` documents the any-word choice
    as deliberate for git. [verified: `_lib.sh:525-538, 586-590`;
    `deny-pii-in-commits.sh:183-191`]
-8. No skill body or doc prescribes the chained-add-and-commit form, so
-   denying it breaks no documented workflow. [verified: grep
-   `git add.*&&.*git commit` under `claude/.claude/skills` → no matches;
-   the only in-repo occurrences are hook comments and hook tests]
+8. No skill body prescribes the chained-add-and-commit form, so denying it
+   breaks no documented skill workflow. [verified: grep
+   `git add.*&&.*git commit` under `claude/.claude/skills` → no matches]
+   The grep scope above does not extend to `docs/`: `docs/hooks.md`'s own
+   gate-deadlock recovery recipe (the "commit the plan file" option)
+   prescribed exactly this chained form, and this gate would have denied
+   it. Fixed by splitting that recipe into two separate commands (see
+   Critical files below).
 9. A new hook must carry `# hook-class: gate` on line 2, hold its own entry
    in `docs/hooks.md`, be wired into a PreToolUse matcher group in
    `claude/.claude/settings.json`, and deny on malformed input, empty
@@ -184,22 +188,85 @@ reviewed.
     the new gate gives detection parity across all nine consumers, not just
     the one it was copied from. [verified: `require-skill-review.sh:83`,
     `require-code-review.sh:64`]
-14. **Accepted residual risk:** the new gate is a hard single point of
-    failure for the other eight hooks' "empty diff means empty commit"
-    soundness. If it's later removed from `settings.json`, overridden via a
-    personal `settings.local.json`, or fails at runtime on unanticipated
-    input, all eight revert to their pre-fix bypassable state with no
-    independent backstop — this is the accepted cost of the DRY-on-response
-    design (see Approach's rejected-alternatives list), not an oversight.
-    Mitigated by `test_hook_alignment.py`'s PreToolUse-wiring check (row 9,
-    catches removal from the canonical `settings.json`) and by this hook's
-    own fail-closed-on-malformed-input behavior; not mitigated against a
-    per-machine `settings.local.json` override. This design also assumes
-    the harness runs every matched `PreToolUse` hook for a single tool call
-    and denies on any single hook's deny — confirm this against the
-    existing multi-hook `Bash` matcher group's observed behavior (multiple
-    gates already coexist there) before implementation relies on it as
-    fact rather than inference.
+14. **Accepted residual risk — operational SPOF:** the new gate is a hard
+    single point of failure for the other eight hooks' "empty diff means
+    empty commit" soundness. If it's later removed from `settings.json`,
+    overridden via a personal `settings.local.json`, or fails at runtime on
+    unanticipated input, all eight revert to their pre-fix bypassable state
+    with no independent backstop — this is the accepted cost of the
+    DRY-on-response design (see Approach's rejected-alternatives list), not
+    an oversight. Mitigated by `test_hook_alignment.py`'s PreToolUse-wiring
+    check (row 9, catches removal from the canonical `settings.json`) and
+    by this hook's own fail-closed-on-malformed-input behavior; not
+    mitigated against a per-machine `settings.local.json` override. This
+    design also assumes the harness runs every matched `PreToolUse` hook
+    for a single tool call and denies on any single hook's deny — confirm
+    this against the existing multi-hook `Bash` matcher group's observed
+    behavior (multiple gates already coexist there) before implementation
+    relies on it as fact rather than inference.
+
+    **Second, distinct residual risk — detection correctness:** a
+    present, correctly-wired, cleanly-parsing gate can still fail to close
+    the bypass it exists for. The ordered fragment walk (row 1's design,
+    "stopping at the first fragment whose `_lib_extract_git_subcmd` is
+    `commit`") on its own allows
+    `git commit -m x && git commit -a --amend --no-edit`: the walk exits
+    unconditionally at the first, clean commit and never inspects the
+    second, unreviewed one — a full bypass of `require-code-review.sh` and
+    every sibling gate, with the gate itself healthy and correctly
+    installed. Neither of row 14's operational mitigations (the wiring
+    check, fail-closed-on-malformed-input) would have caught this, since
+    both verify the gate is present and running, not that its logic is
+    correct. Closed by adding a second, independent check ("Arm 2" in the
+    hook's own header) that counts git-commit-invoking fragments over
+    quote-masked text and denies more than one anywhere in the command.
+    The adversarial multi-commit-chain fixtures in
+    `test_deny_invisible_commit_content.py` are this risk category's
+    ongoing mitigation going forward.
+
+    **Third, distinct residual risk — false-deny on ordinary commits:**
+    the same detection-correctness category cuts both ways. Arm 1 passed
+    the quote-*stripped* commit fragment to the promoted worktree-target
+    helper, whose `xargs -n1` tokenizer relies on real shell quoting to
+    keep a multi-word `-m` value as one token — with quotes already
+    stripped, `git commit -m "fix a real bug here"` tokenized into seven
+    bare words and false-denied on the first trailing one, a false
+    positive on essentially any ordinary multi-word commit message.
+    [verified: direct reproduction against the hook — a synthetic
+    PreToolUse payload for `git commit -m "fix a real bug here"` denied
+    pre-fix and allows post-fix]. Closed
+    by capturing arm 2's masked (quote-intact) counterpart of the same
+    fragment into `DIRECT_MASKED_COMMIT_FRAGMENT` and passing that to the
+    worktree-target check instead, but only when the fragment is a
+    confirmed **direct** `git` invocation (`_lib_fragment_invokes_tool
+    ... git`) — never a `bash -c`/`eval` wrapper, since masked- and
+    stripped-space are byte-identical only outside quotes, and
+    substituting a wrapped invocation's masked text risks swapping in an
+    unrelated invocation's flags. Pinned by
+    `test_wrapped_dirty_commit_then_clean_direct_commit_denied`, which
+    confirms the guard prevents exactly that swap.
+
+    **Fourth, distinct, deliberately-accepted residual risk — wrapped-
+    invocation and quote-embedded-decoy blind spots:** `_mask_shell_quotes`
+    collapses an entire quoted span to nothing, so a real `git commit`
+    invoked inside a code-executing wrapper's quoted argument (`bash -c
+    "git commit ..."`, `eval "git commit ..."`, and similar) is invisible
+    to arm 2's count — a two-commit chain where either commit is wrapped
+    this way is not detected by either arm, e.g. `git commit -m "fix" &&
+    bash -c "git add secret && git commit -m y"`. Separately, arm 1's
+    ordered walk classifies fragments over quote-*stripped* text, so a
+    quoted argument to an unrelated command that happens to contain the
+    literal text "git commit" becomes an indistinguishable fake commit
+    fragment after stripping, e.g. `echo "foo && git commit" && git add
+    secret && git commit -m x` — if it's the first commit-shaped fragment
+    the walk reaches, the walk stops there and never inspects a real,
+    later mutation-then-commit sequence. Both are accepted rather than
+    fixed: this repo's hooks assume a cooperative agent, not one
+    deliberately constructing shell indirection or a decoy quoted string
+    to evade a gate, the same posture `require-respond-pr.sh`'s header
+    states explicitly ("Threat model: cooperative, not adversarial").
+    Disclosed in the hook's own "Known gaps" header comment rather than
+    fixed.
 
 ## Critical files
 
@@ -217,10 +284,22 @@ Paths are repo-relative.
   first fragment whose `_lib_extract_git_subcmd` is `commit`. Deny on any
   earlier fragment that `_lib_fragment_invokes_git` and whose subcommand is
   absent from `_lib_readonly_git_subcmds`; deny on the commit fragment
-  itself if the promoted worktree-target helper returns true.
+  itself if the promoted worktree-target helper returns true — passing the
+  masked (quote-intact) fragment captured during arm 2's walk
+  (`DIRECT_MASKED_COMMIT_FRAGMENT`) rather than the quote-stripped one when
+  the fragment is a confirmed direct `git` invocation, since the
+  worktree-target helper's `xargs -n1` tokenizer needs real quoting to keep
+  a multi-word `-m` value as one token (ledger row 14's third paragraph);
+  falling back to the stripped fragment for a wrapped/indirect invocation
+  (`bash -c "..."`, `eval ...`), where no masked counterpart can be trusted
+  to belong to the same invocation.
   Order-sensitivity is load-bearing, not incidental: a `git add` *after*
   the commit fragment is harmless, and quote-stripping a commit message
-  containing `&&` can synthesize exactly that.
+  containing `&&` can synthesize exactly that. A second, independent check
+  (Arm 2) runs over quote-*masked* — not stripped — text: it counts
+  git-commit-invoking fragments anywhere in the command and denies if more
+  than one appears, closing the gap the ordered walk alone cannot see past
+  its own stopping point (ledger row 14's second paragraph).
   - **Reuse:** `emit_deny` bootstrap + `_lib_emit_deny` re-point,
     `_lib_parse_tool_input_or_deny`, `_lib_strip_shell_quotes`
     (`_lib.sh:1338`), `_lib_split_fragments` (`_lib.sh:575`),
@@ -234,15 +313,25 @@ Paths are repo-relative.
     before this call executes. Worktree-target form: stage explicitly
     first, then commit with no `-a` and no pathspec.
   - **Header** must document, per this repo's hook convention (one
-    sentence each): the three known gaps this gate does not close —
+    sentence each): the six known gaps this gate does not close —
     `git commit --amend` folding HEAD's tree in with no preceding `-a` or
-    chained mutation, quote/indirection obfuscation of the commit
-    detection itself, and `git -C <other-repo> commit` — plus the accepted
-    false-positive class from ledger row 7 (`echo "git add ." && git
-    commit` false-denies because `_lib_fragment_invokes_git` matches `git`
-    as any word, matching `deny-pii-in-commits.sh`'s identical behavior).
-    A reader of the hook file alone, without the plan, must see these
-    without re-deriving them.
+    chained mutation; quote/indirection obfuscation of the commit
+    detection itself; `git -C <other-repo> commit`; a `$(...)`/backtick
+    substitution inside a commit's own arguments that itself runs a real,
+    mutating git command (e.g. `git commit -m "$(git add f; echo x)"`),
+    which executes before the commit runs and is not inspected; the
+    accepted false-positive class from ledger row 7 (`echo "git add ." &&
+    git commit` false-denies because `_lib_fragment_invokes_git` matches
+    `git` as any word, matching `deny-pii-in-commits.sh`'s identical
+    behavior), distinguished from quote-masking correctness (which
+    correctly tracks quote state regardless of an embedded quote of the
+    other type or a multi-line span); and the fail-open timeout exposure —
+    none of this hook's own forks carries an internal timeout, and per the
+    harness's PreToolUse contract a timed-out command-type hook is skipped
+    rather than denied, so a wedged fork silently stops the gate rather
+    than blocking, a pre-existing exposure shared by every sibling
+    always-on commit gate. A reader of the hook file alone, without the
+    plan, must see these without re-deriving them.
   - **Subprocess footprint**, once the fast-reject grep matches: forks
     `sed`/`tr` (via `_lib_strip_shell_quotes`), two more `sed` calls (via
     `_lib_split_fragments`), and `xargs`/`awk` per commit fragment (via the
@@ -250,7 +339,20 @@ Paths are repo-relative.
     filesystem or network access, so none needs the `_lib_capped`/`timeout`
     wrapping `_lib_jq` gets. Not "no subprocess beyond jq": five more
     subprocess kinds fork on a matched call, at negligible but non-zero
-    cost.
+    cost. This hook fires unconditionally on every Bash tool call, not
+    only commit-shaped ones, and none of its own subprocess forks carries
+    an internal timeout. Per the harness's PreToolUse contract
+    (`code.claude.com/docs/en/hooks`, fetched 2026-09-01), a timed-out
+    command-type PreToolUse hook is canceled with its output discarded,
+    and the tool call proceeds through normal permission flow rather than
+    being blocked — so a wedged or replaced `grep`/`sed`/`tr`/`xargs`/`awk`
+    binary is not bounded by the harness's 600-second default PreToolUse
+    hook timeout the way a fail-closed check would be; a timeout here just
+    means this gate silently did not run. The masking awk script's
+    per-character scan is O(n²) on command length (empirically ~12s at
+    500KB input on this machine's `/usr/bin/awk`) — accepted because
+    reaching that timeout at this scaling would require a multi-megabyte
+    single command, well outside normal usage.
 - **`claude/.claude/hooks/tests/test_deny_invisible_commit_content.py`** —
   deny fixtures: `git add f && git commit -m x`;
   `git add f ; git commit -m x`; `git commit -am x`; `git commit -a -m x`;
@@ -261,14 +363,57 @@ Paths are repo-relative.
   regardless of `--amend`); `git commit -a --amend --no-edit` (worktree-
   target arm denies regardless of `--amend` — the mechanism is
   `--amend`-agnostic; only the bare, unmodified amend form below is
-  allowed). Allow fixtures:
+  allowed); `git commit -m x && git commit -a --amend --no-edit` (two
+  chained commits — arm 1 alone stops at the first, clean commit and
+  would allow this); `git commit -m x && git add secret && git commit
+  --amend --no-edit` (a mutation fragment sitting between two commit
+  fragments, past the point arm 1's ordered walk stops); `git commit -m x
+  && git commit -m y -- file.txt` (second commit carries a pathspec);
+  `git commit -m x && git commit -m y && git commit -m z` (three chained
+  commits); a deny-message fixture over the two-chained-commits case
+  asserting the reason names the fragment count and "own, separate Bash
+  tool call"; `git commit -m "hello && git commit -a --amend` (an
+  unpaired quote finds no closing match for arm 2's masking regex and is
+  left unmasked, leaning the fragment count toward denying); a
+  malformed-JSON-input fixture pinning the hook's fail-closed-on-
+  subprocess-failure discipline (`_lib_parse_tool_input_or_deny`'s JSON
+  parse exiting non-zero denies rather than allowing an unscanned
+  commit); `git commit -m 'x"y' && git commit --amend --no-edit -m 'p"q'`
+  (cross-quote-type parity: a `"` embedded in one real single-quoted `-m`
+  value must not falsely pair with an unrelated `"` in a second, pinning
+  the masking fix); `git commit -am "fix a real bug"` (multi-word message
+  with a real `-a` — the multi-word-message fix must not suppress this);
+  `bash -c "git commit -a -m x" && git commit -m y` (a wrapped, dirty
+  first commit followed by a clean direct second commit — pins that the
+  masked-fragment substitution's direct-invocation guard never swaps the
+  wrapped commit's `-a` for the clean one's flags); one
+  `build_path_without`-style deny fixture per fork point (fast-reject
+  `grep`, the masking implementation, `_lib_strip_shell_quotes`'s
+  `sed`/`tr`, `_lib_split_fragments`, the worktree-target helper's
+  `xargs`/`awk`), matching this repo's established missing-binary test
+  convention (`test_lib.py`, `test_ask_new_dependency_disclosure.py`,
+  and others already use `helpers.build_path_without`). Allow fixtures:
   `git commit -m x`; `git commit --amend --no-edit`;
   `git status && git commit -m x`; `git fetch && git commit -m x`;
   `git diff --cached && git commit -m x`;
   `~/.claude/scripts/marker.sh write code-review && git commit -m x`;
   `git commit -m "fix && git add"` (trailing mutation, allowed by the
-  ordering guard); every non-Bash and non-commit payload. Mirror the
-  fixture/helper conventions in `test_deny_pii_in_commits.py` and
+  ordering guard); `git commit -m "$(cat <<'EOF'\ngit add\nEOF\n)"`
+  (heredoc-built commit message mentioning `git add` as inert text — this
+  is the dedicated allow fixture the Out-of-scope section's `$(...)` gap
+  references, pinning that gap's tradeoff: closing it would deny this
+  standard heredoc-message idiom whenever the message text happens to
+  mention a git command); the same heredoc shape with "git commit" (not
+  "git add") as the inert mentioned text, distinctly pinning that the
+  masking fix — not just the fast-reject/subcommand-classification logic
+  — correctly handles the commit-shaped word too; `git commit -m "fix a
+  real bug here"` and the same message chained after the sanctioned
+  marker prefix (multi-word `-m` values must survive the worktree-target
+  check's tokenization); a commit message containing a real embedded
+  newline (masking collapses the whole quoted span, newline included,
+  before fragment-splitting ever runs); every non-Bash and non-commit
+  payload. Mirror
+  the fixture/helper conventions in `test_deny_pii_in_commits.py` and
   `test_require_code_review.py`.
 
 **Modify**
@@ -309,7 +454,10 @@ Paths are repo-relative.
 - **`docs/hooks.md`** — new entry for the hook (mandatory, row 9). This is
   the single canonical home for the cross-cutting statement that every
   commit gate's `--cached` snapshot depends on this shape gate; the four
-  in-hook comments above point here rather than restating it.
+  in-hook comments above point here rather than restating it. Also split
+  the gate-deadlock recovery recipe's `git add ... && git commit -m ...`
+  (row 8) into two separate commands — the new gate now denies that
+  chained form.
 
 **Deliberately not modified:** `plugins/skill-management/hooks/require-skill-review.sh`
 and the two version-bump plugin hooks
@@ -392,6 +540,18 @@ applies.
 - **`git -C <other-repo> commit`.** The gates hash the session's repo, not
   the `-C` target — documented at `deny-pii-in-commits.sh:97-101`.
   Unchanged here.
+- **A `$(...)`/backtick substitution inside a commit's own arguments that
+  itself runs a real, mutating git command** (e.g.
+  `git commit -m "$(git add f; echo x)"`). The substitution executes
+  before the commit runs and is not inspected — this is not the same
+  class as the quote/indirection gap above, since the commit itself *is*
+  correctly detected here; the gap is specifically that a real, executing
+  side effect hidden inside one of the commit's own arguments is invisible
+  to the fragment walk. Left open deliberately: closing it would deny the
+  standard `git commit -m "$(cat <<'EOF' ... EOF)"` heredoc idiom whenever
+  the message text happens to mention a git command, which is a common,
+  legitimate pattern. Pinned by a dedicated allow fixture in the test file
+  above naming the tradeoff.
 - **Removing the empty-staged-diff carve-outs.** Tempting once the shape
   gate lands, but they remain correct for genuine `--allow-empty` and
   amend-message-only commits; the plan makes them sound rather than
@@ -402,3 +562,15 @@ applies.
   separately.
 - **Backfilling review coverage for the incident commit.** Incident
   remediation on the affected account, not a repo change.
+- **Closing the wrapped-invocation and quote-embedded-decoy detection
+  blind spots** (ledger row 14's fourth paragraph): a real commit wrapped
+  in a code-executing quoted argument (`git commit -m "fix" && bash -c
+  "git add secret && git commit -m y"`) is invisible to arm 2's masked
+  count, and a decoy fragment manufactured from quoted text that merely
+  contains the literal string "git commit" (`echo "foo && git commit" &&
+  git add secret && git commit -m x`) can make arm 1's ordered walk stop
+  before it ever reaches a real, later commit. Both require an agent
+  deliberately constructing shell indirection or a decoy string to defeat
+  the gate rather than writing an ordinary command, so both are accepted
+  under this repo's cooperative-agent threat model rather than closed —
+  the same posture `require-respond-pr.sh`'s header states explicitly.
