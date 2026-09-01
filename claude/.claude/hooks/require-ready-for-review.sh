@@ -34,22 +34,18 @@
 #
 # Bypass cases (allow without checking marker):
 # - Not Bash tool, or not git push / gh pr ready / gh pr create.
-# - --dry-run pushes
-# - --tags-only pushes (no branch artifact change)
-# - Deletion pushes (--delete flag, or `origin :branch` source-empty form)
+# - The next three are judged per git-push fragment, so a bypassable push
+#   chained ahead of a gated fragment does not exempt it:
+#   - --dry-run pushes
+#   - --tags-only pushes (no branch artifact change)
+#   - Deletion pushes (--delete flag, or `origin :branch` source-empty form)
 # - Branch is the default branch (no PR semantics)
 # - Branch has no open PR (gh pr view returns empty) — not checked for
 #   gh pr create, since a PR being created does not exist yet.
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
 #
-# Known gaps, inherited by gh pr create, not closed here (tracked in
-# https://github.com/jcdendrite/claude-config/issues/773):
-# - The --dry-run bypass greps the whole $COMMAND, so
-#   `git push --dry-run && gh pr create` exits 0 before the gh pr create arm
-#   is evaluated.
-# - The same whole-$COMMAND grep also lets a second chained `git push`
-#   through.
+# Known gaps:
 # - The default-branch bypass runs before any command-type check, so
 #   `gh pr create` from the default branch is also exempted — believed inert
 #   in practice, since gh errors on a same-branch PR regardless of this hook.
@@ -125,11 +121,63 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
 
+# True when a `git push` fragment publishes a branch ref a reviewer would see.
+# --dry-run pushes nothing.
+# --delete/-d removes every listed ref rather than publishing one.
+# The colon refspec form (`origin :branch`) removes a ref only when every
+# refspec in the fragment is delete-shaped; a real refspec alongside it
+# publishes, so this arm also needs the exhaustive-remaining-args check.
+# --tags with no other refspec publishes only tags.
+push_fragment_publishes_reviewable_change() {
+  local fragment="$1"
+  local remaining
+  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--dry-run(\s|$)'; then
+    return 1
+  fi
+  if printf '%s\n' "$fragment" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
+    return 1
+  fi
+  if printf '%s\n' "$fragment" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
+    # Delete-only holds only when every refspec is a deletion form, since a
+    # real refspec alongside one is reviewable.
+    # A literal $( or backtick anywhere in $COMMAND disqualifies the
+    # delete-only bypass, since a runtime branch ref can hide inside a
+    # substitution that _lib_split_fragments treats as a fragment boundary.
+    if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
+      return 0
+    fi
+    remaining=$(_lib_extract_git_subcmd_args "$fragment" \
+      | grep -vE '^(--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|origin|upstream|:[A-Za-z0-9._/-]+)$' \
+      | grep -v '^$' || true)
+    if [[ -z "$remaining" ]]; then
+      return 1
+    fi
+  fi
+  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--tags(\s|$)'; then
+    # Tag-only holds only when --tags is the sole refspec hint, since a
+    # branch ref alongside it is reviewable.
+    # A literal $( or backtick anywhere in $COMMAND disqualifies the
+    # tags-only bypass, since a runtime branch ref can hide inside a
+    # substitution that _lib_split_fragments treats as a fragment boundary.
+    if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
+      return 0
+    fi
+    remaining=$(_lib_extract_git_subcmd_args "$fragment" \
+      | grep -vE '^(--tags|--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|origin|upstream)$' \
+      | grep -v '^$' || true)
+    if [[ -z "$remaining" ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # Detect gated commands by tokenizing fragments, not regex. This handles:
 # git -C <path> push, git --git-dir=... push, GIT_DIR=... git push,
 # eval git push, xargs git push, git push; (trailing semicolon),
-# (cd /wt; git push) (paren group).
-is_git_push=false
+# (cd /wt; git push) (paren group). A push fragment that publishes nothing
+# reviewable is not a gated command.
+is_gated_git_push=false
 is_gh_pr_ready=false
 is_gh_pr_create=false
 FRAGMENTS=$(_lib_split_fragments "$COMMAND")
@@ -137,7 +185,9 @@ while IFS= read -r frag; do
   [ -z "$frag" ] && continue
   if _lib_fragment_invokes_git "$frag"; then
     subcmd=$(_lib_extract_git_subcmd "$frag")
-    [ "$subcmd" = "push" ] && is_git_push=true
+    if [[ "$subcmd" == "push" ]] && push_fragment_publishes_reviewable_change "$frag"; then
+      is_gated_git_push=true
+    fi
   fi
   if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
     is_gh_pr_ready=true
@@ -146,38 +196,8 @@ while IFS= read -r frag; do
     is_gh_pr_create=true
   fi
 done <<< "$FRAGMENTS"
-if ! $is_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
+if ! $is_gated_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
   exit 0
-fi
-
-# git push bypass shapes — none of these publish a reviewable artifact change.
-if $is_git_push; then
-  # --dry-run: doesn't actually push.
-  if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)--dry-run(\s|$)'; then
-    exit 0
-  fi
-  # --delete or refspec source-empty (`origin :branch`): branch deletion.
-  if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
-    exit 0
-  fi
-  if printf '%s\n' "$COMMAND" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
-    exit 0
-  fi
-  # --tags with no explicit refspec other than tags: tag-only push.
-  # Conservative: only bypass when --tags is the only refspec hint. If the
-  # command also mentions a branch refspec, fall through to the gate.
-  if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)--tags(\s|$)'; then
-    # If the only non-flag args after `git push` are `--tags` (and possibly
-    # a remote name), bypass. If a branch ref is also present, gate.
-    # [[:space:]], not \s: BSD/macOS sed -E has no \s and silently produces no match, leaving push_args empty and collapsing every --tags push into the tag-only bypass above.
-    push_args=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*git[[:space:]]+push[[:space:]]+(.*)/\1/p' | head -1)
-    # Strip flags and known-safe positional (a remote like "origin").
-    # If anything else remains, it's likely a branch ref → gate.
-    remaining=$(printf '%s\n' "$push_args" | tr ' ' '\n' | grep -vE '^(--tags|--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|origin|upstream)$' | grep -v '^$' || true)
-    if [ -z "$remaining" ]; then
-      exit 0
-    fi
-  fi
 fi
 
 # Are we in a git repo?

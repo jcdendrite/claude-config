@@ -537,19 +537,25 @@ _lib_fragment_invokes_git() {
   $found
 }
 
-# Extract the git subcommand from a fragment like "git -C path push -u origin"
-# or "GIT_DIR=x git push". Walks words to find the `git` command word (same
-# logic as _lib_fragment_invokes_git), then continues from there — skipping
-# global flags that consume the next word and other flags — to return the first
-# bare word (the subcommand). Strips trailing non-alnum characters so that
-# `push)` from paren-group splitting yields `push`. Globbing disabled to
-# prevent expansion of wildcards in the command text.
-_lib_extract_git_subcmd() {
+# Print a git fragment's argv from the subcommand onward, one word per line.
+# Walks words to the `git` command word (same scan as _lib_fragment_invokes_git).
+# Then consumes git's global flags and the values the value-taking ones absorb.
+# The first line is the subcommand; each later line is one of that
+# subcommand's own arguments.
+# Prints nothing when no subcommand word follows the flags (`git --version`).
+# The `--git-dir=<path>` form carries its value in the same word, so the
+# catch-all `-*` arm skips it rather than the value-consuming arm.
+# Globbing is disabled so a wildcard in the command text is not expanded.
+_lib_git_argv_from_subcmd() {
   local fragment="$1"
   local saved_opts=$-
   set -f
-  local past_git=false skip_next=false subcmd="" word
+  local past_git=false skip_next=false past_subcmd=false word
   for word in $fragment; do
+    if $past_subcmd; then
+      printf '%s\n' "$word"
+      continue
+    fi
     if ! $past_git; then
       if [[ "$word" == "git" || "$word" == */git ]]; then
         past_git=true
@@ -561,11 +567,31 @@ _lib_extract_git_subcmd() {
       -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
         skip_next=true ;;
       -*) ;;
-      *) subcmd="${word%%[^a-zA-Z0-9_-]*}"; break ;;
+      *) printf '%s\n' "$word"; past_subcmd=true ;;
     esac
   done
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
-  printf '%s' "$subcmd"
+}
+
+# Extract the git subcommand from a fragment like "git -C path push -u origin"
+# or "GIT_DIR=x git push". Strips trailing non-alnum characters so that `push)`
+# from paren-group splitting yields `push`.
+_lib_extract_git_subcmd() {
+  local subcmd
+  subcmd=$(_lib_git_argv_from_subcmd "$1")
+  subcmd="${subcmd%%$'\n'*}"
+  printf '%s' "${subcmd%%[^a-zA-Z0-9_-]*}"
+}
+
+# Print the arguments a git fragment passes to its subcommand, one per line, so
+# `git -C /wt push --tags origin` yields `--tags` and `origin`.
+# Words are printed verbatim, so an unstripped trailing character (`feature)`)
+# fails a caller's exact-match allowlist rather than passing it.
+_lib_extract_git_subcmd_args() {
+  local argv
+  argv=$(_lib_git_argv_from_subcmd "$1")
+  [[ "$argv" == *$'\n'* ]] || return 0
+  printf '%s\n' "${argv#*$'\n'}"
 }
 
 # Split a shell command string into fragments on shell operators (;, &&, ||, |,
