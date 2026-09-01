@@ -9,16 +9,16 @@ it is already used (`plan-architect` in `/plan-it` Step 5, and ad hoc
 typical change needs before it lands, and record a verdict (adopted,
 rejected, or inconclusive) in `docs/cost-levers-considered.md` either way.
 
-This matters now because a prior investigation
-(`docs/cost-levers-considered.md`, "Model routing (reduce Opus usage)" row)
-established that Opus's current 15.7%-of-spend share is correctly sized for
-its *existing* usage points, but never asked whether adding Opus at a new,
-earlier authoring point would prevent review-flagged defects from
-occurring in the first place. Reviewer-yield data (GH-762, corrected pull
-2026-08-30) shows this repo's reviewers are catching mostly-real defects
-(found-edit rates 17.5-66.7%, zero-finding edit rates mostly 22-33%), so
-the remaining cost lever is arriving at review with fewer real defects
-already present, not spawning fewer or cheaper reviewers.
+A prior investigation (`docs/cost-levers-considered.md`, "Model routing
+(reduce Opus usage)" row) established that Opus's current 15.7%-of-spend
+share is correctly sized for its *existing* usage points. It never asked
+whether adding Opus at a new, earlier authoring point would prevent
+review-flagged defects from occurring in the first place. Reviewer-yield
+data (GH-762, corrected pull 2026-08-30) shows this repo's reviewers are
+catching mostly-real defects — found-edit rates 17.5-66.7%, zero-finding
+edit rates mostly 22-33% — so the remaining cost lever is arriving at
+review with fewer real defects already present, not spawning fewer or
+cheaper reviewers.
 
 The intended outcome is a recorded, evidence-backed verdict — adopted,
 rejected, or inconclusive — with no `model:` pin changed unless the data
@@ -27,11 +27,11 @@ scoped plan (not bundled here).
 
 ## Approach
 
-Run the measurement entirely retrospectively against instruments this repo already ships, gated by evidence bars written into this plan file *before* any scan runs, and publish the verdict whichever way it falls. No `model:` pin changes here, and no forward-looking controlled pilot — the corpus already contains the only variation worth reading, and a pilot would cost weeks to produce an effect size this repo has previously measured as unresolvable in the available window.
+Run the measurement entirely retrospectively against instruments this repo already ships, gated by evidence bars written into this plan file *before* any scan runs, and publish the verdict whichever way it falls. No `model:` pin changes here — the corpus already contains the only variation worth reading. No forward-looking controlled pilot either — see Alternatives considered below for why (a pilot would cost weeks to produce an effect size this repo has previously measured as unresolvable in the available window).
 
 **The three phases.**
 
-*Phase 1 — baseline and proxy validation.* The brief's step 1 deliverable is the distribution of review-and-fix rounds for a typical merged change. Sampling method (delegated decision, settled here): **every branch in this repo's own corpus with a merged PR in the rolling transcript window — the whole population, not a sample.** A stratified sample buys nothing when the population already fits in one scan, and it adds a selection step that `plan-review` would rightly ask me to defend. The instrument is `review-trace --this-repo --skill code-review`, which counts literal `/code-review` Skill invocations per branch and — unlike `subagent-mix` — prints raw branch names, so it joins to `gh` on the real `headRefName`. Report median and interquartile range, never the mean: the round count is a small right-skewed integer (0–8 observed), and this register has already been burned once by a mean hiding a right-skewed tail (`docs/cost-levers-considered.md`, "Context cost root cause" — "A right-skewed distribution hides a tail a mean can't see").
+*Phase 1 — baseline and proxy validation.* Phase 1's deliverable is the distribution of review-and-fix rounds for a typical merged change. Sampling method (delegated decision, settled here): **every branch in this repo's own corpus with a merged PR in the rolling transcript window — the whole population, not a sample.** A stratified sample buys nothing when the population already fits in one scan, and it adds a selection step that `plan-review` would rightly ask me to defend. The instrument is `review-trace --this-repo --skill code-review`, which counts literal `/code-review` Skill invocations per branch and — unlike `subagent-mix` — prints raw branch names, so it joins to `gh` on the real `headRefName`. Report median and interquartile range, never the mean: the round count is a small right-skewed integer (0–8 observed), and this register has already been burned once by a mean hiding a right-skewed tail (`docs/cost-levers-considered.md`, "Context cost root cause" — "A right-skewed distribution hides a tail a mean can't see").
 
 The same joined table does double duty: it validates whether `commit_count` (pre-squash, from `gh`) tracks the literal round count. That validation is what licenses Phase 3, whose rows come from PRs whose transcripts have already aged out.
 
@@ -55,7 +55,7 @@ Committing this asymmetry in advance is the whole reason the observational arm i
 
 *A forward-looking controlled pilot.* Set aside, not deferred. Three reasons, in descending weight. It requires flipping a `model:` pin for the treatment arm, which is the routing change step 5 explicitly puts outside this plan — a "temporary" flip is still a shipped routing change. `absolute-token-handoff-threshold.md` already closed a structurally identical pilot ("Delegation-discipline pilot") as unmeasurable in the available window on exactly this repo's throughput and noise floor. And the outcome is a small-count integer with high variance, so detecting anything under a full round would need an n this repo does not produce inside the 30-day retention window. Named in Out of scope with this reasoning rather than left implicit.
 
-*Reading `plan-architect` presence off `subagent-mix`'s per-branch "Top subagent types" column* — the brief's suggested retrospective signal. Set aside as unsound: `transcript-analysis.py:2423` renders `top[:5]` sorted by descending count, so a branch with a single `plan-architect` dispatch and six-plus subagent types drops it from the display. The omission is not random — it correlates with branch busyness, which is the confounder. `subagent-mix`'s untruncated `PR` column (`/plan-review` spawns) is the better in-table indicator, and `pr-cost`'s `plan_file_added` is better still.
+*Reading `plan-architect` presence off `subagent-mix`'s per-branch "Top subagent types" column* — a retrospective signal considered as an alternative. Set aside as unsound: `transcript-analysis.py:2423` renders `top[:5]` sorted by descending count, so a branch with a single `plan-architect` dispatch and six-plus subagent types drops it from the display. The omission is not random — it correlates with branch busyness, which is the confounder. `subagent-mix`'s untruncated `PR` column (`/plan-review` spawns) is the better in-table indicator, and `pr-cost`'s `plan_file_added` is better still.
 
 *Adding a `transcript-analysis.py` subcommand to compute this join directly.* Set aside as heavier than the task requires. Two lighter primitives were checked and one is sufficient: (a) `review-trace` + `gh` + a direct ledger read covers every figure this study publishes, using only shipped, documented instruments; (b) `subagent-mix`'s first table alone is insufficient, for the truncation reason above. Precedent exists both ways — `instrument-authoring` and `plan-boundary` shipped as standing subcommands — but those measurements needed per-turn repricing that no combination of existing commands produced. This one does not.
 
@@ -78,7 +78,7 @@ Committing this asymmetry in advance is the whole reason the observational arm i
 - *`pr-cost` ledger as the primary analysis frame* — `anchors: root, row7`. The only in-corpus frame carrying treatment, outcome, and complexity covariates in one row, so it survives the redaction that forecloses every cross-tool branch join, and it supplies the stratification that partially addresses the assignment confound.
 - *`review-trace` + `gh` overlap-window join for proxy validation* — `anchors: row1`. Validates `commit_count` against literal round counts in the window where both still exist, before applying it to rows whose transcripts are gone. Uses unredacted instruments (`docs/transcript-analysis.md:47`) so the join key is a real branch name.
 - *Pre-registered gates G0–G3 written into the committed plan* — `anchors: root`. Without a bar fixed in advance, an observational screen with a known confound produces a narrative rather than a verdict.
-- *Read-only ledger use by default, `--record` conditional and non-blocking* — `anchors: root`, and the "Creating `<config-dir>/.pr-cost-enabled`" Out-of-scope bullet below. The lighter primitive (read the existing 145 rows) is sufficient for G0; the heavier one (`--record`, a durable out-of-repo write which under six roots needs `--all-accounts` and would touch up to six accounts' ledgers, each gated by that account's own consent sentinel) runs only if the sentinel already exists, and its absence degrades n rather than blocking the study.
+- *Read-only ledger use by default, `--record` conditional and non-blocking* — `anchors: root`, and the "Creating `<config-dir>/.pr-cost-enabled`" Out-of-scope bullet below. The lighter primitive (read the existing 145 rows) is sufficient for G0. The heavier one, `--record`, is a durable out-of-repo write that under six roots needs `--all-accounts` and would touch up to six accounts' ledgers, each gated by that account's own consent sentinel. It runs only if the sentinel already exists, and its absence degrades n rather than blocking the study.
 - *Deliverable split across register row and case study* — `anchors: root`. The register states its own scope as "the verdict plus the measured reason, not the full investigation" (`docs/cost-levers-considered.md:9-10`), and the evidence volume here matches the rows that already carry a `case-studies/` companion.
 
 **Rows.**
@@ -138,7 +138,12 @@ This plan changes no test-covered code, so verification has four parts and only 
 
 3. **Gate-conformance check.** Before the register row is written, read the committed plan file's G0–G3 text and confirm the verdict matches the bar as stated, including G3's asymmetry — specifically, that no "reject" verdict is being drawn from the observational arm alone. A verdict that does not match a stated gate means either the gate or the verdict is wrong; resolve that before writing, not after.
 
-4. **Publication-boundary check on the deliverable.** Three items the commit hook will not catch: no raw `review-trace` or `subagent-mix` output reaches the docs (both print branch strings and carry a `DO NOT PUBLISH` banner under multi-root); every ledger aggregate was computed after filtering to `repo == jcdendrite/claude-config`, so no other repo's rows are folded into a published number; and `docs/cost-levers-considered.md` and `docs/case-studies.md` use `<config-dir>` rather than a literal `~/.claude` (row 11 — `docs/case-studies/**` is exempt, those two files are not). Provenance is clean by construction: every figure derives from this public repo's own branches and PRs under `--this-repo` scope, which is explicitly outside the private-corpus-provenance class this repo's CLAUDE.md defines.
+4. **Publication-boundary check on the deliverable.** Three items the commit hook will not catch:
+   - No raw `review-trace` or `subagent-mix` output reaches the docs — both print branch strings and carry a `DO NOT PUBLISH` banner under multi-root.
+   - Every ledger aggregate was computed after filtering to `repo == jcdendrite/claude-config`, so no other repo's rows are folded into a published number.
+   - `docs/cost-levers-considered.md` and `docs/case-studies.md` use `<config-dir>` rather than a literal `~/.claude` (row 11 — `docs/case-studies/**` is exempt, those two files are not).
+
+   Provenance is clean by construction: every figure derives from this public repo's own branches and PRs under `--this-repo` scope, which is explicitly outside the private-corpus-provenance class this repo's CLAUDE.md defines.
 
 Then `/code-review` before the commit, and `/plan-review` on this plan before it is presented — both hook-enforced.
 
@@ -153,11 +158,11 @@ Then `/code-review` before the commit, and `/plan-review` on this plan before it
   reviewer-ownership fan-out").
 - The nested-CLAUDE.md duplicate-load fix — separate, independently
   briefed work.
-- Changing any agent's or skill step's `model:` pin — `code-writer`'s authoring pass, `plan-it` Steps 2–4, or any other. The brief's step 5 explicitly defers this to a separate, scoped `/plan-it` run, and this plan ends at the recorded verdict regardless of which way the data falls.
+- Changing any agent's or skill step's `model:` pin — `code-writer`'s authoring pass, `plan-it` Steps 2–4, or any other. Per the Context section's intended-outcome framing above, this plan ends at the recorded verdict; any pin change ships as its own separate, scoped `/plan-it` run regardless of which way the data falls.
 - A forward-looking controlled pilot running comparable changes both ways. Declined, not deferred: it requires the pin flip the bullet above excludes, `absolute-token-handoff-threshold.md` already closed a structurally identical pilot as unmeasurable in this repo's available window, and the outcome variable's variance puts a sub-one-round effect out of reach at achievable n.
 - Any change to `transcript-analysis.py` — a new subcommand, a new `pr-cost` ledger column, a per-branch model-mix breakout, or a redaction escape hatch on `subagent-mix`. The study runs on shipped instruments; if a gate fails for want of an instrument, that gap is recorded as a register row and a named follow-up, not built here.
 - Creating `<config-dir>/.pr-cost-enabled` on any account. If the sentinel is absent, the ledger arm runs read-only on existing rows and the reduced n is a stated limit.
-- Re-running `reviewer-yield`. Its corrected pull is from 2026-08-30, inside the brief's own staleness threshold.
+- Re-running `reviewer-yield`. Its corrected pull is from 2026-08-30 — recent enough that re-running it would not change this measurement's inputs.
 - Extending the analysis to any repo other than `claude-config`, or to other accounts' non-`claude-config` work. Both are out of the `--this-repo` scope every command here uses, and both would put private-project data behind a published figure.
 - Adding a review-round metric to `docs/cost-ledger.md`'s weekly schema. That file's rows are aggregate-only and per-ISO-week; the metric this study needs is per-PR.
 - Re-litigating `plan-architect`'s own Opus pin (`design-decisions.md` §30) or `code-writer`'s deliberate `high` effort tier (§24). Both are settled decisions with their own recorded rationale; this measurement asks whether to add an Opus point, not whether the existing ones are correctly placed.
