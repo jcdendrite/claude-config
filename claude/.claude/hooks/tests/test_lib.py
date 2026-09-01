@@ -1225,6 +1225,10 @@ class TestExtractGitSubcmd:
             "git -C /wt -c user.name=x push --tags origin",
             ["--tags", "origin"],
         ),
+        (
+            "git -C /wt push origin :old-branch new-feature:new-feature",
+            ["origin", ":old-branch", "new-feature:new-feature"],
+        ),
         ("git push --tags origin feature)", ["--tags", "origin", "feature)"]),
         ("git push", []),
         ("git --version", []),

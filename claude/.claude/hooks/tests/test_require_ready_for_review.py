@@ -226,6 +226,53 @@ class TestRequireReadyForReview:
     @pytest.mark.parametrize(
         "command",
         [
+            "git -C /wt push origin :old-branch new-feature:new-feature",
+            "git -c user.name=x push origin :old-branch new-feature:new-feature",
+            "git --git-dir=/wt/.git push origin :old-branch new-feature:new-feature",
+        ],
+    )
+    def test_colon_refspec_with_branch_behind_a_git_global_flag_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A global flag between `git` and `push` must not let a
+        delete-only-looking colon-refspec arm exempt a fragment that also
+        names a real refspec — the colon-refspec arm's own version of the
+        --tags guard above."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push origin :old-branch",
+            "git -c user.name=x push origin :old-branch",
+            "git --git-dir=/wt/.git push origin :old-branch",
+        ],
+    )
+    def test_colon_refspec_only_push_behind_a_git_global_flag_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The don't-over-gate counterpart: once the global flag is
+        consumed, a genuinely delete-only colon-refspec push is still
+        recognized as such."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
             "git push --tags $(echo origin feature)",
             "git push --tags `echo origin feature`",
         ],
@@ -330,6 +377,70 @@ class TestRequireReadyForReview:
             run_hook(
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin :feature --tags", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin :dummy-ref origin",
+            "git push origin --tags origin",
+            "git push upstream :dummy upstream",
+        ],
+    )
+    def test_repeated_remote_name_in_refspec_position_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A bare `origin`/`upstream` token is only exempt in the
+        <repository> position; a second occurrence later in the fragment is
+        a refspec (pushes the identically-named local branch) and must not
+        ride along on the remote-name exemption."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push upstream :dummy",
+            "git push upstream --tags",
+        ],
+    )
+    def test_upstream_only_push_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The don't-over-gate counterpart to the repeated-remote-name tests
+        above: a single, non-repeated `upstream` token in the <repository>
+        position is exempt, mirroring `origin`'s existing allow coverage."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_repeated_remote_name_behind_a_git_global_flag_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A global flag ahead of `push` must not change the repeated-remote-
+        name shape's outcome: global-flag stripping and the position-aware
+        exclusion are independent mechanisms, tested separately elsewhere,
+        and this pins their composition."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git -C /wt push origin :dummy-ref origin", session_id="s"
+                ),
                 cwd=repo_on_feature_branch,
             )
             == "deny"
@@ -714,6 +825,34 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin --delete feature && gh pr ready",
+            "git push origin -d feature && gh pr ready",
+            "git push origin :feature && gh pr ready",
+            "git push origin --tags && gh pr ready",
+        ],
+    )
+    def test_bypassable_push_shapes_chained_before_pr_ready_deny(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """`is_gh_pr_ready` denies regardless of the chained push fragment's
+        own classification — this pins that the fragment loop keeps scanning
+        past a bypassable push fragment rather than short-circuiting, not
+        that each push shape's classification is independently exercised
+        here (the real-push sweep below,
+        test_bypassable_push_does_not_exempt_a_chained_gated_fragment, is
+        what actually discriminates on push-shape classification) (GH-773)."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
     # -- gh pr create -------------------------------------------------------
 
     def test_gh_pr_create_no_marker_denies(
@@ -831,8 +970,13 @@ class TestRequireReadyForReview:
     def test_bypassable_push_shapes_chained_before_pr_create_deny(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
     ):
-        """Each of these push shapes exempts only its own fragment, so the
-        chained gh pr create still gates."""
+        """`is_gh_pr_create` denies regardless of the chained push fragment's
+        own classification — this pins that the fragment loop keeps scanning
+        past a bypassable push fragment rather than short-circuiting, not
+        that each push shape's classification is independently exercised
+        here (the real-push sweep below,
+        test_bypassable_push_does_not_exempt_a_chained_gated_fragment, is
+        what actually discriminates on push-shape classification) (GH-773)."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -848,6 +992,7 @@ class TestRequireReadyForReview:
             "git push --dry-run && git push origin feature",
             "git push origin feature && git push --tags origin",
             "git push origin --delete feature && git push origin feature",
+            "git push origin -d feature && git push origin feature",
             "git push --dry-run && gh pr ready",
             "git push origin :feature && git push origin feature",
         ],
@@ -860,10 +1005,13 @@ class TestRequireReadyForReview:
         gates. Per parametrize case:
 
         - dry-run push chained before a real push: the real push still gates.
-        - tag-only push chained before a real push: pins a fragment-scoping
+        - real push chained before a tag-only push: pins a fragment-scoping
           regression, since a real branch push must not be exempted just
           because a tag-only push is chained after it.
-        - delete push chained before a real push: the real push still gates.
+        - delete push (long form) chained before a real push: the real push
+          still gates.
+        - delete push (short form, -d) chained before a real push: the
+          short-flag form of the delete gate is covered too.
         - dry-run push chained before gh pr ready: the gh pr ready arm
           inherits the same fix.
         - colon-refspec delete-only push chained before a real push: the
@@ -901,6 +1049,31 @@ class TestRequireReadyForReview:
     @pytest.mark.parametrize(
         "command",
         [
+            "echo $(pwd) && git push --tags origin",
+            "echo $(pwd) && git push origin :feature",
+        ],
+    )
+    def test_unrelated_command_substitution_over_gates_a_safe_only_fragment(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The command-substitution guard scans the whole command, not just
+        the push fragment: a $(...) anywhere in the chain disqualifies a
+        tags-only or colon-refspec-only fragment's bypass, even when the
+        substitution is unrelated to the push. Makes the documented
+        whole-command-scoped guard's behavior explicit rather than
+        implicit."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
             "eval git push --dry-run && gh pr create",
             "GIT_DIR=/tmp/example.git git push --dry-run && gh pr create",
         ],
@@ -909,11 +1082,12 @@ class TestRequireReadyForReview:
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
     ):
         """A *wrapped* invocation of the --dry-run push exempts only its own
-        fragment, so the chained gh pr create still gates — the wrapped-shape
-        counterpart to test_gh_pr_create_chained_after_dry_run_push_denies.
-        This fixture uses a real repo with no completion marker, so the
-        assertion actually exercises the gh-pr-create arm's marker check
-        rather than passing via the hook's "not a git repo" fallback."""
+        fragment, so the chained gh pr create still gates. This is the
+        wrapped-shape counterpart to
+        test_gh_pr_create_chained_after_dry_run_push_denies. This fixture
+        uses a real repo with no completion marker, so the assertion
+        actually exercises the gh-pr-create arm's marker check rather than
+        passing via the hook's "not a git repo" fallback."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,

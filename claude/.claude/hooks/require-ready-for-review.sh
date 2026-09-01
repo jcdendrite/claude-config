@@ -121,6 +121,40 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
 
+# Print a git-push fragment's subcommand args, minus a bare `origin`/
+# `upstream` repository token — but only in the <repository> position.
+# `git push [<repository>] [<refspec>...]` means only the first non-flag
+# argument can be the repository; a later bare word is a refspec (pushes the
+# identically-named local branch), even when it is textually `origin`/
+# `upstream`. Excluding that token in every position, not just the first,
+# would let `git push origin :dummy origin` hide a real branch push behind a
+# second occurrence of the remote's own name. The six recognized flag
+# spellings below (--force, --force-with-lease[=...], --force-if-includes,
+# -u, --set-upstream, --tags) are passed through unfiltered and never
+# consume the repository-position slot, so each caller's own allowlist
+# still decides which of its own arm-specific flags are safe. Any other
+# flag is treated as the first non-flag word instead, which over-gates
+# (fails closed) rather than opening a bypass.
+push_fragment_args_after_repo() {
+  local fragment="$1"
+  local word seen_repo=false
+  while IFS= read -r word; do
+    [[ -z "$word" ]] && continue
+    case "$word" in
+      --force | --force-with-lease | --force-with-lease=* | --force-if-includes | -u | --set-upstream | --tags)
+        printf '%s\n' "$word"
+        continue ;;
+    esac
+    if ! $seen_repo; then
+      seen_repo=true
+      if [[ "$word" == "origin" || "$word" == "upstream" ]]; then
+        continue
+      fi
+    fi
+    printf '%s\n' "$word"
+  done < <(_lib_extract_git_subcmd_args "$fragment")
+}
+
 # True when a `git push` fragment publishes a branch ref a reviewer would see.
 # --dry-run pushes nothing.
 # --delete/-d removes every listed ref rather than publishing one.
@@ -146,8 +180,8 @@ push_fragment_publishes_reviewable_change() {
     if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
       return 0
     fi
-    remaining=$(_lib_extract_git_subcmd_args "$fragment" \
-      | grep -vE '^(--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|origin|upstream|:[A-Za-z0-9._/-]+)$' \
+    remaining=$(push_fragment_args_after_repo "$fragment" \
+      | grep -vE '^(--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|:[A-Za-z0-9._/-]+)$' \
       | grep -v '^$' || true)
     if [[ -z "$remaining" ]]; then
       return 1
@@ -162,8 +196,8 @@ push_fragment_publishes_reviewable_change() {
     if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
       return 0
     fi
-    remaining=$(_lib_extract_git_subcmd_args "$fragment" \
-      | grep -vE '^(--tags|--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|origin|upstream)$' \
+    remaining=$(push_fragment_args_after_repo "$fragment" \
+      | grep -vE '^(--tags|--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream)$' \
       | grep -v '^$' || true)
     if [[ -z "$remaining" ]]; then
       return 1

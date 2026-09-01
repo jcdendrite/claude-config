@@ -290,7 +290,8 @@ Single `code-writer` dispatch. `_lib.sh`'s new helper is the direct input to the
 - **`_lib_split_fragments`.** `_lib.sh` is edited, but only the git-argv walk: the shared fragment splitter and its known limits (no quote awareness, splitting on any literal `|`) are untouched. Seven hooks depend on it, and G1 puts that decision outside this plan.
 - **`parse-git-command.py`'s duplicate flag list.** It stays duplicated rather than converging on the new `_lib.sh` helper — that duplication is a named, documented exception owned by `require-worktree-for-git-writes.sh`'s "Scope boundary" header, not an oversight this change should tidy up (G4).
 - **The two remaining header gaps.** The default-branch bypass running ahead of any command-type check, and the `settings.json` prefix-glob dispatch versus the in-script fragment detection, stay documented and unfixed.
-- **The tags arm's remote allowlist** (`origin|upstream` only, so `git push --tags fork` gates). Pre-existing, and it errs toward gating.
+- **The tags arm's remote allowlist** (`origin|upstream` only, so `git push --tags fork` gates). Pre-existing, and it errs toward gating for a remote name outside that allowlist.
+- **A repeated `origin`/`upstream` token in a refspec position.** This is a separate case from the tags-arm allowlist above; `push_fragment_args_after_repo`'s position-aware exclusion handles it correctly in both directions.
 - **`is_gh_pr_ready` / `is_gh_pr_create` detection.** The `echo gh pr create` false-positive is deliberately pinned as fail-closed by `test_gh_pr_create_echo_false_positive_denies`; leave it.
 - **Whole-file `[ ]` → `[[ ]]` conversion.** New and edited conditionals use `[[ ]]`; converting the other ~15 tests in the hook, or `_lib.sh`'s, would be churn unrelated to the bug.
 - **`docs/hooks.md`, `settings.json`, and `claude/.claude/skills/ready-for-review/SKILL.md`.** Nothing in them states the push-exemption shapes, so nothing in them becomes false.
