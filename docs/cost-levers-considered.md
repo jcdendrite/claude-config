@@ -318,3 +318,13 @@ Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Demoting `skill-fidelity-reviewer` from auto-dispatch, or refining its trigger prose, on the strength of its zero-finding-bucket cited-path edit rate | Rejected | The two agents' cited-path populations aren't comparable — this agent cites the specifications it checked, not the branch's diff — so the rate is a citation-genre artifact, not a reviewer-value signal; see [`design-decisions.md` §33](design-decisions.md). |
+
+## From `opus-frontload-review-rounds.md` — "Front-loading Opus into authoring: does it cut review rounds?" (2026-09-01)
+
+Full empirical record: [`case-studies/opus-frontload-review-rounds.md`](case-studies/opus-frontload-review-rounds.md).
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Front-loading Opus into an earlier authoring point (beyond `plan-architect` and `consult`-mode) to cut review-and-fix rounds | Inconclusive | The pre-registered observational screen (G3, 186-row ledger, `changed_files`-stratified, 2,000-resample bootstrap) doesn't clear the adopt bar in any stratum — every high-stability pair moves in the confound-consistent direction (`/plan-it`'s own complexity selection), which the plan's asymmetric verdict rule excludes from reading as refutation. |
+| `code-writer` dispatches that resolved to Opus despite a `sonnet` pin, as the one plausible within-agent natural-experiment channel (G2) | Instrument-blocked, not tested | `subagent-mix` redacts `subagent_type`, not only branch names, once more than one account root resolves — unconditional on this machine (6 declared roots). The 12 `Declared: sonnet` rows in the 30-day window can't be individually attributed to `code-writer`; a superset bound (245 sonnet-declared/opus-observed dispatches across all 12 agent types) exceeds the ≥20 floor but isn't code-writer-specific. |
+| A forward-looking controlled pilot flipping a `model:` pin for a treatment arm | Declined, not deferred | Requires the pin flip the plan's Out-of-scope excludes; a structurally identical pilot was already closed as unmeasurable in this repo's available window (`absolute-token-handoff-threshold.md`), and the outcome variable's variance puts a sub-one-round effect out of reach at achievable n. |
