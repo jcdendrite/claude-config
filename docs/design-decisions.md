@@ -609,7 +609,7 @@ body after the fact, so it is exposed to the same reasoned-around
 failure that motivated hook enforcement everywhere else here. Two
 upstream reports show that tier failing. anthropics/claude-code #65657
 reports the system-prompt `Co-Authored-By` trailer taking precedence so
-the `attribution.commit` value is never applied; it is closed as not
+the `attribution.commit` value is never applied. It is closed as not
 planned. #77830 reports the `Claude-Session:` trailer being injected
 through the Bash tool description and ignoring `attribution`. The legacy
 footer *is* correctly suppressed by the same setting — only the newer
