@@ -430,14 +430,13 @@ class TestLogReviewerRoundConcurrency:
         assert state_file.read_text().splitlines() == [value]
         assert not lock_file.exists()
 
-    def test_live_pid_lock_exhausts_retries_then_falls_through_to_unlocked_append(
+    def test_live_pid_lock_falls_through_to_unlocked_append(
         self, isolated_home, tmp_path, live_pid
     ):
-        """A lock held by a LIVE pid is never evicted, unlike the dead-pid
-        case above -- the caller instead exhausts every
-        _LIB_APPEND_LOCK_RETRIES retry (5 * 0.05s) and then falls through
+        """A lock held by a LIVE pid for the whole call is never evicted,
+        unlike the dead-pid case above -- the caller instead falls through
         to an unlocked append rather than hanging or dropping the line."""
-        repo = tmp_path / "live-lock-retry-exhaustion"
+        repo = tmp_path / "live-lock-fallthrough"
         _init_repo(repo)
         _stage_change(repo, "first\nround-one\n")
         value = reviewer_round_state_value(repo)

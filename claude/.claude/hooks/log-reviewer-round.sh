@@ -94,11 +94,11 @@ _record_reviewer_round() {
   mkdir -p "$state_dir" 2>/dev/null || return 0
 
   # Never grows past the cap. This pre-check runs outside the lock
-  # _lib_append_line_locked holds below, so two concurrent dispatches
-  # racing at two DIFFERENT new states (not the same-state fan-out the lock
-  # exists for) could both read "under cap" and both append -- an accepted,
-  # narrow residual: cross-state concurrency at the exact cap boundary is
-  # not the scenario this lock targets (same-state fan-out is).
+  # _lib_append_line_locked holds below. Two concurrent dispatches racing
+  # at two different new states could each read "under cap" and both
+  # append. This is an accepted, narrow residual: cross-state concurrency
+  # at the cap boundary isn't the scenario this lock targets -- same-state
+  # fan-out is.
   if [ -f "$state_file" ] && ! grep -qFx -e "$state_value" -- "$state_file" 2>/dev/null; then
     local existing_count
     existing_count=$(wc -l < "$state_file" | tr -d ' ')
