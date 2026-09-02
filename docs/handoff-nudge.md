@@ -35,7 +35,7 @@ Revisit this default via an extended `rearm-backtest` once escalation-fire data 
 
 - **Kill-switch** (`touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge-disabled"`) — suppresses every future fire, including the hard block, the same as it already suppresses the advisory nudge.
 - **`/handoff`** — the intended way out. It captures state in a `/tmp` file and resumes in a fresh session, whose own estimate starts back below `HANDOFF_NUDGE_BLOCK_AT`.
-- **The `/handoff` active-bypass marker** (`<config-dir>/.handoff-active.d/<session_id>`) — live only while `/handoff` itself is running, it keeps a qualifying re-arm advisory instead of blocking, so the block can't truncate `/handoff`'s own multi-turn write.
+- **The `/handoff` active-bypass marker** (`<config-dir>/.handoff-active.d/<session_id>`) — set by `activate-handoff-bypass.sh` the moment the handoff skill loads (the skill's own `marker.sh activate handoff` step is its first instructed step, and is a fallback for the rare case that hook doesn't fire), live until the skill deactivates it or the session ends. It keeps a qualifying re-arm advisory instead of blocking, so the block can't truncate `/handoff`'s own multi-turn write.
 
 `/handoff` collects this session's in-flight background dispatches before writing the file (see the `handoff` skill's own "Before writing: collect in-flight background dispatches" section), so the ordinary exit from a block can take longer than a single turn.
 
