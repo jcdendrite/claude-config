@@ -578,12 +578,12 @@ def _isolate_transcript_corpus_lookups(tmp_path, monkeypatch):
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "nonexistent-transcript-config-dirs"))
 
 
-def _init_repo(path: Path) -> None:
+def _init_repo(path: Path, initial_branch: str = "main") -> None:
     """Initialise a git repo with one commit and a remote pointing at itself."""
     path.mkdir(parents=True, exist_ok=True)
-    # --initial-branch=main avoids depending on the system's init.defaultBranch setting,
-    # which varies across git versions and CI environments.
-    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=path, check=True)
+    # Passing --initial-branch explicitly avoids depending on the system's
+    # init.defaultBranch setting, which varies across git versions and CI environments.
+    subprocess.run(["git", "init", "-q", f"--initial-branch={initial_branch}"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
 
@@ -594,19 +594,19 @@ def _commit(repo: Path, message: str = "commit") -> None:
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
-def _make_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
+def _make_repo_with_remote(tmp_path: Path, default_branch: str = "main") -> tuple[Path, Path]:
     """Return (local_repo, bare_remote) with origin configured and default branch set."""
     bare = tmp_path / "remote.git"
     bare.mkdir()
-    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main"], cwd=bare, check=True)
+    subprocess.run(["git", "init", "--bare", "-q", f"--initial-branch={default_branch}"], cwd=bare, check=True)
 
     local = tmp_path / "local"
-    _init_repo(local)
+    _init_repo(local, initial_branch=default_branch)
     _commit(local, "init")
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=local, check=True)
-    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=local, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", default_branch], cwd=local, check=True)
     # Set origin/HEAD so a caller relying on it can resolve the default branch
-    subprocess.run(["git", "remote", "set-head", "origin", "main"], cwd=local, check=True)
+    subprocess.run(["git", "remote", "set-head", "origin", default_branch], cwd=local, check=True)
     return local, bare
 
 
