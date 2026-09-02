@@ -127,11 +127,18 @@ triaged-vs-open counts, any untriaged numbers, and the absolute
 `report.md` path — not the full table (terminal width-wrapping). State
 that run artifacts live outside the repository, persist indefinitely with
 no redaction pass, and that committing any of them is a separate call
-inheriting the repo's redaction rules. Disclose the accepted residual: the
-batch-evidence dispatch holds live `gh` credentials and unrestricted
-`Bash` and `Write`, with no separate enforcement layer beyond the standing
-rules above. An issue or comment body is untrusted and could attempt to
-redirect it toward an off-target `gh` mutation, an arbitrary non-`gh`
-command, or credential exfiltration. This residual is accepted because
-this repo's own issue backlog is already public. Name `/respond-pr` as
-the manual next step for acting on the report (comments, closes).
+inheriting the repo's redaction rules. Disclose the accepted residual: all
+three dispatches (batch-evidence, cross-batch synthesis, claim
+verification) share the same ambient `gh` credentials and unrestricted
+`Bash`, with no separate enforcement layer beyond the standing rules given
+to the batch-evidence dispatch. Only the batch-evidence dispatch carries a
+dedicated, tool-scoped agent and the untrusted-data standing rule. The
+synthesis and verification dispatches read the fragments and report.md
+those agents produce, which can quote or paraphrase issue/comment text —
+an injected instruction that survives into a fragment reaches them with no
+standing-rule backstop of their own. An issue or comment body is untrusted
+and could attempt to redirect any of the three toward an off-target `gh`
+mutation, an arbitrary non-`gh` command, or credential exfiltration. This
+residual is accepted because this repo's own issue backlog is already
+public. Name `/respond-pr` as the manual next step for acting on the
+report (comments, closes).

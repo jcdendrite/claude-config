@@ -329,6 +329,21 @@ class TestSpecialistSkillTriggerContracts:
             f"disable-model-invocation: true; add it or remove from COMMAND_SKILLS"
         )
 
+    @pytest.mark.parametrize("skill_name", COMMAND_SKILLS)
+    def test_command_skill_excluded_from_model_invokable_corpus(self, skill_name):
+        """A registered command skill must not count toward the listing budget.
+
+        Asserted directly against _model_invokable_skills(), independent of
+        the aggregate budget's momentary headroom — TestTotalListingBudgetUnderSonnet
+        would only catch a regression here if the corpus happened to be close
+        to the cap at the time.
+        """
+        assert skill_name not in _model_invokable_skills(), (
+            f"{skill_name} is registered in COMMAND_SKILLS (disable-model-invocation: "
+            f"true) but still appears in _model_invokable_skills() — check that flag "
+            f"is actually present and the plugin-scanning loop is reading it"
+        )
+
 
 class TestNameOnlySkillContracts:
     """Contract tests for skills with skillOverrides: name-only.

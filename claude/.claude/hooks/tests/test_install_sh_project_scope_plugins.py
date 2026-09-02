@@ -454,8 +454,7 @@ class TestProjectScopePluginInstallLoop:
         holds live `gh` credentials and unrestricted `Bash` — unlike its
         three lint/guardrail neighbors, its auto-install carries a
         distinguishing warning visible at the point a contributor accepts
-        it (`ciso-reviewer` finding, `/ready-for-review` cumulative pass on
-        PR #807)."""
+        it."""
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
         enabled_plugins = {"issue-triage@claude-config": True}
@@ -464,6 +463,29 @@ class TestProjectScopePluginInstallLoop:
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert installed == ["issue-triage@claude-config"]
+        assert "live gh credentials and unrestricted Bash" in result.stdout
+
+    def test_issue_triage_warning_reprints_when_already_installed(self, tmp_path: Path) -> None:
+        """The warning fires on every run, not just first install — it prints
+        unconditionally before the already-installed check, so a re-run where
+        the plugin is already present still shows it alongside the
+        already-installed line."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        enabled_plugins = {"issue-triage@claude-config": True}
+        project_plugins = [
+            {
+                "id": "issue-triage@claude-config",
+                "scope": "project",
+                "projectPath": str(repo_dir),
+            }
+        ]
+
+        result, installed = _run_install_block(tmp_path, repo_dir, enabled_plugins, project_plugins)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert installed == []
+        assert "✓ issue-triage@claude-config (already installed)" in result.stdout
         assert "live gh credentials and unrestricted Bash" in result.stdout
 
     def test_other_plugins_install_without_the_credential_exposure_warning(self, tmp_path: Path) -> None:
