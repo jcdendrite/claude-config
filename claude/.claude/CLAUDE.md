@@ -85,24 +85,8 @@
   plan-mode subsection and `plan-it`'s Step 1, both in the claude-config repo)
 - In a repo with worktree enforcement opt-in (`.claude/worktree-required` committed, or a machine-level `worktree-required` sentinel at `<config-dir>/worktree-required` — `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and this sentinel is checked as a union with the legacy `~/.claude/worktree-required` so one armed before `CLAUDE_CONFIG_DIR` adoption still activates), Edit and Write must also target the worktree path — the hook blocks main-tree file writes, but resolving paths to `.claude/worktrees/<branch>/...` up front avoids the round-trip denial.
 - `isolation: "worktree"` is an **ephemeral-isolation** primitive, not a feature-branch primitive. The harness creates the worktree on a harness-generated branch name (`worktree-agent-<hash>`), so the `branch-management` skill never runs. Use it only for work that will NOT become a named PR branch — parallel exploration, reviewer agents, throwaway spikes. For PR-bound implementation work, create the worktree yourself first: pick a slug per the `branch-management` skill, run `git worktree add .claude/worktrees/<slug> -b <slug>` (allowed on the main tree even under worktree enforcement), then dispatch the agent **without** `isolation: "worktree"`. Anchor the parent session in that worktree before dispatching — a `Working directory:` line in the prompt does not override where a child's commands actually run. `branch-management` covers why and how.
-- **Dispatching cannot clear a denial your child inherits.** A subagent
-  starts in its dispatcher's working directory and permission mode, so
-  a call denied over a worktree-anchor mismatch or a permission rule is
-  denied identically in every child spawned to retry it. Re-running it
-  with a varied argument varies the wrong thing. Report the denial
-  verbatim to whoever dispatched you, name what you could not reach,
-  and stop — only the dispatching session can change the state that
-  caused it. Dispatch past a denial only when the child holds a
-  capability you lack. Safety's marker bullet names the one documented
-  case.
-- **Never move the worktree anchor while a dispatched agent is
-  running.** The isolation check re-evaluates the session's anchor for
-  the life of a dispatch, so an `EnterWorktree` firing mid-run denies
-  every remaining Bash call in that agent — a bare `pwd` included — no
-  matter how unrelated its work is to the new worktree. Pairing an
-  agent dispatch with a `Skill(branch-management)` call in one parallel
-  tool-call batch is the common shape: the skill's anchoring step lands
-  while the agent is already running. Finish anchoring, then dispatch.
+- **Dispatching cannot clear a denial your child inherits.** A subagent starts in its dispatcher's working directory and permission mode, so a call denied over a worktree-anchor mismatch or a permission rule is denied identically in every child spawned to retry it. Re-running it with a varied argument varies the wrong thing. Report the denial verbatim to whoever dispatched you, name what you could not reach, and stop. Dispatch past a denial only when the child holds a capability you lack. Safety's marker bullet names the one documented case.
+- **Never move the worktree anchor while a dispatched agent is running.** The isolation check re-evaluates the session's anchor for the life of a dispatch, so an `EnterWorktree` firing mid-run denies every remaining Bash call in that agent. A bare `pwd` is denied, however unrelated the agent's work is to the new worktree. The common shape is an agent dispatch batched in parallel with `Skill(branch-management)`, whose anchoring step lands mid-run. Finish anchoring, then dispatch.
 - **Script-first for multi-step Bash recipes; single-statement, no nested `$(...)`, no
   `$CLAUDE_CONFIG_DIR` reference for anything else.** The harness's worktree-isolation Bash-tool
   guard refuses several command shapes, including variable assignment via `$(...)` used later in
