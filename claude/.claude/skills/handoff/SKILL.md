@@ -22,12 +22,12 @@ Run the command below before writing — the directory is not guaranteed to exis
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
-mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"
+~/.claude/scripts/ensure-account-dir.sh handoffs
 ```
 
 ## Before writing: is a handoff warranted?
 
-A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` rather than inferring:
+A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` rather than inferring:
 
 - `"status":"ok"` — write the handoff when `over_threshold` is `true` or `already_fired` is `true`, and report `estimate` and `threshold`.
 - `nudge_disabled` is `true` — say so; the measurement still holds but no nudge will arrive on its own.
@@ -122,7 +122,7 @@ Header line: working directory + current git branch. Derive both from the worktr
 
 ## §5 Gates / markers
 
-Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill, handoff) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
+Run `~/.claude/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill, handoff) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
 
 A live marker whose reconciliation flag fired means finished work is one incidental edit away from a full re-review on resume; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
 
@@ -154,7 +154,7 @@ Never drop a populated section or a load-bearing claim to hit a line count; comp
 
 ## Pre-write checklist
 
-Run `<config-dir>/scripts/check-handoff.py <path>` against the draft file.
+Run `~/.claude/scripts/check-handoff.py <path>` against the draft file.
 It fails on: preamble mismatch, a missing/empty §1–§7 section,
 placeholder text ("TBD", "TODO", "fill in later"), an unresolved
 `<config-dir>`/`<slug>` token in §7, or §7 naming the wrong file. It
