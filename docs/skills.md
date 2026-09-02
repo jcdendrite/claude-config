@@ -145,7 +145,7 @@ Three more plugins also live in `plugins/` but are not part of this repo's own a
 |---|---|---|
 | `lovable-cloud@claude-config` | Lovable Cloud edge-function, knowledge-sync, and migration-sync skills | Downstream Lovable Cloud project repos |
 | `npm-semver@claude-config` | Semver and version-field discipline for the package's own `package.json`, plus a commit-time hook and a reminder to propagate a bump to consumers | Downstream repos that publish an npm package |
-| `linear@claude-config` | Issue-ID auto-linking and comment-formatting conventions for tracker writes | Downstream repos whose tracker MCP server is Linear |
+| `linear-formatting@claude-config` | Issue-ID auto-linking and comment-formatting conventions for tracker writes | Downstream repos whose tracker MCP server is Linear |
 
 Each plugin is installed per-project via `claude plugin install`. For this to work, the claude-config marketplace must be registered on the machine:
 
