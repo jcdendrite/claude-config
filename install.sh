@@ -441,6 +441,7 @@ SENTINEL_INVENTORY=(
   ".consume-durable-continuity-disabled|machine|Durable-continuity auto-consume suppression||disabled|docs/hooks.md § Utility hooks"
   ".commit-stall-block-disabled|machine|Commit-stall auto-advance suppression||disabled|docs/commit-stall-block.md"
   ".session-title-disabled|machine|Branch-based session-title suppression (machine-wide)||disabled|docs/hooks.md § Utility hooks"
+  ".memory-audit-nudge-disabled|machine|Memory-store audit nudge suppression||disabled|docs/memory-audit-nudge.md"
   ".claude/worktree-required|repo|Worktree enforcement (committed, this repo)||disabled|README.md § Worktree enforcement"
   ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
   ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
@@ -889,6 +890,10 @@ if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in either message.
   printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq and git checks (e.g. the agent-reviews/ ignore-state check) without timeout protection.\n' >&2
+  # shellcheck disable=SC2016 # single-quoted for literal display text — the
+  # backtick-quoted tokens are markdown-style formatting, not command
+  # substitution; there is no shell expansion intended in this message.
+  printf '[install] warning: the memory-store-audit nudge hook does not merely run uncapped without `timeout`/`gtimeout` — it refuses to scan at all and stops firing entirely, permanently, with no other signal, until one of those binaries is installed.\n' >&2
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in this message.

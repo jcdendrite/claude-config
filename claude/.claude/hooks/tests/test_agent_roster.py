@@ -57,6 +57,7 @@ NON_REVIEWER_AGENTS = [
     "code-writer.md",     # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
     "Explore.md",         # same-named override of the harness built-in; read-only search, not a reviewer
     "plan-architect.md",  # non-reviewer planning agent; design synthesis plus ad hoc Opus consults on explicit ask
+    "memory-store-classifier.md",  # classification-only agent; dispatched by /memory-store-audit Step 2, read-only
 ]
 
 # Maximum description length for agent frontmatter.
@@ -75,6 +76,7 @@ NON_REVIEWER_MODELS = {
     "code-writer.md": "sonnet",       # implementer
     "Explore.md": "sonnet",           # same-named built-in override
     "plan-architect.md": "opus",      # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
+    "memory-store-classifier.md": "opus",  # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
 }
 
 # Expected effort tier per agent. Mirrors NON_REVIEWER_MODELS's role for
@@ -106,6 +108,10 @@ EXPECTED_EFFORT = {
     "staff-product-engineer.md": "xhigh",
     "staff-sdet.md": "xhigh",
     "plan-architect.md": "xhigh",
+    # "high", not "xhigh": classification difficulty spans a range, backstopped
+    # per §24 by the human's per-item approval checking the verdict against
+    # the cited file immediately before the irreversible act.
+    "memory-store-classifier.md": "high",
 }
 
 # Effort levels Claude Code recognizes.
@@ -654,6 +660,43 @@ class TestNoGateReleaseRosterSync:
             "plan-architect.md's tools: line changed. It must stay exactly "
             "Read, Grep, Glob — no Write, Edit, or Bash — per the agent's "
             "own stated design (see plan-architect.md's body)."
+        )
+
+    def test_memory_store_classifier_tools_are_exactly_read_grep_glob(self):
+        """Pins memory-store-classifier.md's own no-Write/Edit/Bash design guarantee.
+
+        /memory-store-audit's human-in-the-loop promise depends on no
+        agent it dispatches being able to delete a memory file or file an
+        issue itself. This read-only grant is what makes that guarantee
+        structural rather than prose — a future edit widening its tools
+        would pass every other test here while silently reopening it.
+        """
+        assert self._declared_tools("memory-store-classifier") == {"Read", "Grep", "Glob"}, (
+            "memory-store-classifier.md's tools: line changed. It must stay "
+            "exactly Read, Grep, Glob — no Write, Edit, or Bash — per the "
+            "agent's own stated design (see memory-store-classifier.md's body)."
+        )
+
+    def test_memory_store_classifier_forbids_cross_file_blending(self):
+        """Pins the per-row content-isolation instruction /memory-store-audit
+        Step 2's single batched dispatch depends on.
+
+        A single dispatch can hand this agent memory files from several
+        unrelated private projects at once. Without an explicit instruction
+        that a row's destination/verdict/title text may draw only on that
+        row's own file, an LLM classifying several projects' content in one
+        context is a plausible vector for a detail from one project
+        surfacing in a row nominally about another — including in a `file
+        as issue` title bound for a public GitHub issue. A future edit that
+        drops this instruction while leaving the read-only tool grant intact
+        would pass every other test here while silently reopening that gap.
+        """
+        content = (AGENTS_DIR / "memory-store-classifier.md").read_text()
+        assert "never on another file read earlier or" in content, (
+            "memory-store-classifier.md no longer states that a row's "
+            "content must draw only on that row's own file. Restore an "
+            "explicit no-cross-file-blending instruction — see this test's "
+            "docstring for why a single batched dispatch needs one."
         )
 
     def test_harness_builtin_exemptions_have_no_agent_file(self):

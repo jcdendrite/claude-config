@@ -360,7 +360,13 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
       emit_deny "Blocked by PII commit gate: git commit references a message-source file at '${msg_path}', but that path is not a readable regular file from the hook. The gate refuses to scan it (fail-closed) — unscanned content is the leak vector this hook guards. Create the file, inline the message with -m, or simplify the path if it contains whitespace."
       exit 0
     fi
-    SCAN_TARGET+=$'\n'"$(cat "$msg_path" 2>/dev/null || true)"
+    MSG_CONTENT=$(_lib_capped cat "$msg_path" 2>/dev/null)
+    MSG_CONTENT_STATUS=$?
+    if [ "$MSG_CONTENT_STATUS" -eq 124 ]; then
+      emit_deny "Blocked by PII commit gate: could not read message-source file '${msg_path}' within the scan timeout. The gate refuses to scan it (fail-closed) — unscanned content is the leak vector this hook guards."
+      exit 0
+    fi
+    SCAN_TARGET+=$'\n'"$MSG_CONTENT"
   done <<< "$COMMIT_MSG_SOURCES"
 fi
 

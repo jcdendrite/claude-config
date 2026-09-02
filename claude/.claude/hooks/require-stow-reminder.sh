@@ -202,8 +202,13 @@ if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue
     is_pseudo_file_path "$body_source_path" && continue
+    [ ! -f "$body_source_path" ] && continue
     [ ! -r "$body_source_path" ] && continue
-    SCAN_TARGET+=$'\n'"$(cat "$body_source_path" 2>/dev/null || true)"
+    BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null)
+    # Timeout (exit 124) gets the same disposition as an unreadable file
+    # above: skip this source, don't count it toward the reminder check.
+    [ "$?" -eq 124 ] && continue
+    SCAN_TARGET+=$'\n'"$BODY_CONTENT"
   done <<< "$BODY_SOURCES"
 fi
 

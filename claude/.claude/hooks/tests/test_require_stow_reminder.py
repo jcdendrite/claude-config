@@ -14,6 +14,8 @@ from helpers import (
     run_hook_reason,
 )
 
+from .conftest import assert_cap_engaged
+
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 
 
@@ -217,6 +219,37 @@ class TestRequireStowReminder:
         body.write_text("Adds agents/. No reminder here.\n")
         cmd = f"gh pr create --title T --body-file {body}"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
+
+    def test_body_file_device_file_is_denied_not_hung(self, stow_repo):
+        """`--body-file /dev/zero` must deny, not hang: /dev/zero passes
+        the `[ -r ]` readability check but is not a regular file, so the
+        `[ ! -f ]` guard rejects it before the capped `cat` call ever runs."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr create --title T --body-file /dev/zero"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
+
+    @pytest.mark.timing
+    def test_body_file_cat_timeout_skips_source_not_denied(self, stow_repo, tmp_path, cat_timeout_shim):
+        """Required regression test: the body-source file's `_lib_capped
+        cat` call previously swallowed a timeout's exit 124 with
+        `|| true`. This hook's existing disposition for an unreadable
+        body-source file (see the `[ ! -r ]`/`[ ! -f ]` checks above) is
+        to skip that source and keep checking the rest — not deny — so a
+        timeout must apply that same skip rather than introduce a new
+        fail-closed path. The marker lives only in the inline --body
+        text (a source the gate always scans); the body file itself
+        carries no marker and times out on read. A wrongly-introduced
+        deny-on-timeout disposition would block this PR even though the
+        marker is already present elsewhere; the correct skip
+        disposition allows it."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        body = tmp_path / "body.md"
+        body.write_text("no marker in this file\n")
+        cmd = f"gh pr create --title T --body 'post-merge: run ./install.sh' --body-file {body}"
+        env = cat_timeout_shim(f'[ "$1" = "{body}" ]')
+        with assert_cap_engaged():
+            decision = run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo, extra_env=env)
+        assert decision == "allow"
 
     def test_fill_with_marker_in_commit_message_allowed(self, stow_repo):
         """`gh pr create --fill` sources body from commits — a marker
