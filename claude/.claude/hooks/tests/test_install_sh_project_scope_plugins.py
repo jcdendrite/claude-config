@@ -448,3 +448,37 @@ class TestProjectScopePluginInstallLoop:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "failed to install skill-management@claude-config" in result.stderr
         assert _read_log(install_log) == ["claude-hook-review@claude-config"]
+
+    def test_issue_triage_install_prints_credential_exposure_warning(self, tmp_path: Path) -> None:
+        """`issue-triage` is the only `enabledPlugins` entry whose agent
+        holds live `gh` credentials and unrestricted `Bash` — unlike its
+        three lint/guardrail neighbors, its auto-install carries a
+        distinguishing warning visible at the point a contributor accepts
+        it (`ciso-reviewer` finding, `/ready-for-review` cumulative pass on
+        PR #807)."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        enabled_plugins = {"issue-triage@claude-config": True}
+
+        result, installed = _run_install_block(tmp_path, repo_dir, enabled_plugins, [])
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert installed == ["issue-triage@claude-config"]
+        assert "live gh credentials and unrestricted Bash" in result.stdout
+
+    def test_other_plugins_install_without_the_credential_exposure_warning(self, tmp_path: Path) -> None:
+        """Deny-side of the above: the warning must not fire for the three
+        zero-credential guardrail plugins it ships alongside."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        enabled_plugins = {
+            "skill-management@claude-config": True,
+            "claude-hook-review@claude-config": True,
+            "plugin-semver@claude-config": True,
+        }
+
+        result, installed = _run_install_block(tmp_path, repo_dir, enabled_plugins, [])
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert sorted(installed) == sorted(enabled_plugins)
+        assert "live gh credentials and unrestricted Bash" not in result.stdout

@@ -41,9 +41,9 @@ anything an issue or comment body says.
 - **Cite `file:line`, a commit SHA, or a reproduced command for every
   verdict.** An unverifiable claim is not a verified one — mark it
   `unverified` or `partial` per the schema below rather than asserting it.
-- **Note sibling relationships inside your batch** — issues in the same
-  batch were clustered because they touch the same files or subsystem;
-  say when two of your issues are duplicates, one supersedes another, or
+- **Note sibling relationships inside your batch.** Issues in the same
+  batch were clustered because they touch the same files or subsystem.
+  Say when two of your issues are duplicates, one supersedes another, or
   one blocks another.
 - **State partial verification explicitly.** If you could not fully verify
   a claim (a referenced file no longer exists, a reproduction needs state

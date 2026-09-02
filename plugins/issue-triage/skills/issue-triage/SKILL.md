@@ -44,10 +44,10 @@ gh issue list --state open --limit 100 --json number,title,labels,createdAt,upda
 ```
 
 Bodies and comments are deliberately excluded — batch agents fetch them
-per issue, so you never ingest comment text yourself. If the returned
-count equals the limit, re-fetch at a higher `--limit`; after 3 re-fetch
-attempts still truncated, stop and report the truncation rather than
-looping.
+per issue, so you never ingest comment text yourself. Re-fetch at a
+higher `--limit` if the returned count equals the limit. Stop and
+report the truncation, rather than looping, after 3 re-fetch attempts
+still truncated.
 
 ## 3. Cluster and announce the run plan
 
@@ -78,10 +78,11 @@ standing rules and the per-issue record schema (§5) as their canonical,
 single-source copy — do not restate them here.
 
 The standing rules given to each dispatch are the only control on what it
-does with live `gh` credentials and unrestricted `Bash`: no command-level
-enforcement exists, backstopped only by the agent's own category-level
-`tools:` grant (no `Edit`, `Agent`, or network tools). Each agent writes
-its fragment and returns one line per issue plus the fragment path.
+does with live `gh` credentials and unrestricted `Bash`. No command-level
+enforcement exists — the sole backstop is the agent's own category-level
+`tools:` grant, which excludes `Edit`, `Agent`, and network tools. Each
+agent writes its fragment and returns one line per issue plus the
+fragment path.
 
 ## 5. Per-issue record schema
 
