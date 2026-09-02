@@ -12,7 +12,9 @@ import subprocess
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     run_hook,
+    run_hook_reason,
 )
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
@@ -78,3 +80,36 @@ class TestDenyEscapedBackticksInPrBody:
         )
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # ------------------------------------------------------------------ #
+    # GH-783 Phase 2: quote-split and fail-closed status-2 regression      #
+    # ------------------------------------------------------------------ #
+
+    def test_quoted_command_word_reaches_same_verdict_as_bare_form(self):
+        """A quote-adjacent split (`"gh" pr create ...`) must reach the
+        same deny verdict as the unquoted form — the gh-family matcher
+        strips quote characters before word-walking, unlike a raw regex
+        over unstripped $COMMAND."""
+        cmd = "\"gh\" pr create --body 'body with \\`escaped\\` backticks'"
+        assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
+
+    def test_sed_absent_from_path_denies(self, tmp_path):
+        """Status-2 propagation: the matcher could not determine whether
+        this command invokes gh pr create/edit, and this gate's own
+        documented fail-closed posture means an undetermined match denies
+        rather than silently falling through to allow — even for a clean
+        body with no backtick to trigger the content detector itself.
+        Asserts the distinguishing reason text, not just the verdict, so
+        this test cannot be satisfied by an ordinary backtick-match deny
+        reaching "deny" for the wrong reason."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        cmd = "gh pr create --body 'clean body no escapes'"
+        reason = run_hook_reason(
+            DENY_ESCAPED_BACKTICKS_HOOK,
+            bash_input(cmd),
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason

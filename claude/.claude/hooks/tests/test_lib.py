@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 import time
@@ -1337,6 +1338,240 @@ def test_lib_strip_shell_quotes_composed_with_extract_git_subcmd_detects_quoted_
     assert result.stdout == "commit"
 
 
+# --- _lib_command_invokes_git_subcmd / _lib_command_invokes_tool_subcmd -
+#
+# GH-783 Phase 2: composed tri-state matchers (0 matched / 1 did not / 2
+# could not determine) built from the fragment-matcher primitives above.
+# Characterization tests, including the status-2 path each of the eight
+# Phase-2 gate hooks depends on to decide its own fail posture.
+
+
+def _command_invokes_git_subcmd(command: str, subcmd: str, env: dict | None = None) -> int:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "$1" "$2"', "bash", command, subcmd],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+def _command_invokes_tool_subcmd(command: str, tool: str, *subcmd: str, env: dict | None = None) -> int:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_command_invokes_tool_subcmd "$1" "$2" "${{@:3}}"',
+            "bash",
+            command,
+            tool,
+            *subcmd,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestCommandInvokesGitSubcmd:
+    def test_bare_match(self) -> None:
+        assert _command_invokes_git_subcmd("git commit -m x", "commit") == 0
+
+    def test_chained_match(self) -> None:
+        assert _command_invokes_git_subcmd("git add . && git commit -m x", "commit") == 0
+
+    def test_quote_split_match(self) -> None:
+        """GH-783 Phase 2: a quote-adjacent split (`"git" commit`) must not
+        evade this matcher, unlike a raw regex over unstripped $COMMAND."""
+        assert _command_invokes_git_subcmd('"git" commit -m x', "commit") == 0
+
+    def test_no_match(self) -> None:
+        assert _command_invokes_git_subcmd("git status", "commit") == 1
+
+    def test_different_subcommand_prefix_does_not_match(self) -> None:
+        """Word-boundary, not substring: `commit-tree` must not match a
+        `commit` subcommand query."""
+        assert _command_invokes_git_subcmd("git commit-tree x", "commit") == 1
+
+    def test_empty_command_does_not_match(self) -> None:
+        assert _command_invokes_git_subcmd("", "commit") == 1
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "git commit"'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_sed_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        """Tri-state status 2: the underlying quote-strip fork failed, so
+        the matcher could not evaluate the command at all -- distinct from
+        status 1 (evaluated, no match). Every checked caller must deny on
+        this status rather than silently treating it as "no match"."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_git_subcmd("git commit -m x", "commit", env=env) == 2
+
+    def test_tr_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-tr"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tr", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_git_subcmd("git commit -m x", "commit", env=env) == 2
+
+
+class TestCommandInvokesToolSubcmd:
+    def test_bare_match(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr merge 291 --squash", "gh", "pr", "merge") == 0
+
+    def test_chained_match(self) -> None:
+        assert _command_invokes_tool_subcmd("git push && gh pr merge 291", "gh", "pr", "merge") == 0
+
+    def test_no_match_different_subcommand(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr mergefoo", "gh", "pr", "merge") == 1
+
+    def test_no_match_different_verb(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr create --title x", "gh", "pr", "edit") == 1
+
+    def test_command_word_resolution_rejects_quoted_wrapper(self) -> None:
+        """WHY command-word, not any-word: on the quote-stripped fragment
+        `echo gh pr merge`, the command word resolves to `echo`, not `gh` --
+        preserving block-gh-pr-merge.sh's documented `echo "gh pr merge"`
+        allow, but via command-word resolution rather than quote
+        preservation (see block-gh-pr-merge.sh's header)."""
+        assert _command_invokes_tool_subcmd('echo "gh pr merge"', "gh", "pr", "merge") == 1
+
+    def test_quote_split_subcommand_word_matches(self) -> None:
+        """Closes a real gap the prior raw regex missed: `gh pr "merge"`
+        quote-strips to a bare `merge` token, which this word-sequence
+        match now catches."""
+        assert _command_invokes_tool_subcmd('gh pr "merge"', "gh", "pr", "merge") == 0
+
+    def test_full_path_invocation_matches(self) -> None:
+        assert _command_invokes_tool_subcmd("/usr/bin/gh pr merge 291", "gh", "pr", "merge") == 0
+
+    def test_value_taking_global_flag_before_subcommand(self) -> None:
+        """Row 4's exact naive-implementation failure case: without
+        skipping -R/--repo's own value, `o/r` would misread as the
+        subcommand and the match would miss."""
+        assert _command_invokes_tool_subcmd("gh --repo o/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_value_taking_global_flag_between_subcommand_words(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr --repo o/r merge", "gh", "pr", "merge") == 0
+
+    def test_glued_repo_flag_value_before_subcommand(self) -> None:
+        assert _command_invokes_tool_subcmd("gh --repo=o/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_glued_short_repo_flag_value_before_subcommand(self) -> None:
+        """The short-flag glued form (-Rowner/repo, no '='), distinct
+        from --repo=owner/repo -- a dropped or mistyped -R?* arm would
+        misread the glued value as the subcommand word and silently miss
+        a real self-merge attempt."""
+        assert _command_invokes_tool_subcmd("gh -Ro/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_tool_subcmd "gh pr merge" gh'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_sed_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_tool_subcmd("gh pr merge 291", "gh", "pr", "merge", env=env) == 2
+
+    def test_tr_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-tr"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tr", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_tool_subcmd("gh pr merge 291", "gh", "pr", "merge", env=env) == 2
+
+
+# --- gh --help drift guard -----------------------------------------------
+#
+# Row 4's own boundary: gh is a user-installed CLI outside this repo's
+# control, so nothing else fails when a future gh release adds a new
+# value-taking global flag. This test at least catches drift on this CI
+# runner's own gh, the same lightweight self-check row 4 asks for.
+
+
+def _gh_help_inherited_value_taking_flags(help_text: str) -> set[str]:
+    """Parses `gh help ...` output's INHERITED FLAGS section into the set of
+    flag names (short and long) that take a value -- distinguished from a
+    boolean flag by an extra non-flag token in the flag-spec column before
+    the 2+-space gap that starts the description column (e.g. `-R, --repo
+    [HOST/]OWNER/REPO` has the placeholder `[HOST/]OWNER/REPO`; `--help` has
+    none)."""
+    in_section = False
+    section_lines: list[str] = []
+    for line in help_text.splitlines():
+        if line.strip() == "INHERITED FLAGS":
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if line.strip() == "":
+            break
+        section_lines.append(line)
+    value_taking_flags: set[str] = set()
+    for line in section_lines:
+        spec = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
+        tokens = spec.split()
+        flag_tokens = {t.rstrip(",") for t in tokens if t.startswith("-")}
+        has_value_placeholder = any(not t.startswith("-") for t in tokens)
+        if has_value_placeholder:
+            value_taking_flags |= flag_tokens
+    return value_taking_flags
+
+
+def test_gh_pinned_value_taking_flags_are_a_subset_of_gh_help_output() -> None:
+    """_lib_tool_argv_from_subcmd's pinned gh value_taking_flags list
+    (-R/--repo) must be a SUPERSET of this runner's actual `gh help pr
+    merge` INHERITED FLAGS value-taking set -- not merely contain -R/--repo.
+    A future gh release adding a new value-taking global flag not in the
+    pinned list would misread that flag's value as the subcommand word and
+    silently miss a real `gh pr merge` invocation; this fails loudly on
+    that drift instead."""
+    gh_path = shutil.which("gh")
+    if not gh_path:
+        pytest.skip("gh not found in PATH")
+    result = subprocess.run(
+        [gh_path, "help", "pr", "merge"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    real_value_taking_flags = _gh_help_inherited_value_taking_flags(result.stdout)
+    assert real_value_taking_flags, (
+        "parsed no value-taking flags from `gh help pr merge`'s INHERITED "
+        "FLAGS section -- gh's help output format may have changed "
+        "(e.g. a different 'INHERITED FLAGS' heading), silently degrading "
+        "this test's subset check below to a no-op; update "
+        "_gh_help_inherited_value_taking_flags's parser."
+    )
+    pinned_value_taking_flags = {"-R", "--repo"}
+    assert real_value_taking_flags <= pinned_value_taking_flags, (
+        f"gh help pr merge's INHERITED FLAGS lists a value-taking flag not "
+        f"in _lib_tool_argv_from_subcmd's pinned gh value_taking_flags list: "
+        f"{real_value_taking_flags - pinned_value_taking_flags} -- update "
+        "_lib.sh's _lib_tool_argv_from_subcmd value_taking_flags case for gh."
+    )
+
+
 # --- _lib_realpath_m ---------------------------------------------------
 #
 # GNU `realpath -m` is available natively in this test environment, so a
@@ -2114,6 +2349,33 @@ def test_lib_strip_shell_quotes_over_strips_double_quoted_literal_apostrophe() -
     unconditionally regardless of whether they're delimiters or literal
     content, joining `id_r` and `sa` across the apostrophe into `id_rsa`."""
     assert _strip_shell_quotes("""~/.ssh/id_r"'"sa""") == "~/.ssh/id_rsa"
+
+
+def test_lib_strip_shell_quotes_sed_absent_returns_nonzero(tmp_path: Path) -> None:
+    """Pins the fail-closed contract at the layer that actually owns it:
+    every downstream caller (_lib_command_invokes_git_subcmd,
+    _lib_command_invokes_tool_subcmd, and every hook's own
+    COMMAND_UNQUOTED computation) relies on _lib_strip_shell_quotes itself
+    returning non-zero when its sed stage fails, not on the shape of
+    whatever pipeline composes it. Without pipefail (deliberately absent
+    from this file), a naive `sed ... | tr ...` pipeline's exit status is
+    tr's, not sed's -- tr still runs (on empty stdin from the broken pipe)
+    and exits 0 even though sed failed, so this must be checked at this
+    function's own two-stage boundary, not inferred from a caller's
+    pipeline shape."""
+    farm_dir = tmp_path / "path-without-sed"
+    farm_dir.mkdir()
+    restricted_path = build_path_without("sed", farm_dir)
+    env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_strip_shell_quotes "$1"', "bash", "id_r'sa'"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 # --- _lib_strip_env_file_flag_args ------------------------------------------

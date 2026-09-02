@@ -10,6 +10,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     run_hook,
     run_hook_reason,
@@ -29,7 +30,8 @@ def make_lines(n: int, prefix: str = "line") -> str:
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
-    `grep` for the git-commit/path-filter matches, `awk` for the line
+    `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show calls), omitting both
     timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
@@ -37,7 +39,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     binary is itself absent from the test machine."""
     stub_bin = tmp_path / "_stub_bin"
     stub_bin.mkdir()
-    for tool in ("awk", "cat", "dirname", "git", "grep", "jq"):
+    for tool in ("awk", "cat", "dirname", "git", "grep", "jq", "sed", "tr"):
         real_path = shutil.which(tool)
         if not real_path:
             pytest.skip(f"{tool} not found in PATH")
@@ -135,6 +137,44 @@ class TestCheckClaudeMdLength:
             )
             == "deny"
         )
+
+    def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, tmp_path):
+        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
+        reach the same deny verdict as the unquoted form."""
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input('"git" commit -m foo'),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_sed_absent_from_path_denies(self, isolated_home, tmp_path):
+        """Status-2 propagation: the matcher could not determine whether
+        this command invokes git commit, and this gate's own documented
+        fail-closed posture means an undetermined match denies rather than
+        silently falling through to allow. Asserts the distinguishing
+        reason text, not just the verdict, so this test cannot be
+        satisfied by an ordinary over-limit deny reaching "deny" for the
+        wrong reason."""
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        reason = run_hook_reason(
+            CHECK_CLAUDE_MD_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason
 
     def test_new_claude_md_over_limit_denies(self, isolated_home, tmp_path):
         """New file with no HEAD version staged at 201 lines — old defaults to 0 → deny."""
@@ -563,13 +603,18 @@ class TestCheckClaudeMdLength:
         )
 
     def test_chained_git_add_commit_denies(self, isolated_home, tmp_path):
-        """Chained `git add ... && git commit` is caught by the internal regex.
+        """Chained `git add ... && git commit` is caught by the internal
+        _lib_command_invokes_git_subcmd check.
 
-        Note: the `if: "Bash(git commit *)"` predicate in settings.json does NOT
-        match chained commands (the glob requires the command to start with
-        "git commit"). This test invokes the hook binary directly, bypassing the
-        harness gate. The internal grep is the actual gate for this command shape —
-        consistent with the hook header's note that the `if` field is unreliable.
+        Note: this session's live commit probes established that the
+        `if: "Bash(git commit *)"` predicate in settings.json DOES match
+        chained and prefixed commands (a `true && git commit ...` with a
+        real unreviewed staged diff got a genuine deny from
+        require-code-review.sh) — correcting an earlier, disproven claim
+        here that the glob required the command to start with "git commit".
+        This test invokes the hook binary directly regardless, since the
+        internal check is the authoritative gate either way — consistent
+        with the hook header's note that the `if` field is a hint only.
         """
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
