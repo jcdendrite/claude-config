@@ -905,6 +905,88 @@ _lib_command_invokes_tool_subcmd() {
   return 1
 }
 
+# _lib_staged_length_gate PATTERN GATE_LABEL
+# Shared body behind check-skill-length.sh and check-claude-md-length.sh:
+# deny a git commit when a staged file matching PATTERN (a grep -E pattern
+# over `git diff --cached --name-only` output) is over its per-file limit
+# AND longer than the previously committed version — reducing an
+# already-over-limit file commit by commit is allowed; new bloat is not.
+#
+# Callback-by-convention, the same shape _lib_parse_tool_input_or_deny
+# already establishes: CALLER MUST define `emit_deny` (as every gate hook
+# does, per that function's own contract comment) and `limit_for` (a
+# function mapping a repo-root-relative staged path to its line-count
+# limit) before calling this. Also relies on the caller having already
+# populated $COMMAND and $TOOL_NAME via _lib_parse_tool_input_or_deny, and
+# on the caller having already exited for a non-Bash TOOL_NAME.
+#
+# GATE_LABEL is the exact sentence (through its trailing period) each caller
+# already used as its own over-limit deny message's lead-in before this
+# extraction — verbatim, not a generic template, because
+# transcript-analysis.py's _denial_hook_label parses that exact wording
+# ("AGENTS.md length", "Skill length") out of live deny text to attribute a
+# denial to its hook; see _DENIAL_HOOK_LABELS there.
+#
+# Checked fail-closed on the commit-match check, matching both callers'
+# documented fail-closed posture: an undetermined match (sed/tr missing,
+# killed, or erroring inside _lib_command_invokes_git_subcmd) denies rather
+# than silently skipping the length check.
+#
+# The fail-closed message below deliberately reuses GATE_LABEL's own prefix
+# (via ${gate_label%%:*}), so it now classifies into the same
+# transcript-analysis.py _DENIAL_HOOK_LABELS bucket as the over-limit
+# message below — the two were distinct buckets before this extraction; the
+# merge is a deliberate simplification, not an oversight.
+#
+# The git calls below are capped via _lib_capped, which degrades to allow
+# (not just to not-hanging) on timeout: a locked index or network mount
+# silently skips the length check rather than blocking the commit. That is
+# a deliberate choice for a style/lint gate, not a security-relevant
+# scanner — contrast deny-pii-in-commits.sh, which fails closed on the same
+# class of timeout because an unscanned commit there is an unscanned leak
+# vector.
+_lib_staged_length_gate() {
+  local pattern="$1" gate_label="$2"
+  _lib_command_invokes_git_subcmd "$COMMAND" commit
+  local git_commit_match_status=$?
+  if [ "$git_commit_match_status" -eq 1 ]; then
+    return 0
+  fi
+  if [ "$git_commit_match_status" -ne 0 ]; then
+    emit_deny "Blocked by ${gate_label%%:*}: could not determine whether this command invokes git commit (status ${git_commit_match_status}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
+    return 0
+  fi
+
+  # Fail closed if a caller forgot to define limit_for, rather than letting
+  # `limit=$(limit_for "$f")` silently yield empty and skip the length check.
+  if ! declare -f limit_for >/dev/null 2>&1; then
+    emit_deny "Blocked by ${gate_label%%:*}: internal error — limit_for is not defined. This is a caller-contract violation, not a policy violation; report it."
+    return 0
+  fi
+
+  if [ "$(_lib_capped git rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
+    return 0
+  fi
+
+  local fail=0 messages="" f new old limit
+  while IFS= read -r f; do
+    new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
+    old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
+    limit=$(limit_for "$f")
+    if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
+      messages="${messages}  $f: $new lines (was $old, limit $limit)\n"
+      fail=1
+    fi
+  done < <(_lib_capped git diff --cached --name-only 2>/dev/null | grep -E "$pattern")
+
+  if [ "$fail" -eq 1 ]; then
+    local reason
+    reason=$(printf '%s Reduce to the limit or fewer lines before committing:\n%b' "$gate_label" "$messages")
+    emit_deny "$reason"
+  fi
+  return 0
+}
+
 # Decide whether a command chains `marker.sh write <skill>` before its first
 # `git commit`. PreToolUse hooks fire once per Bash tool call before the chain
 # runs, so an on-disk marker check denies naturally-typed forms like

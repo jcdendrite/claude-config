@@ -25,6 +25,10 @@
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
 # git calls below uncapped, so a stalled git (locked index, network mount)
 # hangs this gate rather than degrading gracefully.
+#
+# The commit-detection, repo-root, growth-comparison, and deny-message logic
+# is shared with check-skill-length.sh via _lib_staged_length_gate in
+# _lib.sh — this file supplies only the staged-path pattern and limit_for.
 
 set -uo pipefail
 
@@ -55,23 +59,6 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands. Checked and fail-closed, matching this
-# gate's documented fail-closed posture: an undetermined match (sed/tr
-# missing, killed, or erroring inside the helper) must not silently skip
-# the length check.
-_lib_command_invokes_git_subcmd "$COMMAND" commit
-GIT_COMMIT_MATCH_STATUS=$?
-if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
-  exit 0
-fi
-if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
-  emit_deny "Blocked by CLAUDE.md length gate: could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
-  exit 0
-fi
-
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-[ -z "$REPO_ROOT" ] && exit 0
-
 # Per-file limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
@@ -80,22 +67,8 @@ limit_for() {
   esac
 }
 
-FAIL=0
-MESSAGES=""
-while IFS= read -r f; do
-  new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
-  old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
-  limit=$(limit_for "$f")
-  if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
-    MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit $limit)\n"
-    FAIL=1
-  fi
-# Matches CLAUDE.md and AGENTS.md at the repo root, inside any .claude/ directory,
-# or at any depth inside a .claude/ directory. Does NOT match files in arbitrary
-# subdirectories (e.g. foo/CLAUDE.md) — only root-level and .claude/-scoped files.
-done < <(git diff --cached --name-only 2>/dev/null | grep -E '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$')
-
-if [ "$FAIL" -eq 1 ]; then
-  REASON=$(printf 'CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")
-  emit_deny "$REASON"
-fi
+# Matches CLAUDE.md and AGENTS.md at the repo root, inside any .claude/
+# directory, or at any depth inside a .claude/ directory. Does NOT match
+# files in arbitrary subdirectories (e.g. foo/CLAUDE.md) — only root-level
+# and .claude/-scoped files.
+_lib_staged_length_gate '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$' "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit."

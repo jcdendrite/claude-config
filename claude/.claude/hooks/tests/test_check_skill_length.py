@@ -15,6 +15,8 @@ from helpers import (
     run_hook_reason,
 )
 
+from .conftest import assert_cap_engaged
+
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
 SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
 
@@ -24,8 +26,8 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
     (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
-    count, `git` for the _lib_capped-wrapped show calls), omitting both
-    timeout(1) and gtimeout(1). Mirrors
+    count, `git` for the _lib_capped-wrapped show and diff --cached
+    --name-only calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
     shape; skips (does not silently under-symlink) when a needed real
     binary is itself absent from the test machine."""
@@ -544,3 +546,28 @@ class TestCheckSkillLength:
             )
             == "allow"
         )
+
+    # --- Newly-capped `git diff --cached --name-only` (_lib_staged_length_gate) ---
+
+    @pytest.mark.timing
+    def test_staged_diff_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git diff --cached --name-only`'s _lib_capped wrap (added to
+        _lib_staged_length_gate alongside the shared driver) must actually
+        engage its 5s cap rather than hang, mirroring the `git show` calls'
+        pre-existing _lib_capped wrap. A capped, empty file list means no
+        staged SKILL.md is scanned, so the gate degrades to allow rather
+        than hanging — same degrade-not-hang shape the header comment
+        documents for a machine lacking timeout(1)/gtimeout(1) entirely."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$1" = "diff" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"

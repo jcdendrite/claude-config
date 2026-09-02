@@ -61,8 +61,7 @@ fi
 _lib_command_invokes_git_subcmd "$COMMAND" commit || exit 0
 
 # Only proceed if inside a git repo.
-REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$REPO_ROOT" ]; then
+if [ "$(_lib_capped git rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
   exit 0
 fi
 
