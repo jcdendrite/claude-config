@@ -475,6 +475,33 @@ class TestDenyPiiInCommits:
         msg_file.write_text("a clean commit summary\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo) == "allow"
 
+    def test_F_device_file_denied_not_hung(self, isolated_home, git_repo, pii_patterns):
+        """`-F /dev/zero` must deny, not hang: /dev/zero passes the `[ -r ]`
+        readability check but is not a regular file, so the `[ ! -f ]`
+        guard rejects it before the capped `cat` call ever runs."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -F /dev/zero"), cwd=git_repo) == "deny"
+
+    @pytest.mark.timing
+    def test_F_file_cat_timeout_denied(self, isolated_home, git_repo, pii_patterns, cat_timeout_shim):
+        """Required regression test: the `-F` message-source file's
+        `_lib_capped cat` call previously swallowed a timeout's exit 124
+        with `|| true`, silently scanning empty/partial content instead of
+        failing closed. A real, readable file combined with a `cat` shim
+        that sleeps past the 5s cap for this exact path must now deny
+        rather than let the unscanned SSN through."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text(f"commit summary\n\nseen SSN {SSN}\n")
+        env = cat_timeout_shim(f'[ "$1" = "{msg_file}" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo, extra_env=env
+            )
+        assert decision == "deny"
+
     # ------------------------------------------------------------------ #
     # exclude: globs                                                      #
     # ------------------------------------------------------------------ #

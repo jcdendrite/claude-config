@@ -13,18 +13,15 @@
 # clear/compact/resume — the same argument check-branch-divergence.sh makes for
 # its own startup-only matcher.
 #
-# Order: source _lib.sh (before reading stdin, so _lib_jq's timeout backstop
-# covers the .source filter too) -> .source filter -> _lib_config_dir ->
-# kill-switch -> timeout-binary precondition -> glob-and-measure -> threshold ->
-# re-arm band -> fire.
+# Order: source _lib.sh -> timeout-binary precondition -> .source filter ->
+# _lib_config_dir -> kill-switch -> glob-and-measure -> threshold -> re-arm
+# band -> fire.
 # Exits 0 on every path.
 #
 # Kill-switch: touching <config-dir>/.memory-audit-nudge-disabled suppresses
 # every future fire, checked before any filesystem scan.
 #
-# The scan is skipped entirely when neither timeout(1) nor gtimeout(1) resolves.
-# _lib_capped_for would otherwise run the filesystem walk uncapped, and a
-# stalled path would hold session start itself open with no bound.
+# The timeout-binary precondition runs immediately after sourcing _lib.sh, before any jq/filesystem call, so nothing below it ever runs uncapped — see docs/memory-audit-nudge.md's Known limitations section for why that placement matters.
 #
 # Out of scope, each an accepted limitation rather than an oversight:
 #   - No mid-session firing: the nudge arrives at the next session start.
@@ -34,11 +31,17 @@
 # Fail-open everywhere: a missing jq, an unresolvable config dir, an unreadable
 # projects tree, or malformed stdin exits 0 with no stdout.
 
+# strict mode omitted deliberately, matching nudge-handoff-near-context-cap.sh's
+# own rationale: this hook always exits 0, and -e would trip on this file's
+# `|| true` guards (mkdir -p, log/state-file writes) instead of letting them
+# fail open.
 set -uo pipefail
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
 fi
+
+_lib_timeout_binary_available || exit 0
 
 INPUT=$(cat 2>/dev/null)
 SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.source | type) == "string" then .source else empty end' 2>/dev/null)
@@ -47,8 +50,6 @@ SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.source | type) == "string" then
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 
 [ -f "$CONFIG_DIR/.memory-audit-nudge-disabled" ] && exit 0
-
-_lib_timeout_binary_available || exit 0
 
 # Malformed override values (empty, literal zero, non-digit, zero-padded,
 # 10+ digits) fall back to the shipped default, reusing HANDOFF_NUDGE_ABS_CAP's
@@ -82,6 +83,10 @@ if [ "$NOGLOB_WAS_SET" -eq 1 ]; then set -f; fi
 
 WC_OUTPUT=""
 if [ "$#" -gt 0 ]; then
+  # If a `memory` glob match is itself a symlink to a directory, BSD/macOS
+  # `find` produces no output for it (untested on GNU `find`, whose default
+  # command-line-argument symlink handling can differ) -- that project's
+  # bytes silently drop out of TOTAL_BYTES rather than erroring.
   WC_OUTPUT=$(_lib_capped_for 5 find "$@" -type f -exec wc -c {} + 2>/dev/null)
 fi
 
@@ -89,19 +94,14 @@ fi
 # test_nudge_memory_store_audit.py extracts this program verbatim between
 # these sentinels.
 # Keep both lines.
-# `find -exec ... {} +` may batch into several wc invocations, and each batch
-# holding more than one file emits its own "total" row.
-# Summing $1 unconditionally would count those rows as if they were files.
-# Every per-file line's path is absolute and therefore contains "/", while the
-# "total" row's remaining text is the bare word "total" and has none.
-# Stripping the leading count field and testing for "/" discriminates the two
-# without depending on line position or batch count.
-# A second pass tallying the project-store count with one `grep` per project
-# directory against the whole wc output would cost O(project count x file
-# count). Every per-file path already carries its own project's memory
-# directory as a prefix (.../projects/<project>/memory/...), so this single
-# pass buckets by that prefix (the text up to the rightmost "/memory/")
-# instead, tallying both totals in one O(file count) scan.
+# See docs/memory-audit-nudge.md for why a batched `find -exec ... {} +` can
+# emit more than one "total" row.
+# A per-file line's path always contains "/". A "total" row's remaining text
+# (the bare word "total") never does, which is what `index(path, "/") == 0`
+# below discriminates on.
+# Buckets the project-store count by the text up to the rightmost "/memory/"
+# in each per-file path. Computed in the same awk pass as the byte-total
+# sum — see docs/memory-audit-nudge.md for the batching/bucketing rationale.
 # Prints two lines: the byte total, then the project-store count.
 # shellcheck disable=SC2016 # single-quoted on purpose: $1/$0 are awk field variables, not shell variables; double-quoting would expand them in the shell before awk sees them.
 TOTAL_AND_COUNT=$(_lib_capped_for 5 awk '

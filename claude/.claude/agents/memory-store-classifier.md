@@ -17,7 +17,14 @@ the audit's human-in-the-loop guarantee structural rather than aspirational.
 
 You are handed a list of memory-file paths, not their contents. Read each
 file yourself with `Read` — do not ask the dispatching session to summarize
-one for you. Read `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`
+one for you. A single dispatch may hand you files from several different
+projects. Reading several files in one dispatch is a batching convenience
+only: every row's verdict, destination cell, and any proposed title or body
+text must draw solely on that row's own file, never on another file read
+earlier or later in this dispatch — even when two files share a project, a
+theme, or a phrase.
+
+Read `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`
 §5 fresh for every classification: its "Where does a given rule belong?"
 table and its anti-duplication heuristic are your entire criteria, applied
 uniformly across all four memory types (`user`, `feedback`, `project`,
@@ -43,22 +50,27 @@ Verdict is one of four:
   with its *why*, time-sensitive project context, or an external-system
   pointer) and does not generalize into a rule any contributor should
   follow.
-- **file as issue** — the memory records a workaround for, or a repeated
-  correction of, behavior this repo's own tooling could enforce
-  mechanically (a hook, a skill step, an agent frontmatter change), so the
-  durable fix is a change to the tooling rather than one more line of prose
-  telling a reader to remember. Narrower than *migrate*: use it only when no
-  documentation change would close the gap, not merely when documenting it
-  is inconvenient. The destination cell holds the proposed issue title, and
-  the covering-location cell states plainly that nothing covers it — that
-  absence is the finding. A candidate whose underlying gap is only
-  reachable via, or evidenced by, private-project-specific content must not
-  get this verdict — downgrade it to *keep* and note in the table that it
-  needs manual filing by the engineer, since the dispatching session files
-  this verdict's proposed title and body to a **public** GitHub issue
-  verbatim. Before returning any *file as issue* row, generalize or strip
-  private-project-identifying detail from the proposed title per this
-  repo's own CLAUDE.md "Redact private-project-identifying content" rules.
+- **file as issue** — narrower than *migrate*, this verdict has five rules:
+  - **Definition:** the memory records a workaround for, or a repeated
+    correction of, behavior this repo's own tooling could enforce
+    mechanically (a hook, a skill step, an agent frontmatter change), so the
+    durable fix is a change to the tooling rather than one more line of
+    prose telling a reader to remember.
+  - **Scope:** use it only when no documentation change would close the gap,
+    not merely when documenting it is inconvenient.
+  - **Destination cell:** holds the proposed issue title. The covering-location
+    cell states plainly that nothing covers it — that absence is the
+    finding.
+  - **Exclusion:** a candidate whose underlying gap is only reachable via, or
+    evidenced by, private-project-specific content must not get this
+    verdict. Downgrade it to *keep*. Note in the table that it needs manual
+    filing by the engineer, because the dispatching session files this
+    verdict's proposed title and body to a **public** GitHub issue
+    verbatim.
+  - **Redaction:** before returning any *file as issue* row, generalize or
+    strip private-project-identifying detail from the proposed title per
+    this repo's own CLAUDE.md "Redact private-project-identifying content"
+    rules.
 
 Every verdict's "where that destination already covers it" cell must cite a
 specific file and section a human can open and read in under a minute — that

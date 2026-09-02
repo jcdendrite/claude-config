@@ -199,6 +199,30 @@ def gh_timeout_shim(tmp_path):
     return install
 
 
+@pytest.fixture
+def cat_timeout_shim(tmp_path):
+    """`install(match_condition)` writes a `cat` shim with the same
+    conditional-sleep contract as git_timeout_shim, for regression tests
+    against a `_lib_capped cat <path>` call site. Same skip conditions as
+    git_timeout_shim, checking `cat` in place of `git`.
+
+    `install`'s optional `fake_output` passes through to
+    _write_conditional_sleep_shim, for a call site whose real, uncapped
+    result would otherwise coincidentally match the timed-out result.
+    """
+    real_cat = shutil.which("cat")
+    if not real_cat:
+        pytest.skip("cat not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    def install(match_condition: str, fake_output: str | None = None) -> dict[str, str]:
+        _write_conditional_sleep_shim(tmp_path, "cat", real_cat, match_condition, fake_output)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
 @contextmanager
 def assert_cap_engaged():
     """Time the wrapped block and assert it took longer than

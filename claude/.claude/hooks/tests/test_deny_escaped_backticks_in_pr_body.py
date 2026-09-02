@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 
+import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
@@ -16,6 +17,8 @@ from helpers import (
     run_hook,
     run_hook_reason,
 )
+
+from .conftest import assert_cap_engaged
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
 
@@ -60,6 +63,29 @@ class TestDenyEscapedBackticksInPrBody:
     def test_missing_body_file_is_denied_fail_closed(self):
         cmd = "gh pr create --body-file /nonexistent/path.md"
         assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
+
+    def test_body_file_device_file_is_denied_not_hung(self):
+        """`--body-file /dev/zero` must deny, not hang: /dev/zero passes
+        the `[ -r ]` readability check but is not a regular file, so the
+        `[ -f ]` guard rejects it before the capped `cat` call ever runs."""
+        cmd = "gh pr create --body-file /dev/zero"
+        assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
+
+    @pytest.mark.timing
+    def test_body_file_cat_timeout_is_denied_fail_closed(self, tmp_path, cat_timeout_shim):
+        """Required regression test: the body-source file's `_lib_capped
+        cat` call previously swallowed a timeout's exit 124 with
+        `|| true`, silently scanning empty/partial content instead of
+        failing closed. A real, readable, clean body file combined with a
+        `cat` shim that sleeps past the 5s cap for this exact path must
+        now deny rather than allow on the unscanned content."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("clean body, no escapes\n")
+        cmd = f"gh pr create --body-file {body_file}"
+        env = cat_timeout_shim(f'[ "$1" = "{body_file}" ]')
+        with assert_cap_engaged():
+            decision = run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd), extra_env=env)
+        assert decision == "deny"
 
     def test_chained_command_with_escaped_backtick_is_denied(self):
         cmd = r"git status && gh pr edit 1 --body 'foo \`bar\`'"

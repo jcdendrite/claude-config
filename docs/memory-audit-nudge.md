@@ -17,12 +17,15 @@ memory file, and never names a project directory.
 | Re-arm band | 25600 | `MEMORY_AUDIT_NUDGE_REARM_BYTES` |
 
 The fire rule: `total_bytes >= 25600 × (number of project stores holding any
-memory content)`. A project's `memory/` store holds content, for this
-count, when the byte-measurement scan lists at least one file under it —
-including a zero-byte `MEMORY.md`; an entirely empty or absent `memory/`
-directory doesn't count. Malformed override values (empty, a literal zero,
-non-digit, zero-padded, or 10+ digits) fall back to the shipped default
-rather than letting the threshold degrade toward zero or negative.
+memory content)`. What counts as a project store "holding content":
+
+- A store counts if the byte-measurement scan finds at least one file under
+  it, including a zero-byte `MEMORY.md`.
+- An empty or absent `memory/` directory does not count.
+
+Malformed override values (empty, a literal zero, non-digit, zero-padded, or
+10+ digits) fall back to the shipped default rather than letting the
+threshold degrade toward zero or negative.
 
 **Why this threshold.** The single primary source available is Anthropic's
 own memory documentation:
@@ -65,10 +68,10 @@ the project-store count together, excluding any `wc`-emitted "total" row
 from the sum (`-exec … {} +` can batch into multiple `wc` invocations, each
 capable of emitting its own total row). Each per-file line's path already
 carries its own project's memory directory as a prefix
-(`.../projects/<project>/memory/...`), so the same pass buckets by that
-prefix to tally which project stores hold at least one file — a single
-`awk` invocation, avoiding the per-project-directory `grep` that a
-project-count-scaled (rather than file-count-scaled) pass would cost.
+(`.../projects/<project>/memory/...`), so the same `awk` pass buckets by
+that prefix to count which project stores hold at least one file. This
+avoids a separate per-project-directory `grep` pass, which would scale with
+project count rather than file count.
 A symlink inside a `memory/` directory is skipped: `find`'s default
 (non-`-L`) `-type f` test does not match a symlink, only a real file.
 
@@ -125,9 +128,10 @@ disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.memory-audit-n
   common case. Rather than let `_lib_capped_for` run the find+wc measurement
   uncapped — which for this `SessionStart` hook risks holding session start
   itself open on a stalled filesystem, with no bound — the hook checks
-  `_lib_timeout_binary_available` right after the kill-switch and exits 0
-  before the scan when neither binary resolves: no scan, no log line, no
-  state-file write. `install.sh`'s existing coreutils hint (printed at
+  `_lib_timeout_binary_available` immediately after sourcing `_lib.sh`,
+  before even the `.source` filter, and exits 0 before the scan when
+  neither binary resolves: no scan, no log line, no state-file write.
+  `install.sh`'s existing coreutils hint (printed at
   onboarding) does not name this hook or this consequence — it describes
   hooks that run *uncapped*, not one that stops firing *entirely*.
 - **Threshold tuning is analytic, not corpus-derived.** See "Why this

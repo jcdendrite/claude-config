@@ -58,7 +58,7 @@ def _write_memory_file(home: Path, project: str, filename: str, size_bytes: int)
 
 
 def _run_hook(
-    payload: dict, home: Path, extra_env: dict | None = None
+    payload: dict, home: Path, extra_env: dict | None = None, timeout: float | None = None
 ) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
@@ -71,6 +71,7 @@ def _run_hook(
         text=True,
         env=env,
         check=False,
+        timeout=timeout,
     )
 
 
@@ -102,21 +103,6 @@ def _extract_wc_total_row_awk_program() -> str:
     program_start = block.index("awk '") + len("awk '")
     program_end = block.index("'", program_start)
     return block[program_start:program_end]
-
-
-def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
-    """Build a PATH with only the binaries this hook's fire path invokes
-    (`dirname` to locate _lib.sh, `cat`/`jq` for the payload/output JSON,
-    `find`/`wc` for the byte scan, `awk` for the total-and-project-count
-    pass, `mkdir` for the config dir), omitting both timeout(1) and
-    gtimeout(1). Skips (does not silently under-symlink) when a needed real
-    binary is itself absent from the test machine."""
-    for tool in ("awk", "cat", "dirname", "find", "jq", "mkdir", "wc"):
-        real = shutil.which(tool)
-        if not real:
-            pytest.skip(f"{tool} not found in PATH")
-        (fake_bin / tool).symlink_to(real)
-    return str(fake_bin)
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +172,27 @@ class TestNudgeMemoryStoreAudit:
         assert not _log_path(tmp_path).exists()
         assert not _state_file(tmp_path).exists()
 
-    @pytest.mark.parametrize("source", ["clear", "compact", "resume"])
-    def test_non_startup_source_is_silent(self, tmp_path, source):
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            _base_payload(source="clear"),
+            _base_payload(source="compact"),
+            _base_payload(source="resume"),
+            {"source": 123},
+            {},
+        ],
+        ids=["clear", "compact", "resume", "non-string-source", "absent-source"],
+    )
+    def test_non_startup_source_is_silent(self, tmp_path, payload):
+        """Non-'startup' .source values are silent, including a non-string
+        .source (e.g. a JSON number) and an entirely absent .source --
+        additional input-shape coverage for the outer `[ "$SOURCE" =
+        "startup" ]` bash gate, which rejects both regardless of the jq
+        type-check filter that precedes it."""
         _write_memory_file(
             tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-source", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
         )
-        result = _run_hook(_base_payload(source=source), tmp_path)
+        result = _run_hook(payload, tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
@@ -333,7 +334,7 @@ class TestNudgeMemoryStoreAudit:
         )
         fake_bin = tmp_path / "fakebin-no-timeout-no-gtimeout"
         fake_bin.mkdir()
-        restricted_path = _path_without_timeout_or_gtimeout(fake_bin)
+        restricted_path = build_path_without({"timeout", "gtimeout"}, fake_bin)
         result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": restricted_path})
         assert result.returncode == 0
         assert result.stdout.strip() == ""
@@ -349,7 +350,7 @@ class TestNudgeMemoryStoreAudit:
         )
         fake_bin = tmp_path / "fakebin-with-timeout"
         fake_bin.mkdir()
-        restricted_path = _path_without_timeout_or_gtimeout(fake_bin)
+        restricted_path = build_path_without({"timeout", "gtimeout"}, fake_bin)
         timeout_target = shutil.which("timeout") or shutil.which("gtimeout")
         assert timeout_target is not None, (
             "no timeout-shaped binary found on this machine to exercise the "
@@ -359,6 +360,56 @@ class TestNudgeMemoryStoreAudit:
         result = _run_hook(_base_payload(), tmp_path, extra_env={"PATH": restricted_path})
         assert result.returncode == 0
         assert result.stdout.strip() != ""
+
+    def test_hanging_jq_never_invoked_when_no_timeout_binary_present(self, tmp_path):
+        """Pins the actual property the timeout-binary-precondition reorder
+        fixes, not just its net observable effect: with neither timeout(1)
+        nor gtimeout(1) resolvable, the hook must return quickly even with a
+        hanging jq on PATH. A fast-but-silent jq would also produce empty
+        stdout, so asserting only that (as the sibling no-timeout-binary
+        test does) can't distinguish 'jq ran fast' from 'jq never ran' --
+        this test's timeout on the subprocess call itself is what proves
+        the .source filter's jq call is never reached.
+
+        Uses Popen directly rather than _run_hook's subprocess.run, so a
+        caught regression (the hanging jq stub actually invoked) can be
+        killed via proc.kill() instead of leaving the 30s sleep as an
+        orphaned process for the rest of the test run -- same pattern as
+        test_nudge_handoff_near_context_cap.py::test_does_not_read_stdin
+        and test_lib_worktree_collision_guard.py's concurrent-race tests."""
+        _write_memory_file(
+            tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-hangingjq", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 5
+        )
+        farm_dir = tmp_path / "path-without-timeout-binaries-or-jq"
+        farm_dir.mkdir()
+        restricted_path = build_path_without({"timeout", "gtimeout", "jq"}, farm_dir)
+        hanging_jq_dir = tmp_path / "hanging-jq-bin"
+        hanging_jq_dir.mkdir()
+        hanging_jq = hanging_jq_dir / "jq"
+        hanging_jq.write_text("#!/bin/bash\nsleep 30\n")
+        hanging_jq.chmod(0o755)
+        full_path = f"{hanging_jq_dir}{os.pathsep}{restricted_path}"
+        env = {**os.environ, "HOME": str(tmp_path), "PATH": full_path}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        proc = subprocess.Popen(
+            [str(NUDGE_HOOK)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            stdout, _ = proc.communicate(input=json.dumps(_base_payload()), timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            pytest.fail(
+                "hook did not return within 5s -- the hanging jq stub was invoked, "
+                "meaning the timeout-binary precondition did not run before it"
+            )
+        assert proc.returncode == 0
+        assert stdout.strip() == ""
 
     # -- wc-total-row-and-project-count awk program -------------------------
 
@@ -595,4 +646,28 @@ class TestNudgeMemoryStoreAudit:
         assert result.stdout.strip() == "", (
             "a project store containing only a symlink must not count toward "
             "N or contribute bytes -- find's default -type f test skips it"
+        )
+
+    def test_symlinked_memory_dir_itself_is_undercounted_on_bsd_find(self, tmp_path):
+        """When a project's `memory` glob match is itself a symlink to
+        another directory (not a file inside it), BSD/macOS `find
+        <symlink-to-dir> -type f` produces no output at all for that
+        argument -- the project's bytes silently drop out of the total
+        rather than erroring. Documents the hook's actual current behavior
+        (see the one-line comment above the `find` call in the hook); GNU
+        `find`'s own command-line-argument symlink handling is untested
+        here."""
+        project = f"{SYNTHETIC_PROJECT_PREFIX}-symlinked-memory-dir"
+        project_dir = _config_dir(tmp_path) / "projects" / project
+        project_dir.mkdir(parents=True)
+        real_target = tmp_path / "real-memory-target"
+        real_target.mkdir()
+        (real_target / "MEMORY.md").write_bytes(b"x" * (DEFAULT_PER_PROJECT_BYTES * 5))
+        (project_dir / "memory").symlink_to(real_target, target_is_directory=True)
+        result = _run_hook(_base_payload(), tmp_path)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "", (
+            "a project whose memory/ directory is itself a symlink must not "
+            "count toward N or contribute bytes on this platform's find -- "
+            "see the one-line comment above the find call in the hook"
         )

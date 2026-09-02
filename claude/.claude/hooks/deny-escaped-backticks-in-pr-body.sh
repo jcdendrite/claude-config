@@ -22,8 +22,9 @@
 # - Does NOT auto-permit \` that appear inside fenced code blocks.
 #   The fix is always to drop the backslash, not to add a carve-out.
 #   The deny message explains exactly what to do.
-# - Fails closed (blocks) when a body-source file is a pseudo-file or
-#   is not readable, matching the posture of deny-private-project-refs.sh.
+# - Fails closed (blocks) when a body-source file is a pseudo-file, is
+#   not a regular file, or is not readable, matching the posture of
+#   deny-private-project-refs.sh.
 
 set -uo pipefail
 
@@ -108,11 +109,16 @@ if [ -n "$BODY_SOURCES" ]; then
       emit_deny "gh pr command passes a body-source flag pointing at a pseudo-file path ('${body_source_path}'). The backtick-escape gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' for the full rationale."
       exit 0
     fi
-    if [ ! -r "$body_source_path" ]; then
-      emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist or is not readable from the hook. The backtick-escape gate refuses to scan an unreadable body file (fail-closed). Create the file before running the gh pr command, inline the content with --body, or simplify the path. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' for the full rationale."
+    if [ ! -f "$body_source_path" ] || [ ! -r "$body_source_path" ]; then
+      emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist, is not a regular file, or is not readable from the hook. The backtick-escape gate refuses to scan an unreadable body file (fail-closed). Create the file before running the gh pr command, inline the content with --body, or simplify the path. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' for the full rationale."
       exit 0
     fi
-    BODY_CONTENT=$(cat "$body_source_path" 2>/dev/null || true)
+    BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null)
+    BODY_CONTENT_STATUS=$?
+    if [ "$BODY_CONTENT_STATUS" -eq 124 ]; then
+      emit_deny "gh pr command references a body-source file at '${body_source_path}', but reading it did not finish within the scan timeout. The backtick-escape gate refuses to scan partial content (fail-closed). Simplify the file or inline the content with --body. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' for the full rationale."
+      exit 0
+    fi
     SCAN_TARGET+=$'\n'"$BODY_CONTENT"
   done <<< "$BODY_SOURCES"
 fi

@@ -681,6 +681,28 @@ class TestNoGateReleaseRosterSync:
             "agent's own stated design (see memory-store-classifier.md's body)."
         )
 
+    def test_memory_store_classifier_forbids_cross_file_blending(self):
+        """Pins the per-row content-isolation instruction /memory-store-audit
+        Step 2's single batched dispatch depends on.
+
+        A single dispatch can hand this agent memory files from several
+        unrelated private projects at once. Without an explicit instruction
+        that a row's destination/verdict/title text may draw only on that
+        row's own file, an LLM classifying several projects' content in one
+        context is a plausible vector for a detail from one project
+        surfacing in a row nominally about another — including in a `file
+        as issue` title bound for a public GitHub issue. A future edit that
+        drops this instruction while leaving the read-only tool grant intact
+        would pass every other test here while silently reopening that gap.
+        """
+        content = (AGENTS_DIR / "memory-store-classifier.md").read_text()
+        assert "never on another file read earlier or" in content, (
+            "memory-store-classifier.md no longer states that a row's "
+            "content must draw only on that row's own file. Restore an "
+            "explicit no-cross-file-blending instruction — see this test's "
+            "docstring for why a single batched dispatch needs one."
+        )
+
     def test_harness_builtin_exemptions_have_no_agent_file(self):
         """The exemption list must stay an exemption, not a bypass.
 
