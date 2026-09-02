@@ -20,11 +20,11 @@ fixture is exactly the content the item exists to keep out of the repo.
 
 ## Skill and rule authoring conventions
 
-**No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` has no `includes:`/`import:`/`extends:` field and the `@path` syntax is CLAUDE.md-only — duplicate shared rule text into each skill rather than extracting a `_shared/` file. Co-located auxiliary files (`REFERENCES.md`; a runtime auxiliary like `plan-review/ROUTING.md`, only for load-bearing content that genuinely can't be shortened, not a response to hitting the length cap) are a separate, permitted pattern — see `docs/skills.md`'s Skill architecture notes section.
+**No shared partials across skills — but co-located auxiliary files are distinct.** `SKILL.md` has no `includes:`/`import:`/`extends:` field and the `@path` syntax is CLAUDE.md-only — duplicate shared rule text into each skill rather than extracting a `_shared/` file. Co-located auxiliary files are a separate, permitted pattern — `REFERENCES.md` (edit-time) and `plan-review/ROUTING.md` (runtime) are the two in use. Add one only for content that is genuinely load-bearing and can't be shortened, never as a way to route around a file's length cap. See `docs/skills.md`'s Skill architecture notes section for the full distinction.
 
 **`REFERENCES.md` is the edit-time co-located reference for a skill.** It holds canonical URLs/quotes/framework notes for a skill, read manually at edit time — it is never loaded at runtime and must not be embedded in `SKILL.md`.
 
-**Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` install to every stack — don't hardcode engine/platform tokens (`pg_cron`, `net.http_post`, vendor API names); put stack-specific checks in a project-layer skill (`<skill>-<project>/SKILL.md`) loaded via the base skill's project-layer glob.
+**Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` install to every stack — don't hardcode engine/platform tokens (`pg_cron`, `net.http_post`, vendor API names); put stack-specific checks in a project-layer skill (`<skill>-<project>/SKILL.md`) loaded via the base skill's project-layer glob. The project-layer glob is for *additive* refinements of a base flow that already runs a complete pass on its own — a flow with no standalone base to layer onto (nothing the downstream repo could run absent the layer) belongs in the consuming repo as its own skill instead, not as a project-layer glob on a base that can't run alone.
 
 ### When a skill is surfaced by real-world work, abstract first
 
