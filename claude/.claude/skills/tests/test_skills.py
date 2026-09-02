@@ -2917,6 +2917,14 @@ class TestPerAccountStatePathContract:
     from drifting back in, including the $HOME-form bypass a bare
     '~/.claude/' substring check would miss entirely."""
 
+    def test_flags_issue_triage_state_path(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("~/.claude/issue-triage/run.md")
+        assert match is not None
+
+    def test_does_not_flag_issue_triage_config_dir_prose(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("<config-dir>/issue-triage/run.md")
+        assert match is None
+
     @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
     def test_skill_body_has_no_state_path(self, skill_md_path):
         body = _strip_yaml_frontmatter(skill_md_path.read_text())
