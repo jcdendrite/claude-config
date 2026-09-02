@@ -494,7 +494,10 @@ def edit_input(
 
 
 def write_input(
-    file_path: str, agent_type: str | None = None, cwd: str | None = None, content: str = "x"
+    file_path: str,
+    agent_type: str | None = None,
+    cwd: str | None = None,
+    content: str = "x",
 ) -> dict:
     """`content` defaults to the prior hardcoded placeholder — existing call
     sites that don't care about content keep the same payload."""
