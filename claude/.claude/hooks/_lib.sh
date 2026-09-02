@@ -641,6 +641,60 @@ _lib_extract_git_subcmd_args() {
   printf '%s\n' "${argv#*$'\n'}"
 }
 
+# Decide whether a `git commit` fragment carries `-a`/`--all`, a `--`
+# pathspec separator, or a bare pathspec argument — any of which commits
+# working-tree content that is not in the index when a PreToolUse hook's
+# `git diff --cached` snapshot runs. Shared by deny-pii-in-commits.sh
+# (decides whether it also needs to scan `git diff HEAD`) and
+# deny-invisible-commit-content.sh (denies the commit outright).
+# Usage: _lib_commit_fragment_has_worktree_target "git commit -am wip"
+_lib_commit_fragment_has_worktree_target() {
+  # Each stage is captured into a variable rather than run as one pipeline.
+  # The awk exits as soon as it finds a worktree-target token; in a single
+  # pipeline that closes the pipe on a still-running `xargs -n1`, and under
+  # `set -o pipefail` the resulting SIGPIPE surfaces as a non-zero pipeline
+  # status — spuriously reporting "no target". Testing the captured awk
+  # output isolates the verdict from that SIGPIPE false failure, but
+  # xargs's and awk's own exit codes are still checked below so a genuine
+  # tool failure fails closed rather than reading as "no target".
+  local fragment_tokens verdict xargs_exit awk_exit
+  fragment_tokens=$(printf '%s\n' "$1" | xargs -n1 2>/dev/null)
+  xargs_exit=$?
+  verdict=$(awk '
+    BEGIN { past = 0; skip = 0 }
+    {
+      if (!past) { if ($0 == "commit") past = 1; next }
+      if (skip) { skip = 0; next }
+      if ($0 == "--") { print "Y"; exit }
+      if ($0 ~ /^--/) {
+        if ($0 == "--all") { print "Y"; exit }
+        # Long options that consume a separate-token value.
+        if ($0 ~ /^(--message|--file|--reuse-message|--reedit-message|--template|--author|--date|--cleanup|--fixup|--squash|--trailer|--pathspec-from-file)$/) skip = 1
+        next
+      }
+      if ($0 ~ /^-./) {
+        # Short-flag bundle. `a` anywhere means --all; a bundle ending in a
+        # value-taking letter consumes the next token.
+        if ($0 ~ /a/) { print "Y"; exit }
+        if ($0 ~ /[mFCct]$/) skip = 1
+        next
+      }
+      # A bare, non-consumed token after `commit` is a pathspec.
+      print "Y"; exit
+    }
+  ' <<< "$fragment_tokens")
+  awk_exit=$?
+  # A missing, killed, or otherwise-failing xargs/awk must not read as "no
+  # worktree target" -- treat it the same as a target found, the safe
+  # direction for both callers (deny outright in
+  # deny-invisible-commit-content.sh; also scan `git diff HEAD` in
+  # deny-pii-in-commits.sh).
+  if [ "$xargs_exit" -ne 0 ] || [ "$awk_exit" -ne 0 ]; then
+    return 0
+  fi
+  [ "$verdict" = "Y" ]
+}
+
 # Split a shell command string into fragments on shell operators (;, &&, ||, |,
 # $(...), backticks). Each fragment may invoke a distinct command. Leading/
 # trailing parentheses are stripped from each fragment so that `(cd /x; git push)`

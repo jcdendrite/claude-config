@@ -468,7 +468,9 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
     # a pseudo-file. Gated under the same non-empty staged-diff guard
     # as the -m scan above so that empty-staged-diff flows (--amend
     # without --allow-empty staged content, --allow-empty alone,
-    # nothing staged) preserve their historical "let git decide" pass.
+    # nothing staged) preserve their historical "let git decide" pass —
+    # sound for the shapes deny-invisible-commit-content.sh denies. See
+    # its header's "Known gaps" list for what still isn't.
     COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
     if [ -n "$COMMIT_MSG_SOURCES" ]; then
       while IFS= read -r commit_msg_path; do
@@ -490,7 +492,9 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # nothing staged, or only test-dir changes), the command is NOT added
   # to the scan target. This preserves historical behavior: let git
   # handle the no-content case on its own, even if the message happens
-  # to mention a tracker token.
+  # to mention a tracker token. deny-invisible-commit-content.sh makes an
+  # empty staged diff at hook time mean an empty commit for the shapes it
+  # closes — see its header's "Known gaps" list for the residual.
 fi
 
 if [ "$IS_GH_PR" -eq 1 ]; then

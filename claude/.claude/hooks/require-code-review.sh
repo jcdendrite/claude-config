@@ -82,6 +82,9 @@ fi
 
 # Empty staged diff: amend-message-only, --allow-empty, or nothing to commit.
 # No new content to review; let git decide whether the commit is valid.
+# deny-invisible-commit-content.sh makes an empty diff here mean an empty
+# commit for the shapes it closes — see its header's "Known gaps" list for
+# the residual. Do not remove either half independently.
 if [ -z "$(git -C "$REPO_ROOT" diff --cached 2>/dev/null)" ]; then
   exit 0
 fi

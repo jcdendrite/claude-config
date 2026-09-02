@@ -153,40 +153,45 @@ the substantive content — the edit stays inline. Discovery reads
 (mapping an unfamiliar area before deciding) route to
 `Explore`/`general-purpose`, not `code-writer`.
 
-**Implementation of an approved plan is delegated by default.** A plan
-that cleared `/plan-review` already fixed scope and approach, so condition
-(1) of the decision-made test above holds by construction — dispatch
-`code-writer` per phase, naming the plan path, the phase's steps, and its
-verification command. Two things stay with the parent: a step the plan
-deliberately left open for implementation-time discovery, and the review
-of what a dispatch returns — running the phase's verification command
-inline, reading the returned diff line by line, and applying a
-correction whose content is already decided. Root-causing a failure the
-returned diff does not explain is not parent work: dispatch it as a
-**Debug-investigation probe** (above) and apply the fix the returned
-diagnosis specifies.
+**Implementation of an approved plan is delegated by default.** A plan that cleared `/plan-review` already fixed
+scope and approach, so condition (1) of the decision-made test above holds by construction — dispatch
+`code-writer` per phase, naming the plan path, the phase's steps, and its verification command. Two things stay
+with the parent: a step the plan deliberately left open for implementation-time discovery, and review of what a
+dispatch returns. That review means running the phase's verification command inline, reading the returned diff
+line by line, and applying only a correction the parent's own read of the diff decided — never one a reviewer's
+disposition decided instead. Root-causing a failure the returned diff does not explain is not parent work:
+dispatch it as a **Debug-investigation probe** (above) and apply the fix the returned diagnosis specifies.
+
+**The fix that follows `code-review`, `ready-for-review`, or `respond-pr` feedback is also delegated by
+default.** A reviewer's disposition already names the finding, `file:line`, and a concrete suggested fix, so
+condition (1) holds by construction. Condition (2) commonly does not hold — locating one named finding is
+usually a single ranged `Read`. That doesn't gate this case, though: the fix is itself review-bearing work,
+since an inline fix would skip the re-review `ready-for-review` step 3 runs on a dispatched one. The edit load
+still accumulates in the parent either way. A review round is the ADDRESS/DEFER disposition output of one
+`/code-review` or `/ready-for-review` invocation, not a span across multiple re-review loop iterations. Dispatch
+one `code-writer` per round, `model: sonnet`, carrying: every ADDRESS row verbatim (finding, `file:line`,
+suggested fix); the diff scope; and the verification command. Never dispatch a DEFER row. The parent keeps the
+commit, the `/code-review` re-run, and the marker. Two further carve-outs, neither size-based:
+
+- Not code (a `## Deferred review findings` block, a `respond-pr` reply, a plan-file edit) — stays inline.
+- Still being re-decided — fails condition (1), stays inline.
+
+A finding surviving a second dispatch stops being delegated — it is now a design question, not a fix.
 
 ### Everything else → `general-purpose`
 
-The two-test gate above covers every other case: multi-step
-diagnostics, log correlation, verbose `git diff` / state-survey bursts.
-Dispatch the objective — not the commands — to `general-purpose` with
-an explicit `model: sonnet` (a no-op when the parent is already
-Sonnet; keeps the dispatched work off Opus when the parent is not).
+The two-test gate above covers every other case: multi-step diagnostics, log correlation, verbose `git diff` /
+state-survey bursts. Dispatch the objective — not the commands — to `general-purpose` with an explicit `model:
+sonnet` (a no-op when the parent is already Sonnet; keeps the dispatched work off Opus when the parent is not).
 
 ### Exception: gate/review loops stay orchestrator-driven
 
-A "review → commit → push → ready-for-review, repeat until clean"
-sequence — or any open-ended, multi-step, loop-until-converged gate
-sequence — never goes to one subagent as an internal loop, no matter
-how well it otherwise fits "everything else" above. Drive it from the
-orchestrating session itself, or split it into separate bounded
-per-step dispatches the orchestrator sequences between, so an
-interruption's blast radius stays scoped to one step and each step's
-result stays visible in the orchestrator's own conversation.
+A "review → commit → push → ready-for-review, repeat until clean" sequence — or any open-ended, multi-step,
+loop-until-converged gate sequence — never goes to one subagent as an internal loop, no matter how well it
+otherwise fits "everything else" above. Drive it from the orchestrating session itself, or split it into
+separate bounded per-step dispatches the orchestrator sequences between, so an interruption's blast radius stays
+scoped to one step and each step's result stays visible in the orchestrator's own conversation.
 
-This does not conflict with per-phase `code-writer` dispatch above:
-dispatching one plan phase's bounded implementation work is not a gate
-loop, even across several phases dispatched in sequence — each phase
-dispatch returns to the parent, which reviews it before the next one
-goes out.
+This does not conflict with per-phase `code-writer` dispatch above: dispatching one plan phase's bounded
+implementation work is not a gate loop, even across several phases dispatched in sequence — each phase dispatch
+returns to the parent, which reviews it before the next one goes out.

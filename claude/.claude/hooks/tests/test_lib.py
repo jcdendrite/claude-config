@@ -1275,6 +1275,30 @@ def test_lib_fragment_invokes_git_rejects_documented_look_alikes(fragment: str) 
     assert result.returncode != 0, result.stderr
 
 
+# --- _lib_commit_fragment_has_worktree_target ---------------------------
+#
+# Shared by deny-invisible-commit-content.sh (denies outright) and
+# deny-pii-in-commits.sh (widens the scan to git diff HEAD) -- the two
+# callers read this helper's return value for different purposes, so the
+# tool-missing fail-safe direction gets its own direct test here rather
+# than relying on either caller's own behavioral pinning alone.
+
+
+@pytest.mark.parametrize("missing_binary", ["xargs", "awk"])
+def test_commit_fragment_has_worktree_target_fails_safe_when_tool_missing(
+    missing_binary: str, tmp_path: Path
+) -> None:
+    """A commit fragment with no real worktree target (no -a/--all, no --
+    separator, no bare pathspec) still reports "target found" when xargs or
+    awk is missing from PATH -- the safe direction for both callers."""
+    farm_dir = tmp_path / f"path-without-{missing_binary}"
+    farm_dir.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = build_path_without(missing_binary, farm_dir)
+    result = _run_lib_call('_lib_commit_fragment_has_worktree_target "git commit -m x"', env=env)
+    assert result.returncode == 0, result.stderr
+
+
 # --- _lib_realpath_m ---------------------------------------------------
 #
 # GNU `realpath -m` is available natively in this test environment, so a
