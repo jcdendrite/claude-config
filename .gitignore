@@ -141,6 +141,7 @@ claude/.claude/briefs/
 claude/.claude/cache/
 claude/.claude/error-mode-reports/
 claude/.claude/handoffs/
+claude/.claude/issue-triage/
 
 # Per-machine exclusive-lock file cost-ledger --record holds for its
 # read-check-write window (never the ledger file itself, since renaming it

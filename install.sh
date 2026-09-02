@@ -656,6 +656,9 @@ if [ -f "$SETTINGS_FILE" ]; then
     fi
     while read -r plugin; do
       [ -z "$plugin" ] && continue
+      if [ "$plugin" = "issue-triage@claude-config" ]; then
+        echo "  ! $plugin carries live gh credentials and unrestricted Bash — see its plugin.json description before running /issue-triage"
+      fi
       if _project_plugin_already_installed "$plugin" "$existing_project_plugins"; then
         echo "  ✓ $plugin (already installed)"
       else

@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
+from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, build_path_without, run_hook_reason
 
 from .conftest import (
     _agent_use,
@@ -13628,6 +13628,44 @@ class TestDenialHookLabelEnumerationRealHooks:
         subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
         message = run_hook_reason(
             HOOKS_DIR / "check-skill-length.sh", bash_input("git commit -m foo"), cwd=repo,
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "Skill length"
+
+    def test_claude_md_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-claude-md-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) now goes through the shared
+        _lib_staged_length_gate and shares check-claude-md-length.sh's
+        over-limit label "AGENTS.md length" — pinning the post-Phase-2
+        merged classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-claude-md-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+
+    def test_skill_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-skill-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) now goes through the shared
+        _lib_staged_length_gate and shares check-skill-length.sh's
+        over-limit label "Skill length" — pinning the post-Phase-2 merged
+        classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-skill-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
         )
         assert message is not None
         assert _mod._denial_hook_label("", message) == "Skill length"

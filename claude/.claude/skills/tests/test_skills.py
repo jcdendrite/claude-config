@@ -222,13 +222,11 @@ def _model_invokable_skills() -> list[str]:
 
 
 # Explicit registry of user-only command skills that use the frontmatter
-# disable-model-invocation: true flag. Currently empty — the four former command
-# skills (brief, handoff, read-docx-comments, transcript-analysis) now use
-# skillOverrides: name-only, making them model-invokable by name while keeping
-# their descriptions out of the budget. Add to this list only when a new skill
-# needs strict slash-only access (no model invocation at all) via frontmatter
-# rather than skillOverrides.
-COMMAND_SKILLS: list[str] = []
+# disable-model-invocation: true flag. Plugin skills that need the listing-
+# budget exemption register here instead of via skillOverrides, which does
+# not apply to plugin skills — see docs/skills.md for the full mechanism and
+# the /skill-review exception.
+COMMAND_SKILLS: list[str] = ["issue-triage"]
 
 # Skills that are user-invocable: false (model/hook-dispatched) but deliberately
 # carry no TRIGGER blocks because they are always dispatched by name — never by
@@ -329,6 +327,21 @@ class TestSpecialistSkillTriggerContracts:
         assert "disable-model-invocation: true" in desc, (
             f"{skill_name}/SKILL.md is registered as a command skill but is missing "
             f"disable-model-invocation: true; add it or remove from COMMAND_SKILLS"
+        )
+
+    @pytest.mark.parametrize("skill_name", COMMAND_SKILLS)
+    def test_command_skill_excluded_from_model_invokable_corpus(self, skill_name):
+        """A registered command skill must not count toward the listing budget.
+
+        Asserted directly against _model_invokable_skills(), independent of
+        the aggregate budget's momentary headroom — TestTotalListingBudgetUnderSonnet
+        would only catch a regression here if the corpus happened to be close
+        to the cap at the time.
+        """
+        assert skill_name not in _model_invokable_skills(), (
+            f"{skill_name} is registered in COMMAND_SKILLS (disable-model-invocation: "
+            f"true) but still appears in _model_invokable_skills() — check that flag "
+            f"is actually present and the plugin-scanning loop is reading it"
         )
 
 
@@ -2812,7 +2825,7 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 # "Worktree enforcement").
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
-    r"(handoffs/|briefs/|plans/|projects/|sessions/"
+    r"(handoffs/|briefs/|issue-triage/|plans/|projects/|sessions/"
     r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*\.d/|output-preferences\.md"
     r"|pii-patterns\.md|credential-file-guard\.md|credential-value-patterns\.md"
     r"|data-file-read-guard\.md|private-projects\.md|track-permission-prompts"
@@ -2903,6 +2916,14 @@ class TestPerAccountStatePathContract:
     .claude/plans/normalize-config-dir-paths.md. Guards the state-path class
     from drifting back in, including the $HOME-form bypass a bare
     '~/.claude/' substring check would miss entirely."""
+
+    def test_flags_issue_triage_state_path(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("~/.claude/issue-triage/run.md")
+        assert match is not None
+
+    def test_does_not_flag_issue_triage_config_dir_prose(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("<config-dir>/issue-triage/run.md")
+        assert match is None
 
     @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
     def test_skill_body_has_no_state_path(self, skill_md_path):
