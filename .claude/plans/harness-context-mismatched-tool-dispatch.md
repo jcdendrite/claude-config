@@ -14,11 +14,16 @@ and not something this repo's own config can fix.
 The user surfaced a concrete instance this session ("plan-architect is
 running now... That tool wasn't the right fit here (it's for /loop
 sessions) — cancelled it.") and asked for `transcript-analysis` to find
-other examples before deciding how to respond. That search confirmed
-18 instances across many different session types — `/plan-it`,
-`/code-review`, `/ready-for-review`, `/plan-review`, plain chat, and an
-eval harness — always the same tool, never `plan-architect`, `Monitor`,
-or `CronCreate`. A follow-up Opus consult (`plan-architect`,
+other examples before deciding how to respond. That search (scope:
+`SESSIONS SOURCES (*; 4 roots)`, spanning multiple accounts, including
+private-project transcripts) confirmed the pattern recurring across
+many different session types — `/plan-it`, `/code-review`,
+`/ready-for-review`, `/plan-review`, plain chat, and an eval harness —
+always the same tool, never `plan-architect`, `Monitor`, or
+`CronCreate`. Per G3 below, the exact instance count is not reproduced
+here, since the same provenance constraint that keeps it out of
+`docs/design-decisions.md` §41 applies equally to this plan file, which
+ships in the same PR. A follow-up Opus consult (`plan-architect`,
 `MODE=consult`) then weighed three candidate repo-side mechanisms — a
 `PreToolUse` deny gate, a `PostToolUse` advisory nudge, and a
 `CLAUDE.md` prose line — and rejected all three: none actually reaches
