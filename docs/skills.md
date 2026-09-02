@@ -138,7 +138,7 @@ Four skills that primarily apply to this repo's own workflow — editing `SKILL.
 | `skill-management@claude-config` | Commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing), plus behavioral-equivalence audit via `/skill-review` | Repos that author their own `SKILL.md` files |
 | `claude-hook-review@claude-config` | Review playbook for `.claude/hooks/*.sh` scripts and `settings.json` hook entries | Repos that author their own hook scripts |
 | `plugin-semver@claude-config` | Semver and version-field discipline for plugin manifests | Repos that author Claude Code plugins for a marketplace |
-| `issue-triage@claude-config` | `/issue-triage`: stateless, report-only triage of open GitHub issues — batched evidence-gathering, cross-batch synthesis, and a claim-verification pass | Repos with a GitHub issue backlog that needs periodic evidence-backed triage |
+| `issue-triage@claude-config` | `/issue-triage`: stateless, report-only triage of open GitHub issues — batched evidence-gathering, cross-batch synthesis, and a claim-verification pass | Repos with a public GitHub issue backlog that needs periodic evidence-backed triage |
 
 Three more plugins also live in `plugins/` but are not part of this repo's own authoring workflow — they provide skills for downstream repos rather than for contributors to claude-config itself:
 

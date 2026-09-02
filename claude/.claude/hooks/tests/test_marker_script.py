@@ -55,13 +55,11 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
     ["activate", "respond-pr"],
     ["activate", "memory-skill"],
     ["activate", "handoff"],
-    ["activate", "issue-triage", "foo/bar"],
     ["deactivate", "plan-review"],
     ["deactivate", "ready-for-review"],
     ["deactivate", "respond-pr"],
     ["deactivate", "memory-skill"],
     ["deactivate", "handoff"],
-    ["deactivate", "issue-triage"],
     ["status"],
 ]
 
@@ -302,75 +300,6 @@ class TestMarkerScriptHappyPath:
         result = _run(["deactivate", "handoff"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert not (active_dir / sid).exists()
-
-    def test_activate_issue_triage_creates_active_marker_with_pid_and_repo_target(
-        self, isolated_home, git_repo
-    ):
-        """activate issue-triage takes a second (repo-target) argument, unlike
-        every other activate skill, and stores it in a `.repo-target` sibling
-        file alongside the PID marker (not a second line in the marker
-        itself — see the marker.sh comment on this arm for why)."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        result = _run(
-            ["activate", "issue-triage", "foo/bar"], cwd=git_repo, home=isolated_home
-        )
-        assert result.returncode == 0, result.stderr
-        active_file = isolated_home / ".claude" / ".issue-triage-active.d" / sid
-        assert active_file.exists()
-        content = active_file.read_text().strip()
-        assert content.isdigit(), (
-            f"activate issue-triage must write a numeric PID, got: {content!r}"
-        )
-        repo_target_file = (
-            isolated_home / ".claude" / ".issue-triage-active.d" / f"{sid}.repo-target"
-        )
-        assert repo_target_file.read_text().strip() == "foo/bar"
-
-    def test_activate_issue_triage_without_repo_target_exits_2(self, isolated_home, git_repo):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        result = _run(["activate", "issue-triage"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        active_dir = isolated_home / ".claude" / ".issue-triage-active.d"
-        stray = list(active_dir.iterdir()) if active_dir.exists() else []
-        assert stray == [], f"a missing repo-target must not write a marker: {stray}"
-
-    def test_activate_issue_triage_rejects_whitespace_in_repo_target(
-        self, isolated_home, git_repo
-    ):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        result = _run(
-            ["activate", "issue-triage", "foo bar"], cwd=git_repo, home=isolated_home
-        )
-        assert result.returncode == 2, result.stderr
-        active_dir = isolated_home / ".claude" / ".issue-triage-active.d"
-        stray = list(active_dir.iterdir()) if active_dir.exists() else []
-        assert stray == [], f"a whitespace-containing target must not write a marker: {stray}"
-
-    def test_activate_plan_review_with_a_third_argument_exits_2(self, isolated_home, git_repo):
-        """Every activate skill other than issue-triage stays 2-arg only."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        result = _run(
-            ["activate", "plan-review", "extra"], cwd=git_repo, home=isolated_home
-        )
-        assert result.returncode == 2, result.stderr
-
-    def test_deactivate_issue_triage_removes_active_marker_and_repo_target(
-        self, isolated_home, git_repo
-    ):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        active_dir = isolated_home / ".claude" / ".issue-triage-active.d"
-        active_dir.mkdir(parents=True)
-        (active_dir / sid).touch()
-        (active_dir / f"{sid}.repo-target").write_text("foo/bar")
-        result = _run(["deactivate", "issue-triage"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-        assert not (active_dir / sid).exists()
-        assert not (active_dir / f"{sid}.repo-target").exists()
 
     def test_help_exits_0(self, isolated_home, git_repo):
         result = _run(["--help"], cwd=git_repo, home=isolated_home)
@@ -785,44 +714,6 @@ class TestMarkerWriteSatisfiesTheGate:
             )
             == "allow"
         )
-
-    def test_activate_issue_triage_marker_arms_the_gh_mutation_gate(
-        self, isolated_home, git_repo
-    ):
-        """Same round-trip proof for the restriction-polarity marker: real
-        `marker.sh activate issue-triage <target>` output, read by the real
-        plugin hook — not a Python-seeded fixture on either side, so a
-        drift between marker.sh's write format and the hook's read format
-        (the PID marker plus its .repo-target sibling) would fail this
-        test even though each side's own unit tests stay green."""
-        sid = "test-session-issue-triage-roundtrip"
-        _seed_session(isolated_home, sid)
-
-        result = _run(
-            ["activate", "issue-triage", "foo/bar"], cwd=git_repo, home=isolated_home
-        )
-        assert result.returncode == 0, result.stderr
-
-        deny_hook = (
-            HOOKS_DIR.parent.parent.parent
-            / "plugins" / "issue-triage" / "hooks" / "deny-gh-mutation-during-triage.sh"
-        )
-        assert (
-            run_hook(deny_hook, bash_input("gh issue close 5", session_id=sid), home=isolated_home)
-            == "deny"
-        ), "a live marker written by the real activate command must arm the write-shape deny"
-        assert (
-            run_hook(
-                deny_hook,
-                bash_input("gh issue view 5 -R other/repo", session_id=sid),
-                home=isolated_home,
-            )
-            == "deny"
-        ), "the real .repo-target sibling must arm the off-target deny"
-        assert (
-            run_hook(deny_hook, bash_input("gh issue view 5", session_id=sid), home=isolated_home)
-            == "allow"
-        ), "an on-target read must still pass through"
 
 
 class TestMarkerScriptHonorsConfigDir:
@@ -1782,11 +1673,8 @@ class TestMarkerScriptStatusCompletionMarkers:
 
 class TestMarkerScriptStatusActiveBypass:
     """`marker.sh status` reports each active-bypass marker (plan-review,
-    ready-for-review, respond-pr, memory-skill, handoff, issue-triage) for
-    this session as live, stale, or absent. issue-triage's liveness check
-    depends only on the PID marker file seeded below, not on its
-    `.repo-target` sibling, so these generic live/stale/absent cases need
-    no special-casing for it."""
+    ready-for-review, respond-pr, memory-skill, handoff) for this session as
+    live, stale, or absent."""
 
     SID = "test-session-status-bypass"
 
@@ -1796,7 +1684,6 @@ class TestMarkerScriptStatusActiveBypass:
         ("respond-pr", ".respond-pr-active.d"),
         ("memory-skill", ".memory-skill-active.d"),
         ("handoff", ".handoff-active.d"),
-        ("issue-triage", ".issue-triage-active.d"),
     ]
 
     @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
