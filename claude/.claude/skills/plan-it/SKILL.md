@@ -55,7 +55,7 @@ The dispatch prompt carries:
 
 Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it automatically at startup, like every subagent except `Explore`/`Plan`.
 
-Insert the returned text verbatim into the plan file's Approach, Critical files, Verification, and Out of scope sections — do not rewrite or summarize it further. If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. Pass the plan file's path on that re-dispatch rather than re-injecting the plan text inline — `plan-architect` holds `Read` and can load its own prior draft. `/code-review`'s Fix-route step is a second caller of this same revision re-dispatch, for an ADDRESS finding whose fix would introduce a new mechanism on a branch that already has a plan file.
+Insert the returned text verbatim into the plan file's Approach, Critical files, Verification, and Out of scope sections — do not rewrite or summarize it further. If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. Pass the plan file's path on that re-dispatch rather than re-injecting the plan text inline — `plan-architect` holds `Read` and can load its own prior draft.
 
 Re-dispatch from scratch, rather than repairing inline, on any of these returns:
 - A context-limit failure or tool error mid-dispatch.
