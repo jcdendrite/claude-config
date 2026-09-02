@@ -104,9 +104,10 @@ choreography in prose at each site, on four independent grounds:
 4. **It's more DRY.** A prose fallback dance restated at every site can silently drift
    out of sync between copies; a script is one tested, shellchecked artifact.
 
-This inherits `marker.sh`'s own known, already-accepted gap for a session running under a
-non-default `$CLAUDE_CONFIG_DIR` whose `~/.claude` isn't a live install (e.g. a secondary
-account container) — not a new gap this fix introduces.
+Every git-tracked file under `claude/.claude/` resolves into one shared stow checkout
+regardless of the active account, so a hardcoded `~/.claude/scripts/<name>` or
+`~/.claude/hooks/<name>` names the same file under every `$CLAUDE_CONFIG_DIR` — there is
+no non-default-account gap for a script or hook call site to inherit.
 
 For an ad-hoc orchestrator Bash call no script pre-covers, the fallback convention is:
 one double-quoted statement, no nested `$(...)`, no `$CLAUDE_CONFIG_DIR` reference — the

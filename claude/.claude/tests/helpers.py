@@ -914,6 +914,10 @@ def install_marker_script(isolated_home: Path) -> Path:
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
     install_marker_script(isolated_home)
+    _symlink_if_absent(
+        isolated_home / ".claude" / "scripts" / "ensure-account-dir.sh",
+        SCRIPTS_DIR / "ensure-account-dir.sh",
+    )
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,

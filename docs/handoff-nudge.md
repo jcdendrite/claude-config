@@ -60,7 +60,7 @@ The hook checks for this file before reading the transcript. It is useful when r
 The nudge is a one-shot push, which makes it a poor thing to reason about as a query — a session at the plan→implementation boundary wants to know where it stands, not whether an injection happened to fire. `--check` answers that directly:
 
 ```bash
-"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check
+~/.claude/hooks/nudge-handoff-near-context-cap.sh --check
 ```
 
 It writes nothing — no fired marker, no log line — and exits 0 on every path, emitting one JSON object:
@@ -123,7 +123,7 @@ A session with no main-thread turn carrying a usage block (no fire threshold to 
 Run with:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" spend-over-threshold --since 2026-01-01
+python3 ~/.claude/scripts/transcript-analysis.py spend-over-threshold --since 2026-01-01
 ```
 
 ## Known limitations
