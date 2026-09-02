@@ -20,6 +20,10 @@
 #   pinned by a unit test that's skipped whenever GNU sed is detected, so CI
 #   (ubuntu-24.04, GNU sed) never exercises that regression test directly --
 #   only a contributor's local BSD/macOS sed runs it.
+# - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
+#   checked immediately and denies rather than falling through to this
+#   hook's normal allow path with the credential-path scan silently
+#   unscanned.
 #
 # Fail-closed on unparseable hook input.
 
@@ -55,7 +59,15 @@ fi
 # Quote-stripped so an adjacent-quote split (e.g. `cat ~/.ssh/config"_backup"`,
 # which bash executes identically to the unquoted form) can't slip the
 # credential-path token past this scan -- see _lib_strip_shell_quotes.
+# Checked and fail-closed, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation -- an unchecked failure here would silently
+# clear COMMAND_UNQUOTED and fall through to this hook's normal allow path.
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by credential-path Bash gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
+  exit 0
+fi
 
 # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+, Windows NTFS), `id_RSA` opens the same file as `id_rsa` -- a case-sensitive match here would silently bypass a gate with no other bypass valve.
 if printf '%s' "$COMMAND_UNQUOTED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then

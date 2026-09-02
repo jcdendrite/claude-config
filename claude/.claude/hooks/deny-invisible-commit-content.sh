@@ -33,10 +33,9 @@
 #    HEAD's tree into the commit, content never in `--cached` either.
 #    Left open because closing it would break the amend-message-only flow
 #    every commit gate's empty-diff carve-out exists to permit.
-#  - Quote/indirection obfuscation of the commit detection itself
-#    (`g"it commit"`, a shell variable holding the git path, a heredoc
-#    body piped to an interpreter) — the same surface every other commit
-#    gate already has.
+#  - Whole-word quote obfuscation (`"git" commit`) is closed for both arms
+#    (see docs/security-hardening.md for the mechanism); a shell variable,
+#    heredoc, or mid-word quote split (`g"it commit"`) remains open.
 #  - `git -C <other-repo> commit` — the gates hash the session's own repo,
 #    not the `-C` target.
 #  - A `$(...)`/backtick substitution inside a commit's own arguments
@@ -53,17 +52,11 @@
 #    quote character of the other kind inside a real argument does not
 #    affect the fragment count, and neither does an argument spanning
 #    multiple physical lines.
-#  - Wrapped-invocation blind spot: `_mask_shell_quotes` collapses an
-#    entire quoted span to nothing, so a real `git commit` invoked inside a
-#    code-executing wrapper's quoted argument (`bash -c "git commit ..."`,
-#    `eval "git commit ..."`, and similar) is invisible to arm 2's count.
-#    A two-commit chain where either commit is wrapped this way is not
-#    detected by either arm — e.g. `git commit -m "fix" && bash -c "git
-#    add secret && git commit -m y"`. Accepted under this repo's
-#    cooperative-agent threat model (see require-respond-pr.sh's own
-#    "Threat model" comment for the same posture stated elsewhere): these
-#    hooks assume a cooperative agent, not one deliberately constructing
-#    shell indirection to evade a gate.
+#  - Wrapped-invocation blind spot: a real `git commit` inside a
+#    code-executing wrapper's quoted argument (`bash -c "git commit
+#    ..."`) is invisible to arm 2's count; ANSI-C multi-char escapes have
+#    the same blind spot (see docs/security-hardening.md for the full
+#    derivation and the cooperative-agent threat-model rationale).
 #  - Quote-embedded decoy fragment: arm 1's ordered walk classifies
 #    fragments over quote-stripped text, so a quoted argument to an
 #    unrelated command that happens to contain the literal text "git
@@ -83,8 +76,11 @@
 #    predates this hook and is shared by every sibling always-on commit
 #    gate.
 #
-# Subprocess footprint once the fast-reject grep matches: pure string-
-# processing forks (grep/sed/tr/awk/xargs), no filesystem or network
+# Subprocess footprint: the quote-strip (sed+tr) that produces
+# COMMAND_UNQUOTED forks unconditionally, ahead of the fast-reject grep, on
+# every Bash call — the fast-reject grep itself and everything past it
+# still only fork once it matches. Every fork here is a pure string-
+# processing one (grep/sed/tr/awk/xargs), no filesystem or network
 # access, so none needs the `_lib_capped`/`timeout` wrapping `_lib_jq`
 # gets. Every fork's exit status is checked and fails closed on a
 # non-zero result, matching `_lib_parse_tool_input_or_deny`'s jq
@@ -126,13 +122,24 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
+# Quote-stripped so an adjacent-quote split (`"git" commit`) can't dodge
+# the fast-reject grep below or arm 1's fragment walk further down — same
+# helper as deny-network-installs.sh. Checked and fail-closed, matching
+# every other fork in this hook.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by invisible-commit-content gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+  exit 0
+fi
+
 # Fast-reject: only continue for commands that mention `git commit` in some
 # textual form. Copied verbatim from require-code-review.sh so every
 # commit gate shares one detection shape. Matches `git commit` at the
 # start of the command OR after a shell separator (&&, ||, ;, |), so
 # chained forms like `git add . && git commit` are also caught. The
 # trailing (\s|$) avoids matching `git commit-tree` or similar.
-printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'
+printf '%s\n' "$COMMAND_UNQUOTED" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'
 FAST_REJECT_EXIT=$?
 if [ "$FAST_REJECT_EXIT" -eq 1 ]; then
   exit 0
@@ -152,6 +159,18 @@ fi
 # second commit fragment. See docs/hooks.md's entry for this hook for the
 # single-pass quote-state-tracking design and how it contrasts with arm
 # 1's `_lib_strip_shell_quotes`.
+#
+# Exception:
+# - A quoted span whose entire interior is a single safe word
+#   (`^[A-Za-z0-9._/-]+$`) is emitted unquoted, not blanked, so a quoted
+#   `git`/`commit` word (`"git" commit`) survives quoting and stays
+#   visible to arm 2's fragment-count loop below.
+# - A leading `$` immediately before the opening delimiter is dropped too,
+#   mirroring `_lib_strip_shell_quotes`'s own `$'`/`$"` opener rule
+#   (`_lib.sh`).
+# - Every other quoted span — multi-word, containing whitespace or an
+#   operator — still blanks to its delimiter pair unchanged, so
+#   `-m "fix && git commit"` still masks the operator inside the message.
 _mask_shell_quotes() {
   printf '%s' "$1" | awk -v dq='"' -v sq="'" '
     BEGIN { RS = "\0" }
@@ -159,6 +178,8 @@ _mask_shell_quotes() {
       n = length($0)
       quote = ""
       quote_start = 0
+      quote_dollar_prefix = 0
+      span = ""
       result = ""
       for (i = 1; i <= n; i++) {
         c = substr($0, i, 1)
@@ -166,12 +187,23 @@ _mask_shell_quotes() {
           if (c == dq || c == sq) {
             quote = c
             quote_start = i
+            span = ""
+            quote_dollar_prefix = (length(result) > 0 && substr(result, length(result), 1) == "$")
           } else {
             result = result c
           }
         } else if (c == quote) {
-          result = result quote c
+          if (quote_dollar_prefix) {
+            result = substr(result, 1, length(result) - 1)
+          }
+          if (span ~ /^[A-Za-z0-9._\/-]+$/) {
+            result = result span
+          } else {
+            result = result quote c
+          }
           quote = ""
+        } else {
+          span = span c
         }
       }
       if (quote != "") {
@@ -240,12 +272,6 @@ fi
 # walk stops at the first commit fragment rather than scanning the     #
 # whole command.                                                       #
 # ------------------------------------------------------------------ #
-STRIPPED_COMMAND=$(_lib_strip_shell_quotes "$COMMAND")
-STRIP_EXIT=$?
-if [ "$STRIP_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not quote-strip the command text (exit ${STRIP_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
-  exit 0
-fi
 
 # Built once, from the single source of truth in _lib.sh, mirroring
 # deny-reviewer-tree-mutation.sh's and require-worktree-for-git-writes.sh's
@@ -256,7 +282,7 @@ while IFS= read -r subcmd; do
 done < <(_lib_readonly_git_subcmds)
 ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
-STRIPPED_FRAGMENTS=$(_lib_split_fragments "$STRIPPED_COMMAND")
+STRIPPED_FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 SPLIT_EXIT=$?
 if [ "$SPLIT_EXIT" -ne 0 ]; then
   emit_deny "Blocked by invisible-commit-content gate: could not split the command into fragments (exit ${SPLIT_EXIT}). Failing closed rather than allowing an unscanned git commit."

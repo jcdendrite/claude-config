@@ -522,6 +522,12 @@ _lib_is_repo_plan_file() {
 #
 # Rejects: `ls .github/`, `cat .gitignore`, `grep github.com`, `./git-foo`.
 # Accepts: `git log`, `sudo git commit`, `GIT_DIR=x git push`, `/usr/bin/git status`.
+#
+# Caller contract: word comparisons here are quote-blind by design (bash
+# word-splitting does not remove quote characters, so `"git" log` fails
+# every comparison below). The caller is responsible for passing a fragment
+# already quote-stripped via _lib_strip_shell_quotes if it needs to match a
+# quoted invocation.
 _lib_fragment_invokes_git() {
   local fragment="$1"
   local saved_opts=$-
@@ -546,6 +552,10 @@ _lib_fragment_invokes_git() {
 # The `--git-dir=<path>` form carries its value in the same word, so the
 # catch-all `-*` arm skips it rather than the value-consuming arm.
 # Globbing is disabled so a wildcard in the command text is not expanded.
+#
+# Caller contract: word comparisons here are quote-blind by design, same as
+# _lib_fragment_invokes_git — the caller is responsible for passing a
+# fragment already quote-stripped via _lib_strip_shell_quotes.
 _lib_git_argv_from_subcmd() {
   local fragment="$1"
   local saved_opts=$-
@@ -656,6 +666,12 @@ _lib_commit_fragment_has_worktree_target() {
 # $(...), backticks). Each fragment may invoke a distinct command. Leading/
 # trailing parentheses are stripped from each fragment so that `(cd /x; git push)`
 # yields `git push` as a clean fragment rather than `git push)`.
+# Call-site contract (load-bearing): the underlying sed pipeline can fail
+# (missing, killed, or erroring), and no caller runs under `set -e`, so
+# every call site must capture and check the exit status immediately and
+# fail closed on non-zero, rather than proceeding with a silently empty
+# fragment list — see deny-invisible-commit-content.sh's SPLIT_EXIT
+# computation for the pattern.
 _lib_split_fragments() {
   printf '%s' "$1" \
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
@@ -674,6 +690,10 @@ _lib_split_fragments() {
 # problem.
 #
 # Shared by deny-reviewer-tree-mutation.sh and deny-repo-relocation.sh.
+#
+# Caller contract: word comparisons here are quote-blind by design, same as
+# _lib_fragment_invokes_git — the caller is responsible for passing a
+# fragment already quote-stripped via _lib_strip_shell_quotes.
 _lib_fragment_command_word() {
   local fragment="$1"
   local saved_opts=$-
@@ -710,6 +730,10 @@ _lib_fragment_command_word() {
 
 # True iff the fragment's command word equals $2, or ends in "/$2" (an
 # absolute/relative path invocation, e.g. /usr/bin/terraform).
+#
+# Caller contract: inherits _lib_fragment_command_word's quote-blindness —
+# the caller is responsible for passing a fragment already quote-stripped
+# via _lib_strip_shell_quotes.
 _lib_fragment_invokes_tool() {
   local fragment="$1" tool="$2"
   local cmd
@@ -720,6 +744,11 @@ _lib_fragment_invokes_tool() {
 # True iff $2 appears in $1 as a standalone whitespace-delimited token — for
 # exact-flag checks (e.g. --fix, --remove-source-files) where a real value
 # never appends more non-space characters.
+#
+# Caller contract: this is a regex boundary match against $1 verbatim, no
+# word-walk — but it is still quote-blind (a quoted `"--fix"` never matches
+# the bare $2). The caller is responsible for passing a fragment already
+# quote-stripped via _lib_strip_shell_quotes.
 _lib_fragment_has_token() {
   local fragment="$1" token="$2"
   [[ "$fragment" =~ (^|[[:space:]])${token}([[:space:]]|$) ]]
@@ -1419,6 +1448,12 @@ _lib_config_lines() {
 # shell-word tokenization: variable expansion and command substitution
 # remain an accepted residual, same as the documented indirection gap (see
 # docs/security-hardening.md).
+# Call-site contract (load-bearing): the underlying sed/tr pipeline can fail
+# (missing, killed, or erroring), and no caller runs under `set -e`, so
+# every call site must capture and check the exit status immediately and
+# fail closed on non-zero, rather than proceeding with a silently empty or
+# partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
+# computation for the pattern.
 _lib_strip_shell_quotes() {
   printf '%s' "$1" \
     | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g' \

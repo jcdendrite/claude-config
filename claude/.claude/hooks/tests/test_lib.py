@@ -1117,6 +1117,16 @@ class TestFragmentCommandWord:
     def test_empty_fragment_returns_empty(self) -> None:
         assert _fragment_command_word("") == ""
 
+    def test_quoted_command_word_not_matched_by_contract(self) -> None:
+        """Caller contract (GH-783): this function is quote-blind by
+        design -- bash word-splitting does not remove quote characters, so
+        a quoted command word is returned verbatim, quotes and all, never
+        matching the bare tool name a caller compares it against. The
+        caller is responsible for stripping via _lib_strip_shell_quotes
+        first; pinned here so a future "fix" inside this function isn't
+        mistaken for closing a real gap."""
+        assert _fragment_command_word('"black" src/x.py') != "black"
+
 
 class TestFragmentInvokesTool:
     def test_exact_match(self) -> None:
@@ -1134,6 +1144,11 @@ class TestFragmentInvokesTool:
     def test_runner_wrapped_match(self) -> None:
         assert _fragment_invokes_tool("sudo env X=1 rsync -a /a /b", "rsync")
 
+    def test_quoted_tool_name_not_matched_by_contract(self) -> None:
+        """Caller contract (GH-783): inherits _lib_fragment_command_word's
+        quote-blindness."""
+        assert not _fragment_invokes_tool('"mv" /a /b', "mv")
+
 
 class TestFragmentHasToken:
     def test_standalone_token_matches(self) -> None:
@@ -1150,6 +1165,13 @@ class TestFragmentHasToken:
 
     def test_missing_token_does_not_match(self) -> None:
         assert not _fragment_has_token("rsync -a /a /b", "--remove-source-files")
+
+    def test_quoted_token_not_matched_by_contract(self) -> None:
+        """Caller contract (GH-783): a quoted token is a different literal
+        string than its bare form, so the boundary-match regex never
+        matches it -- quote-blind by design, same as the other matchers
+        in this family."""
+        assert not _fragment_has_token('rsync "--remove-source-files" /a /b', "--remove-source-files")
 
 
 # --- _lib_git_argv_from_subcmd / _lib_extract_git_subcmd /
@@ -1273,6 +1295,46 @@ def test_lib_fragment_invokes_git_accepts_documented_invocations(fragment: str) 
 def test_lib_fragment_invokes_git_rejects_documented_look_alikes(fragment: str) -> None:
     result = _run_lib_call(f'_lib_fragment_invokes_git "{fragment}"', env=dict(os.environ))
     assert result.returncode != 0, result.stderr
+
+
+# --- GH-783: caller-contract quote-blindness + composition -------------
+#
+# Not added to the Accepts list above: that list mirrors _lib.sh's own doc
+# comment, and _lib_fragment_invokes_git's quote-blind behavior is
+# unchanged by GH-783 -- the fix is at each caller's own input boundary
+# (COMMAND_UNQUOTED), not inside this function. These rows pin the
+# quote-blindness as an intentional caller contract and prove the
+# strip-then-match composition every caller now uses actually works.
+
+
+def test_lib_fragment_invokes_git_is_quote_blind_by_contract() -> None:
+    """A quoted git word matches nothing here by design -- bash
+    word-splitting does not remove quote characters. GH-783's fix strips
+    via _lib_strip_shell_quotes before calling this function, not inside
+    it; pinned here so a future "fix" placed inside this function isn't
+    mistaken for closing a real gap."""
+    result = _run_lib_call('_lib_fragment_invokes_git \'"git" log\'', env=dict(os.environ))
+    assert result.returncode != 0, result.stderr
+
+
+def test_lib_strip_shell_quotes_composed_with_invokes_git_detects_quoted_git_word() -> None:
+    """Composition test for the GH-783 caller idiom: strip once at the
+    hook's input boundary, then match -- proves `"git" log` is detected
+    once stripped, closing the bypass _lib_fragment_invokes_git's own
+    quote-blindness would otherwise leave open."""
+    call = "stripped=$(_lib_strip_shell_quotes '\"git\" log'); _lib_fragment_invokes_git \"$stripped\""
+    result = _run_lib_call(call, env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_strip_shell_quotes_composed_with_extract_git_subcmd_detects_quoted_subcommand() -> None:
+    """Composition test for the subcommand-quoted shape: the subcommand
+    word itself is quoted (`git "commit"`), not just the git word --
+    proves the same strip-then-match idiom closes it too."""
+    call = "stripped=$(_lib_strip_shell_quotes 'git \"commit\"'); _lib_extract_git_subcmd \"$stripped\""
+    result = _run_lib_call(call, env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "commit"
 
 
 # --- _lib_realpath_m ---------------------------------------------------
