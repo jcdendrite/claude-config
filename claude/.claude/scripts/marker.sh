@@ -256,15 +256,18 @@ _status_report_active_bypass() {
 # Prints TARGET's mtime as a Unix epoch, GNU stat first then BSD/macOS stat --
 # same probe order as ask-new-dependency-disclosure.sh's _file_size (not
 # shared via _lib.sh; that hook's comment names this as the canonical form).
+# Capped at 5s via _lib_capped_for, matching _hash_staged_diff capped's own
+# rationale: a check call (unlike write) reads state it doesn't control, so
+# a stalled stat must not hang the gate it's backing.
 _marker_mtime_epoch() {
   local target="$1"
-  stat -c%Y -- "$target" 2>/dev/null || stat -f%m -- "$target" 2>/dev/null
+  _lib_capped_for 5 stat -c%Y -- "$target" 2>/dev/null || _lib_capped_for 5 stat -f%m -- "$target" 2>/dev/null
 }
 
 # _resolve_code_review_check_max_age_seconds
 # Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
 # deliberately conservative, ungrounded choice (docs/design-decisions.md
-# §40). Malformed override (empty, zero, non-digit, zero-padded, or 9+
+# §42). Malformed override (empty, zero, non-digit, zero-padded, or 9+
 # digits) falls back to the default -- same guard shape as
 # nudge-long-turn-subagent.sh's resolve_threshold.
 _resolve_code_review_check_max_age_seconds() {
@@ -305,7 +308,9 @@ _code_review_marker_fresh_age() {
   case "$now" in ''|*[!0-9]*) return 1 ;; esac
   for candidate in "${candidates[@]}"; do
     [ -f "$candidate" ] || continue
-    grep -qFx -e "$expected_value" -- "$candidate" 2>/dev/null || continue
+    # Capped at 5s for the same reason _marker_mtime_epoch is: check reads a
+    # marker file it doesn't control.
+    _lib_capped_for 5 grep -qFx -e "$expected_value" -- "$candidate" 2>/dev/null || continue
     mtime=$(_marker_mtime_epoch "$candidate")
     [ -n "$mtime" ] || continue
     age=$(( now - mtime ))

@@ -41,13 +41,23 @@
 # - Undercounting from an outpaced scan rate compounds across a burst of
 #   same-session fires.
 # - A SIGKILL while holding the scan lock can orphan the lock directory.
-# - A mkdir racing its own timeout's SIGTERM, or a trap-ordering race
-#   around LOCK_DIR's assignment, can also orphan the lock directory.
+# - A mkdir that completes after its own timeout's SIGTERM leaves exit
+#   124 with the directory still created, orphaning the lock directory.
+# - A trappable signal landing between mkdir succeeding and LOCK_DIR
+#   being assigned leaves the EXIT trap closing over an empty LOCK_DIR
+#   and never running rmdir on the just-created directory.
 # - `_scan_turn_count_cached`'s windowed `head` read (line ~209) isn't
 #   wrapped in `_lib_capped_for`. Only the piped `jq -s` call is.
 #   Low severity: the unwrapped read targets a freshly-created,
 #   `MAX_SCAN_WINDOW_BYTES`-bounded temp file, not an unbounded or
 #   externally-controlled source.
+# - `[ ! -f "$TRANSCRIPT_PATH" ]`, `[ -e "$FIRED_MARKER" ]`, and the
+#   `printf '.' >> "$INVOCATION_MARKER"` append all run on every fire, not
+#   only the sampled one. None carries even `_lib_capped_for`'s soft
+#   SIGTERM backstop, since that wrapper can only cover a spawned external
+#   process, not a bash builtin or redirection. A stalled or unresponsive
+#   $CONFIG_DIR mount hangs any of these on every fire, not just the
+#   sampled 1-in-10.
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0

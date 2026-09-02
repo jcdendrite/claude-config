@@ -13,6 +13,11 @@ from helpers import HOOKS_DIR
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
+# _lib.sh's slow-path tail calls are hardcoded to `_lib_capped_for 2 tail
+# ...` -- not overridable via env var, so this mirrors that literal rather
+# than reading it from the shell source.
+SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS = 2
+
 
 def _run_lib_fn(fn_call: str) -> str:
     """Source _lib.sh in a bash subprocess and evaluate fn_call."""
@@ -496,8 +501,8 @@ class TestLibAdvanceOffsetPastCompleteLines:
         # load, an empirically observed baseline rather than a guessed
         # margin -- the invariant that matters is not hanging for the ~10s
         # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= 1.5, (
-            f"expected the 2s _lib_capped_for timeout to fire (stub sleeps 10s "
+        assert elapsed >= SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS - 0.5, (
+            f"expected the {SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
             f"if it does not), took {elapsed:.1f}s for this single call"
         )
 

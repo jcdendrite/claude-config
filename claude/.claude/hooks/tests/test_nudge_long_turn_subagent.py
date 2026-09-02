@@ -32,6 +32,11 @@ SESSION_ID = "test-session-long-turn-001"
 DEFAULT_THRESHOLD = 340
 DEFAULT_SAMPLE_CADENCE = 10
 
+# nudge-long-turn-subagent.sh's own forks (find, mkdir, wc, tail, jq -s) are
+# all hardcoded to `_lib_capped_for 2 ...` -- not overridable via env var,
+# so this mirrors that literal rather than reading it from the shell source.
+SCAN_CALL_TIMEOUT_CAP_SECONDS = 2
+
 # The five malformed shapes resolve_threshold/resolve_sample_cadence guard
 # against: empty, a literal zero, non-digit, zero-padded, and 9+ digits
 # (which risks wrapping negative in bash's signed 64-bit arithmetic).
@@ -175,6 +180,23 @@ class TestNudgeLongTurnSubagent:
         _write_transcript(transcript, [_assistant_turn_record() for _ in range(DEFAULT_THRESHOLD)])
         results = _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE)
         assert results[-1].stdout.strip() != "", "threshold is a >= comparison, not strictly greater-than"
+
+    def test_turn_count_excludes_non_turn_shaped_records(self, tmp_path):
+        """The turn-counting jq filter (`select(.message? and .message.usage)`)
+        must not count a transcript record that carries no usage block --
+        mirrors test_nudge_handoff_near_context_cap.py's own negative-
+        usage-block fixture for the sibling hook."""
+        transcript = tmp_path / "t.jsonl"
+        turn_records = [_assistant_turn_record() for _ in range(5)]
+        non_turn_records = [
+            {"type": "user", "message": {"content": "continue"}},
+            {"type": "user", "message": {"role": "user"}},
+            {"type": "system", "content": "some system note"},
+        ]
+        _write_transcript(transcript, turn_records + non_turn_records)
+        _fire(transcript, tmp_path, DEFAULT_SAMPLE_CADENCE)
+        _, total, _ = _scan_state_path(tmp_path).read_text().splitlines()
+        assert int(total) == len(turn_records)
 
     def test_threshold_env_override_respected(self, tmp_path):
         transcript = tmp_path / "t.jsonl"
@@ -727,8 +749,8 @@ class TestNudgeLongTurnSubagent:
         # No upper bound: an empirically observed baseline, not a guessed
         # margin -- the invariant that matters is not hanging for the ~10s
         # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= 1.5, (
-            f"expected the 2s _lib_capped_for timeout to fire (stub sleeps 10s "
+        assert elapsed >= SCAN_CALL_TIMEOUT_CAP_SECONDS - 0.5, (
+            f"expected the {SCAN_CALL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
             f"if it does not), took {elapsed:.1f}s for the single sampled fire"
         )
         assert stale_file.exists(), (
@@ -859,8 +881,8 @@ class TestNudgeLongTurnSubagent:
         # No upper bound: an empirically observed baseline, not a guessed
         # margin -- the invariant that matters is not hanging for the ~10s
         # stub sleep, which the lower bound alone already rules out.
-        assert elapsed >= 1.5, (
-            f"expected the 2s _lib_capped_for timeout to fire (stub sleeps 10s "
+        assert elapsed >= SCAN_CALL_TIMEOUT_CAP_SECONDS - 0.5, (
+            f"expected the {SCAN_CALL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
             f"if it does not), took {elapsed:.1f}s for the single sampled fire"
         )
         offset_after, total_after, _ = _scan_state_path(tmp_path).read_text().splitlines()

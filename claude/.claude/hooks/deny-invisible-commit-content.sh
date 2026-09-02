@@ -13,8 +13,13 @@
 #    fast-reject grep below) and an execution-wrapper token (`bash -c`,
 #    `sh -c`, `eval`, `xargs`, `source`/bare `.`, `perl -e`, `python -c`,
 #    `ruby -e`, `node -e`, or similar) anywhere in the same call, regardless
-#    of order or quoting. Closes the wrapped-invocation bypass structurally,
-#    without parsing what runs inside the wrapper. Accepted over-deny cost:
+#    of order or quoting. Closes the wrapped-invocation bypass for a
+#    git-commit-shaped fragment the fast-reject grep below chain-anchors
+#    (`git commit` at the start of the command, or right after `&&`/`;`/
+#    `|`), co-occurring anywhere with a wrapper token. Order/quoting
+#    independence holds only within that chain-anchored scope; see Known
+#    gaps below for the piped/embedded case it does not cover. Accepted
+#    over-deny cost:
 #    a commit message merely mentioning one of these tokens as ordinary
 #    text (e.g. documenting `xargs` usage) denies too, since the check does
 #    not parse quoting. The same cost also covers a hyphen-joined compound
@@ -85,6 +90,14 @@
 #    "Threat model" comment for the same posture stated elsewhere): these
 #    hooks assume a cooperative agent, not one deliberately constructing
 #    shell indirection to evade a gate.
+#  - An enumerated wrapper token (`xargs`, `perl -e`) that pipes or embeds
+#    the commit text as interpreter data, rather than chain-anchoring it
+#    per the fast-reject grep, evades both the fast-reject grep and the
+#    wrapper/commit co-occurrence check downstream of it — e.g.
+#    `printf '%s' 'git commit -m y' | xargs -0 sh -c` or
+#    `perl -e "system('git commit -m y')"`. Distinct from the enumerated-
+#    token gap above: these two tokens are covered when the commit text is
+#    chain-anchored, only not when it is piped or embedded as data instead.
 #  - None of this hook's own forks carries an internal timeout, except
 #    `_mask_shell_quotes`'s own 5s `_lib_capped_for` cap (see below). Per
 #    the harness's PreToolUse contract (code.claude.com/docs/en/hooks,
@@ -100,11 +113,9 @@
 # processing forks (grep/sed/tr/awk/xargs), no filesystem or network
 # access. Every fork's exit status is checked and fails closed on a
 # non-zero result, matching `_lib_parse_tool_input_or_deny`'s jq
-# discipline. `_mask_shell_quotes`'s per-character awk scan is O(n²) on
-# command length (an unusually large single Bash command's masking cost
-# grows faster than linearly), so it runs under a 5s `_lib_capped_for`
-# cap — the same hung-fork backstop `_lib_jq`/`_lib_capped` use elsewhere
-# — rather than the unbounded run every other fork in this file gets: a
+# discipline. The per-character awk scan is O(n²) on command length, so it
+# now runs under the same 5s `_lib_capped_for` cap `_lib_jq`/`_lib_capped`
+# use elsewhere (every other fork in this file stays unbounded). A
 # pathological input denies fast instead of stalling the gate.
 #
 # Fail-closed on unparseable hook input.
@@ -245,11 +256,11 @@ _trim_fragment() {
 # Arm 2: deny a chain carrying more than one git-commit-invoking       #
 # fragment, and deny a non-read-only git subcommand reached before the #
 # first masked commit fragment. Independent of arm 1 below, and must   #
-# run first — arm 1's ordered walk exits unconditionally at the first  #
-# commit fragment it finds, so a real mutation hidden behind a fake,   #
-# quote-embedded decoy commit fragment in arm 1's quote-stripped text  #
-# is invisible there; masking correctly erases the decoy's content, so #
-# this ordered walk over quote-masked text still reaches it.           #
+# run first: arm 1's ordered walk exits unconditionally at the first   #
+# commit fragment it finds, so a decoy commit fragment quoted ahead of #
+# a real mutation is invisible to it. Masking erases the decoy's       #
+# content instead, so this ordered walk over masked text still reaches #
+# the real mutation.                                                   #
 # ------------------------------------------------------------------ #
 MASKED_COMMAND=$(_mask_shell_quotes "$COMMAND")
 MASK_EXIT=$?

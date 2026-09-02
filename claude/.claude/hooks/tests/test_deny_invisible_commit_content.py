@@ -405,6 +405,30 @@ class TestDenyInvisibleCommitContent:
             bash_input("git -C /tmp/other-repo commit -am x"),
         ) == "allow"
 
+    def test_piped_xargs_commit_text_allowed(self):
+        """Allowed (documented gap): the fast-reject grep only matches a
+        git-commit-shaped fragment that is chain-anchored (start of command,
+        or right after &&/;/|). Here the commit text is piped into `xargs`
+        as stdin data rather than chain-anchored, so the fast-reject grep
+        never fires and the wrapper/commit co-occurrence check downstream of
+        it never runs either -- xargs is an enumerated wrapper token, but
+        only when the commit text is chain-anchored, not piped."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('printf "%s" "git commit -m y" | xargs -0 sh -c'),
+        ) == "allow"
+
+    def test_perl_e_embedded_commit_text_allowed(self):
+        """Allowed (documented gap): same fast-reject-grep-never-fires shape
+        as test_piped_xargs_commit_text_allowed above, but the commit text is
+        embedded as a string argument to `perl -e` rather than piped -- perl
+        -e is also an enumerated wrapper token, and also only covered when
+        the commit text is chain-anchored."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("perl -e \"system('git commit -m y')\""),
+        ) == "allow"
+
     def test_readonly_subcommand_chained_before_commit_allowed(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git status && git commit -m x")) == "allow"
 
@@ -435,6 +459,16 @@ class TestDenyInvisibleCommitContent:
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input('git commit -m "fix && git add"'),
+        ) == "allow"
+
+    def test_quote_embedded_decoy_fragment_with_read_only_real_mutation_allowed(self):
+        """Allow counterpart to test_quote_embedded_decoy_fragment_denied:
+        same quote-embedded decoy shape, but the real chained subcommand is
+        read-only (`git status`), so neither arm 1's fake-fragment walk nor
+        arm 2's masked-fragment walk has anything to deny."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('echo "foo && git commit" && git status && git commit -m x'),
         ) == "allow"
 
     # ------------------------------------------------------------------ #
