@@ -46,7 +46,8 @@ If you forgot the prefix on a write that already happened, edit the
 existing record by passing its `id` to the same write tool, prefixing the
 corrected body with a brief note that it was originally posted without
 attribution and has now been corrected. Do not post a separate "correction"
-comment — the visible note inside the edited record is the audit trail.
+comment — the note inside the edited record documents that the correction
+was made.
 
 **Always verify the prefix landed.** After a write that should carry the
 `**[Claude Code]**` prefix, refetch the record and spot-check that the
