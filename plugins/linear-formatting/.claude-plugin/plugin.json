@@ -1,0 +1,9 @@
+{
+  "name": "linear-formatting",
+  "description": "Linear issue-comment and issue-link formatting conventions for tracker writes. Not the Linear MCP server registration — see linear@claude-plugins-official for that. This plugin carries only the linear-formatting skill. Install at project scope in any repo whose tracker MCP server is Linear.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Cordova Strategy"
+  },
+  "skills": "./skills/"
+}
