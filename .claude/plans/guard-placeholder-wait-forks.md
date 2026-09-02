@@ -31,17 +31,22 @@ a dispatch that restates what the parent already knows) without enumerating
 them — the same collapsing form that lets prose succeed where the rejected
 hook's pattern-matching would need constant upkeep.
 
-Verbatim text to insert:
+Verbatim text to insert (revised from the original draft after
+`comment-discipline-reviewer` required the three no-op shapes as an
+explicit list rather than a colon-chained run-on):
 
 ```markdown
 **A dispatch must return something the parent does not already have.**
-Never dispatch an agent — of any type — whose instructions are to do no
-work: to report back immediately, to occupy the turn, or to hold while
-other dispatches finish. A no-op agent returns at once, so it waits for
-nothing. It still pays a full agent's context cost for an empty return.
-Waiting is not an action a dispatch can perform: when pending dispatches
-are all that remain, end the turn without a tool call and let their
-completion drive the next one.
+Never dispatch an agent — of any type — whose instructions are to do no work:
+
+- Report back immediately.
+- Occupy the turn.
+- Hold while other dispatches finish.
+
+A no-op agent returns at once, so it waits for nothing — waiting isn't an
+action a dispatch can perform — yet still pays a full agent's context cost
+for an empty return. When pending dispatches are all that remain, end the
+turn without a tool call and let their completion drive the next one.
 ```
 
 The core justification — a no-op agent returns immediately and therefore
@@ -143,16 +148,36 @@ full agent context and returns nothing.
     file-content fact any test or hook can assert; a test asserting the body
     contains a given string would be tautological and would break on any
     later rewording. `anchors: row1`
+12. `claude/.claude/skills/subagent-delegation/SKILL.md` was already at
+    `check-skill-length.sh`'s 200-line cap before this change, discovered
+    only at commit time (the cap is a hard hook, not `skill-review`'s softer
+    200-line target). `[verified: check-skill-length.sh denial message;
+    `git show HEAD:<path> | wc -l` = 200]` — closing the gap by raising the
+    per-skill cap or extracting the new rule to a co-located file were both
+    considered and rejected: `docs/skills.md`'s Skill architecture notes
+    section reserves cap overrides for skills whose routing/ownership tables
+    "genuinely resist trimming" (this file's prose does not), and states
+    extraction adds Read-tool indirection without reducing context cost
+    ("shorten first, do not extract"). Resolved instead by trimming ~14
+    lines of restated or duplicated prose elsewhere in the same file (a
+    rewrap, a dropped duplicate cross-reference, a merged restatement of the
+    file's own opening framing) — each trim verified against `skill-review`'s
+    behavior test (does removing this line change Claude's behavior on a
+    realistic input?) before applying. `anchors: row1`
 
 ## Critical files
 
 - `claude/.claude/skills/subagent-delegation/SKILL.md` — **modify.** Insert
   the verbatim paragraph from the Approach section between the end of the
-  "Stays inline — do not over-delegate" bullet list (currently line 58,
-  ending "...not the investigation that precedes it.") and the "**No
-  permission cost.**" paragraph (currently line 60), separated by a blank
-  line on each side. No other line in the file changes — frontmatter, Step
-  1's gate text, the bullet list, and all of Step 2 stay byte-identical.
+  "Stays inline — do not over-delegate" bullet list and the "**No permission
+  cost.**" paragraph, separated by a blank line on each side. Frontmatter and
+  Step 1's Bash-scoped opening sentence stay untouched. Because the file was
+  already at the 200-line cap, landing the insertion also requires the ~14
+  lines of trims named in ledger row 12, scattered across Step 1 and Step 2 —
+  see that row for the specific sites and why each is safe. This makes the
+  change in-file-scope tightening (CLAUDE.md §Scope discipline, Axis 2)
+  rather than an unrelated expansion: the trims are required to land the
+  insertion at all, not opportunistic cleanup riding along with it.
 
 **Reuse opportunities:** match the existing bolded-lead-sentence paragraph
 shape already used twice in Step 1 (`**Operational trigger:**`, `**No
@@ -179,6 +204,11 @@ diff — do not run them and do not claim they passed.
    covers the worktree-relative `.venv` paths). Let it select — do not
    widen to the full suite by hand; a SKILL.md-only diff is squarely inside
    its rule table, and CI runs the full suite on push.
+1a. `git show :claude/.claude/skills/subagent-delegation/SKILL.md | wc -l`
+    against the staged content, confirming ≤200 — mirrors
+    `check-skill-length.sh`'s own count so a future revision to this rule
+    doesn't silently regrow past the cap and get caught only at commit time,
+    as happened during this plan's own implementation (ledger row 12).
 2. `/skill-review` on the diff — hook-enforced: `require-skill-review.sh`
    blocks `git commit` until the behavioral-equivalence marker is written
    (`.claude/rules/review-pipeline-dispatch.md`). The specific claim it must
