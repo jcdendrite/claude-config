@@ -17,10 +17,10 @@ Grounds "Issue-ID auto-linking": "Write `@text` to mention a user, issue,
 project, date, or document in a description or comment... Pasting an issue
 ID will also link it in the editor, or you can mention issues with
 `@[team-key]-[number]`. Referenced issues are added as related issues
-automatically" — quoted with the source's own worked example (a specific
-team key and number) replaced by a bracketed placeholder per this repo's
-redaction convention; the source for the bare-form/`@`-mention auto-link
-behavior and for the related-issue side effect of an `@`-mention.
+automatically." The source's own worked example (a specific team key and
+number) is replaced by a bracketed placeholder per this repo's redaction
+convention. This grounds both the bare-form/`@`-mention auto-link behavior
+and the related-issue side effect of an `@`-mention.
 
 ## Linear Docs — Comments and reactions
 https://linear.app/docs/comment-on-issues
@@ -33,7 +33,7 @@ wraps.
 ## MCP server-name prefixes
 
 Grounds "MCP tool surface"'s two observed prefixes independently of any
-client's own configuration:
+consumer's own configuration:
 
 - `mcp__linear__*` — Anthropic's official `linear` plugin
   (`anthropics/claude-plugins-official`, `external_plugins/linear/.mcp.json`)

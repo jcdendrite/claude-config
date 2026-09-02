@@ -24,7 +24,7 @@ fixture is exactly the content the item exists to keep out of the repo.
 
 **`REFERENCES.md` is the edit-time co-located reference for a skill.** It holds canonical URLs/quotes/framework notes for a skill, read manually at edit time — it is never loaded at runtime and must not be embedded in `SKILL.md`.
 
-**Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` install to every stack — don't hardcode engine/platform tokens (`pg_cron`, `net.http_post`, vendor API names); put stack-specific checks in a project-layer skill (`<skill>-<project>/SKILL.md`) loaded via the base skill's project-layer glob. The project-layer glob is for *additive* refinements of a base flow that already runs a complete pass on its own — a flow with no standalone base to layer onto (nothing the downstream repo could run absent the layer) belongs in the consuming repo as its own skill instead, not as a project-layer glob on a base that can't run alone.
+**Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` install to every stack — don't hardcode engine/platform tokens (`pg_cron`, `net.http_post`, vendor API names); put stack-specific checks in a project-layer skill (`<skill>-<project>/SKILL.md`) loaded via the base skill's project-layer glob. The project-layer glob is for *additive* refinements of a base flow that already runs a complete pass on its own. A flow with no standalone base to layer onto belongs in the consuming repo as its own skill instead.
 
 ### When a skill is surfaced by real-world work, abstract first
 
