@@ -262,15 +262,19 @@ class TestNudgeMemoryStoreAudit:
 
     @pytest.mark.parametrize(
         "override_value",
-        ["", "0", "abc", "0100", "1234567890"],
-        ids=["empty", "zero", "non-digit", "zero-padded", "ten-plus-digits"],
+        ["", "0", "abc", "0100", "123456789", "1234567890"],
+        ids=["empty", "zero", "non-digit", "zero-padded", "nine-digits", "ten-plus-digits"],
     )
     def test_malformed_per_project_bytes_override_falls_back_to_default(
         self, tmp_path, override_value
     ):
         """A malformed MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES override falls
         back to the shipped 25600 default rather than degrading the
-        threshold toward 0 or negative."""
+        threshold toward 0 or negative.
+
+        The "nine-digits" case pins the glob pattern's actual rejection
+        boundary (`?????????*` matches 9+ characters), not just an
+        arbitrarily-longer 10-digit value."""
         _write_memory_file(
             tmp_path,
             f"{SYNTHETIC_PROJECT_PREFIX}-override",
@@ -285,6 +289,27 @@ class TestNudgeMemoryStoreAudit:
         assert result.returncode == 0
         # Still below the correctly-applied 25600 default -- a leaked
         # malformed override (toward 0) would fire here instead.
+        assert result.stdout.strip() == ""
+
+    def test_eight_digit_per_project_bytes_override_is_honored(self, tmp_path):
+        """Positive control for the boundary above: an 8-digit override is
+        the accepted side of the glob's 9+-digit rejection cutoff, so it
+        must be honored rather than falling back to the 25600 default."""
+        override_value = "10000000"  # smallest 8-digit value
+        _write_memory_file(
+            tmp_path,
+            f"{SYNTHETIC_PROJECT_PREFIX}-eightdigit",
+            "MEMORY.md",
+            DEFAULT_PER_PROJECT_BYTES + 5000,
+        )
+        result = _run_hook(
+            _base_payload(),
+            tmp_path,
+            extra_env={"MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES": override_value},
+        )
+        assert result.returncode == 0
+        # Above the 25600 default (a fallback would fire here) but far below
+        # the correctly-applied 8-digit override's threshold.
         assert result.stdout.strip() == ""
 
     def test_no_override_uses_shipped_default_threshold(self, tmp_path):
@@ -302,14 +327,18 @@ class TestNudgeMemoryStoreAudit:
 
     @pytest.mark.parametrize(
         "override_value",
-        ["", "0", "abc", "0100", "1234567890"],
-        ids=["empty", "zero", "non-digit", "zero-padded", "ten-plus-digits"],
+        ["", "0", "abc", "0100", "123456789", "1234567890"],
+        ids=["empty", "zero", "non-digit", "zero-padded", "nine-digits", "ten-plus-digits"],
     )
     def test_malformed_rearm_bytes_override_falls_back_to_default(self, tmp_path, override_value):
         """A malformed MEMORY_AUDIT_NUDGE_REARM_BYTES override falls back to
         the shipped 25600 default at the re-arm boundary, rather than
         degrading it toward 0 and re-firing before the real band is
-        crossed."""
+        crossed.
+
+        The "nine-digits" case pins the glob pattern's actual rejection
+        boundary (`?????????*` matches 9+ characters), not just an
+        arbitrarily-longer 10-digit value."""
         project = f"{SYNTHETIC_PROJECT_PREFIX}-rearm-override"
         extra_env = {"MEMORY_AUDIT_NUDGE_REARM_BYTES": override_value}
         _write_memory_file(tmp_path, project, "MEMORY.md", DEFAULT_PER_PROJECT_BYTES)

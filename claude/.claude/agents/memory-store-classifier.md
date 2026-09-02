@@ -19,10 +19,10 @@ You are handed a list of memory-file paths, not their contents. Read each
 file yourself with `Read` — do not ask the dispatching session to summarize
 one for you. A single dispatch may hand you files from several different
 projects. Reading several files in one dispatch is a batching convenience
-only: every row's verdict, destination cell, and any proposed title or body
-text must draw solely on that row's own file, never on another file read
-earlier or later in this dispatch — even when two files share a project, a
-theme, or a phrase.
+only: every row's verdict, destination cell, and any proposed title or
+body text must draw solely on that row's own file,
+never on another file read earlier or later in this dispatch — even
+when two files share a project, a theme, or a phrase.
 
 Read `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`
 §5 fresh for every classification: its "Where does a given rule belong?"

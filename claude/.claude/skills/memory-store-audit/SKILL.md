@@ -55,12 +55,30 @@ For each `file as issue` verdict, file it with:
 gh api repos/{owner}/{repo}/issues -f title=… -f body=…
 ```
 
-run with cwd inside the `claude-config` checkout. `gh api` is used for
-consistency with `deny-private-project-refs.sh`'s other gated dispatch
-surfaces, not because `gh issue create` is unsafe — both are
-redaction-gated identically. This repo is the only filing target; a
-harness or private-project gap downgrades that row to *keep* plus a report
-line naming it for the engineer to file by hand.
+`gh api` is deliberate, not incidental: `deny-private-project-refs.sh`
+gates mutating `gh api` calls (any call carrying `-f`/`-F`/`--field`/
+`--raw-field`/`--input`), but its dispatch has no branch recognizing `gh
+issue` at all — `gh issue create` would file the same content with no
+redaction scan whatsoever. See that hook's own "Known gaps" section for
+the exact scope of this gap.
+
+Before the first `gh api` call, verify cwd is actually inside the
+`claude-config` checkout rather than assuming it from prose alone — this
+skill's nudge fires in every session on the machine, so an ordinary
+forgotten `cd` both files the issue against the wrong repo and silently
+bypasses the redaction gate, which short-circuits outside a
+`claude-config` remote:
+
+```bash
+git rev-parse --show-toplevel && git config --get remote.origin.url
+```
+
+Confirm the printed remote contains `claude-config` before proceeding; if
+it doesn't, `cd` into the checkout first.
+
+This repo is the only filing target; a harness or private-project gap
+downgrades that row to *keep* plus a report line naming it for the
+engineer to file by hand.
 
 One `AskUserQuestion` per issue, immediately before its `gh api` call,
 showing the exact title, the exact body, and the target repo verbatim. No
@@ -122,6 +140,18 @@ nothing blocks a session that skips it. Quarantine, not the pause itself, is
 what bounds a skipped pause's blast radius on deletion; no equivalent bound
 exists for a skipped issue-filing pause, so Step 4's pause is the only
 safety net on that path.
+
+## Known Limitations
+
+- **Cross-project content isolation in Step 2 is prose-only.** A single
+  batched dispatch can hand `memory-store-classifier` files from several
+  unrelated private projects at once, and the per-row isolation
+  instruction in that agent's own body (pinned by
+  `test_memory_store_classifier_forbids_cross_file_blending`) is the only
+  thing keeping one row's verdict, destination, and title/body text
+  scoped to that row's own file. Nothing enforces this at execution time
+  or verifies it under a real multi-project batch — a model that blends
+  content across rows would not be caught by any downstream check.
 
 ## Closing note
 

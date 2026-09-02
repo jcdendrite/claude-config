@@ -893,6 +893,10 @@ if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in this message.
+  printf '[install] warning: the memory-store-audit nudge hook does not merely run uncapped without `timeout`/`gtimeout` — it refuses to scan at all and stops firing entirely, permanently, with no other signal, until one of those binaries is installed.\n' >&2
+  # shellcheck disable=SC2016 # single-quoted for literal display text — the
+  # backtick-quoted tokens are markdown-style formatting, not command
+  # substitution; there is no shell expansion intended in this message.
   printf '[install] hint: install via `brew install coreutils` (macOS) or `apt install coreutils` (debian). On macOS, coreutils installs `gtimeout` by default — either re-run with `--with-default-names` (older brew) or symlink `gtimeout` to `timeout` in PATH.\n' >&2
 fi
 

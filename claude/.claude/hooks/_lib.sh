@@ -36,7 +36,9 @@ _lib_capped() {
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
 # See _lib_timeout_binary_available below for callers that must refuse
-# outright rather than fall through to the uncapped branch.
+# outright rather than fall through to the uncapped branch. That function
+# reimplements this same timeout(1)/gtimeout(1) probe independently rather
+# than calling into it; keep the two probes in sync by hand.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
@@ -50,8 +52,11 @@ _lib_capped_for() {
 }
 
 # Reports whether _lib_capped_for will actually cap.
-# It runs the command uncapped when neither binary is on PATH, which a hook that blocks session start cannot accept.
-# Runs the same timeout(1)/gtimeout(1) probe _lib_capped_for uses, so the two stay in sync.
+# _lib_capped_for runs the command uncapped when neither binary is on PATH.
+# A hook that blocks session start cannot accept that uncapped fallback.
+# Runs the same timeout(1)/gtimeout(1) probe _lib_capped_for uses above,
+# reimplemented independently rather than shared; keep the two probes in
+# sync by hand.
 _lib_timeout_binary_available() {
   command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1
 }

@@ -108,13 +108,9 @@ EXPECTED_EFFORT = {
     "staff-product-engineer.md": "xhigh",
     "staff-sdet.md": "xhigh",
     "plan-architect.md": "xhigh",
-    # Classification difficulty spans a wide range (most rows are obviously
-    # one-off session noise; a minority are genuine §5 judgment calls), so
-    # this gets "high", not "xhigh".
-    # It is backstopped in the sense §24 requires: unlike /plan-review's
-    # plausibility read of a plan, the human's per-item approval checks the
-    # verdict's cited ground truth directly against the file it names,
-    # immediately before the irreversible act.
+    # "high", not "xhigh": classification difficulty spans a range, backstopped
+    # per §24 by the human's per-item approval checking the verdict against
+    # the cited file immediately before the irreversible act.
     "memory-store-classifier.md": "high",
 }
 

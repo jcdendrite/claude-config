@@ -14,14 +14,17 @@
 # its own startup-only matcher.
 #
 # Order: source _lib.sh -> timeout-binary precondition -> .source filter ->
-# _lib_config_dir -> kill-switch -> glob-and-measure -> threshold -> re-arm
-# band -> fire.
+# _lib_config_dir -> kill-switch -> override-parsing -> glob-and-measure ->
+# threshold -> re-arm band -> fire.
 # Exits 0 on every path.
 #
 # Kill-switch: touching <config-dir>/.memory-audit-nudge-disabled suppresses
 # every future fire, checked before any filesystem scan.
 #
-# The timeout-binary precondition runs immediately after sourcing _lib.sh, before any jq/filesystem call, so nothing below it ever runs uncapped — see docs/memory-audit-nudge.md's Known limitations section for why that placement matters.
+# The timeout-binary precondition runs immediately after sourcing _lib.sh,
+# before any jq/filesystem call. Nothing below it ever runs uncapped as a
+# result. See docs/memory-audit-nudge.md's Known limitations section for why
+# that placement matters.
 #
 # Out of scope, each an accepted limitation rather than an oversight:
 #   - No mid-session firing: the nudge arrives at the next session start.
@@ -52,10 +55,10 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 [ -f "$CONFIG_DIR/.memory-audit-nudge-disabled" ] && exit 0
 
 # Malformed override values (empty, literal zero, non-digit, zero-padded,
-# 10+ digits) fall back to the shipped default, reusing HANDOFF_NUDGE_ABS_CAP's
+# 9+ digits) fall back to the shipped default, reusing HANDOFF_NUDGE_ABS_CAP's
 # guard shape in nudge-handoff-near-context-cap.sh.
 # A value degraded toward 0 would fire on every session.
-# A 10+ digit value risks wrapping negative in bash's signed 64-bit arithmetic.
+# A 9+ digit value risks wrapping negative in bash's signed 64-bit arithmetic.
 case "${MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES:-}" in
   ''|0|*[!0-9]*|0[0-9]*|?????????*) PER_PROJECT_BYTES=25600 ;;
   *) PER_PROJECT_BYTES=$MEMORY_AUDIT_NUDGE_PER_PROJECT_BYTES ;;
@@ -84,9 +87,11 @@ if [ "$NOGLOB_WAS_SET" -eq 1 ]; then set -f; fi
 WC_OUTPUT=""
 if [ "$#" -gt 0 ]; then
   # If a `memory` glob match is itself a symlink to a directory, BSD/macOS
-  # `find` produces no output for it (untested on GNU `find`, whose default
-  # command-line-argument symlink handling can differ) -- that project's
-  # bytes silently drop out of TOTAL_BYTES rather than erroring.
+  # `find` produces no output for it.
+  # This is untested on GNU `find`, whose default command-line-argument
+  # symlink handling can differ.
+  # That project's bytes silently drop out of TOTAL_BYTES rather than
+  # erroring.
   WC_OUTPUT=$(_lib_capped_for 5 find "$@" -type f -exec wc -c {} + 2>/dev/null)
 fi
 
@@ -130,9 +135,10 @@ PROJECT_STORE_COUNT="${TOTAL_AND_COUNT#*$'\n'}"
 case "$TOTAL_BYTES" in ''|*[!0-9]*) TOTAL_BYTES=0 ;; esac
 case "$PROJECT_STORE_COUNT" in ''|*[!0-9]*) PROJECT_STORE_COUNT=0 ;; esac
 
-# No memory content anywhere on the machine: nothing to audit, and the
-# count-scaled threshold below is undefined at N=0 (not a division, but a
-# store-count of zero must never itself be read as "already over budget").
+# No memory content anywhere on the machine means nothing to audit.
+# The count-scaled threshold below is undefined at N=0, though not because
+# of a division.
+# A store-count of zero must never itself be read as "already over budget".
 [ "$PROJECT_STORE_COUNT" -gt 0 ] || exit 0
 
 THRESHOLD=$(( PER_PROJECT_BYTES * PROJECT_STORE_COUNT ))
@@ -142,19 +148,18 @@ if [ "$TOTAL_BYTES" -lt "$THRESHOLD" ] 2>/dev/null; then
 fi
 
 STATE_FILE="$CONFIG_DIR/.memory-audit-nudge-fired"
-# This read-then-write is not lock-protected: two near-simultaneous session
-# starts on the same machine can double-fire or stomp each other's
-# high-water mark. Low severity for this informational-class hook (no data
-# loss), so deferred rather than fixed.
+# This read-then-write is unlocked, so two near-simultaneous session starts
+# can double-fire or stomp each other's high-water mark -- low severity for
+# this informational-class hook (no data loss), so left unfixed.
 RECORDED_TOTAL=""
 if [ -f "$STATE_FILE" ]; then
   IFS= read -r RECORDED_TOTAL < "$STATE_FILE" 2>/dev/null || RECORDED_TOTAL=""
 fi
-# Same malformed-value guard shape as the override guards above. A literal
-# "0" is never a value this hook itself would have written (a real fire only
-# ever happens at TOTAL_BYTES >= THRESHOLD > 0), so it is treated as no
-# prior record rather than a real recorded total -- fail toward firing, not
-# toward silent suppression.
+# Same malformed-value guard shape as the override guards above.
+# A literal "0" is never a value this hook itself would have written, since
+# a real fire only ever happens at TOTAL_BYTES >= THRESHOLD > 0.
+# It is treated as no prior record rather than a real recorded total, which
+# fails toward firing rather than toward silent suppression.
 case "$RECORDED_TOTAL" in ''|0|*[!0-9]*|0[0-9]*|?????????*) RECORDED_TOTAL="" ;; esac
 
 mkdir -p "$CONFIG_DIR" 2>/dev/null || true
@@ -173,9 +178,11 @@ if [ -n "$RECORDED_TOTAL" ] && [ "$TOTAL_BYTES" -lt "$(( RECORDED_TOTAL + REARM_
 fi
 
 # Fire: build the nudge JSON first and only write the state file/log if it
-# actually produced output, mirroring nudge-handoff-near-context-cap.sh's own
-# build-before-write ordering so a jq failure can't burn the session's one
-# shot with nothing to show for it.
+# actually produced output.
+# This mirrors nudge-handoff-near-context-cap.sh's own build-before-write
+# ordering.
+# A jq failure this way can't burn the session's one shot with nothing to
+# show for it.
 # shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq filter reference, not a shell variable; double-quoting would expand it in the shell before jq sees it. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 OUTPUT=$(_lib_jq -n \
   --argjson total "$TOTAL_BYTES" \
