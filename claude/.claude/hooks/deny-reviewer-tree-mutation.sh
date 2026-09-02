@@ -57,17 +57,17 @@
 #
 # Known gaps (what this model does NOT close):
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
-#     catches a `cp`/`mv`/`tee`/`>`/`>>` write target when it is the
-#     fragment's sole or first command, but not the same target hidden
-#     behind a bare `&` background operator in the same fragment — `cp
-#     /tmp/scratch.txt src/tracked_file.txt & echo /tmp/x` is allowed
-#     today (confirmed live). `_lib_split_fragments` does not split a
-#     fragment on a bare `&`, so the word-walk still resolves `cp` as the
-#     command word and reads a stale trailing word as the destination.
-#     GH-811 tracks the underlying `_lib_split_fragments` limitation this
-#     depends on; see _fragment_raw_write_targets's own docstring below for
-#     its other residual gaps (relative paths, symlinks, fd-numbered
-#     redirects, `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
+#     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
+#     fragment's sole or first command; a target behind a bare `&`
+#     background operator (`cp /tmp/scratch.txt src/tracked_file.txt &
+#     echo /tmp/x`) is not caught, because `_lib_split_fragments` does not
+#     split a fragment on a bare `&`, so the word-walk still resolves `cp`
+#     as the command word and reads a stale trailing word as the
+#     destination.
+#   - GH-811 tracks that `_lib_split_fragments` limitation; see
+#     _fragment_raw_write_targets's own docstring below for its other
+#     residual gaps (relative paths, symlinks, fd-numbered redirects,
+#     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
 #   - A Bash-created symlink that launders the /tmp exemption
 #     (`ln -s src/x /tmp/link`, then a Write to `/tmp/link`) — the
 #     file-write arm matches the literal `/tmp/*` path and does not resolve

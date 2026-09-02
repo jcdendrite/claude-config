@@ -1469,6 +1469,13 @@ class TestCommandInvokesToolSubcmd:
     def test_glued_repo_flag_value_before_subcommand(self) -> None:
         assert _command_invokes_tool_subcmd("gh --repo=o/r pr merge", "gh", "pr", "merge") == 0
 
+    def test_glued_short_repo_flag_value_before_subcommand(self) -> None:
+        """The short-flag glued form (-Rowner/repo, no '='), distinct
+        from --repo=owner/repo -- a dropped or mistyped -R?* arm would
+        misread the glued value as the subcommand word and silently miss
+        a real self-merge attempt."""
+        assert _command_invokes_tool_subcmd("gh -Ro/r pr merge", "gh", "pr", "merge") == 0
+
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(
             ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_tool_subcmd "gh pr merge" gh'],

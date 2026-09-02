@@ -11,6 +11,7 @@ from helpers import (
     bash_input,
     build_path_without,
     run_hook,
+    run_hook_reason,
 )
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
@@ -155,6 +156,38 @@ class TestRequireStowReminder:
         commit_install_sh_change(stow_repo)
         cmd = "gh pr create --title T --body 'post-merge: run ./install.sh'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+
+    def test_install_sh_only_reason_names_install_sh_not_toplevel_entries(self, stow_repo):
+        """The install-only branch's REASON_DETAIL must not mention
+        "top-level entries" -- that wording belongs to a trigger that
+        didn't fire."""
+        commit_install_sh_change(stow_repo)
+        cmd = "gh pr create --title T --body 'hardens the installer'"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        assert reason is not None
+        assert "changes install.sh" in reason
+        assert "top-level entries" not in reason
+
+    def test_new_toplevel_only_reason_names_toplevel_entries_not_install_sh(self, stow_repo):
+        """The new-top-level-only branch's REASON_DETAIL must not claim
+        install.sh changed."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr create --title 'Add agents' --body 'Adds reviewer agents.'"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        assert reason is not None
+        assert "adds new top-level entries" in reason
+        assert "changes install.sh" not in reason
+
+    def test_combined_trigger_reason_names_both(self, stow_repo):
+        """When both triggers fire in the same PR, the reason text must
+        name both -- not silently pick one and drop the other."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        commit_install_sh_change(stow_repo)
+        cmd = "gh pr create --title T --body 'no marker here'"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        assert reason is not None
+        assert "adds new top-level entries" in reason
+        assert "changes install.sh" in reason
 
     def test_marker_install_sh_in_body_allowed(self, stow_repo):
         commit_new_toplevel_dir(stow_repo, "agents")
