@@ -450,8 +450,8 @@ class TestProjectScopePluginInstallLoop:
         assert _read_log(install_log) == ["claude-hook-review@claude-config"]
 
     def test_issue_triage_install_prints_credential_exposure_warning(self, tmp_path: Path) -> None:
-        """`issue-triage` is the only `enabledPlugins` entry whose agent
-        holds live `gh` credentials and unrestricted `Bash` — unlike its
+        """`issue-triage` is the only `enabledPlugins` entry whose dispatches
+        hold live `gh` credentials and unrestricted `Bash` — unlike its
         three lint/guardrail neighbors, its auto-install carries a
         distinguishing warning visible at the point a contributor accepts
         it."""

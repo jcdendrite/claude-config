@@ -62,7 +62,7 @@
     },
     {
       "name": "issue-triage",
-      "description": "Repeatable evidence-backed triage of this repo's open GitHub issues: batched parallel evidence-gathering, cross-batch synthesis, a claim-verification pass, and a disposition report. Report-only — executing dispositions stays a manual follow-up. All three dispatch stages hold live gh credentials and unrestricted Bash with no command-level enforcement, so install at project scope only in a repo with a public GitHub issue backlog.",
+      "description": "Repeatable evidence-backed triage of this repo's open GitHub issues: batched parallel evidence-gathering, cross-batch synthesis, a claim-verification pass, and a disposition report. Report-only — executing dispositions stays a manual follow-up. Every dispatch runs general-purpose under the operator's own ambient gh credentials and unrestricted Bash, with no command-level enforcement beyond prompt-level standing rules. Issue and comment text is untrusted input from anyone who can file an issue, and run artifacts persist unredacted outside the repo. Install at project scope only where the credential's reach, that input exposure, and that retention are all acceptable.",
       "author": {
         "name": "Cordova Strategy"
       },
