@@ -154,11 +154,16 @@
 #
 # Scope boundary: `_lib.sh`'s `_lib_split_fragments`/`_lib_extract_git_subcmd`/
 # `_lib_fragment_invokes_git` (used by deny-pii-in-commits.sh,
-# deny-private-project-refs.sh, require-ready-for-review.sh) are NOT reused
-# here. Those hooks judge commit-message/PR-readiness content, where the
-# heredoc/quote misparse class this rewrite fixes rarely bites; their
-# boolean-fragment-test shape also doesn't fit the cwd-threading records
-# this hook needs. Two parsers coexist deliberately — a named exception to
+# deny-private-project-refs.sh, require-ready-for-review.sh,
+# deny-reviewer-tree-mutation.sh) are NOT reused here.
+# - Those hooks judge commit-message/PR-readiness content, or
+#   (deny-reviewer-tree-mutation.sh) whether a git subcommand is read-only.
+# - None need a resolved cwd target.
+# - The heredoc/quote misparse class COMMAND_UNQUOTED's quote-stripping
+#   closes rarely bites any of them.
+# - Their boolean-fragment-test shape doesn't fit the cwd-threading records
+#   this hook needs.
+# Two parsers coexist deliberately — a named exception to
 # single-source-of-truth, not an oversight.
 
 set -uo pipefail

@@ -103,15 +103,13 @@
 #   - An agent reached only through an alias, wrapper script, or another
 #     level of indirection this fragment-level scan cannot see is
 #     undecidable, same class of gap as require-worktree-for-git-writes.sh.
-#   - A git-write or in-place-edit reached through a QUOTED command name
-#     (`bash -c "git checkout"`, `'sed' -i file`) is not caught: the word
-#     scan sees the glued token (`"git`, `'sed`) and it matches neither the
-#     bare name nor `*/name`. Same indirection class as the alias/wrapper gap
-#     above. Deliberately accepted under the cooperative threat model — an
-#     accidental reviewer mutation is a DIRECT command (which IS caught);
-#     wrapping a command name in quotes to run it is not a cooperative-agent
-#     behavior. Hardening the shared _lib_fragment_invokes_git for this would
-#     also change require-worktree-for-git-writes.sh — out of scope here.
+#   - A git-write or in-place-edit reached through a command name quoted
+#     directly in the Bash arm's own command text (`'sed' -i file`) IS
+#     caught: the Bash arm strips quote characters from $COMMAND before
+#     splitting into fragments, so the word scan sees the bare token. A
+#     command name reached only through a nested shell boundary this scan
+#     never executes (`bash -c "git checkout"`) is still undecidable — same
+#     indirection class as the alias/wrapper gap above.
 #   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
 #     resolves `file_path` to its real path before invoking this hook, a
 #     legitimate reviewer write under `/tmp/...` would miss the literal
@@ -126,6 +124,10 @@
 #     check — git absent, the resolved cwd not a repo, the timeout firing —
 #     denies rather than allows (fail-closed friction on an unusual
 #     environment, not a missed mutation).
+#   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
+#     exit status is checked and denies with an explicit message rather than
+#     falling through to this hook's normal "no gated fragment matched"
+#     allow path.
 
 set -uo pipefail
 
@@ -303,6 +305,23 @@ case "$TOOL_NAME" in
     done < <(_lib_readonly_git_subcmds)
     ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
+    # Quote-stripped so an adjacent-quote split (`'sed' -i file`, `"git"
+    # checkout`) can't dodge the word-walk detectors below — same helper
+    # as deny-network-installs.sh. Checked and fail-closed, matching
+    # deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
+    COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+    COMMAND_UNQUOTED_EXIT=$?
+    if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+      emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      exit 0
+    fi
+
+    FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+    FRAGMENTS_SPLIT_EXIT=$?
+    if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      exit 0
+    fi
     while IFS= read -r fragment; do
       [ -z "$fragment" ] && continue
 
@@ -385,8 +404,9 @@ case "$TOOL_NAME" in
     # a final line with no newline delimiter. `$(...)` command substitution
     # strips any trailing newline and `<<<` re-adds exactly one, guaranteeing
     # the last fragment is newline-terminated. Mirrors deny-pii-in-commits.sh
-    # and deny-private-project-refs.sh's identical `<<< "$(_lib_split_fragments ...)"` usage.
-    done <<< "$(_lib_split_fragments "$COMMAND")"
+    # and deny-private-project-refs.sh's identical assign-then-`<<<
+    # "$VAR"`-here-string pattern.
+    done <<< "$FRAGMENTS"
     exit 0
     ;;
   *)

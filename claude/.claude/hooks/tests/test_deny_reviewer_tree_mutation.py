@@ -9,6 +9,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     multiedit_input,
     run_hook,
@@ -468,6 +469,42 @@ class TestBashInPlaceEditFamily:
 
     def test_reviewer_rustfmt_denied(self):
         assert run_hook(HOOK, bash_input("rustfmt src/x.rs", agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_quoted_sed_dash_i_denied(self):
+        # GH-783: a command name quoted directly in $COMMAND ('sed' -i file)
+        # is caught -- $COMMAND is quote-stripped before splitting into
+        # fragments, unlike the nested-shell-boundary gap
+        # TestKnownGapBypass.test_reviewer_quoted_command_name_bypass_allowed
+        # still documents (`bash -c "sed -i ..."`, which this scan never
+        # executes).
+        assert run_hook(HOOK, bash_input("'sed' -i s/a/b/ x.txt", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_quoted_argument_without_dash_i_allowed(self):
+        # GH-783: confirms COMMAND_UNQUOTED doesn't affect fragment splitting
+        # for a benign quoted argument with no token-boundary interaction.
+        # Not an over-strip false-positive guard: _lib_strip_shell_quotes
+        # only deletes quote/backslash characters, so it can't merge, split,
+        # or relocate a token boundary, and this hook's -i gate is an
+        # exact-token-prefix match -- there is no constructible near-boundary
+        # input for this hook that a broken over-strip implementation could
+        # flip from allow to deny.
+        assert run_hook(HOOK, bash_input('sed s/a/b/ "x.txt"', agent_type="staff-sdet")) == "allow"
+
+    def test_command_unquoted_sed_absent_from_path_denied(self, tmp_path):
+        # GH-783: COMMAND_UNQUOTED's sed/tr strip failure must fail closed
+        # rather than let a missing sed silently collapse fragment
+        # detection and fall through to this hook's normal allow path.
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                HOOK,
+                bash_input("'git' checkout -- some/file.txt", agent_type="staff-sdet"),
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
 
 
 class TestBuiltinAgents:

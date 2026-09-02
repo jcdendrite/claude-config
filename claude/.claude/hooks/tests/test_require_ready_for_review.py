@@ -13,6 +13,7 @@ from helpers import (
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
+    build_path_without,
     edit_input,
     extract_skill_command,
     git_toplevel,
@@ -1376,6 +1377,62 @@ class TestRequireReadyForReview:
                 READY_FOR_REVIEW_HOOK,
                 bash_input("/usr/bin/git push origin feature", session_id="s"),
                 cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_quoted_git_word_push_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """GH-783: a quoted git word (`"git" push`) must still be detected
+        as a gated push. Bash word-splitting does not remove quote
+        characters, so without the hook's own COMMAND_UNQUOTED strip the
+        fragment word `"git` never matches _lib_fragment_invokes_git's bare
+        `git` comparison and the push sails through unreviewed."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input('"git" push origin feature', session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_dash_capital_c_space_containing_quoted_value_allow_unchanged_by_strip(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """GH-783's word-count-invariance claim, exercised rather than only
+        hand-traced: a `-C` value containing a literal space is a
+        pre-existing, accepted misparse (the naive whitespace word-walk
+        splits inside the quotes both before and after
+        COMMAND_UNQUOTED's own quote-stripping, since stripping removes
+        only the quote characters, not the space) — the subcommand word
+        resolves to the value's second half ("dir"), never "push", so the
+        push goes undetected and the command allows. This pins that the
+        fix does not change that pre-existing outcome, not that the
+        outcome itself is desirable."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input('git -C "my dir" push origin feature', session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_sed_absent_from_path_denied(self, tmp_path):
+        """GH-783: COMMAND_UNQUOTED is computed before any repo/gh state is
+        read, so a missing sed must deny (fail-closed) rather than let
+        _lib_strip_shell_quotes's failure silently collapse fragment
+        detection and fall through to this gate's normal allow path."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                extra_env={"PATH": restricted_path},
             )
             == "deny"
         )

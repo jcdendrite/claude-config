@@ -12,6 +12,7 @@ from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     multiedit_input,
     run_hook,
@@ -1225,6 +1226,26 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         assert elapsed < 1.0, (
             f"a 60-target tee fanout with no .claude mention took {elapsed:.2f}s -- "
             "should stay near the fast-reject's cost, not scale with target count"
+        )
+
+    def test_sed_absent_from_path_denied(self, isolated_home, tmp_path):
+        """MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip is the earliest fork
+        this scan reaches, run unconditionally ahead of Stage 1 for every
+        Bash call. A missing sed must deny (fail-closed) rather than let
+        _lib_strip_shell_quotes's failure silently clear
+        MARKER_WRITE_COMMAND_UNQUOTED and fall through to this scan's normal
+        no-match allow path with no bypass valve on a real marker write."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("~/.claude/scripts/marker.sh write code-review"),
+                home=isolated_home,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
         )
 
 

@@ -90,7 +90,7 @@
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
 #  - A chained `git add ... && git commit` staging content after this hook's
-#    staged-diff scan is now denied outright by deny-invisible-commit-content.sh,
+#    staged-diff scan is denied outright by deny-invisible-commit-content.sh,
 #    so that shape never reaches this hook's PII/credential scan at all.
 #  - Credit-card detection matches contiguous 13-19 digit runs only;
 #    space- or dash-separated card numbers are not caught.
@@ -99,6 +99,10 @@
 #    session's current repository, not the `-C` target. `-C` into a
 #    subdirectory of the same repo is unaffected (the scan pathspecs are
 #    repo-root-relative).
+#  - Every _lib_strip_shell_quotes/_lib_split_fragments call site in this
+#    hook checks its exit status and fails closed: the command's own
+#    fragment split, each fragment's git_fragment_unquoted strip, and the
+#    SCAN_TARGET strip that feeds the credential-value/PII scan buffer.
 #
 # The `-F`/`--file` unreadable-source and pseudo-file checks below run for every commit, armed or not — fail-closed on content the hook cannot verify, independent of which scan tier triggered the commit-detection path.
 #
@@ -148,15 +152,42 @@ fi
 # so `git -c key=val commit` and `GIT_DIR=x git commit` are recognised.
 GIT_COMMIT_FOUND=0
 HEAD_SCAN_NEEDED=0
+# Raw $COMMAND by design (RAW_SPLIT_BY_DESIGN in test_hook_command_normalization.py):
+# each fragment below is stripped individually so the raw copy stays available
+# for _lib_commit_fragment_has_worktree_target's xargs tokenizer. The split's
+# own exit status is still checked here, matching deny-invisible-commit-content.sh's
+# SPLIT_EXIT pattern — an unchecked failure would silently yield zero fragments
+# and let a real commit skip the per-fragment scan below entirely.
+GIT_FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+GIT_FRAGMENTS_SPLIT_EXIT=$?
+if [ "$GIT_FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Commit blocked by PII/credential guard: could not split the command into fragments (exit ${GIT_FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+  exit 0
+fi
 while IFS= read -r git_fragment; do
   [ -z "$git_fragment" ] && continue
-  _lib_fragment_invokes_git "$git_fragment" || continue
-  [ "$(_lib_extract_git_subcmd "$git_fragment")" = "commit" ] || continue
+  # Per-fragment strip, matcher calls only: an adjacent-quote split
+  # (`"git" "commit"`) can't dodge _lib_fragment_invokes_git /
+  # _lib_extract_git_subcmd, which are quote-blind by contract. Checked and
+  # fail-closed, matching deny-invisible-commit-content.sh's own
+  # COMMAND_UNQUOTED computation — a `continue` here would silently skip
+  # scanning this fragment instead.
+  git_fragment_unquoted=$(_lib_strip_shell_quotes "$git_fragment")
+  git_fragment_unquoted_exit=$?
+  if [ "$git_fragment_unquoted_exit" -ne 0 ]; then
+    emit_deny "Commit blocked by PII/credential guard: could not quote-strip a command fragment (exit ${git_fragment_unquoted_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+    exit 0
+  fi
+  _lib_fragment_invokes_git "$git_fragment_unquoted" || continue
+  [ "$(_lib_extract_git_subcmd "$git_fragment_unquoted")" = "commit" ] || continue
   GIT_COMMIT_FOUND=1
+  # Raw fragment, not the stripped copy: xargs below tokenizes quotes
+  # itself, and pre-stripping splits a quoted -m message into words the
+  # pathspec check reads as a worktree target.
   if _lib_commit_fragment_has_worktree_target "$git_fragment"; then
     HEAD_SCAN_NEEDED=1
   fi
-done <<< "$(_lib_split_fragments "$COMMAND")"
+done <<< "$GIT_FRAGMENTS"
 
 if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0
@@ -276,6 +307,11 @@ done
 # appended below are real file content, never shell-quoted, so only this
 # component needs stripping.
 SCAN_TARGET=$(_lib_strip_shell_quotes "$COMMAND")
+SCAN_TARGET_EXIT=$?
+if [ "$SCAN_TARGET_EXIT" -ne 0 ]; then
+  emit_deny "Commit blocked by PII/credential guard: could not quote-strip the commit-message component of the scan target (exit ${SCAN_TARGET_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+  exit 0
+fi
 
 added_lines_of() {
   # Keep real `+` content lines, drop `+++` file headers.

@@ -5,7 +5,16 @@ import json
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, edit_input, read_input, run_hook, run_hook_reason, write_input
+from helpers import (
+    HOOKS_DIR,
+    bash_input,
+    build_path_without,
+    edit_input,
+    read_input,
+    run_hook,
+    run_hook_reason,
+    write_input,
+)
 
 DENY_CREDENTIAL_BASH_READS_HOOK = HOOKS_DIR / "deny-credential-bash-reads.sh"
 
@@ -555,6 +564,29 @@ class TestDenyCredentialBashReads:
     # directly at the library level instead, in
     # test_lib.py::test_lib_strip_env_file_flag_args_returns_original_text_unchanged_on_sed_failure,
     # which injects the byte via argv rather than through jq.
+
+    # ------------------------------------------------------------------ #
+    # Fail-closed on sed absence                                          #
+    # ------------------------------------------------------------------ #
+
+    def test_sed_absent_from_path_denied(self, isolated_home, tmp_path):
+        """COMMAND_UNQUOTED's sed/tr strip is the earliest fork this hook
+        reaches. A missing sed must deny (fail-closed) rather than let
+        _lib_strip_shell_quotes's failure silently clear COMMAND_UNQUOTED
+        and fall through to this hook's normal allow path with no bypass
+        valve on a real credential-path read."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                DENY_CREDENTIAL_BASH_READS_HOOK,
+                bash_input("cat ~/.ssh/id_rsa"),
+                home=isolated_home,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
 
     # ------------------------------------------------------------------ #
     # Deny message content                                                #

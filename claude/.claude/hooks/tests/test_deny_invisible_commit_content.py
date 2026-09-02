@@ -9,11 +9,31 @@ git-subcommand tests.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 from helpers import HOOKS_DIR, bash_input, build_path_without, read_input, run_hook, run_hook_reason
 
 DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
+
+# Matches _mask_shell_quotes's own definition, opening brace through the
+# closing brace at column 0 — used to invoke it in isolation, since running
+# the full hook blocks on stdin JSON and never exposes this internal
+# function's raw output.
+_MASK_SHELL_QUOTES_FUNCTION_RE = re.compile(r"_mask_shell_quotes\(\) \{.*?\n\}\n", re.DOTALL)
+
+
+def _call_mask_shell_quotes(text: str) -> str:
+    source = DENY_INVISIBLE_COMMIT_CONTENT_HOOK.read_text()
+    match = _MASK_SHELL_QUOTES_FUNCTION_RE.search(source)
+    assert match is not None, "could not locate _mask_shell_quotes's definition in the hook source"
+    result = subprocess.run(
+        ["bash", "-c", f'{match.group(0)}_mask_shell_quotes "$1"', "bash", text],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
 
 
 class TestDenyInvisibleCommitContent:
@@ -30,6 +50,14 @@ class TestDenyInvisibleCommitContent:
     def test_semicolon_chained_add_then_commit_denied(self):
         """`;` separator, not just `&&`, must also be walked."""
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git add f ; git commit -m x")) == "deny"
+
+    def test_quoted_git_word_chained_add_then_commit_denied(self):
+        """GH-783: this is test_chained_add_then_commit_denied's own
+        fixture with two quote characters added around the second `git`.
+        Regression guard: the fast-reject grep must run against
+        COMMAND_UNQUOTED so a quoted `git commit` in a chain is still
+        caught."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input('git add f && "git" commit -m x')) == "deny"
 
     def test_bash_c_wrapped_chained_add_denied(self):
         """Required regression test: the raw command's first fragment word is
@@ -113,6 +141,39 @@ class TestDenyInvisibleCommitContent:
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("git commit -m x && git commit -m y && git commit -m z"),
         ) == "deny"
+
+    def test_quoted_git_word_two_chained_commits_denied(self):
+        """GH-783: a quoted `git` word on the first commit must still count
+        toward arm 2's total. This input passes the fast-reject grep as-is
+        (a bare, unquoted `git commit` is present in the second fragment)
+        but would fail without the masker's single-safe-word unquoting:
+        the masked first fragment's `git` word would stay blanked and the
+        count would never reach 2. Isolates the masker fix from the
+        fast-reject fix the test above proves."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('"git" commit -m a && git commit -m b'),
+        ) == "deny"
+
+    def test_ansi_c_quoted_git_word_two_chained_commits_denied(self):
+        """GH-783: the ANSI-C-quote form of the git word (`$'git'`) must
+        normalize the same way `_lib_strip_shell_quotes` already
+        normalizes it for arm 1 (dropping the leading `$` along with the
+        quote delimiters) — proving the masker's own `$`-drop logic
+        actually fires, not just the unrelated stripper it's modeled on."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("$'git' commit -m x && git commit -m y"),
+        ) == "deny"
+
+    def test_mask_shell_quotes_ansi_c_multi_word_span_has_no_stray_dollar(self):
+        """A multi-word ANSI-C-quoted span ($'fix && bar') falls into the
+        blanking branch (its interior isn't a single safe word), which must
+        trim the leading `$` the same way the single-safe-word unquoting
+        branch already does — otherwise the blanked output is `$''`
+        instead of `''`, an internal inconsistency with the masker's own
+        documented "drops the leading $" rule."""
+        assert _call_mask_shell_quotes("$'fix && bar'") == "''"
 
     def test_multi_commit_deny_message_names_invariant(self):
         reason = run_hook_reason(
@@ -211,6 +272,20 @@ class TestDenyInvisibleCommitContent:
         """`-a` as its own token, not bundled into `-am` above."""
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git commit -a -m x")) == "deny"
 
+    def test_quoted_git_word_with_all_flag_denied(self):
+        """GH-783: a single, unchained, quoted-`git` commit using `-a`
+        proves arm 1's whole path denies once the fast-reject hoist onto
+        COMMAND_UNQUOTED lets it through. Does not by itself isolate the
+        masker fix's contribution — arm 1's commit_check_fragment defaults
+        to the already quote-stripped `$fragment` regardless of the
+        masker, so `-a` is visible either way; the allow test below (a
+        multiword message, no `-a`) is what actually isolates the masker
+        fix."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('"git" commit -a -m "fix the thing"'),
+        ) == "deny"
+
     def test_commit_all_long_flag_denied(self):
         """The actual `--all` long-form spelling, distinct from the two `-a`
         short-flag shapes above — previously covered in this file's own
@@ -254,6 +329,17 @@ class TestDenyInvisibleCommitContent:
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input('git commit -m "fix a real bug here"'),
+        ) == "allow"
+
+    def test_quoted_git_word_multiword_message_allowed(self):
+        """The masker-fix isolation case: no -a/pathspec, multi-word -m
+        message — if the masker leaves git/commit blanked, arm 1's
+        worktree-target check falls back to the raw fragment and
+        false-denies on the multi-word message (same bug class as
+        test_multiword_message_allowed)."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('"git" commit -m "fix a real bug here"'),
         ) == "allow"
 
     def test_multiword_message_after_marker_chain_allowed(self):
@@ -319,8 +405,12 @@ class TestDenyInvisibleCommitContent:
     # ------------------------------------------------------------------ #
 
     def test_grep_absent_from_path_denied(self, tmp_path):
-        """The fast-reject grep is the first fork this hook takes on every
-        Bash call."""
+        """The fast-reject grep is the first grep fork this hook takes —
+        COMMAND_UNQUOTED's sed+tr quote-strip forks ahead of it, on every
+        Bash call, but grep itself still runs unconditionally right after.
+        A missing grep denies every Bash call regardless of content, the
+        same broad outcome class sed/tr's own absence below produces
+        too."""
         farm_dir = tmp_path / "path-without-grep"
         farm_dir.mkdir()
         restricted_path = build_path_without("grep", farm_dir)
@@ -344,10 +434,11 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_sed_absent_from_path_denied(self, tmp_path):
-        """`_lib_split_fragments` (arm 2's masked-command split) is the
-        earliest sed fork this hook reaches, ahead of both arm 1's own sed
-        uses (`_lib_strip_shell_quotes`, then its own `_lib_split_fragments`
-        call)."""
+        """`_lib_strip_shell_quotes` computing COMMAND_UNQUOTED is the
+        earliest sed fork this hook reaches — ahead of the fast-reject grep
+        itself — so a missing sed denies every Bash call, not only ones
+        mentioning `git commit`, the same broad outcome class the grep
+        case above has."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -358,9 +449,10 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_tr_absent_from_path_denied(self, tmp_path):
-        """tr backs only `_lib_strip_shell_quotes` (arm 1). A single,
-        unchained commit clears arm 2 with no tr dependency of its own, so
-        this pins arm 1's tr fork failing closed."""
+        """tr backs only `_lib_strip_shell_quotes`, called once for
+        COMMAND_UNQUOTED ahead of the fast-reject grep — so a missing tr
+        denies every Bash call, not only ones mentioning `git commit`, the
+        same broad outcome class the grep case above has."""
         farm_dir = tmp_path / "path-without-tr"
         farm_dir.mkdir()
         restricted_path = build_path_without("tr", farm_dir)
