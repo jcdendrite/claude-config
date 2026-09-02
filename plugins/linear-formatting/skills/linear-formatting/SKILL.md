@@ -2,8 +2,10 @@
 name: linear-formatting
 description: >
   Linear issue-comment and issue-link formatting conventions for tracker
-  writes: issue-ID auto-linking, comment markdown support, and the
-  create/update tool-shape variance across Linear MCP server versions.
+  writes: issue-ID auto-linking, comment markdown support, the
+  create/update tool-shape variance across Linear MCP server versions,
+  the required Claude-authorship attribution prefix, real-newline
+  formatting, and the repeated-issue-reference auto-linker drop.
   TRIGGER when: posting or editing a Linear issue comment or document,
   or writing text that references a Linear issue ID for a Linear-tracked
   repo. DO NOT TRIGGER when: the tracker is not Linear (e.g. Jira, GitHub
@@ -16,6 +18,39 @@ user-invocable: false
 
 Formatting conventions for text written back to Linear — issue comments and
 documents — so issue references auto-link and markdown renders as intended.
+
+## Attribution
+
+**CRITICAL:** All Linear writes via MCP tools are posted through the user's
+Linear API token and will appear as the user's account. To avoid confusion
+(the user may think they wrote the content themselves), **always** prefix
+every comment / description / document body authored by Claude with
+`**[Claude Code]**` followed by the content.
+
+Applies to:
+- Comment write body.
+- New issue description.
+- New project description.
+- New milestone description.
+- New Document write content.
+- The body of a Document write update when adding Claude-authored sections.
+
+Does NOT apply to:
+- Edits that preserve existing user-authored content where Claude is only
+  making minor surgical changes (typos, link updates). When in doubt
+  whether an edit is minor or substantive, treat it as substantive and add
+  the prefix.
+- Read tools (no body parameter).
+
+If you forgot the prefix on a write that already happened, edit the
+existing record by passing its `id` to the same write tool, prefixing the
+corrected body with a brief note that it was originally posted without
+attribution and has now been corrected. Do not post a separate "correction"
+comment — the visible note inside the edited record is the audit trail.
+
+**Always verify the prefix landed.** After a write that should carry the
+`**[Claude Code]**` prefix, refetch the record and spot-check that the
+prefix is actually present — do not assume the write saved as composed.
 
 ## MCP tool surface
 
@@ -83,13 +118,57 @@ Write plan-back content as plain Markdown using these elements — there is
 no need to pre-render to HTML or to avoid Markdown syntax on the assumption
 the comment field is plain text.
 
+## Use real newlines, not escape sequences
+
+Linear renders markdown but does NOT interpret `\n` escape sequences. Literal
+`\n` appears as visible text in issue descriptions and comments.
+
+**Wrong** — renders as visible `\n\n`:
+```
+First paragraph.\n\nSecond paragraph.
+```
+
+**Correct** — use actual line breaks in the parameter value:
+```
+First paragraph.
+
+Second paragraph.
+```
+
+## Repeated issue references may be silently dropped
+
+Linear's auto-linker wraps plain-text issue-ID mentions in `<issue id="...">`
+tags when content is saved. It sometimes drops the second and later
+plain-text mentions of the same issue ID, leaving fragments like
+`"Tracked in ."` in the rendered doc. Observed triggers:
+- A numbered list where the reference sits near a trailing period.
+- The same ID already appearing earlier in the document.
+
+First mention in the doc is safe to write as plain form (`PROJ-123`); Linear
+will link it. For every subsequent mention of the same ID, write the
+explicit tag to guarantee it survives:
+
+```
+Tracked in <issue id="<uuid>">PROJ-123</issue>.
+```
+
+Retrieve the ID by calling Issue lookup (the `id` field) or by fetching a
+doc that already references it and copying the `id` attribute.
+
+**Always verify after a large write-tool call.** Refetch the document
+and spot-check the sections that reference issues — especially numbered
+lists with repeated references. Do not assume a save succeeded end-to-end.
+
 ## Checklist
 
 Before posting a comment or document back to Linear:
 
 ```
 linear-formatting checklist:
+- [ ] Claude-authored content is prefixed with **[Claude Code]**
 - [ ] Issue IDs referenced in the body use the bare or @-mention form, not a manual markdown link
 - [ ] No issue ID sits inside a code span/block unless showing literal text on purpose
 - [ ] The write tool was resolved by role against the installed server's actual tool list, not hardcoded by name
+- [ ] Paragraph breaks are real newlines in the parameter value, not literal `\n`
+- [ ] Repeated mentions of the same issue ID past the first use the explicit `<issue id="...">` tag
 ```
