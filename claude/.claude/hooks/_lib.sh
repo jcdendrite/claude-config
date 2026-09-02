@@ -1689,7 +1689,15 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 # - Residual gap: a channel reference spliced right after a fabricated
 #   closing bracket evades this detector, same class as the all-digit
 #   GitHub-issue exclusion above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^(])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+# - Excludes bash parameter-expansion-length syntax (`${#array[@]}`,
+#   `${#string}`): the first alternative also requires the hash not be
+#   immediately preceded by `{`, the exact adjacent sequence that shape
+#   always produces.
+# - Residual gap: a channel reference wrapped as `{#slug}` (e.g. a
+#   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
+#   evades this detector via the same exclusion, same class as the two
+#   residual gaps above.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^({])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a
