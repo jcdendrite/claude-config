@@ -89,9 +89,9 @@
 #  - The editor-flow commit (`git commit` / `git commit --amend` with no
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
-#  - A chained `git add ... && git commit` stages content after the hook
-#    fires; the staged-diff scan sees the pre-add index. The commit
-#    message is still scanned via the command string.
+#  - A chained `git add ... && git commit` staging content after this hook's
+#    staged-diff scan is now denied outright by deny-invisible-commit-content.sh,
+#    so that shape never reaches this hook's PII/credential scan at all.
 #  - Credit-card detection matches contiguous 13-19 digit runs only;
 #    space- or dash-separated card numbers are not caught.
 #  - `git -C <path> commit` aimed at a *different* repository is still
@@ -138,41 +138,9 @@ fi
 # --- Detect `git commit`; decide whether `git diff HEAD` is also needed --
 # Runs before the pii-patterns.md arming check below: the credential-value sub-check needs commit-detection and diff extraction regardless of arming.
 # `-a`/`--all`, a `--` pathspec separator, or a bare pathspec argument all
-# commit working-tree content not in the index at hook time.
-commit_fragment_has_worktree_target() {
-  # Each stage is captured into a variable rather than run as one pipeline.
-  # The awk exits as soon as it finds a worktree-target token; in a single
-  # pipeline that closes the pipe on a still-running `xargs -n1`, and under
-  # `set -o pipefail` the resulting SIGPIPE surfaces as a non-zero pipeline
-  # status — spuriously reporting "no target". Testing the captured awk
-  # output makes the verdict independent of any stage's exit code.
-  local fragment_tokens verdict
-  fragment_tokens=$(printf '%s\n' "$1" | xargs -n1 2>/dev/null)
-  verdict=$(awk '
-    BEGIN { past = 0; skip = 0 }
-    {
-      if (!past) { if ($0 == "commit") past = 1; next }
-      if (skip) { skip = 0; next }
-      if ($0 == "--") { print "Y"; exit }
-      if ($0 ~ /^--/) {
-        if ($0 == "--all") { print "Y"; exit }
-        # Long options that consume a separate-token value.
-        if ($0 ~ /^(--message|--file|--reuse-message|--reedit-message|--template|--author|--date|--cleanup|--fixup|--squash|--trailer|--pathspec-from-file)$/) skip = 1
-        next
-      }
-      if ($0 ~ /^-./) {
-        # Short-flag bundle. `a` anywhere means --all; a bundle ending in a
-        # value-taking letter consumes the next token.
-        if ($0 ~ /a/) { print "Y"; exit }
-        if ($0 ~ /[mFCct]$/) skip = 1
-        next
-      }
-      # A bare, non-consumed token after `commit` is a pathspec.
-      print "Y"; exit
-    }
-  ' <<< "$fragment_tokens")
-  [ "$verdict" = "Y" ]
-}
+# commit working-tree content not in the index at hook time — detected via
+# _lib_commit_fragment_has_worktree_target (_lib.sh), shared with
+# deny-invisible-commit-content.sh.
 
 # Walk the command's shell fragments once. _lib_split_fragments splits on
 # &&/;/|/$()/backticks; _lib_extract_git_subcmd word-walks each fragment,
@@ -185,7 +153,7 @@ while IFS= read -r git_fragment; do
   _lib_fragment_invokes_git "$git_fragment" || continue
   [ "$(_lib_extract_git_subcmd "$git_fragment")" = "commit" ] || continue
   GIT_COMMIT_FOUND=1
-  if commit_fragment_has_worktree_target "$git_fragment"; then
+  if _lib_commit_fragment_has_worktree_target "$git_fragment"; then
     HEAD_SCAN_NEEDED=1
   fi
 done <<< "$(_lib_split_fragments "$COMMAND")"

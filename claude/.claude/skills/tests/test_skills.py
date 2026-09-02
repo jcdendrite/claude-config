@@ -479,6 +479,18 @@ class TestConventionSkillWiring:
         """handoff's pre-write checklist must have an actionable run pointer to pr-description."""
         assert "run the `pr-description`" in self._skill_body("handoff")
 
+    def test_ready_for_review_continues_past_pr_description(self):
+        """ready-for-review step 5 must tell the model pr-description's ending is not this gate's stopping point."""
+        # Normalized so a future hard-wrap of this paragraph doesn't break the pin.
+        body = " ".join(self._skill_body("ready-for-review").split())
+        assert "continue to the next step in the same turn" in body
+
+    def test_handoff_continues_past_pr_description(self):
+        """handoff's pre-write checklist must tell the model pr-description's ending is not this checklist's stopping point."""
+        # Normalized so a future hard-wrap of this paragraph doesn't break the pin.
+        body = " ".join(self._skill_body("handoff").split())
+        assert "write the handoff file in the same turn" in body
+
 
 class TestCodeWriterSelfReviewScope:
     """Pin code-writer's self-review diffing instructions.
