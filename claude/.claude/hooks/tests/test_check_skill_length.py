@@ -547,7 +547,8 @@ class TestCheckSkillLength:
             == "allow"
         )
 
-    # --- Newly-capped `git diff --cached --name-only` (_lib_staged_length_gate) ---
+    # --- Newly-capped `git diff --cached --name-only` and `git rev-parse
+    # --is-inside-work-tree` (_lib_staged_length_gate) ---
 
     @pytest.mark.timing
     def test_staged_diff_git_timeout_engages_cap(
@@ -563,6 +564,31 @@ class TestCheckSkillLength:
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         env = git_timeout_shim('[ "$1" = "diff" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_repo_detection_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git rev-parse --is-inside-work-tree`'s _lib_capped wrap (added to
+        _lib_staged_length_gate alongside the shared driver) must actually
+        engage its 5s cap rather than hang, mirroring the `git diff` cap
+        coverage immediately above it. A capped, empty result isn't the
+        literal string "true", so the gate degrades to allow rather than
+        hanging — same degrade-not-hang shape. One instance here suffices
+        for both check-skill-length.sh and check-claude-md-length.sh: the
+        capped call is caller-invariant, running identically for both hooks
+        before either caller's own logic."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$1" = "rev-parse" ]')
         with assert_cap_engaged():
             decision = run_hook(
                 CHECK_SKILL_LENGTH_HOOK,

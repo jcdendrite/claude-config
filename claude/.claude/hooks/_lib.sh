@@ -945,6 +945,12 @@ _lib_command_invokes_tool_subcmd() {
 # scanner — contrast deny-pii-in-commits.sh, which fails closed on the same
 # class of timeout because an unscanned commit there is an unscanned leak
 # vector.
+#
+# The rev-parse and diff calls' cap-engagement characterization tests live
+# only in test_check_skill_length.py, valid for both callers because these
+# capped calls are caller-invariant; the two show calls have no dedicated
+# cap-engagement test anywhere, a pre-existing gap this extraction doesn't
+# close.
 _lib_staged_length_gate() {
   local pattern="$1" gate_label="$2"
   _lib_command_invokes_git_subcmd "$COMMAND" commit
