@@ -72,8 +72,9 @@ be new content there under any option that uses it.
 - The third project's tracker is Atlassian/Jira, confirmed structurally
   different from Linear. [engineer-verified]
 - Where the generic piece lives — a public claude-config plugin, a private
-  cs-playbook scaffold, or a hybrid — is explicitly left to the architecture
-  design step, informed by the tracker-diversity finding above.
+  scaffold in one of the engineer's other repos, or a hybrid — is explicitly
+  left to the architecture design step, informed by the tracker-diversity
+  finding above.
   [engineer-verified: defers this call]
 
 ## Approach
