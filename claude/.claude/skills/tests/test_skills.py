@@ -222,13 +222,11 @@ def _model_invokable_skills() -> list[str]:
 
 
 # Explicit registry of user-only command skills that use the frontmatter
-# disable-model-invocation: true flag. Currently empty — the four former command
-# skills (brief, handoff, read-docx-comments, transcript-analysis) now use
-# skillOverrides: name-only, making them model-invokable by name while keeping
-# their descriptions out of the budget. Add to this list only when a new skill
-# needs strict slash-only access (no model invocation at all) via frontmatter
-# rather than skillOverrides.
-COMMAND_SKILLS: list[str] = []
+# disable-model-invocation: true flag. Plugin skills that need the listing-
+# budget exemption register here instead of via skillOverrides, which does
+# not apply to plugin skills — see docs/skills.md for the full mechanism and
+# the /skill-review exception.
+COMMAND_SKILLS: list[str] = ["issue-triage"]
 
 # Skills that are user-invocable: false (model/hook-dispatched) but deliberately
 # carry no TRIGGER blocks because they are always dispatched by name — never by

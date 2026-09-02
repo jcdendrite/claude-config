@@ -1,11 +1,10 @@
 ---
 name: issue-triage
 description: >
-  Evidence-backed, report-only GitHub issue triage.
-  TRIGGER when: asked to triage or assess the open issue backlog.
-  DO NOT TRIGGER when: acting on, filing, or reviewing one issue or PR —
-  use `gh`/`/respond-pr`.
+  Evidence-backed, report-only GitHub issue triage. Invoke directly with
+  `/issue-triage` — not auto-triggered by the model.
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # Issue triage

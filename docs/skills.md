@@ -67,6 +67,8 @@ Source: [Claude Code settings — skillOverrides](https://code.claude.com/docs/e
 
 Note: `skillOverrides` does not apply to plugin skills — plugin visibility is managed via the `/plugin` command and `enabledPlugins` in settings.json.
 
+For a plugin skill that never needs model-initiated invocation, `disable-model-invocation: true` in its own `SKILL.md` frontmatter is a real fix instead. Unlike `skillOverrides`, it is read directly from the file, so it applies to plugin skills too. `issue-triage` uses this: it is human-invoked only via `/issue-triage`, so its description is fully excluded from the listing budget. `skill-review` can't take the same fix, because `/code-review` and the `require-skill-review` hook dispatch it by name — `disable-model-invocation: true` would block that dispatch too, which is why it keeps the minimized, always-counted description described above instead.
+
 ## Bundled skills disabled by default
 
 Claude Code ships a set of bundled skills alongside its custom-skill support. Ten bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`, and two (`/loop`, `/simplify`) are set to `name-only` — invokable by name with no description-budget cost. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
