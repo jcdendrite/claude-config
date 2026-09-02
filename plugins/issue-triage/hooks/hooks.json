@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-gh-mutation-during-triage.sh",
+            "statusMessage": "Checking issue-triage gh-mutation gate..."
+          }
+        ]
+      }
+    ]
+  }
+}

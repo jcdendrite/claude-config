@@ -2812,7 +2812,7 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 # "Worktree enforcement").
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
-    r"(handoffs/|briefs/|plans/|projects/|sessions/"
+    r"(handoffs/|briefs/|issue-triage/|plans/|projects/|sessions/"
     r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*\.d/|output-preferences\.md"
     r"|pii-patterns\.md|credential-file-guard\.md|credential-value-patterns\.md"
     r"|data-file-read-guard\.md|private-projects\.md|track-permission-prompts"

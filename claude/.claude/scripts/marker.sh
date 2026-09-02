@@ -26,15 +26,22 @@ Subcommands:
   status     Report every completion marker (code-review, skill-review,
              plan-review, ready-for-review) for this repo and every
              active-bypass marker (plan-review, ready-for-review,
-             respond-pr, memory-skill, handoff) for this session, each as
-             live, historical, or absent. Takes no skill argument. Evicts a
-             stale (dead-PID) active-bypass marker for this session as a
-             side effect of classifying it.
+             respond-pr, memory-skill, handoff, issue-triage) for this
+             session, each as live, historical, or absent. Takes no skill
+             argument. Evicts a stale (dead-PID) active-bypass marker for
+             this session as a side effect of classifying it.
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review
   activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
+              issue-triage <owner>/<repo>
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
+              issue-triage
+
+issue-triage inverts the other five markers' polarity: a live marker here
+ACTIVATES a deny (see deny-gh-mutation-during-triage.sh), it doesn't
+release one. `activate` also takes a second argument (`<owner>/<repo>`)
+that the other five don't.
 EOF
 }
 
@@ -214,7 +221,7 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+if [ $# -lt 1 ] || [ $# -gt 3 ]; then
   usage
   exit 2
 fi
@@ -232,24 +239,45 @@ CONFIG_DIR=$(_lib_config_dir) || {
 
 SUBCOMMAND="$1"
 ARG2="${2:-}"
+ARG3="${3:-}"
 
-# Validate arg count per subcommand.
+# Validate arg count per subcommand. write/deactivate stay 2-arg only.
+# activate takes an optional third argument, used only by issue-triage's
+# restriction-polarity marker to carry the confinement target (see usage()
+# above).
 case "$SUBCOMMAND" in
-  write|activate|deactivate)
-    if [ -z "$ARG2" ]; then
+  write|deactivate)
+    if [ -z "$ARG2" ] || [ -n "$ARG3" ]; then
       usage
       exit 2
     fi
     SKILL="$ARG2"
     ;;
+  activate)
+    if [ -z "$ARG2" ]; then
+      usage
+      exit 2
+    fi
+    SKILL="$ARG2"
+    if [ "$SKILL" = "issue-triage" ]; then
+      if [ -z "$ARG3" ]; then
+        usage
+        exit 2
+      fi
+      REPO_TARGET="$ARG3"
+    elif [ -n "$ARG3" ]; then
+      usage
+      exit 2
+    fi
+    ;;
   clear-stale)
-    if [ -n "$ARG2" ] && [ "$ARG2" != "--dry-run" ]; then
+    if { [ -n "$ARG2" ] && [ "$ARG2" != "--dry-run" ]; } || [ -n "$ARG3" ]; then
       usage
       exit 2
     fi
     ;;
   resolve-session-id|status)
-    if [ -n "$ARG2" ]; then
+    if [ -n "$ARG2" ] || [ -n "$ARG3" ]; then
       usage
       exit 2
     fi
@@ -390,8 +418,28 @@ case "$SUBCOMMAND" in
         mkdir -p "$CONFIG_DIR/.handoff-active.d"
         printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
         ;;
+      issue-triage)
+        # REPO_TARGET is stored in a sibling file, not a second line in the
+        # PID marker: the shared liveness check strips all whitespace
+        # before matching `^[0-9]+$`, so a second line would corrupt that
+        # check for every marker kind. Restriction-polarity marker (see
+        # usage() above): a live marker ACTIVATES
+        # deny-gh-mutation-during-triage.sh's deny, rather than releasing a
+        # standing one.
+        case "$REPO_TARGET" in
+          *[[:space:]]*)
+            printf "marker.sh: 'activate issue-triage' target %s must not contain whitespace.\n" "$REPO_TARGET" >&2
+            exit 2
+            ;;
+        esac
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        mkdir -p "$CONFIG_DIR/.issue-triage-active.d"
+        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.issue-triage-active.d/$SESSION_ID"
+        printf '%s\n' "$REPO_TARGET" > "$CONFIG_DIR/.issue-triage-active.d/$SESSION_ID.repo-target"
+        ;;
       *)
-        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
+        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff, issue-triage\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -421,8 +469,13 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
         ;;
+      issue-triage)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        rm -f "$CONFIG_DIR/.issue-triage-active.d/$SESSION_ID"
+        rm -f "$CONFIG_DIR/.issue-triage-active.d/$SESSION_ID.repo-target"
+        ;;
       *)
-        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
+        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff, issue-triage\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -520,5 +573,9 @@ case "$SUBCOMMAND" in
     _status_report_active_bypass respond-pr ".respond-pr-active.d" "$SESSION_ID"
     _status_report_active_bypass memory-skill ".memory-skill-active.d" "$SESSION_ID"
     _status_report_active_bypass handoff ".handoff-active.d" "$SESSION_ID"
+    # issue-triage is restriction-polarity (see usage() above): "live" here
+    # means the gh-mutation deny is currently ACTIVE for this session, not
+    # that a standing deny is released.
+    _status_report_active_bypass issue-triage ".issue-triage-active.d" "$SESSION_ID"
     ;;
 esac
