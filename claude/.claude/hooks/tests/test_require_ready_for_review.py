@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -1433,6 +1435,39 @@ class TestRequireReadyForReview:
                 READY_FOR_REVIEW_HOOK,
                 bash_input("git push origin feature", session_id="s"),
                 extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_fragments_split_sed_failure_denied(self, tmp_path):
+        """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
+        from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
+        sed binary, so a total sed-absent test (like the one above) can't
+        tell which of the two is actually catching the failure. A sed shim
+        fails on any invocation that isn't _lib_strip_shell_quotes's own
+        `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
+        while the later _lib_split_fragments call (a bare `sed -E
+        's/.../g'`, no `-e` token) fails on its own."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
             == "deny"
         )

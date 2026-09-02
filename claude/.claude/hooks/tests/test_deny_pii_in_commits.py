@@ -321,6 +321,24 @@ class TestDenyPiiInCommits:
         _stage(git_repo, "f.txt", "x\nref 41234567890123456789\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
 
+    def test_word_adjacent_card_quote_split_denied(self, isolated_home, git_repo, pii_patterns):
+        """GH-783: a credit-card-shaped digit run whose only preceding word
+        boundary is an adjacent quote character (no space, e.g.
+        `x"4111111111111111"`) must still deny under the raw+stripped union
+        scan. SCAN_TARGET_UNQUOTED alone would miss this -- stripping the
+        quote merges `x` and the digit run into `x4111111111111111` with no
+        \\b boundary between them -- but the raw $SCAN_TARGET side of the
+        SCAN_TARGET_BOTH union still has the quote and still matches.
+        Mirrors deny-private-project-refs.sh's
+        test_word_adjacent_tracker_id_quote_split_denied."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(f'git commit -m \'card x"{CARD_VALID}" on file\''),
+            cwd=git_repo,
+        ) == "deny"
+
     # ------------------------------------------------------------------ #
     # Added lines only — removing PII must never be blocked               #
     # ------------------------------------------------------------------ #
@@ -596,15 +614,15 @@ class TestDenyPiiInCommits:
         )
 
     def test_scan_target_sed_failure_denied(self, isolated_home, git_repo, tmp_path):
-        """GH-783: SCAN_TARGET_EXIT must fail closed on its own, isolated
-        from GIT_FRAGMENTS_SPLIT_EXIT and git_fragment_unquoted_exit above --
-        all three checks call sed against text drawn from the same
+        """GH-783: SCAN_TARGET_UNQUOTED_EXIT must fail closed on its own,
+        isolated from GIT_FRAGMENTS_SPLIT_EXIT and git_fragment_unquoted_exit
+        above -- all three checks call sed against text drawn from the same
         $COMMAND, so a total sed-absent test can't tell which one is
         catching the failure. A sed shim fails only on a `-e`-flagged call
         (_lib_strip_shell_quotes's own shape, shared by the per-fragment
-        strip and this SCAN_TARGET strip) whose stdin carries a marker that
-        straddles a `&&` fragment-split point -- present in the raw,
-        unsplit $COMMAND that SCAN_TARGET strips directly, but absent from
+        strip and this SCAN_TARGET_UNQUOTED strip) whose stdin carries a
+        marker that straddles a `&&` fragment-split point -- present in the
+        raw, unsplit $COMMAND that feeds SCAN_TARGET, but absent from
         every individual fragment the per-fragment strip sees, since
         _lib_split_fragments already broke the marker apart at that `&&`
         before the per-fragment strip ever runs. GIT_FRAGMENTS_SPLIT_EXIT's
