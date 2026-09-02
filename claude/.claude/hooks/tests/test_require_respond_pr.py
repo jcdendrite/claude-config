@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 import pytest
@@ -10,9 +11,11 @@ from helpers import (
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
+    build_path_without,
     edit_input,
     extract_skill_command,
     run_hook,
+    run_hook_reason,
     run_skill_command,
 )
 
@@ -21,6 +24,11 @@ from .conftest import _seed_session
 RESPOND_PR_HOOK = HOOKS_DIR / "require-respond-pr.sh"
 RESPOND_PR_SKILL = SKILLS_DIR / "respond-pr" / "SKILL.md"
 ERROR_MODE_SKILL = SKILLS_DIR / "error-mode-analysis" / "SKILL.md"
+
+# GH-483's fenced-code-block reply commands all use this exact `-F body=`
+# shape (see respond-pr/SKILL.md steps 7 and the Attribution/Guidelines
+# sections).
+_FENCED_BLOCK_RE = re.compile(r"```(?:bash)?\n(.*?)```", re.DOTALL)
 
 
 @pytest.fixture
@@ -94,6 +102,27 @@ class TestRequireRespondPr:
     )
     def test_non_matching_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
+
+    def test_awk_absent_from_path_denies(self, isolated_home, current_repo_foo_bar, tmp_path):
+        """GH-801: status-2 propagation. COMMAND_FLAT's awk fork failing
+        must not silently fall through to "no arm matched, allow" -- this
+        gate's own documented posture is fail-closed, and the prior
+        parameter-expansion form's "this form cannot fail" guarantee is
+        exactly what the checked awk fork narrows. Asserts the
+        distinguishing reason text, not just the verdict, so this test
+        cannot be satisfied by an ordinary gated-write deny reaching
+        "deny" for the wrong reason."""
+        farm_dir = tmp_path / "path-without-awk"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("awk", farm_dir)
+        reason = run_hook_reason(
+            RESPOND_PR_HOOK,
+            bash_input("gh pr view 5"),
+            cwd=current_repo_foo_bar,
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not flatten" in reason
 
     # -- `gh issue comment` gating -------------------------------------------
     # `gh issue comment` posts through the same POST /repos/{o}/{r}/issues/{n}/
@@ -938,4 +967,85 @@ class TestRequireRespondPr:
                 cwd=current_repo_foo_bar,
             )
             == "deny"
+        )
+
+
+class TestGh483Invariants:
+    """GH-483's two acceptance-criteria tests. Neither is a behavioral
+    hook-gate test like the classes above: both are source/doc scans,
+    because the two invariants they pin have no runtime code path this
+    hook (or any script) executes — see each test's own docstring."""
+
+    def test_documented_reply_commands_all_carry_claude_code_attribution(self):
+        """GH-483 acceptance criterion 1: 'a comment posted through
+        /respond-pr carries the [Claude Code] prefix'. The whole gate
+        exists to route writes into /respond-pr for that guarantee, but
+        nothing enforces it in code — the attribution is a prose
+        instruction the skill's own worked examples model, not a script
+        the hook (or this test) can execute against a real write. Pinned
+        at the only enforceable layer available instead: every documented
+        `-F body=` reply-posting command in SKILL.md itself carries both
+        the required prefix and the AI-disclosure trailer, so a worked
+        example silently losing the prefix fails here rather than
+        shipping unnoticed."""
+        skill_text = RESPOND_PR_SKILL.read_text()
+        reply_blocks = [
+            block for block in _FENCED_BLOCK_RE.findall(skill_text) if "-F body=" in block
+        ]
+        assert reply_blocks, "no `-F body=` reply-posting command blocks found in respond-pr/SKILL.md"
+        for block in reply_blocks:
+            assert "**[Claude Code]**" in block, (
+                f"reply command missing the [Claude Code] prefix:\n{block}"
+            )
+            assert "🤖 Generated with [Claude Code](https://claude.com/claude-code)" in block, (
+                f"reply command missing the AI-disclosure attribution trailer:\n{block}"
+            )
+
+    def test_every_pattern_is_accounted_for_in_a_gate_bucket(self):
+        """GH-483 acceptance criterion 2, inverted: nothing structurally
+        stops a future PATTERN_* from being added and forgotten in every
+        gate that decides on it -- that is exactly how `gh issue comment`
+        once came to be gated in one arm and not the other. The prior
+        version of this test used a naming heuristic ("WRITE" or
+        "MUTATION" in the name) that missed PATTERN_FIELD_FLAG and
+        PATTERN_ANY_FILE_BODY, neither of whose names contains either
+        substring, leaving both with no coverage from this test despite
+        being real entries in gated_write_patterns. This version scans the
+        hook's own source instead: every PATTERN_* it assigns must appear
+        in one of three accounted-for buckets --
+          - the if/elif arm chain that decides whether to keep evaluating
+            a command at all (a literal `[[ "$COMMAND_FLAT" =~ $PATTERN_X
+            ]]` conditional), which also covers PATTERN_MUTATING_METHOD's
+            own standalone check;
+          - the gated_write_patterns array literal;
+          - an explicit allowlist of sub-pattern-only helpers that are
+            never matched directly against COMMAND_FLAT themselves
+            (PATTERN_REPO_FLAG_RUN, a repo-flag-consuming fragment
+            interpolated into PATTERN_PR_WRITE_CMD and
+            PATTERN_ISSUE_WRITE_CMD's own definitions, not a top-level
+            write-detection pattern in its own right).
+        A pattern in none of the three is real, unaccounted-for dead code
+        or a forgotten gate wiring -- either way this test should catch
+        it."""
+        text = RESPOND_PR_HOOK.read_text()
+        pattern_names = re.findall(r"^(PATTERN_[A-Z_]+)=", text, re.MULTILINE)
+        assert pattern_names, "no PATTERN_* assignments found — did the naming convention change?"
+
+        conditional_matches = set(
+            re.findall(r'\[\[\s*"\$COMMAND_FLAT"\s*=~\s*\$(PATTERN_[A-Z_]+)\s*\]\]', text)
+        )
+
+        array_match = re.search(r"gated_write_patterns=\((.*?)\)", text, re.DOTALL)
+        assert array_match, "gated_write_patterns array literal not found in require-respond-pr.sh"
+        array_names = set(re.findall(r'"\$(PATTERN_[A-Z_]+)"', array_match.group(1)))
+
+        sub_pattern_only_allowlist = {"PATTERN_REPO_FLAG_RUN"}
+
+        accounted_for = conditional_matches | array_names | sub_pattern_only_allowlist
+        missing = [name for name in pattern_names if name not in accounted_for]
+        assert not missing, (
+            f"PATTERN_* not accounted for in the arm chain, "
+            f"gated_write_patterns, or sub_pattern_only_allowlist: {missing} "
+            "— wire it into a gate, or add it to sub_pattern_only_allowlist "
+            "with a reason."
         )

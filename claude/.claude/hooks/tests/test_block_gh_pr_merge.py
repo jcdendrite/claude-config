@@ -8,6 +8,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     read_input,
     run_hook,
@@ -195,3 +196,59 @@ class TestBlockGhPrMerge:
         # command shape and is excluded by the implementation brief. This test
         # asserts the boundary so a future pattern expansion doesn't silently capture it.
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh api repos/owner/repo/pulls/291/merge")) == "allow"
+
+    # ------------------------------------------------------------------ #
+    # GH-783 Phase 2: quote-split and command-matcher regression tests    #
+    # ------------------------------------------------------------------ #
+
+    def test_quoted_form_reaches_same_verdict_as_bare_form(self):
+        """A quote-adjacent split (`"gh" pr merge 1`) must reach the same
+        deny verdict as the unquoted form — the fragment matcher strips
+        quote characters before word-walking, unlike a raw regex over
+        unstripped $COMMAND."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('"gh" pr merge 1')) == "deny"
+
+    def test_quoted_subcommand_word_now_denied(self):
+        """Closes a real gap the prior regex missed: `gh pr "merge"` quote-
+        strips to a bare `merge` token, which the word-sequence matcher now
+        catches — a genuine behavior change/gap-close, not a regression.
+        See docs/hooks.md's entry for this hook."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('gh pr "merge"')) == "deny"
+
+    def test_echo_wrapped_form_still_allowed_via_command_word_resolution(self):
+        """Re-pins the false-positive-avoidance property test_false_positive_
+        shapes_allowed above already covers, naming the NEW mechanism: the
+        stripped fragment's command word resolves to `echo`, not `gh`, not
+        because a quote character survived stripping."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('echo "gh pr merge"')) == "allow"
+
+    def test_value_taking_global_flag_before_subcommand_denied(self):
+        """Row 4's exact naive-implementation failure case: without
+        skipping -R/--repo's own value, `o/r` would misread as the
+        subcommand and the match would miss."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh --repo o/r pr merge")) == "deny"
+
+    def test_full_path_invocation_now_denied(self):
+        """Closed as a side effect of the command-word matcher (see
+        _lib_fragment_invokes_tool): a path ending in /gh resolves the same
+        as the bare token, not only a literal `gh` word."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("/usr/bin/gh pr merge 291")) == "deny"
+
+    def test_sed_absent_from_path_denies(self, tmp_path):
+        """Status-2 propagation: the matcher could not determine whether
+        this command invokes gh pr merge, and this hook's documented
+        fail-closed posture means an undetermined match denies rather than
+        silently falling through to allow. Asserts the distinguishing
+        reason text, not just the verdict, so this test cannot be
+        satisfied by an ordinary merge-match deny reaching the same
+        "deny" verdict for the wrong reason."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        reason = run_hook_reason(
+            BLOCK_GH_PR_MERGE_HOOK,
+            bash_input("gh pr merge 291"),
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason

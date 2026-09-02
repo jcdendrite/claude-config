@@ -9,6 +9,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     run_hook,
     run_hook_reason,
@@ -21,7 +22,8 @@ SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
-    `grep` for the git-commit/path-filter matches, `awk` for the line
+    `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show calls), omitting both
     timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
@@ -29,7 +31,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     binary is itself absent from the test machine."""
     stub_bin = tmp_path / "_stub_bin"
     stub_bin.mkdir()
-    for tool in ("awk", "cat", "dirname", "git", "grep", "jq"):
+    for tool in ("awk", "cat", "dirname", "git", "grep", "jq", "sed", "tr"):
         real_path = shutil.which(tool)
         if not real_path:
             pytest.skip(f"{tool} not found in PATH")
@@ -142,6 +144,42 @@ class TestCheckSkillLength:
             )
             == "deny"
         )
+
+    def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
+        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
+        reach the same deny verdict as the unquoted form."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input('"git" commit -m foo'),
+                cwd=skill_repo,
+            )
+            == "deny"
+        )
+
+    def test_sed_absent_from_path_denies(self, isolated_home, skill_repo, tmp_path):
+        """Status-2 propagation: the matcher could not determine whether
+        this command invokes git commit, and this gate's own documented
+        fail-closed posture means an undetermined match denies rather than
+        silently falling through to allow. Asserts the distinguishing
+        reason text, not just the verdict, so this test cannot be
+        satisfied by an ordinary over-limit deny reaching "deny" for the
+        wrong reason."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        reason = run_hook_reason(
+            CHECK_SKILL_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=skill_repo,
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason
 
     def test_new_skill_over_limit_denies(self, isolated_home, new_skill_repo):
         """New file with no HEAD version staged at 201 lines — old defaults to 0 → deny."""
