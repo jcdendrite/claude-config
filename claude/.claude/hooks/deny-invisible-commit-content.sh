@@ -25,7 +25,7 @@
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition,
 # so it runs for every Bash tool call and filters internally via the
-# fast-reject grep below — matching deny-pii-in-commits.sh's own
+# fast-reject check below — matching deny-pii-in-commits.sh's own
 # defense-in-depth posture.
 #
 # Known gaps this gate does not close:
@@ -77,14 +77,15 @@
 #    gate.
 #
 # Subprocess footprint: the quote-strip (sed+tr) that produces
-# COMMAND_UNQUOTED forks unconditionally, ahead of the fast-reject grep, on
-# every Bash call — the fast-reject grep itself and everything past it
-# still only fork once it matches. Every fork here is a pure string-
-# processing one (grep/sed/tr/awk/xargs), no filesystem or network
-# access, so none needs the `_lib_capped`/`timeout` wrapping `_lib_jq`
-# gets. Every fork's exit status is checked and fails closed on a
-# non-zero result, matching `_lib_parse_tool_input_or_deny`'s jq
-# discipline. `_mask_shell_quotes`'s per-character awk scan is O(n²) on
+# COMMAND_UNQUOTED, and the fast-reject check's own internal quote-strip
+# and fragment-split (GH-783 Phase 2's _lib_command_invokes_git_subcmd),
+# all fork unconditionally on every Bash call — everything past the
+# fast-reject (arm 1 and arm 2) still only forks once it matches. Every
+# fork here is a pure string-processing one (grep/sed/tr/awk/xargs), no
+# filesystem or network access, so none needs the `_lib_capped`/`timeout`
+# wrapping `_lib_jq` gets. Every fork's exit status is checked and fails
+# closed on a non-zero result, matching `_lib_parse_tool_input_or_deny`'s
+# jq discipline. `_mask_shell_quotes`'s per-character awk scan is O(n²) on
 # command length (empirically ~12s at 500KB input on this machine's
 # /usr/bin/awk), so an unusually large single Bash command's masking cost
 # grows faster than linearly — accepted because reaching the harness's
@@ -123,9 +124,10 @@ if [ "$TOOL_NAME" != "Bash" ]; then
 fi
 
 # Quote-stripped so an adjacent-quote split (`"git" commit`) can't dodge
-# the fast-reject grep below or arm 1's fragment walk further down — same
-# helper as deny-network-installs.sh. Checked and fail-closed, matching
-# every other fork in this hook.
+# arm 1's fragment walk further down — same helper as
+# deny-network-installs.sh. The fast-reject check below does its own
+# internal quote-stripping and does not read this variable. Checked and
+# fail-closed, matching every other fork in this hook.
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 COMMAND_UNQUOTED_EXIT=$?
 if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
@@ -134,18 +136,18 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
 fi
 
 # Fast-reject: only continue for commands that mention `git commit` in some
-# textual form. Copied verbatim from require-code-review.sh so every
-# commit gate shares one detection shape. Matches `git commit` at the
-# start of the command OR after a shell separator (&&, ||, ;, |), so
-# chained forms like `git add . && git commit` are also caught. The
-# trailing (\s|$) avoids matching `git commit-tree` or similar.
-printf '%s\n' "$COMMAND_UNQUOTED" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'
+# textual form. Shares the _lib_command_invokes_git_subcmd matcher every
+# other commit gate uses (GH-783 Phase 2), rather than a hand-copied regex.
+# The helper does its own quote-stripping internally, so this call passes
+# the raw $COMMAND, not the already-stripped COMMAND_UNQUOTED above (which
+# arm 1's fragment walk still needs further down).
+_lib_command_invokes_git_subcmd "$COMMAND" commit
 FAST_REJECT_EXIT=$?
 if [ "$FAST_REJECT_EXIT" -eq 1 ]; then
   exit 0
 fi
 if [ "$FAST_REJECT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not evaluate the fast-reject grep (exit ${FAST_REJECT_EXIT}) — grep may be missing, killed, or errored. Failing closed rather than silently allowing an unscanned git commit."
+  emit_deny "Blocked by invisible-commit-content gate: could not determine whether this command invokes git commit (status ${FAST_REJECT_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than silently allowing an unscanned git commit."
   exit 0
 fi
 

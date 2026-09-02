@@ -53,10 +53,12 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate commands that contain a git commit invocation.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
-  exit 0
-fi
+# Only gate commands that contain a git commit invocation. Deliberately
+# unchecked, matching this hook's own fail-open posture on the jq-absent
+# path below: status 2 (could not determine) falls through the same "not
+# gated, allow" path as status 1 (no match), rather than gaining a
+# dedicated deny fork.
+_lib_command_invokes_git_subcmd "$COMMAND" commit || exit 0
 
 # Only proceed if inside a git repo.
 REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null)

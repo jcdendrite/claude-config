@@ -9,6 +9,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     run_hook,
 )
 
@@ -72,6 +73,14 @@ def commit_inside_existing_toplevel(repo: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "add skill bar"], cwd=repo, check=True)
 
 
+def commit_install_sh_change(repo: Path) -> None:
+    """GH-465: change install.sh (not stowed, so a re-run reminder is
+    needed independent of any new claude/.claude/ top-level entry)."""
+    (repo / "install.sh").write_text("#!/bin/bash\necho updated installer\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "update install.sh"], cwd=repo, check=True)
+
+
 class TestRequireStowReminder:
     def test_non_pr_command_allowed(self, stow_repo):
         commit_new_toplevel_dir(stow_repo, "agents")
@@ -121,6 +130,31 @@ class TestRequireStowReminder:
         commit_new_toplevel_file(stow_repo, "newfile.md")
         cmd = "gh pr create --title T --body 'add file'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
+
+    # ------------------------------------------------------------------ #
+    # GH-465: install.sh changes also need the re-run reminder            #
+    # ------------------------------------------------------------------ #
+
+    def test_install_sh_change_without_new_toplevel_denied(self, stow_repo):
+        """install.sh itself is not stowed — a change to it needs the
+        reminder even with no new claude/.claude/ top-level entry."""
+        commit_install_sh_change(stow_repo)
+        cmd = "gh pr create --title T --body 'hardens the installer'"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "deny"
+
+    def test_install_sh_change_with_marker_allowed(self, stow_repo):
+        commit_install_sh_change(stow_repo)
+        cmd = "gh pr create --title T --body 'post-merge: run ./install.sh'"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+
+    def test_new_toplevel_and_install_sh_both_changed_with_marker_allowed(self, stow_repo):
+        """Both triggers firing at once must not require two separate
+        markers — one install.sh/stow mention in the body still covers
+        both reasons."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        commit_install_sh_change(stow_repo)
+        cmd = "gh pr create --title T --body 'post-merge: run ./install.sh'"
+        assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
 
     def test_marker_install_sh_in_body_allowed(self, stow_repo):
         commit_new_toplevel_dir(stow_repo, "agents")
@@ -209,6 +243,30 @@ class TestRequireStowReminder:
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
         cmd = "gh pr create --title T --body 'no marker'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=repo) == "allow"
+
+    def test_sed_absent_from_path_still_allows(self, stow_repo, tmp_path):
+        """Mirror-image of the checked hooks' status-2 deny tests: this
+        hook is deliberately, correctly unchecked (see its header's fail-
+        open posture), so an otherwise-denyable command (new top-level
+        entry, no marker) under a sed-absent PATH must still ALLOW -- the
+        gh pr create/edit matcher can't determine a match, treats that the
+        same as "no match", and the whole gate never engages. Pins the
+        accepted fail-open posture as an executable invariant rather than
+        leaving it implicit."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        cmd = "gh pr create --title 'Add agents' --body 'Adds reviewer agents.'"
+        assert (
+            run_hook(
+                STOW_REMINDER_HOOK,
+                bash_input(cmd),
+                cwd=stow_repo,
+                extra_env={"PATH": restricted_path},
+            )
+            == "allow"
+        )
 
     def test_malformed_input_denied(self, stow_repo):
         """Fail-closed on unparseable JSON, parallel to the other gates."""

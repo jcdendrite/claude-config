@@ -23,8 +23,9 @@
 # require-memory-skill.sh gate loads it at the exact moment a memory write
 # is happening, so its routing content can't move to a narrower surface.
 #
-# The "if" field in settings.json is unreliable — the internal grep is the
-# actual gate. See require-code-review.sh for the same pattern and rationale.
+# The "if" field in settings.json is unreliable — the internal
+# _lib_command_invokes_git_subcmd check is the actual gate. See
+# require-code-review.sh for the same pattern and rationale.
 #
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
 # git calls below uncapped, so a stalled git (locked index, network mount)
@@ -59,8 +60,17 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
+# Only gate git commit commands. Checked and fail-closed, matching this
+# gate's documented fail-closed posture: an undetermined match (sed/tr
+# missing, killed, or erroring inside the helper) must not silently skip
+# the length check.
+_lib_command_invokes_git_subcmd "$COMMAND" commit
+GIT_COMMIT_MATCH_STATUS=$?
+if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
+  exit 0
+fi
+if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
+  emit_deny "Blocked by skill length gate: could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
   exit 0
 fi
 
