@@ -5,8 +5,20 @@ description: Write a cross-session handoff file at ~/.claude/handoffs/<descripti
 
 Write a cross-session handoff file at `<config-dir>/handoffs/<descriptive-slug>-handoff.md`
 (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
-using the structure below. Run the command below before writing — the
-directory is not guaranteed to exist yet.
+using the structure below.
+
+## Before writing: activate the handoff bypass marker
+
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh activate handoff
+```
+
+Run this first, before the warrant check below: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session from the moment this skill loads, closing the window between skill load and reaching the warrant check itself. Failure is non-fatal; continue to the warrant check regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below. If the warrant check below finds a handoff is not warranted, deactivate the marker before stopping — see that section's closing note.
+
+## Before writing: create the handoffs directory
+
+Run the command below before writing — the directory is not guaranteed to exist yet.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
@@ -22,16 +34,7 @@ A handoff resets context, and the fresh session re-pays for what this one alread
 - `"model_recognized":false` — also report `model` and `context_window`: the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is.
 - `"status":"cannot-resolve"` or `"status":"schema-drift"` — name the `reason` and fall back to judgment: session length, how much of the task remains, whether this is a natural seam.
 
-`docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
-
-## Before writing: activate the handoff bypass marker
-
-<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
-```
-~/.claude/scripts/marker.sh activate handoff
-```
-
-Now that a handoff is warranted, run this: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session for the rest of the write. Failure is non-fatal; continue the handoff regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below.
+`docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file. If none of the above warrant writing, run `~/.claude/scripts/marker.sh deactivate handoff` before stopping — the marker activated above has no further purpose once the write itself doesn't happen.
 
 ## Before writing: collect in-flight background dispatches
 
@@ -183,10 +186,7 @@ Once the handoff file is written and verified:
 ~/.claude/scripts/handoff-record-conversion.sh
 ```
 
-Best-effort: silently skips the log append if this session's id can't be
-resolved — a conversion metric, not a gate. Recipes across this repo
-route through a dedicated script like this one instead of an inline multi-statement Bash call;
-see `docs/worktree-bash-guard.md` for why.
+Best-effort: silently skips the log append if this session's id can't be resolved — a conversion metric, not a gate. Recipes across this repo route through a dedicated script like this one instead of an inline multi-statement Bash call; see `docs/worktree-bash-guard.md` for why.
 
 ## After writing: deactivate the handoff bypass marker
 

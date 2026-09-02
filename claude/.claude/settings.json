@@ -415,6 +415,15 @@
             "command": "~/.claude/hooks/nudge-transcript-toolkit.sh"
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/activate-handoff-bypass.sh"
+          }
+        ]
       }
     ],
     "PostToolBatch": [
