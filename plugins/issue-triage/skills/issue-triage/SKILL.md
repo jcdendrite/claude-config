@@ -1,14 +1,10 @@
 ---
 name: issue-triage
 description: >
-  Evidence-backed, report-only triage of this repo's open GitHub issue
-  backlog.
-  TRIGGER when: asked to triage, sweep, or assess the repo's open GitHub
-  issue backlog as a whole.
-  DO NOT TRIGGER when: reading, closing, commenting on, or labeling a
-  single named issue directly — use `gh issue view`, `gh issue close`, or
-  `gh issue comment`, or `/respond-pr`, not this mechanism; reviewing PR
-  review comments — that's `/respond-pr`'s job; filing a new issue.
+  Evidence-backed, report-only GitHub issue triage.
+  TRIGGER when: asked to triage or assess the open issue backlog.
+  DO NOT TRIGGER when: acting on, filing, or reviewing one issue or PR —
+  use `gh`/`/respond-pr`.
 user-invocable: true
 ---
 
