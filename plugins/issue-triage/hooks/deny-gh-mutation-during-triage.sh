@@ -50,7 +50,11 @@
 # gh-shaped Bash command. Tampering with the PID marker, not only the
 # repo-target sibling, fail-opens this whole gate:
 # _lib_active_bypass_marker_live (_lib.sh) evicts any marker whose content
-# isn't a live PID.
+# isn't a live PID. The comparison below is literal string equality, not a
+# canonicalized-path comparison: a non-canonical spelling of the same path
+# (a `./` segment, redundant slashes, a symlink) is not matched and passes
+# through unflagged. Same cooperative-not-adversarial limit as the Bash-side
+# bypass list above, not a new gap.
 #
 # Scope: this hook pattern-matches only gh/gh api-shaped Bash commands, plus
 # Write calls to this run's own two marker files. It restricts nothing else
