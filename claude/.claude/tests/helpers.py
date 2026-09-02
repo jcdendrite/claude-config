@@ -498,7 +498,6 @@ def write_input(
     agent_type: str | None = None,
     cwd: str | None = None,
     content: str = "x",
-    session_id: str | None = None,
 ) -> dict:
     """`content` defaults to the prior hardcoded placeholder — existing call
     sites that don't care about content keep the same payload."""
@@ -507,8 +506,6 @@ def write_input(
         payload["agent_type"] = agent_type
     if cwd is not None:
         payload["cwd"] = cwd
-    if session_id is not None:
-        payload["session_id"] = session_id
     return payload
 
 
