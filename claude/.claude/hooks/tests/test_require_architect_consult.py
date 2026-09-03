@@ -231,6 +231,24 @@ class TestRequireArchitectConsult:
             extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
         ) == "allow"
 
+    def test_payload_cwd_field_resolves_state_over_subprocess_pwd(self, isolated_home, tmp_path):
+        """CWD=$(jq -r '.cwd // empty' ...) is the primary CWD-resolution
+        signal, falling back to $PWD only when the payload carries no `.cwd`.
+        Runs the subprocess from a neutral non-repo directory, but passes the
+        real at-cap repo via the JSON `cwd` field: a hook that (wrongly) read
+        $PWD instead would find no git repo there and allow (per this gate's
+        allow-on-state-failure posture), so asserting "deny" here pins that
+        `.cwd` -- not $PWD -- is what actually resolves the repo root."""
+        repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "payload-cwd")
+        _stage_change(repo, "first\nround-one\nround-three\n")
+        neutral_cwd = tmp_path / "neutral-cwd"
+        neutral_cwd.mkdir()
+        assert run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-payload-cwd", subagent_type=REVIEWER_PERSONA, cwd=str(repo)),
+            cwd=neutral_cwd,
+        ) == "deny"
+
     def test_deny_message_contents(self, isolated_home, tmp_path):
         """Pins the deny message's content requirement: names the
         plan-architect MODE=consult dispatch, tells the agent to escalate to

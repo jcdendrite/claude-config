@@ -2303,10 +2303,10 @@ _lib_round_consult_gate_disabled() {
   return 0
 }
 
-# Shared bounded-retry count for _lib_append_line_locked below. Small and
-# fixed, mirroring review-ledger.sh's _LEDGER_LOCK_RETRIES: this runs
-# synchronously inside a hook, so the worst-case added latency is bounded
-# retries * the sleep below.
+# Shared bounded-retry count for _lib_append_line_locked below, used by both
+# review-ledger.sh and log-reviewer-round.sh. Small and fixed: this runs
+# synchronously inside a hook or CLI script, so the worst-case added latency
+# is bounded retries * the sleep below.
 _LIB_APPEND_LOCK_RETRIES=5
 
 # _lib_append_line_locked FILE LOCK_FILE LINE
@@ -2314,10 +2314,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # shell-script-conventions rule silently clobbers any other EXIT trap
 # already registered in the calling process -- a future caller sharing this
 # primitive must ensure no other EXIT trap is active in the same process.
-# Generic form of review-ledger.sh's _append_ledger_line_locked, extracted
-# here because log-reviewer-round.sh needs the identical check-then-append
-# critical section against a different state file and that script is not
-# currently sourced by any hook. Acquires a same-directory noclobber lock
+# Shared by review-ledger.sh and log-reviewer-round.sh, which each need the
+# identical check-then-append critical section against a different state
+# file. Acquires a same-directory noclobber lock
 # (bash `set -o noclobber`, the idiom _lib_worktree_collision_guard already
 # establishes in this repo) around the check-then-append: no-ops if LINE
 # already exists verbatim in FILE, else appends it. The lock file's content
@@ -2334,8 +2333,7 @@ _LIB_APPEND_LOCK_RETRIES=5
 # above, so it clears whether the append succeeds or fails.
 _lib_append_line_locked() {
   local file="$1" line="$3"
-  # Deliberately not `local`, mirroring _append_ledger_line_locked's own
-  # _LEDGER_LOCK_PATH: the EXIT trap below evaluates this lazily at
+  # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
   # `local` binding of the same name would be out of scope by then.
   _LIB_APPEND_LOCK_PATH="$2"

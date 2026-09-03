@@ -334,6 +334,28 @@ class TestLogReviewerRoundStateAppend:
         assert not state_file.exists()
 
 
+class TestLogReviewerRoundPayloadCwd:
+    def test_payload_cwd_field_resolves_state_over_subprocess_pwd(self, isolated_home, tmp_path):
+        """CWD=$(jq -r '.cwd // empty' ...) inside _resolve_round_context is
+        the primary CWD-resolution signal, falling back to $PWD only when
+        the payload carries no `.cwd`. Runs the subprocess from a neutral
+        non-repo directory, but passes the real repo via the JSON `cwd`
+        field: a hook that (wrongly) read $PWD instead would find no git
+        repo there and record nothing, so asserting the state file lands at
+        the real repo's key pins that `.cwd` -- not $PWD -- is what actually
+        resolves the repo root."""
+        repo = tmp_path / "payload-cwd-recorder"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        value = reviewer_round_state_value(repo)
+        neutral_cwd = tmp_path / "neutral-cwd"
+        neutral_cwd.mkdir()
+        payload = agent_input(session_id="s-payload-cwd", subagent_type=REVIEWER_PERSONA, cwd=str(repo))
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=neutral_cwd, home=isolated_home)
+        state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
+        assert state_file.read_text().splitlines() == [value]
+
+
 class TestLogReviewerRoundConsultLatch:
     def test_mode_consult_writes_latch(self, isolated_home, tmp_path):
         repo = tmp_path / "latch-consult"
@@ -514,6 +536,31 @@ class TestLogReviewerRoundSweep:
         assert not stale_file.exists()
         fresh_file = reviewer_round_state_path(isolated_home / ".claude", fresh_repo)
         assert fresh_file.exists()
+
+    def test_stale_latch_swept_fresh_latch_spared(self, isolated_home, tmp_path):
+        """_maybe_write_consult_latch's own 30-day sweep, structurally
+        identical to _record_reviewer_round's sweep above but over
+        .architect-consult-latch.d rather than .reviewer-round-state.d."""
+        stale_repo = tmp_path / "stale-latch-repo"
+        _init_repo(stale_repo)
+        stale_latch = architect_consult_latch_path(isolated_home / ".claude", stale_repo)
+        stale_latch.parent.mkdir(parents=True, exist_ok=True)
+        stale_latch.touch()
+        old_time = time.time() - (31 * 86400)
+        os.utime(stale_latch, (old_time, old_time))
+
+        fresh_repo = tmp_path / "fresh-latch-repo"
+        _init_repo(fresh_repo)
+        payload = agent_input(
+            session_id="s-fresh-latch",
+            subagent_type="plan-architect",
+            prompt="MODE=consult\nIs the foundation wrong?",
+        )
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=fresh_repo, home=isolated_home)
+
+        assert not stale_latch.exists()
+        fresh_latch = architect_consult_latch_path(isolated_home / ".claude", fresh_repo)
+        assert fresh_latch.exists()
 
 
 class TestLogReviewerRoundFailureDegradesCleanly:

@@ -860,15 +860,18 @@ not either half alone, is the unit that survives a whole parallel reviewer
 fan-out (five reviewers dispatched against one state collapse to one
 entry) while still telling a committed fix (HEAD moves, staged diff
 empties) apart from a staged one. Four lighter counters were rejected:
-branch commit count (correlated with round count but not equal to it — a
-3-commit branch at round 1 would fire on a converging PR); the existing
-`review-narrative-ledger` (session-keyed, disable-able, swept at 30 days,
-and already known not to reliably keep pace with `/code-review` runs);
-counting `agent-reviews/` findings files (opt-in via the `findings_path:`
-convention, so the count tracks reviewer output opt-in, not rounds); and
-appending round rows to `code-review-markers/` (that file's content is
-itself the commit gate's authorization, and this repo's CLAUDE.md forbids
-hand-writing marker state outright).
+
+- Branch commit count — correlated with round count but not equal to it, so
+  a 3-commit branch at round 1 would fire on a converging PR.
+- The existing `review-narrative-ledger` — session-keyed, disable-able,
+  swept at 30 days, and already known not to reliably keep pace with
+  `/code-review` runs.
+- Counting `agent-reviews/` findings files — opt-in via the
+  `findings_path:` convention, so the count tracks reviewer output opt-in,
+  not rounds.
+- Appending round rows to `code-review-markers/` — that file's content is
+  itself the commit gate's authorization, and this repo's CLAUDE.md forbids
+  hand-writing marker state outright.
 
 The release condition is a content-free, presence-only latch at
 `<config-dir>/.architect-consult-latch.d/<repo-hash>.<branch-hash>`,
@@ -893,14 +896,13 @@ problem general to every consumer's review pipeline, not a personal
 preference or a scan with a false-positive cost, so defaulting it on is
 closer to `handoff-nudge`'s shape than either opt-in nudge's.
 
-`claude/.claude/CLAUDE.md`'s Model & Effort Routing Opus bullet previously
-closed with "never dispatch it this way on your own initiative," a flat
-prohibition compatible only with the explicit-user-ask trigger §37
-established. Shipping this gate without touching that clause would leave
-the gate's own deny message prescribing a dispatch the very next sentence
-of CLAUDE.md forbids. The carve-out added to that clause names a
-precondition — a hook deny, or the dispatching session's own recognition
-that the branch is entering a third `/code-review` round — not an event.
+`claude/.claude/CLAUDE.md`'s Model & Effort Routing Opus bullet's flat
+"never dispatch it this way on your own initiative" prohibition needed a
+carve-out for this gate's own prescribed dispatch, or the gate's deny
+message would prescribe an action CLAUDE.md itself forbids. The carve-out
+added to that clause names a precondition — a hook deny, or the
+dispatching session's own recognition that the branch is entering a third
+`/code-review` round — not an event.
 An event-shaped carve-out ("unless a hook deny prescribes it") would
 reward the worse outcome: a session that self-triggers early and correctly
 would be technically in violation, while one that blundered into the deny

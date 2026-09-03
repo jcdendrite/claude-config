@@ -7,13 +7,14 @@
 # (docs/case-studies/opus-frontload-review-rounds.md lines 158-269). See
 # docs/design-decisions.md §41 for the full design rationale.
 #
-# Failure direction: deny on payload failure (malformed JSON, empty stdin,
-# non-object tool_input, missing _lib.sh, missing jq) -- TestGateHookBehavior
-# requires this uniformly of every gate. Allow on state failure (unusable
-# session id, unresolvable config dir, unresolvable repo root, detached
-# HEAD) -- this is a cost-and-quality interruption, not a security control,
-# and an over-firing deny on unresolvable git state would block legitimate
-# reviewer fan-out.
+# Failure direction:
+#   - Deny on payload failure (malformed JSON, empty stdin, non-object
+#     tool_input, missing _lib.sh, missing jq) -- TestGateHookBehavior
+#     requires this uniformly of every gate.
+#   - Allow on state failure (unusable session id, unresolvable config dir,
+#     unresolvable repo root, detached HEAD) -- this is a cost-and-quality
+#     interruption, not a security control, and an over-firing deny on
+#     unresolvable git state would block legitimate reviewer fan-out.
 #
 # Known gaps, stated rather than left implicit (repo hook-review
 # convention):
@@ -66,7 +67,8 @@ _lib_round_consult_gate_disabled && exit 0
 SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # A live /plan-review or /ready-for-review fan-out must not consume a
 # round-counting slot -- without this, 115 plan-driven branches in the
-# measured window would drop the effective trigger to code-review round 2.
+# measured window (docs/case-studies/opus-frontload-review-rounds.md line
+# 36) would drop the effective trigger to code-review round 2.
 # An empty or unusable SESSION_ID makes both checks report "not live" (the
 # function's own arity/validity guard), which correctly falls through to
 # the ordinary round-count logic below rather than granting a bypass.
