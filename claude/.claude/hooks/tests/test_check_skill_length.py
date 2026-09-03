@@ -430,10 +430,17 @@ class TestCheckSkillLength:
             == "deny"
         )
 
-    def test_memory_files_skill_over_default_under_override_allows(
-        self, isolated_home, tmp_path
-    ):
-        """ai-instruction-and-memory-files/SKILL.md gets a 215-line cap; 210 lines (over 200, under 215) → allow."""
+    def test_memory_files_skill_falls_to_default_limit(self, isolated_home, tmp_path):
+        """ai-instruction-and-memory-files/SKILL.md gets no per-skill override.
+
+        Regression test: guards against a future `limit_for()` edit re-adding
+        any override above the 200-line default for this path. 195 (init)
+        sits under the default; 201 (restage) is the minimal over-default,
+        growing value, so it denies here. A re-added override anywhere above
+        200 would put 201 back under that override's own ceiling and allow
+        instead, so 195/201 pins the default with no gap between the two
+        behaviors.
+        """
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -446,32 +453,7 @@ class TestCheckSkillLength:
         (repo / memory_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / memory_path).write_text(make_skill_content(210))
-        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_memory_files_skill_over_override_denies(self, isolated_home, tmp_path):
-        """ai-instruction-and-memory-files/SKILL.md over the 215-line override and growing → deny."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
-            parents=True
-        )
-        (repo / memory_path).write_text(make_skill_content(210))
-        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / memory_path).write_text(make_skill_content(216))
+        (repo / memory_path).write_text(make_skill_content(201))
         subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
         assert (
             run_hook(
