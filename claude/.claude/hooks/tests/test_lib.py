@@ -1236,6 +1236,112 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
     assert result.stdout == ""
 
 
+# --- _lib_resolve_default_branch ------------------------------------------
+#
+# guard-settings-session-keys.sh calls this to pick its git-show comparison
+# branch. require-ready-for-review.sh resolves its own default branch the
+# same way, inline, to decide its default-branch push bypass.
+
+
+def _resolve_default_branch(repo_root: Path) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_resolve_default_branch "$1"', "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _init_repo_on_branch(path: Path, branch: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+def test_resolve_default_branch_via_symbolic_ref_for_non_main_name(tmp_path: Path) -> None:
+    """A repo whose default branch is neither main/master/develop still
+    resolves correctly via the direct origin/HEAD symbolic ref, without
+    ever reaching the candidate-probe fallback."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "trunk")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+        cwd=repo, check=True,
+    )
+
+    assert _resolve_default_branch(repo) == "trunk"
+
+
+def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
+    tmp_path: Path,
+) -> None:
+    """No origin/HEAD symbolic ref configured (common for a hand-built or
+    shallow repo) — falls back to probing the conventional candidate names,
+    landing on the first one (main, master, develop) with a matching
+    origin/<candidate> ref."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "develop")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
+    )
+
+    assert _resolve_default_branch(repo) == "develop"
+
+
+def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
+    """No origin/HEAD symbolic ref and no origin/{main,master,develop} ref at
+    all (e.g. a repo with no configured remote) — the helper reports "could
+    not resolve" as empty stdout rather than guessing."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+
+    assert _resolve_default_branch(repo) == ""
+
+
+def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
+    tmp_path: Path,
+) -> None:
+    """Both origin/develop and origin/master exist (no origin/HEAD, no
+    origin/main) — the candidate loop returns master, the earlier-listed
+    candidate in the main/master/develop order, not develop."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "master")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
+    )
+
+    assert _resolve_default_branch(repo) == "master"
+
+
+def test_resolve_default_branch_symbolic_ref_does_not_verify_target(
+    tmp_path: Path,
+) -> None:
+    """origin/HEAD points at origin/main via a symbolic ref, but
+    origin/main itself was never created — the symbolic-ref path returns
+    "main" anyway, unlike the candidate loop, because it never verifies the
+    target ref resolves. Pins this asymmetry as the helper's current
+    contract rather than leaving it undefended."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    assert _resolve_default_branch(repo) == "main"
+
+
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
 #     _lib_fragment_has_token --------------------------------------------
 #

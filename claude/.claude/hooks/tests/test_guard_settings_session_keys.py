@@ -25,6 +25,9 @@ GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 # ". These keys" that follows the list, not the first bare "." — a nested
 # guarded key's own dotted path (e.g. "env.CLAUDE_CODE_EFFORT_LEVEL")
 # contains a "." that a naive "stop at first period" pattern would truncate on.
+# The literal "main" here depends on settings_repo's default-branch
+# resolution continuing to resolve to exactly "main" — the hook interpolates
+# ${DEFAULT_BRANCH:-the default branch} at this position, not a hardcoded string.
 _CHANGED_KEYS_SEGMENT = re.compile(r"differs from main on: (.*?)\. These keys")
 
 
@@ -43,7 +46,11 @@ def settings_repo(tmp_path):
     Mirrors the structure the hook sees at commit time: a committed
     baseline on `main`, then a staged modification in the working tree.
     The repo path matches `claude/.claude/settings.json` — the exact
-    path the hook checks for.
+    path the hook checks for. Fakes the origin/main ref (no real remote)
+    so the hook's default-branch resolution succeeds against this repo,
+    the same as it would against a real clone. The fixture sets up both
+    origin/HEAD (a symbolic ref) and origin/main directly, so it
+    satisfies whichever of the two resolution paths the hook takes.
     """
     repo = tmp_path / "settings-repo"
     repo.mkdir()
@@ -61,6 +68,74 @@ def settings_repo(tmp_path):
     settings_file.write_text('{"model": "sonnet", "effortLevel": "normal"}\n')
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo, check=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    return repo, settings_file
+
+
+def _init_settings_repo_on_branch(repo, branch: str, settings_content: str):
+    """Same repo shape as `settings_repo`, parameterized on the checked-out
+    branch name and initial settings.json content — shared by the fixtures
+    below that exercise `_lib_resolve_default_branch`'s candidate-probe and
+    unresolvable paths through the real hook, not just in isolation
+    (test_lib.py)."""
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", branch], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    settings_dir = repo / "claude" / ".claude"
+    settings_dir.mkdir(parents=True)
+    settings_file = settings_dir / "settings.json"
+    settings_file.write_text(settings_content)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return settings_file
+
+
+def _advance_origin_main_to_head(repo) -> None:
+    """Fast-forward the faked origin/main ref (see settings_repo) to the
+    repo's current HEAD. A test that commits a new baseline on local main
+    must call this too, or the hook's origin/main comparison (see
+    guard-settings-session-keys.sh) still reads the earlier commit instead
+    of the baseline the test just established."""
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+
+
+@pytest.fixture
+def settings_repo_candidate_probe_only(tmp_path):
+    """Git repo whose default branch resolves only via the candidate-probe
+    fallback: origin/develop exists, but no origin/HEAD symbolic ref does.
+    For a test proving that fallback path reaches the real hook, not just
+    the isolated _lib_resolve_default_branch helper (test_lib.py)."""
+    repo = tmp_path / "settings-repo-develop"
+    settings_file = _init_settings_repo_on_branch(
+        repo, "develop", '{"model": "sonnet", "effortLevel": "normal"}\n'
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"],
+        cwd=repo, check=True,
+    )
+    return repo, settings_file
+
+
+@pytest.fixture
+def settings_repo_unresolvable_default_branch(tmp_path):
+    """Git repo with no origin remote configured at all: no origin/HEAD
+    symbolic ref and no origin/{main,master,develop} ref. For a test
+    proving the hook's fail-safe MAIN_CONTENT="" fallback holds through the
+    actual script, not just _lib_resolve_default_branch in isolation."""
+    repo = tmp_path / "settings-repo-no-remote"
+    settings_file = _init_settings_repo_on_branch(
+        repo, "main", '{"model": "sonnet", "effortLevel": "normal"}\n'
+    )
     return repo, settings_file
 
 
@@ -72,6 +147,38 @@ class TestGuardSettingsSessionKeys:
             run_hook(
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_denies_against_origin_main_not_local_main_when_diverged(self, settings_repo):
+        """Regression test: gitrevisions(7) resolves a bare `main` against
+        refs/heads/main before refs/remotes/origin/main, so an unqualified
+        `git show "$DEFAULT_BRANCH:..."` would read local main's content
+        rather than the origin/main content _lib_resolve_default_branch
+        actually verified. The comparison must read origin/main.
+
+        Advances local main past origin/main, then stages a change that
+        differs from origin/main's guarded values but not from local
+        main's advanced ones -- an unqualified bare-name comparison would
+        read local main's non-differing content and incorrectly allow.
+        """
+        repo, settings_file = settings_repo
+        settings_file.write_text('{"model": "sonnet", "effortLevel": "high"}\n')
+        subprocess.run(
+            ["git", "commit", "-am", "advance local main past origin/main"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "high", "unrelatedTestKey": "value"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'stage against diverged local main'"),
                 cwd=repo,
             )
             == "deny"
@@ -384,6 +491,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-q", "-m", "object-valued baseline"],
             cwd=repo, check=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo, settings_file, '{"model": "sonnet", "tui": {"b": 2, "a": 1}}\n'
         )
@@ -425,6 +533,43 @@ class TestGuardSettingsSessionKeys:
             == "allow"
         )
 
+    def test_reads_payload_cwd_not_ambient_cwd(self, settings_repo, tmp_path):
+        """Run the hook process from an unrelated directory while the
+        payload's `.cwd` points at the staged repo. Ambient resolution
+        would find no repo and exit 0 (allow); payload resolution finds
+        the guarded-key diff and denies."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        elsewhere = tmp_path / "unrelated"
+        elsewhere.mkdir()
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'", cwd=str(repo)),
+                cwd=elsewhere,
+            )
+            == "deny"
+        ), "hook resolved its repo from ambient cwd instead of the payload"
+
+    def test_allows_using_payload_cwd_even_when_ambient_cwd_has_a_guarded_diff(
+        self, settings_repo, tmp_path
+    ):
+        """Mirror of the case above: ambient cwd sits in a repo WITH a
+        guarded-key diff staged, payload cwd points outside any repo.
+        Keying off ambient state would deny; keying off the payload allows."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'", cwd=str(non_repo)),
+                cwd=repo,
+            )
+            == "allow"
+        ), "hook denied using the ambient repo's staged diff rather than the payload's"
+
     def test_chained_add_commit_with_model_change_denies(self, settings_repo):
         """Chained `git add ... && git commit` is still gated."""
         repo, settings_file = settings_repo
@@ -451,6 +596,44 @@ class TestGuardSettingsSessionKeys:
             )
             == "allow"
         )
+
+    def test_candidate_probe_only_default_branch_reaches_hook_and_denies(
+        self, settings_repo_candidate_probe_only
+    ):
+        """No origin/HEAD symbolic ref, only origin/develop — the hook must
+        resolve the default branch via _lib_resolve_default_branch's
+        candidate-probe fallback and name it correctly in the deny
+        message, not fall back to "main"."""
+        repo, settings_file = settings_repo_candidate_probe_only
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'update settings'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "differs from develop on:" in reason
+        assert "differs from main on:" not in reason
+
+    def test_unresolvable_default_branch_reaches_hook_and_denies_with_fallback_text(
+        self, settings_repo_unresolvable_default_branch
+    ):
+        """No origin remote at all — _lib_resolve_default_branch's empty
+        output means MAIN_CONTENT falls back to "", so the guarded-key
+        comparison runs against an empty baseline. Proves the fail-safe
+        fallback holds through the actual script, not just
+        _lib_resolve_default_branch in isolation (test_lib.py), and that
+        the deny message carries the literal "the default branch" fallback
+        text from ${DEFAULT_BRANCH:-the default branch}."""
+        repo, settings_file = settings_repo_unresolvable_default_branch
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'update settings'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "differs from the default branch on:" in reason
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
@@ -567,6 +750,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with nested env"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
@@ -614,6 +798,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with both nested keys"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
@@ -642,6 +827,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with empty env"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
@@ -670,6 +856,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with empty env"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
@@ -700,6 +887,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with real nested value"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
@@ -729,6 +917,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with corrupted env"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
@@ -756,6 +945,7 @@ class TestGuardSettingsSessionKeys:
             ["git", "commit", "-am", "baseline with empty env"],
             cwd=repo, check=True, capture_output=True,
         )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
