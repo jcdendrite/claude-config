@@ -53,13 +53,16 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 16 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
 
-- **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known; never run in the foreground for a real PR, since `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
+- **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 
   - Prints `LAUNCH_SHA: <oid>` once at start.
-  - Reports exactly one terminal `CI_RESULT` line: `CI_RESULT: none` (no checks were ever configured), `CI_RESULT: error <reason>`, or `CI_RESULT: checks <json>` (a `bucket` field per check is the pass/fail source of truth).
+  - Reports exactly one terminal `CI_RESULT` line:
+    - `CI_RESULT: none` — no checks were ever configured.
+    - `CI_RESULT: error <reason>`
+    - `CI_RESULT: checks <json>` — the `bucket` field per check is the pass/fail source of truth.
   - Reads the optional `CI_CHECKS_GH_TOKEN` environment variable and, when set, uses it (as `GH_TOKEN`) for the two `gh pr checks` calls only.
 
-  That variable exists because fine-grained PATs cannot read the Checks API at all — a documented GitHub CLI limitation ([cli/cli#12597](https://github.com/cli/cli/issues/12597)), not a scoping mistake fixable by granting a permission — so a `gh` session authenticated with one 403s on both calls.
+  Fine-grained PATs cannot read the Checks API at all — a documented GitHub CLI limitation, not a scoping mistake fixable by granting a permission ([cli/cli#12597](https://github.com/cli/cli/issues/12597)). A `gh` session authenticated with one 403s on both calls.
 
   - Most users' `gh` auth doesn't need this: leave it unset unless you hit that 403.
   - If you do, provision a classic PAT — scoped to the narrowest set of repos you actually watch CI on, never the account-wide default.
