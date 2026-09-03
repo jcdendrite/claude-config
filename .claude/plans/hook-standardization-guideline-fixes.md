@@ -544,9 +544,14 @@ Per-wave additions:
   - *No external dependents.* The collect-only diff cannot see a consumer outside
     those two files keyed on the literal old identifier — a `select-tests.py`
     rule-table entry, a doc, a `-k` filter. `git grep -n 'Gh483\|gh482\|pr605'`
-    must return zero hits outside the three renamed sites. `staff-sdet` confirmed
-    zero external references exist today; this check makes that verified evidence
-    rather than an assumption carried into execution.
+    must return zero hits outside the three renamed sites, except two: one
+    pre-existing, out-of-scope reference at `.claude/plans/test-pyramid-audit.md:30`
+    (predates this PR, not part of this diff), and one in this diff's own
+    `test_ticket_reference_discipline.py:6`, which cites `TestGh483Invariants` as
+    an illustrative example of the identifier shape that test's detector catches,
+    not a consumer of the renamed identifier. `staff-sdet` confirmed zero external
+    references exist today; this check makes that verified evidence rather than an
+    assumption carried into execution.
 - **Wave 2.** The D4 and D5 tests must be shown passing on the pre-extraction
   `_lib.sh` before `_lib_words_start_with` is extracted, then passing again after
   — run in that order inside the one dispatch. A test written only after the

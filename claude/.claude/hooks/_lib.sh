@@ -858,8 +858,8 @@ _lib_tool_argv_from_subcmd() {
 # against WORD's own length. Internal to _lib_command_invokes_tool_subcmd
 # below, the sole caller, which flattens both arrays across the call
 # boundary via "$@" plus a "--" sentinel, the same by-value idiom
-# want_subcmd uses at its own call boundary a few lines down (no nameref:
-# this repo targets macOS system bash 3.2).
+# want_subcmd uses at its own call boundary a few lines down.
+# No local -n/declare -n: this repo targets macOS system bash 3.2.
 _lib_words_start_with() {
   local -a words=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do

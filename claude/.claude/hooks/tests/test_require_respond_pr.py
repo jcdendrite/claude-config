@@ -1027,9 +1027,10 @@ class TestRespondPrStructuralInvariants:
             )
 
     def test_every_pattern_is_accounted_for_in_a_gate_bucket(self):
-        """GH-483 acceptance criterion 2, inverted: a PATTERN_* constant can
-        be defined and never wired into a gate arm, which is how one
-        command reached production gated in one arm only. This test scans
+        """GH-483's requirement that no PATTERN_* constant reach production
+        wired into zero gate arms, inverted: a PATTERN_* constant can be
+        defined and never wired into a gate arm, which is how one command
+        reached production gated in one arm only. This test scans
         the hook's own source: every PATTERN_* it assigns must appear in
         one of three accounted-for buckets --
           - the if/elif arm chain that decides whether to keep evaluating
