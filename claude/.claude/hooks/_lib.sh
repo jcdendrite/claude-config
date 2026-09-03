@@ -488,6 +488,34 @@ _lib_active_plan_hash() {
   printf '%s' "$digest"
 }
 
+# _lib_cumulative_diff_hash REPO_ROOT PR_DIFF_SCRIPT
+# Hashes PR_DIFF_SCRIPT's (pr-diff-against-base.sh's) stdout for REPO_ROOT --
+# the completion-marker value for the `cumulative-review` kind. marker.sh's
+# `write cumulative-review` and `status` arms both call this helper so they
+# use the identical capture-then-hash recipe (see docs/design-decisions.md
+# §42).
+#
+# Two-outcome contract, matching _lib_active_plan_hash:
+#   - exit 0, non-empty stdout: the sha256 hex digest of the diff.
+#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, or was
+#     killed by the cap. Callers MUST fail closed -- the write arm aborts the
+#     write instead of recording an empty-diff marker, and the status arm
+#     degrades to reporting the marker absent rather than erroring the whole
+#     report.
+_lib_cumulative_diff_hash() {
+  local repo_root="$1" pr_diff_script="$2"
+  local diff_output
+  # 15s, not the shared 5s _lib_capped default: this is the only _lib_capped
+  # call site that's network-bound, since PR_DIFF_SCRIPT shells out to
+  # `gh pr view`.
+  diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
+  [ -n "$diff_output" ] || return 1
+  local digest
+  digest=$(printf '%s' "$diff_output" | sha256sum | awk '{print $1}')
+  [ -n "$digest" ] || return 1
+  printf '%s' "$digest"
+}
+
 # _lib_is_repo_plan_file REPO_ROOT ABS_PATH
 # Both arguments must already be _lib_realpath_m-normalized by the caller --
 # the same precondition the agent-reviews/ check in require-plan-review.sh

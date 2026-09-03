@@ -2538,6 +2538,76 @@ class TestNormalizedAnchorText:
         )
 
 
+_CACHE_RULE_ANCHOR_RE = re.compile(r"<!-- CACHE_RULE:(\S+) (start|end) -->")
+
+# The one anchor region the cumulative-diff review cache introduced.
+# Asserted as an exact set for the same reason as _EXPECTED_SCOPE_ANCHORS: a
+# corpus scan alone passes vacuously if the anchor pair is deleted.
+_EXPECTED_CACHE_ANCHORS = {
+    ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"),
+}
+
+
+def test_cache_rule_anchors_present() -> None:
+    """Every CACHE_RULE: anchor pair is present, ordered, and non-trivial in
+    length — the CACHE_RULE:-namespace mirror of test_scope_rule_anchors_present
+    above.
+    """
+    MIN_CACHE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
+
+    found: set[tuple[str, str]] = set()
+    for skill_md_path in _all_skill_md_paths():
+        text = skill_md_path.read_text()
+        skill_name = skill_md_path.parent.name
+
+        marker_names = {f"CACHE_RULE:{m.group(1)}" for m in _CACHE_RULE_ANCHOR_RE.finditer(text)}
+
+        for marker_name in marker_names:
+            found.add((skill_name, marker_name))
+            enclosed = _extract_scope_anchor_region(skill_md_path, marker_name)
+            assert len(enclosed) >= MIN_CACHE_TEXT_CHARS, (
+                f"{skill_md_path}: {marker_name} encloses only {len(enclosed)} "
+                f"non-whitespace chars after stripping — looks deleted or gutted"
+            )
+
+    assert found == _EXPECTED_CACHE_ANCHORS, (
+        "Cache-rule anchors drifted from the expected set — a region was "
+        "added, renamed, or deleted.\n"
+        f"  expected but missing: {sorted(_EXPECTED_CACHE_ANCHORS - found)}\n"
+        f"  found but unexpected: {sorted(found - _EXPECTED_CACHE_ANCHORS)}"
+    )
+
+
+_PINNED_CACHE_CLAUSES: dict[tuple[str, str], str] = {
+    ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"): (
+        "Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: "
+        "if its `cumulative-review` line reads `live`, this diff content already "
+        "passed a full unnarrowed cumulative review — skip the invocation below, "
+        "report the cache hit in the Completion summary, and continue to step 4. "
+        "Content type is never a skip reason on its own — on `historical` or "
+        "`absent`, markdown, skill, and config diffs get the same pass as "
+        "everything else."
+    ),
+}
+
+
+@pytest.mark.parametrize("skill_name,marker_name", sorted(_PINNED_CACHE_CLAUSES))
+def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str) -> None:
+    """The pin is exact for the same reason as test_pinned_scope_clause_matches_live_text:
+    the skip-vs-run reading is not deterministically derivable from the text alone.
+    On failure, re-read the guarantee and update the constant only if the new
+    wording preserves it.
+    """
+    skill_md_path = _skill_file(skill_name)
+    live_text = _normalized_anchor_text(skill_md_path, marker_name)
+    pinned_text = " ".join(_PINNED_CACHE_CLAUSES[(skill_name, marker_name)].split())
+    assert live_text == pinned_text, (
+        f"{skill_md_path}: {marker_name} no longer matches its pinned text.\n"
+        f"  live:   {live_text!r}\n"
+        f"  pinned: {pinned_text!r}"
+    )
+
+
 def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
     """Left-column shorthand of every data row in the Change-type table.
 

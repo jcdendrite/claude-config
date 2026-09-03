@@ -9,6 +9,11 @@
 
 set -u
 
+# Sibling script, same directory as marker.sh itself -- shared by the `write
+# cumulative-review` arm and the `status` arm below, both via
+# _lib_cumulative_diff_hash.
+PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
+
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
@@ -24,15 +29,15 @@ Subcommands:
              Print this session's canonically-resolved session id. Takes no
              skill argument.
   status     Report every completion marker (code-review, skill-review,
-             plan-review, ready-for-review) for this repo and every
-             active-bypass marker (plan-review, ready-for-review,
+             plan-review, ready-for-review, cumulative-review) for this repo
+             and every active-bypass marker (plan-review, ready-for-review,
              respond-pr, memory-skill, handoff) for this session, each as
              live, historical, or absent. Takes no skill argument. Evicts a
              stale (dead-PID) active-bypass marker for this session as a
              side effect of classifying it.
 
 Valid (subcommand, skill) combinations:
-  write       code-review | skill-review | plan-review | ready-for-review
+  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review
   activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
 EOF
@@ -342,8 +347,27 @@ case "$SUBCOMMAND" in
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
+      cumulative-review)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # No _guard_staged_vs_unstaged call: this marker covers the
+        # committed PR-vs-base diff, not the staged diff, so that guard's
+        # staged-vs-unstaged question does not apply here.
+        # Compute before redirecting -- same shape as every other write arm
+        # above: `>` truncates the marker before the pipeline runs, so a
+        # failed hash would destroy a valid marker and silently force a
+        # re-review.
+        if ! MARKER_VALUE=$(_lib_cumulative_diff_hash "$REPO_ROOT" "$PR_DIFF_SCRIPT"); then
+          printf 'marker.sh: could not resolve the cumulative PR-vs-base diff (pr-diff-against-base.sh failed, produced no output, or timed out after 15s). Abort without writing a marker.\n' >&2
+          exit 2
+        fi
+        mkdir -p "$CONFIG_DIR/cumulative-review-markers"
+        printf '%s\n' "$MARKER_VALUE" \
+          > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review\n" "$SKILL" >&2
+        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -513,6 +537,27 @@ case "$SUBCOMMAND" in
     # report as absent rather than error on.
     READY_FOR_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
     _status_report_completion_marker ready-for-review "$CONFIG_DIR/ready-for-review-markers" "$REPO_HASH_PREFIX" "$READY_FOR_REVIEW_VALUE"
+
+    # cumulative-review: same recipe as the `write cumulative-review` arm
+    # above, via the shared _lib_cumulative_diff_hash. Makes a network round
+    # trip (gh pr view) unlike every other line in this report, which are
+    # all local/offline. A hash that can't be computed (gh/network failure,
+    # no resolvable merge-base, or the 15s cap firing) is treated as empty
+    # here rather than aborting -- `status` is a report, not a write. No
+    # reconciliation flag: that check is documented (_status_reconciliation_flag
+    # above) as applying only to pathspec-hash markers, and the cumulative
+    # diff is not staged/unstaged tree state.
+    CUMULATIVE_DIFF_HASH_FAILED=0
+    CUMULATIVE_REVIEW_VALUE=$(_lib_cumulative_diff_hash "$REPO_ROOT" "$PR_DIFF_SCRIPT") || { CUMULATIVE_REVIEW_VALUE=""; CUMULATIVE_DIFF_HASH_FAILED=1; }
+    _status_report_completion_marker cumulative-review "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX" "$CUMULATIVE_REVIEW_VALUE"
+    # A failed computation with a marker on disk would otherwise print as
+    # "historical (hash does not match)" -- a confirmed-mismatch claim this
+    # code never actually made. Flag that distinction without changing the
+    # line above, so a reader can tell "could not verify" apart from
+    # "confirmed stale".
+    if [ "$CUMULATIVE_DIFF_HASH_FAILED" -eq 1 ] && _status_glob_has_match "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX"; then
+      printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, produced no output, or timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
+    fi
 
     printf '\nActive-bypass markers (this session):\n'
     _status_report_active_bypass plan-review ".plan-review-active.d" "$SESSION_ID"
