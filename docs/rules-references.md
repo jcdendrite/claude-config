@@ -175,3 +175,74 @@ Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
   Grounds the rule file's claim that a versioned OS-label pin
   (`ubuntu-24.04`) reduces drift but is not a full immutable pin the way an
   action SHA is.
+
+- **Composite action (`action.yml`) schema — no `permissions:`,
+  `concurrency:`, `runs-on:`, or `timeout-minutes` key** —
+  `docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax`,
+  fetched 2026-09-03. The documented `runs.steps[*]` key set for a composite
+  step is `name`, `id`, `if`, `uses`, `run`, `shell`, `env`,
+  `working-directory`, `with`, `continue-on-error`. None of `permissions`,
+  `concurrency`, `runs-on`, or `timeout-minutes` appears in that key set.
+  `runs.steps[*].uses` and `runs.steps[*].with` are documented and behave
+  like their workflow-file counterparts, grounding the "transfers directly"
+  guidance in the rule body for SHA-pinned nested `uses:` and
+  `actions/checkout`'s `persist-credentials: false` `with:` input.
+
+- **Composite-action context availability — `secrets` is the one
+  documented inputs-only context; `github.event.*` carries no documented
+  restriction** — `docs.github.com/en/actions/learn-github-actions/contexts`,
+  "Context availability" and `github`-context-properties sections, fetched
+  2026-09-03.
+
+  The `secrets` context is the one documented restriction: "The secrets
+  context is not available for composite actions due to security reasons.
+  If you want to pass a secret to a composite action, you need to do it
+  explicitly as an input."
+
+  That page's "Context availability" table is keyed to workflow-file YAML
+  locations (`run-name`, `concurrency`, `jobs.<job_id>.steps.run`, and
+  similar). The string "composite" does not appear in that table, so it is
+  silent on composite actions rather than an affirmative listing of
+  `github` as available there. The claim instead rests on the `secrets`
+  carve-out above being the only composite-action restriction GitHub
+  documents: no equivalent carve-out names `github.event.*`.
+
+  GitHub's metadata-syntax page (above) separately shows a canonical
+  `runs.steps[*].run` example using `${{ github.action_path }}` directly,
+  with no `env:` indirection — consistent with, though not proof of,
+  `github.event.*` behaving the same way.
+
+  The **contexts page** (not the metadata-syntax page) documents one
+  exception to direct `run:` availability: `github.action_ref` and
+  `github.action_repository` must not be used directly in a composite
+  step's `run:` and require `env:` indirection instead.
+
+  The "Context-dependent, not authorable in `action.yml`" bullet's
+  `pull_request_target`/`workflow_run`-privilege and OIDC-subject-pinning
+  claims, as applied to composite actions, restate the existing
+  workflow-level citations above unchanged. A composite step runs inline
+  within the calling job, inheriting the caller's trigger context and OIDC
+  trust policy rather than having its own. No separate composite-action
+  citation applies.
+
+## `paths:` glob-dialect conventions
+
+Source for `claude/.claude/rules/rule-authoring-conventions.md`. Verified
+against `code.claude.com/docs/en/memory` §"Path-specific rules", fetched
+2026-09-03.
+
+- **Brace expansion** — "You can specify multiple patterns and use brace
+  expansion to match multiple extensions in one pattern"; `src/*.{ts,tsx}`
+  expands to two patterns.
+- **Brace-expansion budget** — a rule's whole `paths` list shares a budget
+  of 1,000 expanded patterns and 4 MiB: "Claude Code uses any pattern that
+  would exceed the budget unexpanded, and its literal braces match no
+  files."
+- **Malformed bracket expression** — "A pattern with a `[` that can't be
+  read as a bracket expression, such as `photos [2024/**`, is invalid: it
+  matches nothing, and the rule's other patterns keep working."
+- **No `paths:` key** — the rule loads unconditionally at launch, "with the
+  same priority as `.claude/CLAUDE.md`."
+- **Several `paths:` glob-dialect behaviors are not stated at this
+  source** — recorded as `[unverified]` in the rule body
+  (`rule-authoring-conventions.md`) rather than restated or inferred here.

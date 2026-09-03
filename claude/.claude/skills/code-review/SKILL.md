@@ -197,7 +197,7 @@ Evaluate the code against each item. Only flag items where there is a concrete i
 
 For `.claude/skills/**/SKILL.md` review, invoke `skill-review`. For `claude/.claude/agents/*.md` and `plugins/*/agents/*.md` review, invoke `agent-review`. Each owns frontmatter contract, trigger design, voice, length, behavior test, cross-reference vs duplication, and behavioral-equivalence audit on compressions for its file type — do not assert behavioral equivalence on prose compressions yourself; that audit belongs to the dispatched skill.
 
-For `CLAUDE.md`, `AGENTS.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
+For `CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`, and `<config-dir>/projects/*/memory/` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) review, invoke `ai-instruction-and-memory-files`. It owns placement (which surface), altitude, duplication, length cap, and behavior test for instruction and memory files.
 
 35. **Permission scope** — Do `permissions.allow` rules in settings.json follow least-privilege? Flag blanket allows (`"Bash"`) where scoped (`"Bash(git:*)"`) would suffice. If permissions.allow rules were added or modified, invoke `/review-permissions` for deep security analysis.
 
