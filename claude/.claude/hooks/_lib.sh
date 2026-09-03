@@ -1097,18 +1097,21 @@ _lib_autonomous_shipping_sentinel_present() {
 # Returns 0 (true) when this machine has opted into autonomous shipping
 # (commit/push/PR without asking) for the given repo.
 #
-# NOT a generalization of _lib_worktree_enforcement_active above: that
-# function's committed-sentinel arm is safe because worktree enforcement
-# only restricts a hostile repo, while autonomous shipping removes a human
-# checkpoint — so a repo's own committed content must never grant it. There
-# is no repo-level "required" file in this code path; committing one has no
-# effect. Two tiers only: (1) machine sentinel, required —
-# _lib_autonomous_shipping_sentinel_present's union of the resolved config
-# dir and the legacy ~/.claude location; (2) per-repo opt-out
-# (.claude/autonomous-shipping-optout), narrows the machine default off for
-# this repo only. Every error path (filesystem error, empty $HOME, empty
-# REPO_ROOT, wrong argument count) fails toward NOT shipping — the safe
-# direction for a granting mechanism.
+# This function is not a generalization of _lib_worktree_enforcement_active
+# above: it has no committed-sentinel arm. That function's committed-sentinel
+# arm is safe because worktree enforcement only restricts a hostile repo.
+# Autonomous shipping removes a human checkpoint instead, so a repo's own
+# committed content must never grant it. There is no repo-level "required"
+# file in this code path; committing one has no effect. Two tiers only: (1)
+# machine sentinel, required — _lib_autonomous_shipping_sentinel_present's
+# union of the resolved config dir and the legacy ~/.claude location; (2)
+# per-repo opt-out (.claude/autonomous-shipping-optout), narrows the machine
+# default off for this repo only. Every error path fails toward NOT shipping
+# — the safe direction for a granting mechanism:
+#   - filesystem error
+#   - empty $HOME
+#   - empty REPO_ROOT
+#   - wrong argument count
 _lib_autonomous_shipping_active() {
   [ "$#" -eq 1 ] || return 1
   local repo_root="$1"

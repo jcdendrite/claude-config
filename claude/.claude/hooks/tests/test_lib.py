@@ -1942,28 +1942,15 @@ class TestAutonomousShippingSentinelPresent:
         config_dir.mkdir(parents=True)
         assert not _autonomous_shipping_sentinel_present(home, str(config_dir))
 
-    def test_absent_when_home_unset_and_neither_location_has_sentinel(
+    def test_absent_when_home_empty_and_neither_location_has_sentinel(
         self, tmp_path: Path
     ) -> None:
         """Mirrors test_absent_when_neither_location_has_sentinel above with
-        HOME unset instead of populated. Covers the unguarded $HOME-unset
+        HOME empty instead of populated. Covers the unguarded $HOME-empty
         case documented on the helper itself."""
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'. {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1"',
-                "bash",
-                str(config_dir),
-            ],
-            capture_output=True,
-            text=True,
-            env={"HOME": "", "PATH": os.environ["PATH"]},
-            check=False,
-        )
-        assert result.returncode != 0
+        assert not _autonomous_shipping_sentinel_present("", str(config_dir))
 
     def test_present_when_config_dir_has_sentinel(self, tmp_path: Path) -> None:
         home = tmp_path / "home"

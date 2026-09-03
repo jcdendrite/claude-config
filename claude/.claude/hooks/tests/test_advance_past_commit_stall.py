@@ -396,9 +396,10 @@ def test_legacy_home_claude_sentinel_fires_via_fast_path_union(
     """GH-793: the fast-path sentinel check (step 3) must union the
     resolved config dir with the legacy $HOME/.claude location, the same
     way the full _lib_autonomous_shipping_active check at step 9 already
-    does — armed_home's legacy $HOME/.claude/autonomous-shipping-required
-    still fires even though CLAUDE_CONFIG_DIR points at a directory holding
-    no copy of it."""
+    does. armed_home provides the sentinel only at the legacy
+    $HOME/.claude/autonomous-shipping-required location, while
+    CLAUDE_CONFIG_DIR points at a directory holding no copy of it, and the
+    fast path still fires."""
     empty_config_dir = tmp_path / "empty-profile"
     empty_config_dir.mkdir()
     result = _fire(
