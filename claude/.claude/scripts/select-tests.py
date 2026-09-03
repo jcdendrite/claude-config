@@ -40,11 +40,22 @@ LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
 
+# Common ancestor for the repo-wide-scan cross-domain exception below,
+# mirroring PLUGINS_DIR's role for the plugin-generic predicates.
+CLAUDE_TOP_LEVEL_DIR = "claude"
+
 # test_transcript_analysis.py and its two siblings shell into specific hook
 # scripts and read specific SKILL.md files by path, not by import.
 # Domain-narrowing can't see that dependency, so it's declared here as a
 # cross-domain exception rather than folded into the scripts domain rule.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
+
+# test_ticket_reference_discipline.py statically scans every tracked .py and
+# .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
+# independent of any import graph. Same undeclared-dependency shape as
+# TRANSCRIPT_ANALYSIS_TEST_GLOB, naming the one dependent test file rather
+# than its containing domain.
+TICKET_REFERENCE_DISCIPLINE_TEST_PATH = "claude/.claude/hooks/tests/test_ticket_reference_discipline.py"
 
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 
@@ -253,6 +264,31 @@ def _is_hooks_dir_shell_script_change(path: str) -> bool:
     return _is_under(path, HOOKS_DIR) and path.endswith(".sh")
 
 
+def _is_under_deliberately_unmapped_claude_dir(path: str) -> bool:
+    return any(
+        _is_under(path, f"{CLAUDE_TOP_LEVEL_DIR}/.claude/{name}")
+        for name in DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
+    )
+
+
+# See TICKET_REFERENCE_DISCIPLINE_TEST_PATH's own comment above for what
+# that test scans. This predicate is deliberately .py-only. That test's .sh
+# coverage is achieved today only incidentally, through the existing
+# hooks/scripts shell-script domain rules.
+# Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly rather than the
+# HOOKS_TESTS_DIR domain it lives in. Excludes
+# DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS (claude/.claude/tests/):
+# - test_statusline_command.py and test_pytest_collection_config.py live there
+# - excluding them keeps those two files falling open to the full suite via
+#   unmatched-path, instead of narrowing to a domain that doesn't contain them
+def _is_py_source_under_claude_or_plugins(path: str) -> bool:
+    return (
+        path.endswith(".py")
+        and (_is_under(path, CLAUDE_TOP_LEVEL_DIR) or _is_under(path, PLUGINS_DIR))
+        and not _is_under_deliberately_unmapped_claude_dir(path)
+    )
+
+
 # (predicate, target paths added when it matches) — a plain domain rule.
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
@@ -319,6 +355,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
+# _is_py_source_under_claude_or_plugins: see its own comment above for
+# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly, not a
+# domain directory.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -344,6 +383,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
+    (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),
 )
 
 

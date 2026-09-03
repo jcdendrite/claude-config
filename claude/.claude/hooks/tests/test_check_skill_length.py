@@ -25,7 +25,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
-    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
+    (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show and diff --cached
     --name-only calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
@@ -148,8 +148,8 @@ class TestCheckSkillLength:
         )
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
-        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
-        reach the same deny verdict as the unquoted form."""
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         assert (

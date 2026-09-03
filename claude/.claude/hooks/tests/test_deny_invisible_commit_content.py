@@ -405,15 +405,13 @@ class TestDenyInvisibleCommitContent:
     # ------------------------------------------------------------------ #
 
     def test_grep_absent_from_path_does_not_affect_the_gate(self, tmp_path):
-        """GH-783 Phase 2: the fast-reject swapped its grep-based match for
-        _lib_command_invokes_git_subcmd (sed/tr and a bash word-walk, no
-        grep), so grep is no longer a dependency of this hook at all — a
-        plain, otherwise-allowed `git commit -m x` (nothing that trips arm
-        1 or arm 2) still allows with grep absent from PATH. Pins that
-        grep's disappearance from this file's own fork list didn't
-        silently change the gate's fail posture; sed/tr below are still a
-        real dependency, since the fast-reject's own internal quote-strip
-        needs them."""
+        """The fast-reject matches via _lib_command_invokes_git_subcmd
+        (sed/tr and a bash word-walk); it does not use grep. A plain,
+        otherwise-allowed `git commit -m x` (nothing that trips arm 1 or
+        arm 2) still allows with grep absent from PATH. This confirms the
+        gate's fail posture doesn't depend on grep being present on PATH.
+        sed/tr remain a real dependency, since the fast-reject's own
+        internal quote-strip needs them."""
         farm_dir = tmp_path / "path-without-grep"
         farm_dir.mkdir()
         restricted_path = build_path_without("grep", farm_dir)
