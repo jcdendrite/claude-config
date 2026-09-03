@@ -1,16 +1,15 @@
 ---
 name: linear-formatting
 description: >
-  Linear issue-comment and issue-link formatting conventions for tracker
-  writes: issue-ID auto-linking, comment markdown support, the
-  create/update tool-shape variance across Linear MCP server versions,
-  the required Claude-authorship attribution prefix, real-newline
-  formatting, and the repeated-issue-reference auto-linker drop.
+  Linear tracker-write formatting: issue-ID auto-linking, comment
+  markdown support, create/update tool-shape variance across Linear MCP
+  server versions, required Claude-authorship attribution prefix,
+  real-newline formatting, and repeated-issue-reference auto-linker drop.
   TRIGGER when: posting or editing a Linear issue comment or document,
-  or writing text that references a Linear issue ID for a Linear-tracked
-  repo. DO NOT TRIGGER when: the tracker is not Linear (e.g. Jira, GitHub
+  or writing text referencing a Linear issue ID in a Linear-tracked
+  repo. DO NOT TRIGGER when: tracker is not Linear (e.g. Jira, GitHub
   Issues), or the write touches only a status/assignee field with no
-  comment or document body.
+  comment/document body.
 user-invocable: false
 ---
 

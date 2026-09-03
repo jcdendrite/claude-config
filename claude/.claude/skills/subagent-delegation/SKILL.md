@@ -1,15 +1,15 @@
 ---
 name: subagent-delegation
 description: >
-  Dispatch to a subagent vs inline. TRIGGER when: full check suite or
-  full-project verification; broad codebase search; first exploratory read;
-  2nd/3rd Bash toward same question; delegating implementation; about to wait
-  on a dispatched subagent, or about to write a Bash `sleep`-then-recheck loop.
-  DO NOT TRIGGER when: single-artifact targeted lookup (one file or value,
+  Subagent vs inline dispatch. TRIGGER when: full check suite/full-project
+  verification; broad codebase search; first exploratory read; 2nd/3rd
+  Bash toward same question; delegating implementation; waiting on a
+  dispatched subagent, or writing a `sleep`-then-recheck loop.
+  DO NOT TRIGGER when: single-artifact lookup (one file/value,
   not a multi-site sweep); comprehension read feeding your own
-  writing/review/design; Edit/Write sequences where scope or content is
-  still forming; the specific failure output or diff you reason over line
-  by line; a `sleep` unrelated to waiting on a dispatch — a documented
+  writing/review/design; Edit/Write sequences with scope/content
+  still forming; a specific failure output or diff read line
+  by line; a `sleep` unrelated to dispatch-waiting — documented
   backoff, a fixture's timing test.
 ---
 

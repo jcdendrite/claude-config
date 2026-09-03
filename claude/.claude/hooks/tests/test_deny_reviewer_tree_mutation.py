@@ -724,9 +724,9 @@ class TestRawWriteTargetGap:
     fragment's sole or first command. Regression tests proving the header's
     own three named examples (`cp scratch src/x`, `sed ... > src/x`, `tee
     src/x`) are caught, paired with the /tmp exemption each must still
-    permit. GH-811 tracks the residual gap where the same target is hidden
-    behind a bare `&` in the same fragment — see
-    test_reviewer_raw_write_hidden_behind_bare_ampersand_allowed below."""
+    permit. GH-811's bare-`&` case, where the same target sits behind a
+    background operator in the same fragment, is covered separately by
+    test_reviewer_raw_write_hidden_behind_bare_ampersand_denied below."""
 
     def test_reviewer_cp_to_tracked_path_denied(self):
         assert run_hook(HOOK, bash_input("cp scratch src/x", agent_type="staff-sdet")) == "deny"
@@ -793,16 +793,12 @@ class TestRawWriteTargetGap:
         # the command shape, same invariant TestBashGitWrites pins for git.
         assert run_hook(HOOK, bash_input("cp scratch src/x", agent_type="code-writer")) == "allow"
 
-    def test_reviewer_raw_write_hidden_behind_bare_ampersand_allowed(self):
-        # GH-811: pins the CURRENT (imperfect) behavior, not the desired
-        # one. `_lib_split_fragments` does not split on a bare `&`, so
-        # `_fragment_raw_write_targets` still resolves `cp` as this
-        # fragment's command word and reads the last word of the whole
-        # unsplit fragment ("/tmp/x", from the backgrounded `echo`) as the
-        # destination — the real target (src/tracked_file.txt) is never
-        # emitted, and the write is allowed. A fix to GH-811's underlying
-        # `_lib_split_fragments` limitation should make this assertion
-        # start failing; update it to "deny" then, not silently accept it.
+    def test_reviewer_raw_write_hidden_behind_bare_ampersand_denied(self):
+        # GH-811: `_lib_split_fragments` splits a fragment on a bare `&`
+        # backgrounding operator, so `_fragment_raw_write_targets`
+        # evaluates the backgrounded `cp` fragment on its own and emits
+        # its real target (src/tracked_file.txt), rather than a stale
+        # trailing word from the rest of the command.
         assert (
             run_hook(
                 HOOK,
@@ -811,8 +807,26 @@ class TestRawWriteTargetGap:
                     agent_type="staff-sdet",
                 ),
             )
-            == "allow"
+            == "deny"
         )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cp /tmp/malicious.txt claude/.claude/hooks/_lib.sh",
+            "printf malicious > claude/.claude/hooks/_lib.sh",
+            "echo malicious | tee claude/.claude/hooks/_lib.sh",
+        ],
+    )
+    def test_raw_bash_write_target_onto_tracked_file_denied(self, command):
+        """`_fragment_raw_write_targets` resolves a cp/redirect/tee target
+        from each fragment's own positional words, so the piped `tee`
+        fragment's real target denies like the others. This closes the
+        composed two-hop path require-review-orchestrator-agent-target.sh's
+        own allowlist otherwise leaves open for a
+        review-orchestrator-dispatched reviewer persona -- see
+        docs/design-decisions.md §40."""
+        assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "deny"
 
 
 class TestBuiltinAgents:
@@ -1006,24 +1020,6 @@ class TestKnownGapBypass:
         # Same documented gap: GNU sed's `--in-place` long form starts `--i`,
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "cp /tmp/malicious.txt claude/.claude/hooks/_lib.sh",
-            "printf malicious > claude/.claude/hooks/_lib.sh",
-            "echo malicious | tee claude/.claude/hooks/_lib.sh",
-        ],
-    )
-    def test_raw_bash_write_target_onto_tracked_file_allowed(self, command):
-        """Documented "Known gaps" miss (this hook's own header comment):
-        arbitrary Bash write-target resolution (cp/redirect/tee onto a
-        tracked file) is not mechanically gated. This is also the composed
-        two-hop path require-review-orchestrator-agent-target.sh's own
-        allowlist does not close for a review-orchestrator-dispatched
-        reviewer persona -- see docs/design-decisions.md §40. Pin the
-        accepted allow so a future narrowing of this gap is visible."""
-        assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "allow"
 
 
 class TestChainOperators:

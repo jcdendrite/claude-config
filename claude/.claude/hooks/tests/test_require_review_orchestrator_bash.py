@@ -22,6 +22,12 @@ HELPER_SCRIPT_BASENAME_AND_ARGS = [
     ("orchestrator-checkpoint.sh", "read run-id-123"),
 ]
 
+# The tools every PATH-stub fixture needs regardless of scenario: cat/jq for
+# JSON parsing, dirname to locate _lib.sh, sed for fragment splitting, tr for
+# _lib_strip_shell_quotes, and bash to run the hook itself. Fixtures add their
+# own scenario-specific extras (e.g. realpath/grealpath) on top of this.
+_BASELINE_STUB_TOOLS = ("bash", "cat", "dirname", "jq", "sed", "tr")
+
 # The closed verification-command allowlist: exactly the forms root
 # CLAUDE.md's own Commands section names, plus their worktree-relative forms.
 CLOSED_VERIFICATION_COMMANDS = [
@@ -50,15 +56,15 @@ def _write_canonical_scripts(tmp_path, basenames):
 def _fast_realpath_bin(tmp_path):
     """Stub PATH with only the binaries the canonical-path resolution path
     needs (cat/jq for JSON parsing, dirname to locate _lib.sh, sed for
-    fragment splitting, realpath/grealpath for canonical resolution),
-    omitting timeout/gtimeout. Mirrors
+    fragment splitting, realpath/grealpath for canonical resolution, tr for
+    _lib_strip_shell_quotes), omitting timeout/gtimeout. Mirrors
     test_guard_settings_session_keys.py's _stub_bin_without_timeout shape.
     Each _lib_realpath_m call then skips the timeout-wrapper fork, keeping
     a many-fragment budget-exhaustion command near the suite's normal
     per-test cost instead of paying for it on every resolution."""
     stub_bin = tmp_path / "_fast_realpath_bin"
     stub_bin.mkdir()
-    for tool in ("bash", "cat", "dirname", "jq", "sed", "realpath", "grealpath"):
+    for tool in (*_BASELINE_STUB_TOOLS, "realpath", "grealpath"):
         real_path = shutil.which(tool)
         if not real_path:
             pytest.skip(f"{tool} not found in PATH")
@@ -440,7 +446,7 @@ class TestFragmentCmdResolutionComposesWithRealpathDepthCap:
         way at the hook's own allow/deny boundary."""
         stub_bin = tmp_path / "_forced_fallback_bin"
         stub_bin.mkdir()
-        for tool in ("bash", "cat", "dirname", "jq", "sed"):
+        for tool in _BASELINE_STUB_TOOLS:
             real_path = shutil.which(tool)
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
