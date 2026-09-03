@@ -75,8 +75,8 @@ entries needed.
 ### Heavy command output — run inline
 
 Run checks (tests, lint, typecheck, build) via the parent's Bash tool — never delegate. Harness
-truncates output past a threshold, persists overflow to a file, returns only the first bytes
-(usually the startup banner, not failures). See `subagent-delegation/REFERENCES.md` §
+output truncates past a threshold, so the returned preview tends to miss the failure. See
+`subagent-delegation/REFERENCES.md` §
 "Heavy command output — harness truncation and check-suite sizes" for the threshold and sizes.
 
 - **Enumerate check commands and run them one at a time** (test, then lint,

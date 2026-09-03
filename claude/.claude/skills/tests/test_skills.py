@@ -2444,7 +2444,7 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     ],
 )
 def test_normalize_heading(raw_heading: str, normalized: str) -> None:
-    """The real heading at subagent-delegation/SKILL.md:123 pins the
+    """The real heading at subagent-delegation/SKILL.md:120 pins the
     mid-heading-backtick case; the rest are synthetic but exercise the same
     normalization independently."""
     assert _normalize_heading(raw_heading) == normalized
@@ -2538,6 +2538,19 @@ def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
             # pins _blank_frontmatter's exclusion for this extractor.
             0,
             id="citation-inside-frontmatter-is-excluded",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n" 'Citation: `sibling.md` § "Duplicate Heading"\n'
+                ),
+                "example-skill/sibling.md": "## Duplicate Heading\n\nFirst copy.\n\n## Duplicate Heading\n",
+            },
+            # Would be 1 if _heading_texts started requiring headings to be
+            # unique — today it returns a set, so two identical normalized
+            # headings in the target file still resolve.
+            0,
+            id="duplicate-headings-in-target-still-resolve",
         ),
     ],
 )
