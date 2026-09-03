@@ -2763,7 +2763,7 @@ class TestReviewTrace:
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
 
-    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self):
+    def test_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
         branch_filter must select by that per-event value, not the session's first
@@ -14841,7 +14841,7 @@ class TestHookObservableBoundaries:
 
 
 class TestRampCurveFromCorpus:
-    def test_turn_index_bucket_edges_match_pr605_bands_including_the_gap(self):
+    def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
         """PR #605's own table never labeled turn index 10-19 (its bands jump
         from "5-10" to "20-40"); the cascading less-than lookup this reuses
         from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range

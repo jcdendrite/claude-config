@@ -1526,10 +1526,10 @@ def test_lib_strip_shell_quotes_composed_with_extract_git_subcmd_detects_quoted_
 
 # --- _lib_command_invokes_git_subcmd / _lib_command_invokes_tool_subcmd -
 #
-# GH-783 Phase 2: composed tri-state matchers (0 matched / 1 did not / 2
-# could not determine) built from the fragment-matcher primitives above.
+# Composed tri-state matchers (0 matched / 1 did not / 2 could not
+# determine) built from the fragment-matcher primitives above.
 # Characterization tests, including the status-2 path each of the eight
-# Phase-2 gate hooks depends on to decide its own fail posture.
+# gate hooks depends on to decide its own fail posture.
 
 
 def _command_invokes_git_subcmd(command: str, subcmd: str, env: dict | None = None) -> int:
@@ -1570,8 +1570,8 @@ class TestCommandInvokesGitSubcmd:
         assert _command_invokes_git_subcmd("git add . && git commit -m x", "commit") == 0
 
     def test_quote_split_match(self) -> None:
-        """GH-783 Phase 2: a quote-adjacent split (`"git" commit`) must not
-        evade this matcher, unlike a raw regex over unstripped $COMMAND."""
+        """A quote-adjacent split (`"git" commit`) must not evade this
+        matcher, unlike a raw regex over unstripped $COMMAND."""
         assert _command_invokes_git_subcmd('"git" commit -m x', "commit") == 0
 
     def test_no_match(self) -> None:
@@ -1611,6 +1611,16 @@ class TestCommandInvokesGitSubcmd:
         restricted_path = build_path_without("tr", farm_dir)
         env = {"PATH": restricted_path, "HOME": str(tmp_path)}
         assert _command_invokes_git_subcmd("git commit -m x", "commit", env=env) == 2
+
+
+def _words_start_with(words: tuple[str, ...], prefix: tuple[str, ...]) -> int:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_words_start_with "$@"', "bash", *words, "--", *prefix],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode
 
 
 class TestCommandInvokesToolSubcmd:
@@ -1661,6 +1671,32 @@ class TestCommandInvokesToolSubcmd:
         misread the glued value as the subcommand word and silently miss
         a real self-merge attempt."""
         assert _command_invokes_tool_subcmd("gh -Ro/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_short_flag_with_space_value_before_subcommand(self) -> None:
+        """The short-flag space-separated form (-R o/r), distinct from
+        both --repo=o/r and the glued -Ro/r form above -- exercises the
+        skip_next branch that consumes the separate value word."""
+        assert _command_invokes_tool_subcmd("gh -R o/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_shorter_subcommand_sequence_does_not_match(self) -> None:
+        """Covers the untested `[ "${#got_subcmd[@]}" -lt "${#want_subcmd[@]}" ]
+        && continue` guard: a fragment whose subcommand sequence is shorter
+        than the wanted sequence must not match, even though every word it
+        does have agrees with the wanted sequence's prefix."""
+        assert _command_invokes_tool_subcmd("gh pr", "gh", "pr", "merge") == 1
+
+    def test_literal_double_dash_in_words_misaligns_the_prefix_sentinel(self) -> None:
+        """_lib_words_start_with's caller flattens WORDS and PREFIX across
+        the call boundary with a bare `--` sentinel between them. A literal
+        `--` inside WORDS itself is indistinguishable from that sentinel, so
+        the scan stops at WORDS's own `--` instead of the real boundary,
+        truncating WORDS and shifting PREFIX -- a silent wrong-answer
+        failure mode (this call's true answer is a match: WORDS starts with
+        `foo`), not a crash. Not reachable today:
+        _lib_tool_argv_from_subcmd's `-*` flag branch consumes any literal
+        `--` in a real command before it reaches got_subcmd, and
+        want_subcmd is always a hardcoded literal with no `--` word."""
+        assert _words_start_with(("foo", "--", "bar"), ("foo",)) == 1
 
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(

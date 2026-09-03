@@ -198,7 +198,7 @@ class TestBlockGhPrMerge:
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh api repos/owner/repo/pulls/291/merge")) == "allow"
 
     # ------------------------------------------------------------------ #
-    # GH-783 Phase 2: quote-split and command-matcher regression tests    #
+    # Quote-split and command-matcher regression tests                    #
     # ------------------------------------------------------------------ #
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self):
@@ -209,17 +209,16 @@ class TestBlockGhPrMerge:
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('"gh" pr merge 1')) == "deny"
 
     def test_quoted_subcommand_word_now_denied(self):
-        """Closes a real gap the prior regex missed: `gh pr "merge"` quote-
-        strips to a bare `merge` token, which the word-sequence matcher now
-        catches — a genuine behavior change/gap-close, not a regression.
-        See docs/hooks.md's entry for this hook."""
+        """`gh pr "merge"` quote-strips to a bare `merge` token, which the
+        word-sequence matcher catches. See docs/hooks.md's entry for this
+        hook."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('gh pr "merge"')) == "deny"
 
     def test_echo_wrapped_form_still_allowed_via_command_word_resolution(self):
         """Re-pins the false-positive-avoidance property test_false_positive_
-        shapes_allowed above already covers, naming the NEW mechanism: the
-        stripped fragment's command word resolves to `echo`, not `gh`, not
-        because a quote character survived stripping."""
+        shapes_allowed above already covers: the stripped fragment's
+        command word resolves to `echo`, not `gh`, not because a quote
+        character survived stripping."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input('echo "gh pr merge"')) == "allow"
 
     def test_value_taking_global_flag_before_subcommand_denied(self):

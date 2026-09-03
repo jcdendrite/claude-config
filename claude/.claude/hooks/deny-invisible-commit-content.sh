@@ -77,11 +77,11 @@
 #    gate.
 #
 # Subprocess footprint: the quote-strip (sed+tr) that produces
-# COMMAND_UNQUOTED, and the fast-reject check's own internal quote-strip
-# and fragment-split (GH-783 Phase 2's _lib_command_invokes_git_subcmd),
-# all fork unconditionally on every Bash call — everything past the
-# fast-reject (arm 1 and arm 2) still only forks once it matches. Every
-# fork here is a pure string-processing one (grep/sed/tr/awk/xargs), no
+# COMMAND_UNQUOTED, and the fast-reject check's own internal quote-strip and
+# fragment-split (_lib_command_invokes_git_subcmd), all fork unconditionally
+# on every Bash call — everything past the fast-reject (arm 1 and arm 2)
+# still only forks once it matches. Every fork here is a pure
+# string-processing one (grep/sed/tr/awk/xargs), no
 # filesystem or network access, so none needs the `_lib_capped`/`timeout`
 # wrapping `_lib_jq` gets. Every fork's exit status is checked and fails
 # closed on a non-zero result, matching `_lib_parse_tool_input_or_deny`'s
@@ -137,7 +137,7 @@ fi
 
 # Fast-reject: only continue for commands that mention `git commit` in some
 # textual form. Shares the _lib_command_invokes_git_subcmd matcher every
-# other commit gate uses (GH-783 Phase 2), rather than a hand-copied regex.
+# other commit gate uses (GH-783), rather than a hand-copied regex.
 # The helper does its own quote-stripping internally, so this call passes
 # the raw $COMMAND, not the already-stripped COMMAND_UNQUOTED above (which
 # arm 1's fragment walk still needs further down).

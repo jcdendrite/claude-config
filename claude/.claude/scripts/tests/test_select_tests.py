@@ -48,10 +48,13 @@ class TestSelectPytestTargets:
             _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR,
         }
 
-    def test_scripts_change_selects_scripts_tests_only(self):
+    def test_scripts_change_also_selects_hooks_tests(self):
+        """test_ticket_reference_discipline.py (HOOKS_TESTS_DIR) statically
+        scans every tracked .py file under claude/, including this one, for
+        ticket-prefixed identifiers and plan-phase-qualified labels."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/mark-terminal.py"])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.SCRIPTS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_scripts_dir_shell_script_change_also_selects_hooks_and_skills_tests(self):
         """test_shellcheck.py (HOOKS_TESTS_DIR) lints every tracked shell
@@ -85,8 +88,11 @@ class TestSelectPytestTargets:
         """claude/.claude/scripts-other/ shares SCRIPTS_DIR's string prefix
         but is a distinct sibling directory -- _is_under's directory-boundary
         check (path == directory or startswith directory + "/") must not
-        treat it as under claude/.claude/scripts."""
-        result = _mod.select_pytest_targets(["claude/.claude/scripts-other/x.py"])
+        treat it as under claude/.claude/scripts. A non-.py extension keeps
+        this scoped to that boundary check rather than also exercising
+        _is_py_source_under_claude_or_plugins, which would match a .py file
+        here regardless of the SCRIPTS_DIR boundary."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts-other/x.md"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
@@ -175,10 +181,13 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.LOVABLE_CLOUD_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
-    def test_skill_management_scripts_change_selects_skills_tests(self):
+    def test_skill_management_scripts_change_also_selects_hooks_tests(self):
+        """test_ticket_reference_discipline.py (HOOKS_TESTS_DIR) statically
+        scans every tracked .py file under plugins/ too, so this .py change
+        now selects HOOKS_TESTS_DIR alongside SKILLS_TESTS_DIR."""
         result = _mod.select_pytest_targets(["plugins/skill-management/scripts/validate_skill_structure.py"])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_skill_management_scripts_shell_script_change_falls_open(self):
         """Scoped to .py files only, so a .sh file here (none exists today)
@@ -284,7 +293,9 @@ class TestSelectPytestTargets:
             "plugins/lovable-cloud/README.md",
         ])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SCRIPTS_TESTS_DIR, _mod.LOVABLE_CLOUD_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.LOVABLE_CLOUD_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+        }
 
     def test_helpers_py_global_trigger_forces_full_suite(self):
         result = _mod.select_pytest_targets(["claude/.claude/tests/helpers.py"])
@@ -493,10 +504,12 @@ class TestSelectPytestTargets:
         rule -- only a literal SKILL.md filename triggered the skills
         domain. The new _is_under(p, SKILLS_TESTS_DIR) blanket closes that
         gap, mirroring the hooks and scripts domains' own blanket
-        _is_under() rules."""
+        _is_under() rules. HOOKS_TESTS_DIR is also selected: this is a .py
+        file under claude/, which test_ticket_reference_discipline.py
+        (HOOKS_TESTS_DIR) statically scans."""
         result = _mod.select_pytest_targets(["claude/.claude/skills/tests/test_skills.py"])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_non_lovable_cloud_plugin_agents_change_selects_hooks_and_skills_tests(self):
         """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
@@ -537,6 +550,40 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([])
         assert result.reason == "empty-diff"
         assert result.triggering_paths == ()
+
+    def test_arbitrary_plugin_py_file_also_selects_hooks_tests(self):
+        """_is_py_source_under_claude_or_plugins is plugin-generic, not tied
+        to a named plugin's own cross-domain exception -- a .py file under a
+        plugin with no dedicated rule of its own (unlike skill-management or
+        lovable-cloud) still selects HOOKS_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["plugins/npm-semver/scripts/check.py"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+
+    def test_deliberately_unmapped_claude_tests_dir_py_change_falls_open(self):
+        """claude/.claude/tests/ has no selectable pytest target of its own
+        (DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS) -- a bare "any .py under
+        claude/" predicate would incorrectly narrow
+        test_statusline_command.py's and test_pytest_collection_config.py's
+        own coverage from the full suite down to HOOKS_TESTS_DIR, a
+        directory that does not contain them."""
+        result = _mod.select_pytest_targets(["claude/.claude/tests/test_statusline_command.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+        result = _mod.select_pytest_targets(["claude/.claude/tests/test_pytest_collection_config.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_non_py_file_under_claude_or_plugins_does_not_select_hooks_tests_via_the_new_predicate(self):
+        """Scoped to .py only, matching test_ticket_reference_discipline.py's
+        own corpus for the identifier/plan-phase-label checks it backs. A
+        .sh file gets HOOKS_TESTS_DIR only through an existing shell-script
+        rule (e.g. HOOKS_DIR's own domain rule), never through this one --
+        this fixture path is under neither, so it must fall open."""
+        result = _mod.select_pytest_targets(["plugins/npm-semver/scripts/check.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
 
 
 class TestBuildPytestArgv:
@@ -948,7 +995,7 @@ class TestMainComposition:
         exit_code = _mod.main(["-k", "foo"])
 
         assert exit_code == 0
-        assert recorded["pytest_argv"] == [_mod.SCRIPTS_TESTS_DIR, "-k", "foo"]
+        assert recorded["pytest_argv"] == [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR, "-k", "foo"]
         assert recorded["repo_root_passed_to_compute"] == fake_repo_root
         assert recorded["cwd"] == fake_repo_root
 
@@ -1015,7 +1062,7 @@ class TestMainComposition:
         exit_code = _mod.main(None)
 
         assert exit_code == 0
-        assert recorded["pytest_argv"] == [_mod.SCRIPTS_TESTS_DIR, "-k", "bar"]
+        assert recorded["pytest_argv"] == [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR, "-k", "bar"]
 
     def test_unmatched_path_prints_offending_paths_to_stderr(self, monkeypatch, capsys):
         """stderr previously named only the reason code, never the path

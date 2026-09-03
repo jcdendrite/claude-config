@@ -759,16 +759,16 @@ _lib_fragment_has_token() {
 # SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
 # or the fragment-split) failed and the answer could not be determined.
 # Composes _lib_strip_shell_quotes, _lib_split_fragments,
-# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so GH-783 Phase
-# 2's eight gate hooks share one fragment-aware matcher instead of each
-# hand-copying a raw regex over unstripped $COMMAND (which a quote-split
-# defeats, e.g. `"git" commit`).
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so the eight gate
+# hooks share one fragment-aware matcher instead of each hand-copying a raw
+# regex over unstripped $COMMAND (which a quote-split defeats, e.g. `"git"
+# commit`).
 #
 # Call-site contract (load-bearing): never picks a fail posture itself —
 # every caller must check for status 2 and decide allow-or-deny for its own
 # gate, the same discipline _lib_split_fragments's own call-site contract
-# already requires. GH-783 Phase 2's six checked-fail-closed hooks deny on
-# status 2; its two correctly-fail-open hooks (guard-settings-session-keys.sh,
+# already requires. Six checked-fail-closed hooks deny on status 2; the two
+# correctly-fail-open hooks (guard-settings-session-keys.sh,
 # require-stow-reminder.sh) treat anything other than 0 as "no match" and
 # stay silent about the distinction, matching their own documented posture.
 _lib_command_invokes_git_subcmd() {
@@ -851,6 +851,31 @@ _lib_tool_argv_from_subcmd() {
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
 }
 
+# _lib_words_start_with WORD... -- PREFIX...
+# Boolean exit status: 0 if WORD's first ${#PREFIX[@]} words equal PREFIX
+# word-for-word, 1 on the first mismatch. Caller must already have checked
+# WORD has at least as many words as PREFIX -- this never bounds-checks
+# against WORD's own length. Internal to _lib_command_invokes_tool_subcmd
+# below, the sole caller, which flattens both arrays across the call
+# boundary via "$@" plus a "--" sentinel, the same by-value idiom
+# want_subcmd uses at its own call boundary a few lines down (no nameref:
+# this repo targets macOS system bash 3.2).
+_lib_words_start_with() {
+  local -a words=()
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    words+=("$1")
+    shift
+  done
+  shift
+  local -a prefix_words=("$@")
+  local i=0
+  while [ "$i" -lt "${#prefix_words[@]}" ]; do
+    [ "${words[$i]}" = "${prefix_words[$i]}" ] || return 1
+    i=$((i + 1))
+  done
+  return 0
+}
+
 # _lib_command_invokes_tool_subcmd COMMAND TOOL SUBCMD...
 # Tri-state via exit status, same 0/1/2 contract as
 # _lib_command_invokes_git_subcmd above: 0 if any fragment of COMMAND
@@ -892,15 +917,7 @@ _lib_command_invokes_tool_subcmd() {
       got_subcmd+=("$word")
     done < <(_lib_tool_argv_from_subcmd "$fragment" "$tool")
     [ "${#got_subcmd[@]}" -lt "${#want_subcmd[@]}" ] && continue
-    local matched=true i=0
-    while [ "$i" -lt "${#want_subcmd[@]}" ]; do
-      if [ "${got_subcmd[$i]}" != "${want_subcmd[$i]}" ]; then
-        matched=false
-        break
-      fi
-      i=$((i + 1))
-    done
-    $matched && return 0
+    _lib_words_start_with "${got_subcmd[@]}" -- "${want_subcmd[@]}" && return 0
   done <<< "$fragments"
   return 1
 }
@@ -1720,14 +1737,14 @@ _lib_config_lines() {
 # partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
 # computation for the pattern.
 _lib_strip_shell_quotes() {
-  local stripped stripped_exit result result_exit
+  local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
   stripped_exit=$?
   [ "$stripped_exit" -ne 0 ] && return 1
-  result=$(printf '%s' "$stripped" | tr -d "\"'")
-  result_exit=$?
-  [ "$result_exit" -ne 0 ] && return 1
-  printf '%s' "$result"
+  unquoted=$(printf '%s' "$stripped" | tr -d "\"'")
+  unquoted_exit=$?
+  [ "$unquoted_exit" -ne 0 ] && return 1
+  printf '%s' "$unquoted"
   return 0
 }
 

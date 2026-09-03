@@ -995,7 +995,7 @@ class TestRequireRespondPr:
         )
 
 
-class TestGh483Invariants:
+class TestRespondPrStructuralInvariants:
     """GH-483's two acceptance-criteria tests. Neither is a behavioral
     hook-gate test like the classes above: both are source/doc scans,
     because the two invariants they pin have no runtime code path this
@@ -1027,17 +1027,11 @@ class TestGh483Invariants:
             )
 
     def test_every_pattern_is_accounted_for_in_a_gate_bucket(self):
-        """GH-483 acceptance criterion 2, inverted: nothing structurally
-        stops a future PATTERN_* from being added and forgotten in every
-        gate that decides on it -- that is exactly how `gh issue comment`
-        once came to be gated in one arm and not the other. The prior
-        version of this test used a naming heuristic ("WRITE" or
-        "MUTATION" in the name) that missed PATTERN_FIELD_FLAG and
-        PATTERN_ANY_FILE_BODY, neither of whose names contains either
-        substring, leaving both with no coverage from this test despite
-        being real entries in gated_write_patterns. This version scans the
-        hook's own source instead: every PATTERN_* it assigns must appear
-        in one of three accounted-for buckets --
+        """GH-483 acceptance criterion 2, inverted: a PATTERN_* constant can
+        be defined and never wired into a gate arm, which is how one
+        command reached production gated in one arm only. This test scans
+        the hook's own source: every PATTERN_* it assigns must appear in
+        one of three accounted-for buckets --
           - the if/elif arm chain that decides whether to keep evaluating
             a command at all (a literal `[[ "$COMMAND_FLAT" =~ $PATTERN_X
             ]]` conditional), which also covers PATTERN_MUTATING_METHOD's

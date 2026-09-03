@@ -204,14 +204,14 @@ _fragment_raw_write_targets() {
   for word in $fragment; do
     words+=("$word")
   done
-  local n="${#words[@]}"
+  local word_count="${#words[@]}"
   local i=0 next
-  while [ "$i" -lt "$n" ]; do
+  while [ "$i" -lt "$word_count" ]; do
     word="${words[$i]}"
     case "$word" in
       '>'|'>>')
         next=$((i + 1))
-        [ "$next" -lt "$n" ] && printf '%s\n' "${words[$next]}"
+        [ "$next" -lt "$word_count" ] && printf '%s\n' "${words[$next]}"
         ;;
       '>>'*)
         printf '%s\n' "${word#>>}"
@@ -222,13 +222,13 @@ _fragment_raw_write_targets() {
     esac
     i=$((i + 1))
   done
-  if [ "$n" -gt 0 ] && (_lib_fragment_invokes_tool "$fragment" cp || _lib_fragment_invokes_tool "$fragment" mv); then
-    printf '%s\n' "${words[$((n - 1))]}"
+  if [ "$word_count" -gt 0 ] && (_lib_fragment_invokes_tool "$fragment" cp || _lib_fragment_invokes_tool "$fragment" mv); then
+    printf '%s\n' "${words[$((word_count - 1))]}"
   fi
-  if [ "$n" -gt 0 ] && _lib_fragment_invokes_tool "$fragment" tee; then
+  if [ "$word_count" -gt 0 ] && _lib_fragment_invokes_tool "$fragment" tee; then
     local seen_tee=false
     i=0
-    while [ "$i" -lt "$n" ]; do
+    while [ "$i" -lt "$word_count" ]; do
       word="${words[$i]}"
       if $seen_tee; then
         case "$word" in
