@@ -24,7 +24,7 @@ from helpers import (
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
-# The 18 single-command tilde-form shapes the hook accepts — single source of
+# The 19 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -33,6 +33,7 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh write skill-review",
     "~/.claude/scripts/marker.sh write plan-review",
     "~/.claude/scripts/marker.sh write ready-for-review",
+    "~/.claude/scripts/marker.sh write cumulative-review",
     "~/.claude/scripts/marker.sh activate plan-review",
     "~/.claude/scripts/marker.sh activate ready-for-review",
     "~/.claude/scripts/marker.sh activate respond-pr",
@@ -52,7 +53,7 @@ TILDE_MARKER_SHAPES = [
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 18 single-command shapes, each must be allowed       #
+    # Valid shapes — 19 single-command shapes, each must be allowed       #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -655,7 +656,8 @@ class TestGateReleaseAuthority:
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
-        "skill", ["code-review", "skill-review", "plan-review", "ready-for-review"]
+        "skill",
+        ["code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review"],
     )
     def test_write_denied_for_no_release_agents(self, agent_type, skill):
         assert (

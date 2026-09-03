@@ -64,26 +64,21 @@ the existing owner or open a separate branch. Rebase once the default branch is 
 
 ## 3. Code review (halt on findings)
 
-Run `/code-review` against the **cumulative** PR-vs-default-branch
-diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this
-resolves through a dedicated script rather than an inline multi-statement Bash call):
+Compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
 ~/.claude/scripts/pr-diff-against-base.sh
 ```
 
+<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache start -->
+Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: if its `cumulative-review` line reads `live`, this diff content already passed a full unnarrowed cumulative review — skip the invocation below, report the cache hit in the Completion summary, and continue to step 4. Content type is never a skip reason on its own — on `historical` or `absent`, markdown, skill, and config diffs get the same pass as everything else.
+<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
+
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Because the reviewed diff is not the staged diff, do NOT write the review-completion
-marker (per `/code-review`'s own rule). If findings are produced, dispatch one
-`code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS
-row. The resulting fix commit goes through the standard staged-diff `/code-review` +
-marker gate — not step 3's own cumulative pass — before returning to step 2. Do not
-re-run `/code-review` on its own output (loop risk).
-
-Unskippable — markdown, skill, and config diffs benefit from the same pass.
+On a cache miss, run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate — not step 3's own cumulative pass — before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -166,7 +161,7 @@ Removes only this session's file. If the skill errors before reaching this step,
 Summarize for the user, then (and only then) signal that the branch is ready for human review:
 
 - Verification: commands run and their results.
-- Code review: findings fixed, or "none."
+- Code review: findings fixed, "none," or "skipped — cache hit."
 - PR description: authored for a new PR, or updated / "already in sync."
 - CI: watch still running — it will report when checks resolve, or check `gh pr checks <n>` yourself. If it already resolved, report that result instead.
 - Branch: clean, pushed, PR #N ready for review.

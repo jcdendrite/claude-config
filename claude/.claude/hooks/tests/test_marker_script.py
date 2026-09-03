@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 import time
 
 import pytest
@@ -29,9 +30,10 @@ from helpers import (
     write_skill_review_marker,
 )
 
-from .conftest import _seed_session
+from .conftest import _seed_session, assert_cap_engaged
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
+PR_DIFF_SCRIPT = SCRIPTS_DIR / "pr-diff-against-base.sh"
 
 
 def _ready_for_review_marker_path(home, repo, session_id: str):
@@ -40,6 +42,174 @@ def _ready_for_review_marker_path(home, repo, session_id: str):
     marker_path/plan_review_marker_path above, just the ready-for-review dir."""
     repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
     return home / ".claude" / "ready-for-review-markers" / f"{repo_hash}.{session_id}"
+
+
+def _cumulative_review_marker_path(home, repo, session_id: str):
+    """Same repo-hash recipe as _ready_for_review_marker_path above, just the
+    cumulative-review dir."""
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    return home / ".claude" / "cumulative-review-markers" / f"{repo_hash}.{session_id}"
+
+
+def _gh_shim_source(base_ref: str | None) -> str:
+    """Return source for a gh shim answering `gh pr view --json baseRefName
+    --jq .baseRefName`, duplicated from
+    scripts/tests/test_pr_diff_against_base.py's helper of the same name
+    rather than cross-imported -- conftest.py's _dead_pid documents the same
+    neither-test-tree-imports-the-other convention.
+
+    base_ref=None models `gh pr view` failing (no PR open, or gh not
+    authenticated), exercising pr-diff-against-base.sh's fallback to a
+    repo's own refs/remotes/origin/HEAD symref.
+    """
+    body = "sys.exit(1)" if base_ref is None else f"print({base_ref!r})"
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["pr", "view"] and "--json" in args and "baseRefName" in args:
+            {body}
+        else:
+            sys.exit(1)
+    """)
+
+
+def _env_with_gh_shim(tmp_path, base_ref: str | None) -> dict:
+    """Build a PATH-prepending env dict with a gh shim reporting base_ref --
+    guarantees marker.sh's `cumulative-review` arm never makes a real gh
+    network call in these tests, regardless of the host's own gh state."""
+    shim_dir = tmp_path / "gh_shim"
+    shim_dir.mkdir()
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(_gh_shim_source(base_ref))
+    gh_shim.chmod(0o755)
+    return {"PATH": f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
+def _arm_default_branch_ref_and_second_commit(repo) -> None:
+    """Add refs/remotes/origin/main (+ origin/HEAD symref) at the repo's
+    current HEAD, then a second commit on a new file -- the minimum
+    pr-diff-against-base.sh needs to resolve a non-empty committed diff.
+
+    Applied on demand to the specific tests exercising `write
+    cumulative-review`/`status`, never to the shared git_repo fixture
+    itself: require-plugin-version-bump.sh's BASE resolution reads the
+    identical refs/remotes/origin/HEAD symref, and stops degrading to
+    BASE=HEAD once it is present -- test_require_plugin_version_bump.py's
+    TestRequirePluginVersionBump class is built on that degraded-mode
+    assumption (see its own comment), so arming it repo-wide via git_repo
+    breaks every test in that class.
+
+    Touches a new file (second.txt), not file.txt, so file.txt's committed
+    content is unaffected -- but the commit is made via `git commit` without
+    `-a`, so it also folds in git_repo's own pre-staged file.txt change
+    (still sitting in the index at this point) alongside second.txt.
+    """
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "second.txt").write_text("second file\n")
+    subprocess.run(["git", "add", "second.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add second file"], cwd=repo, check=True)
+
+
+@pytest.fixture
+def cumulative_diff_repo(git_repo):
+    """git_repo, armed via _arm_default_branch_ref_and_second_commit so
+    pr-diff-against-base.sh resolves a non-empty committed diff. Local to
+    this file (not conftest.py) since only TestMarkerScriptCumulativeReview
+    needs it -- see that helper's docstring for why the arming must not
+    reach the shared git_repo fixture itself."""
+    _arm_default_branch_ref_and_second_commit(git_repo)
+    return git_repo
+
+
+def _advance_origin_main_and_rebase(repo, commit_fn) -> None:
+    """Move refs/remotes/origin/main forward by one commit built by
+    commit_fn (which mutates and stages the working tree; this function
+    commits it), then rebase the checked-out branch back onto the new
+    origin/main -- reproduces a conflict-free rebase onto a moved default
+    branch, always producing a new HEAD SHA regardless of whether the
+    cumulative diff bytes actually changed (docs/design-decisions.md
+    §42's motivating scenario)."""
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "checkout", "-q", "refs/remotes/origin/main"], cwd=repo, check=True)
+    commit_fn(repo)
+    new_tip = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", new_tip], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-q", branch], cwd=repo, check=True)
+    subprocess.run(["git", "rebase", "-q", "origin/main"], cwd=repo, check=True)
+
+
+def _commit_unrelated_file(repo) -> None:
+    """Add a file the PR commit never touches -- an origin/main advance
+    with zero overlap with the reviewed diff."""
+    (repo / "unrelated.txt").write_text("unrelated base change\n")
+    subprocess.run(["git", "add", "unrelated.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "unrelated base change"], cwd=repo, check=True)
+
+
+CONTEXT_DRIFT_LINE_COUNT = 10
+
+
+def _shared_txt_lines(extra: str = "") -> str:
+    """N numbered lines plus optional extra content -- shared by
+    context_diff_repo's setup and _insert_adjacent_line below, so both
+    sides build shared.txt from the identical line set."""
+    return "\n".join(f"L{i}" for i in range(1, CONTEXT_DRIFT_LINE_COUNT + 1)) + "\n" + extra
+
+
+def _insert_adjacent_line(repo) -> None:
+    """Insert a line inside shared.txt's last few lines -- close enough to
+    the PR commit's own appended line (see context_diff_repo) to fall
+    inside git diff's default 3-line context window, so a conflict-free
+    rebase still shifts that hunk's context lines."""
+    lines = [f"L{i}" for i in range(1, CONTEXT_DRIFT_LINE_COUNT)]
+    lines.append(f"L{CONTEXT_DRIFT_LINE_COUNT - 1}.5")
+    lines.append(f"L{CONTEXT_DRIFT_LINE_COUNT}")
+    (repo / "shared.txt").write_text("\n".join(lines) + "\n")
+    subprocess.run(["git", "add", "shared.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "insert adjacent line"], cwd=repo, check=True)
+
+
+@pytest.fixture
+def context_diff_repo(git_repo):
+    """git_repo plus a committed multi-line shared.txt, origin/main pointed
+    at that commit, and a PR commit that appends one line to shared.txt's
+    end -- unlike cumulative_diff_repo's brand-new second.txt, this gives
+    the PR's diff hunk real context lines that a base-branch edit can
+    later shift. Local to this file for the same reason as
+    cumulative_diff_repo above."""
+    repo = git_repo
+    (repo / "shared.txt").write_text(_shared_txt_lines())
+    subprocess.run(["git", "add", "shared.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add shared.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "shared.txt").write_text(
+        _shared_txt_lines(f"L{CONTEXT_DRIFT_LINE_COUNT + 1}\n")
+    )
+    subprocess.run(["git", "add", "shared.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"append L{CONTEXT_DRIFT_LINE_COUNT + 1}"], cwd=repo, check=True)
+    return repo
+
 
 # Every write/activate/deactivate/status subcommand marker.sh dispatches.
 # Shared by TestMarkerScriptSessionMissing and TestMarkerScriptSessionIdValidation
@@ -50,6 +220,7 @@ ALL_MARKER_SUBCOMMAND_ARGS = [
     ["write", "skill-review"],
     ["write", "plan-review"],
     ["write", "ready-for-review"],
+    ["write", "cumulative-review"],
     ["activate", "plan-review"],
     ["activate", "ready-for-review"],
     ["activate", "respond-pr"],
@@ -615,13 +786,13 @@ class TestMarkerDirectoryNamingConvention:
     preserves the invariant.
     """
 
-    WRITE_SKILLS = ("code-review", "skill-review", "plan-review", "ready-for-review")
+    WRITE_SKILLS = ("code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review")
 
     SID = "test-session-naming"
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
     def test_write_lands_in_skill_derived_directory(
-        self, skill, isolated_home, git_repo
+        self, skill, isolated_home, git_repo, tmp_path
     ):
         sid = self.SID
         _seed_session(isolated_home, sid)
@@ -630,8 +801,16 @@ class TestMarkerDirectoryNamingConvention:
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         (plans_dir / "p.md").write_text("# plan\n")
+        extra_env = None
+        if skill == "cumulative-review":
+            # cumulative-review's own diff recipe needs a resolvable default
+            # branch -- see _arm_default_branch_ref_and_second_commit's
+            # docstring for why this is armed per-test rather than on the
+            # shared git_repo fixture.
+            _arm_default_branch_ref_and_second_commit(git_repo)
+            extra_env = _env_with_gh_shim(tmp_path, None)
 
-        result = _run(["write", skill], cwd=git_repo, home=isolated_home)
+        result = _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=extra_env)
         assert result.returncode == 0, result.stderr
 
         expected_dir = isolated_home / ".claude" / f"{skill}-markers"
@@ -647,7 +826,7 @@ class TestMarkerDirectoryNamingConvention:
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
     def test_write_touches_no_other_marker_directory(
-        self, skill, isolated_home, git_repo
+        self, skill, isolated_home, git_repo, tmp_path
     ):
         """The inverse guard: an arm that writes some other skill's directory
         (a copy-paste slip between adjacent `case` arms) would leave the
@@ -656,9 +835,13 @@ class TestMarkerDirectoryNamingConvention:
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         (plans_dir / "p.md").write_text("# plan\n")
+        extra_env = None
+        if skill == "cumulative-review":
+            _arm_default_branch_ref_and_second_commit(git_repo)
+            extra_env = _env_with_gh_shim(tmp_path, None)
 
         assert (
-            _run(["write", skill], cwd=git_repo, home=isolated_home).returncode == 0
+            _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=extra_env).returncode == 0
         )
 
         # isolated_home pre-creates code-review-markers/, so presence alone
@@ -1686,6 +1869,312 @@ class TestMarkerScriptStatusCompletionMarkers:
         assert other_marker.name not in result.stdout
         assert other_session not in result.stdout
         assert other_repo_hash not in result.stdout
+
+
+class TestMarkerScriptCumulativeReview:
+    """`write cumulative-review` and `status`'s cumulative-review line both
+    hash pr-diff-against-base.sh's output via the shared
+    _lib_cumulative_diff_hash helper -- guarded against a failed, empty, or
+    hung diff on the write side, and degrading to absent rather than
+    aborting on the read side."""
+
+    SID = "test-session-cumulative-review"
+    # Lower bound for proving _lib_cumulative_diff_hash's 15s cap fired,
+    # not just any cap. Above the shared 5s _lib_capped default (so a
+    # silent regression back to that cap still fails this assertion) and
+    # safely under 15s (so cap-plus-overhead reliably clears it).
+    CUMULATIVE_DIFF_CAP_FLOOR_SECONDS = 12
+
+    def test_write_creates_marker_with_diff_hash(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        env = _env_with_gh_shim(tmp_path, None)
+        result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
+        files = list(marker_dir.iterdir())
+        assert len(files) == 1
+        assert files[0].name.endswith(f".{sid}")
+        content = files[0].read_text().strip()
+        assert re.fullmatch(r"[0-9a-f]{64}", content), (
+            f"expected a sha256 hex digest, got {content!r}"
+        )
+
+    def test_write_aborts_when_diff_resolution_fails(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """No gh, no origin/HEAD symref, no main/master/develop candidate ref
+        -- pr-diff-against-base.sh exits nonzero, and the write arm must
+        abort rather than record a marker for a diff that never resolved."""
+        _seed_session(isolated_home, self.SID)
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/HEAD"],
+            cwd=cumulative_diff_repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/main"],
+            cwd=cumulative_diff_repo,
+            check=True,
+        )
+        env = _env_with_gh_shim(tmp_path, None)
+        result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert result.returncode == 2
+        assert "cumulative" in result.stderr.lower()
+        marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a failed diff must not write a marker: {stray}"
+
+    def test_write_aborts_when_diff_is_empty(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """HEAD reset to match origin/main: pr-diff-against-base.sh exits 0
+        with empty stdout (identical trees). marker.sh runs under `set -u`
+        only, so an unguarded empty-input sha256sum would silently produce
+        the empty-input digest at exit 0 -- the write arm must treat empty
+        output as a failure, not a valid marker value."""
+        _seed_session(isolated_home, self.SID)
+        subprocess.run(
+            ["git", "reset", "--hard", "refs/remotes/origin/main"],
+            cwd=cumulative_diff_repo,
+            check=True,
+        )
+        env = _env_with_gh_shim(tmp_path, None)
+        result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty diff must not write a marker: {stray}"
+
+    @pytest.mark.timing
+    def test_write_aborts_when_gh_pr_view_times_out(
+        self, isolated_home, cumulative_diff_repo, gh_timeout_shim
+    ):
+        """pr-diff-against-base.sh's own `gh pr view` call has no cap of its
+        own -- the write arm's outer 15s _lib_capped_for cap must still
+        engage and abort rather than hang indefinitely. sleep_seconds=20:
+        past the 15s cap, unlike the 10s TIMEOUT_SHIM_SLEEP_SECONDS default
+        calibrated for the shared 5s _lib_capped cap elsewhere."""
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
+        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+            result = _run(
+                ["write", "cumulative-review"],
+                cwd=cumulative_diff_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a timed-out diff must not write a marker: {stray}"
+
+    def test_status_live_when_hash_matches_current_diff(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        env = _env_with_gh_shim(tmp_path, None)
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+        result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: live" in result.stdout
+
+    def test_status_historical_when_marker_hash_is_stale(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        marker = _cumulative_review_marker_path(isolated_home, cumulative_diff_repo, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("0" * 64 + "\n")
+        env = _env_with_gh_shim(tmp_path, None)
+        result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: historical" in result.stdout
+
+    def test_status_absent_when_no_marker_exists(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: absent" in result.stdout
+
+    @pytest.mark.timing
+    def test_status_degrades_to_absent_on_timeout_rather_than_erroring(
+        self, isolated_home, cumulative_diff_repo, gh_timeout_shim
+    ):
+        """status is a report, not a write -- a hung `gh pr view` must
+        degrade the cumulative-review line to absent rather than crashing
+        the whole status report (or hanging it past the 15s cap).
+        sleep_seconds=20: past the 15s cap, unlike the 10s
+        TIMEOUT_SHIM_SLEEP_SECONDS default calibrated for the shared 5s
+        _lib_capped cap elsewhere."""
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
+        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+            result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: absent" in result.stdout
+
+    @pytest.mark.timing
+    def test_status_reports_could_not_verify_when_marker_exists_but_hash_fails(
+        self, isolated_home, cumulative_diff_repo, tmp_path, gh_timeout_shim
+    ):
+        """The CUMULATIVE_DIFF_HASH_FAILED stderr branch requires BOTH a
+        cumulative-review marker already on disk AND _lib_cumulative_diff_hash
+        failing on this status call -- distinct from
+        test_status_degrades_to_absent_on_timeout_rather_than_erroring above,
+        which covers the no-marker case and never reaches this branch. Write
+        a marker with a working gh shim first, then re-run status with a
+        `gh pr view` hung past the 15s cap."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        write_env = _env_with_gh_shim(tmp_path, None)
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=write_env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+
+        timeout_env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
+        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+            result = _run(
+                ["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=timeout_env
+            )
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review:" in result.stdout
+        assert (
+            "cumulative-review: could not verify (pr-diff-against-base.sh failed, "
+            "produced no output, or timed out -- the state above reflects marker "
+            "presence only, not a confirmed hash comparison)"
+        ) in result.stderr
+
+    def test_write_and_status_hash_recipes_agree_byte_for_byte(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """marker.sh write and status both call the shared
+        _lib_cumulative_diff_hash helper, but that only proves the two call
+        sites agree with EACH OTHER. Prove the stored value also matches an
+        independently-computed sha256 of pr-diff-against-base.sh's own
+        stdout, so a shared-helper bug that hashes the wrong bytes on both
+        sides couldn't hide behind the two sides merely agreeing.
+
+        Trailing newlines are stripped from the independently-captured
+        stdout before hashing, mirroring bash command substitution's own
+        trailing-newline stripping inside _lib_cumulative_diff_hash --
+        without it this comparison would fail on the newline boundary alone,
+        not on a real recipe mismatch."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        env = _env_with_gh_shim(tmp_path, None)
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+        marker = _cumulative_review_marker_path(isolated_home, cumulative_diff_repo, sid)
+        stored_value = marker.read_text().strip()
+
+        diff_output = subprocess.run(
+            [str(PR_DIFF_SCRIPT)],
+            cwd=cumulative_diff_repo,
+            env={**os.environ, **env},
+            capture_output=True,
+            check=True,
+        ).stdout.rstrip(b"\n")
+        assert stored_value == hashlib.sha256(diff_output).hexdigest()
+
+        status_result = _run(
+            ["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env
+        )
+        assert status_result.returncode == 0, status_result.stderr
+        assert "cumulative-review: live" in status_result.stdout
+
+    def test_status_stays_live_after_conflict_free_rebase_onto_moved_base(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """The cache's own motivating scenario: origin/main advances with a
+        commit the PR's diff never touches, the PR commit is rebased onto
+        it conflict-free (a new HEAD SHA every time), and the cumulative
+        diff bytes come out identical -- the marker hashed before the move
+        must still read live after it."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        env = _env_with_gh_shim(tmp_path, None)
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+
+        _advance_origin_main_and_rebase(cumulative_diff_repo, _commit_unrelated_file)
+
+        result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: live" in result.stdout
+
+    def test_status_historical_after_base_move_shifts_diff_context(
+        self, isolated_home, context_diff_repo, tmp_path
+    ):
+        """A base-branch commit that edits content merely adjacent to the
+        PR's own change -- not the changed line itself -- can still shift
+        the diff hunk's context lines after a conflict-free rebase. The
+        cache must not paper over that with a false live: this is
+        docs/design-decisions.md §42's named residual (a byte-identical
+        rebase is not guaranteed for every conflict-free rebase, only the
+        motivating case where nothing near the diff moved)."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        env = _env_with_gh_shim(tmp_path, None)
+        write_result = _run(
+            ["write", "cumulative-review"],
+            cwd=context_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert write_result.returncode == 0, write_result.stderr
+
+        _advance_origin_main_and_rebase(context_diff_repo, _insert_adjacent_line)
+
+        result = _run(["status"], cwd=context_diff_repo, home=isolated_home, extra_env=env)
+        assert result.returncode == 0, result.stderr
+        assert "cumulative-review: historical" in result.stdout
+        assert "could not verify" not in result.stderr, (
+            "historical must reflect a genuine hash mismatch, not a masked "
+            "_lib_cumulative_diff_hash computation failure"
+        )
 
 
 class TestMarkerScriptStatusActiveBypass:

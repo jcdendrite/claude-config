@@ -51,7 +51,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   mark-terminal --list                   # list every live session's PID/TTY/cwd
   ```
 
-- **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 16 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
+- **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 17 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
 
 - **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 

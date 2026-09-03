@@ -8,6 +8,8 @@ A CLAUDE.md rule is advisory and can be reasoned around ("this change is too tri
 
 ## 2. Content-addressed review markers
 
+Five kinds exist: `code-review`, `plan-review`, `ready-for-review`, `skill-review`, and `cumulative-review` (§44) — a fifth kind that hashes the cumulative PR-vs-base diff so `ready-for-review` step 3 can reuse a prior clean pass instead of re-running it on a byte-identical rebase.
+
 A marker's *content* — not its filename, and not its mere existence — is what authorizes a gate to open. The sha256 is taken from the staged diff at the time `/code-review` runs; the hook recomputes the sha256 at commit time and compares. If even one line has been re-staged since the review ran, the sha256 doesn't match and the gate fires again — no manual invalidation needed, no timer to expire, no way to accidentally commit a diff that wasn't reviewed.
 
 That content-addressing is what makes the filename a pure implementation detail. The marker lives at `<config-dir>/code-review-markers/<repo-hash>.<session-id>` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`), where the session-id component exists so two parallel Claude Code sessions in the same worktree don't overwrite each other's markers — a write-side concern. Reading it back as an *authorization* predicate was a mistake worth naming: it narrowed the gate to "this session reviewed this state" when the property the gate wants is "this state has been reviewed," so a session resumed under a new id was denied a review it had genuinely completed. The gate now matches on content across every session suffix under the repo-hash. The repo-hash stays part of the read, because an identical diff in an unrelated repository was reviewed against different code.
@@ -813,3 +815,19 @@ question.
 - [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference) — per-key scope column, including the "Any file" scope cited above.
 - [Fullscreen mode](https://code.claude.com/docs/en/fullscreen) — alternate-screen renderer behavior, memory, and mouse support.
 - `claude/.claude/hooks/guard-settings-session-keys.sh` and [`docs/hooks.md`](hooks.md) — the guarded key set and the staged-vs-`main` comparison.
+
+## 44. `ready-for-review`'s cumulative-diff review cache: a fifth content-addressed marker kind (2026-09-02)
+
+`ready-for-review` step 3 ran a mandatory, fully-unnarrowed `/code-review` pass over the entire PR-vs-base diff on every push to a branch with an open PR, including a push that only rebases or merge-syncs onto a moved default branch with zero conflicts and zero content change. The gating marker (`ready-for-review-markers`) is keyed on the exact HEAD SHA, not diff content, so a conflict-free rebase always re-arms it and forces a full specialist-reviewer re-run from scratch.
+
+A `cumulative-review` marker kind closes this: its value is the sha256 of `pr-diff-against-base.sh`'s output. It is written by `marker.sh write cumulative-review` at the end of a clean step-3 pass and read back through `marker.sh status`'s existing completion-marker report, so a rebase that leaves the cumulative diff byte-identical reuses the prior clean review instead of re-running it.
+
+The preimage is the diff bytes alone, deliberately excluding the merge-base SHA and the base-branch ref — folding either in would make the cache miss in precisely its motivating case, since a rebase onto a moved default branch always changes the merge-base.
+
+**Named residual, not fixed here** (§34's "Named residual, not fixed here" is the precedent shape for recording this kind of gap rather than engineering it away). A byte-identical diff rebased onto a moved default branch is not strictly the same review object: a reviewer's ripple and causal-reach judgment can depend on code outside the diff, and a clean rebase surfaces textual conflicts only, not semantic ones. This residual is not closed by folding the base ref into the hash — that would defeat the cache's own motivating case, as above — so it is compensated instead: step 2's verification runs against the rebased tree on every pass and is never cached, and CI runs on every push. The cache skips reviewer judgment over bytes nobody changed, not verification of the tree.
+
+**A second named residual: the write is a zero-evidence self-attestation.** `write cumulative-review`'s only precondition is that the diff hashes to something; nothing binds the write to proof that a review actually ran. This is not a new privilege boundary: every existing marker kind is already self-attested, with no hook correlating a write to completed review work. It does, however, convert step 3 from prose-"unskippable" into a silently skippable step. The accepted mitigation is the same one already in place for the base-move residual above: step 2's verification and CI still run unconditionally on every pass, cache hit or not.
+
+### Sources
+
+- `.claude/plans/rfr-cumulative-diff-cache.md` — full assumption ledger, mechanism list, and out-of-scope residuals.
