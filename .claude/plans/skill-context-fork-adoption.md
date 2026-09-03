@@ -72,10 +72,9 @@ the full tool set. Both properties are load-bearing for M9 and M10.
   `[verified: README.md:95, root CLAUDE.md "Plans in this repo affect all stow users"]`
 
 `marker.sh`'s session-resolution model and `require-plugin-version-bump.sh`'s
-contract were previously listed here as givens G3 and G4. Both are this repo's
-own artifacts and therefore in reach; they are conditions this plan *could*
-change and deliberately will not, so they belong in **Out of scope** and appear
-only there.
+contract are this repo's own artifacts and therefore in reach — conditions
+this plan *could* change and deliberately will not. They are listed in
+**Out of scope**, not here.
 
 **Rows:**
 
@@ -84,18 +83,18 @@ only there.
    walk resolves its writes to the parent session id. All three gate classes
    (content-addressed completion markers, session-keyed active-bypass markers,
    session-scoped review ledger) therefore survive forking.
-   `[verified: probe run this session — see row 14 for the probe's own scope caveat,
-   which applies to rows 1–4 alike]`
+   `[verified: Verification step 1's nested-fork probe, plus a live single-fork
+   run in a genuinely interactive top-level session — see Verification step 2]`
 2. A `background: false` fork holds the full tool set, including `Bash`,
    `Read`, `Write`, `Skill`, and `Agent`.
-   `[verified: probe run this session — row 14 caveat applies]`
+   `[verified: Verification step 2]`
 3. A fork receives no conversation history, but does receive harness-injected
    `gitStatus`, `CLAUDE.md`, and `MEMORY.md`.
-   `[verified: probe run this session — row 14 caveat applies; consistent with
-   the docs' "Also loads: CLAUDE.md" table row]`
+   `[verified: Verification step 2; consistent with the docs' "Also loads:
+   CLAUDE.md" table row]`
 4. `AskUserQuestion` is **absent** from a fork's tool list — a forked skill
    cannot conduct user dialogue.
-   `[verified: probe run this session — row 14 caveat applies]`
+   `[verified: Verification step 2]`
 5. `background` defaults to `true`, so a bare `context: fork` yields a
    background fork with a narrowed tool set and edits outside `/rewind`
    checkpoints. `[verified: docs — "Default: true"; "applies its edits outside
@@ -141,11 +140,15 @@ only there.
     nesting and resolves session identity the same way. `[unverified]` —
     Verification step 1 exercises this directly before the frontmatter lands.
 14. Fork behavior in a normal interactive session matches what the `claude -p`
-    probe observed. `[unverified]` — the probe ran inside a nested
-    non-interactive session; the observed mechanism matches what the repo
-    already documents for Agent-tool subagents, but the interactive path was
-    not directly tested. **This caveat governs rows 1–4, which rest on the same
-    single probe run.**
+    probe observed. `[verified: Verification step 2 exercised the interactive
+    path directly — see that step for the method]` — nested `claude -p` turned
+    out to be the wrong instrument for this check entirely: it is a separate
+    process with its own permission domain, so even a successful nested run
+    would answer "can a `-p` subprocess reach these tools," not "does a fork
+    inside my own interactive session." The mechanism that actually resolved
+    this row was invoking a throwaway project-scope skill (a verbatim copy of
+    the real `SKILL.md` body under a scratch name) directly from a live,
+    already-running interactive session — no nested process, no restart.
 15. The Claude Code version that introduced `context:` itself is unknown. Below
     it the key is an unrecognized frontmatter field and the skill runs
     in-context as it does today — graceful degradation to the status quo.
@@ -193,6 +196,36 @@ only there.
     accepted for this change rather than blocking it, and the roster keeps both
     skills rather than dropping `error-mode-analysis` or pinning a
     non-gate-release `agent:` type. `[engineer-verified]`
+24. A fork's `Agent` tool can dispatch a `general-purpose` subagent that itself
+    invokes a review skill and writes a marker — the same forged-gate outcome
+    as row 21/M9, reached one hop removed, and invisible to a check that only
+    inspects the fork's own tool calls or its SKILL.md body text (the subagent
+    dispatch prompt is assembled at inference time, not present in the
+    reviewed file). Discovered during this diff's own `/code-review` pass
+    (`ciso-reviewer`), not previously named by M9 or the row-17 issue. M9's
+    negative instruction is broadened in both bodies to also disclaim
+    dispatching a subagent for gate release, and the row-17 issue
+    (`github.com/jcdendrite/claude-config/issues/831`) is commented with this
+    path so a fix scoped only to the original direct-call path isn't later
+    treated as closing this one too. Same disclosed-and-accepted-risk class as
+    row 23, not a new blocking condition. `[engineer-verified]`
+25. Whether a `background: false` fork's `Bash` call pauses for an
+    interactive permission prompt (giving an attentive human a mid-fork chance
+    to interrupt) versus auto-denying or auto-allowing is unverified.
+    `background: false` is chosen here for a functional reason only — row 5's
+    default otherwise omits `Bash`, which both skills require — not for any
+    supervision property; treat turn-by-turn human visibility into a fork's
+    tool calls as unverified rather than assumed. `[unverified]`
+26. Artifact A's Step 5 "manually scan before persisting" instruction has no
+    mechanical enforcement — the same prose-only limitation as M9, applied to
+    PII/credential content rather than gate release. Forking removes the
+    informal human co-reader that partially compensated for this pre-existing
+    weakness (raw content now streams only through the fork, not through a
+    human-read conversation, before the scan runs). Bounded, not blocking:
+    Artifact A already carried no automated scrub in any prior version either.
+    Filed as a separate GitHub issue
+    (`github.com/jcdendrite/claude-config/issues/840`) and excluded here, same
+    pattern as row 17. `[engineer-verified]`
 
 ### Mechanism justifications
 
@@ -330,17 +363,18 @@ before assembling Artifact A. Step 7's per-sub-window re-run needs the same
 path bookkeeping across windows.
 
 **M9 — Negative marker instruction in both bodies, plus a test asserting it.**
-`anchors: row21, row1`. Row 21 establishes the standing arrangement M2 creates;
-this is the control that bounds it. Neither body today says anything about
-`marker.sh`, and M6's roster test checks frontmatter shape only. Both bodies
-gain an explicit "this skill never invokes `marker.sh` and never invokes a
-review skill" instruction, and `test_skills.py` gains an assertion that neither
-body references either — author-time preventive, adversarial-input
-best-effort, without touching the
-allowlist itself (Out of scope). The `docs/skills.md` precedent bullet states
-the converse of the existing note too: a forked skill that ingests
-externally-writable content must carry this instruction before defaulting to
-`general-purpose`.
+`anchors: row21, row1, row24`. Row 21 establishes the standing arrangement M2
+creates; this is the control that bounds it. Neither body today says anything
+about `marker.sh`, and M6's roster test checks frontmatter shape only. Both
+bodies gain an explicit "this skill never invokes `marker.sh` and never
+invokes a review skill, directly or by dispatching a subagent to do either on
+its behalf" instruction — the subagent clause closes row 24's two-hop path,
+found during this diff's own `/code-review` pass — and `test_skills.py` gains
+an assertion that neither body references either — author-time preventive,
+adversarial-input best-effort, without touching the allowlist itself (Out of
+scope). The `docs/skills.md` precedent bullet states the converse of the
+existing note too: a forked skill that ingests externally-writable content
+must carry this instruction before defaulting to `general-purpose`.
 
 State the limit plainly rather than implying coverage: M9's test is a static
 lint over this repo's own authored text, so it verifies what the skill *says*,
@@ -485,6 +519,7 @@ neither body.
 
 Run before staging, in the order given. Steps 1–2 gate the frontmatter change,
 because row 13 is the `[unverified]` row the plan's correctness rests on.
+Steps 1–4 have run and passed as of this plan revision.
 
 1. **Nested-fork check (resolves row 13).** Run `scripts/dev/fork-topology-probe.sh`,
    which creates two throwaway skills under `.claude/skills/`, each with
@@ -494,15 +529,42 @@ because row 13 is the `[unverified]` row the plan's correctness rests on.
    to the outer and both resolve to the same Claude main-process PID. The
    script cleans up its own skills on exit including on failure, so an aborted
    run leaves no stale skill directories.
-2. **Single-fork end-to-end (partially resolves row 14).** After the frontmatter
-   lands, invoke `/transcript-narrative` from a normal interactive session and
-   confirm the fork runs, `transcript-analysis.py sessions --paths` succeeds
-   inside it (Bash reachable), and the return is a path plus ranked lessons
-   rather than the full case study.
+2. **Single-fork end-to-end (resolves row 14).** Neither the bare
+   `/transcript-narrative` nor a `claude:transcript-narrative`-style
+   directory-qualified name reaches this worktree's edits: the bare name
+   resolves through the `~/.claude/skills/` stow symlink to the **main
+   checkout**, not this worktree, so it serves whatever `main` has (stale
+   until the PR merges and the consumer runs `git pull`); no
+   directory-qualified duplicate for a nested `<dir>/.claude/skills/` path is
+   discoverable at all — confirmed empirically, not merely undocumented. The
+   only path that actually reaches the worktree's own edit without touching
+   the main checkout or the real stow symlinks: copy
+   `claude/.claude/skills/transcript-narrative/SKILL.md` verbatim into a
+   throwaway project-scope skill (e.g. `.claude/skills/<scratch-name>/SKILL.md`
+   with the `name:` frontmatter field rewritten to match), invoke it by that
+   scratch name from a live, already-running interactive session, then delete
+   the throwaway directory afterward regardless of outcome. The project-skill
+   registry lags by one `Skill`-tool call after a filesystem change (the new
+   name reliably resolves on the *second* invocation attempt, not necessarily
+   the first) — retry once before treating an "Unknown skill" result as a
+   real failure. No session restart is required; the registry is not fixed at
+   session start the way the stowed-skill case suggested. Confirm the served
+   body contains `## Step 0 — Confirm Bash is available` before trusting
+   anything else — its absence means the copy step went wrong, not that
+   anything about forking is broken. Then confirm the fork runs,
+   `transcript-analysis.py sessions --paths` succeeds inside it (Bash
+   reachable), and the return is a path plus ranked lessons rather than the
+   full case study.
 3. **`error-mode-analysis` fork end-to-end, covering the second dependency.**
-   Invoke `/error-mode-analysis` and confirm its `gh api graphql` call succeeds
-   *inside* the fork — auth-bearing, one nesting level deeper than step 2, and
-   the dependency step 2 does not exercise.
+   Same throwaway-copy method as step 2, applied to
+   `claude/.claude/skills/error-mode-analysis/SKILL.md`. Confirm its
+   `gh api graphql` call succeeds *inside* the fork — auth-bearing, one
+   nesting level deeper than step 2, and the dependency step 2 does not
+   exercise. Because this skill's default scope is a full multi-branch,
+   multi-PR delivery analysis, a mechanism check may reasonably narrow scope
+   (e.g. one PR) rather than run the full breadth-default end to end; what
+   this step requires is evidence the GraphQL call itself succeeded with a
+   valid response shape, not a complete bucketed report.
 4. **Follow-up-question flow.** After step 2, ask a question the digest alone
    cannot answer (e.g. the evidence behind a specific ranked lesson) and
    confirm the model re-opens the artifact rather than answering from the

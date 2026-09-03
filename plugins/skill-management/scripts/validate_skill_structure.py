@@ -71,13 +71,21 @@ def parse_frontmatter(skill_file: Path) -> dict:
 def validate(skill_file: Path) -> list[str]:
     """Return a list of human-readable violation messages for ``skill_file``.
 
-    An empty list means the file passes all structural checks.  Two checks
+    An empty list means the file passes all structural checks.  Three checks
     are applied in order:
 
     1. Strict-YAML frontmatter — the frontmatter between the ``---`` delimiters
        must parse with ``yaml.safe_load`` without raising.
     2. Description length cap — ``len(description) + len(when_to_use)`` must
        not exceed ``MAX_SKILL_DESCRIPTION_CHARS``.
+    3. ``context: fork`` requires an explicit literal-boolean ``background``
+       value; omitting it silently defaults to a background fork with a
+       narrowed tool set and no ``/rewind`` checkpoint coverage. This check
+       only requires the author to state a value, not which one.
+
+       The ``context`` match is exact-case ``"fork"`` — whether the harness's
+       own parser is case-sensitive here is unestablished, so this check does
+       not guess at its tolerance.
     """
     violations: list[str] = []
 
@@ -103,6 +111,21 @@ def validate(skill_file: Path) -> list[str]:
             f"exceeds harness cap of {MAX_SKILL_DESCRIPTION_CHARS}; the tail "
             f"will be truncated from the system-prompt listing"
         )
+
+    # Check 3: context: fork requires an explicit literal-boolean background.
+    if frontmatter.get("context") == "fork":
+        has_background = "background" in frontmatter
+        background = frontmatter.get("background")
+        if not isinstance(background, bool):
+            state = repr(background) if has_background else "absent"
+            violations.append(
+                f"{skill_file}: context: fork requires an explicit "
+                f"background: true or background: false; background is "
+                f"{state}. Omitting it defaults background to true, "
+                f"producing a background fork with a narrowed tool set and "
+                f"edits applied outside /rewind checkpoints, with no error "
+                f"anywhere."
+            )
 
     return violations
 
