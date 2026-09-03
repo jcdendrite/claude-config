@@ -859,6 +859,10 @@ _lib_tool_argv_from_subcmd() {
 # below, the sole caller, which flattens both arrays across the call
 # boundary via "$@" plus a "--" sentinel, the same by-value idiom
 # want_subcmd uses at its own call boundary a few lines down.
+# Invariant this sentinel depends on: neither WORDS nor PREFIX may contain
+# the literal string "--". WORDS-side: _lib_tool_argv_from_subcmd strips
+# every "-*"-shaped word, including a bare "--", before it reaches
+# got_subcmd. PREFIX-side: want_subcmd is always a hardcoded literal.
 # No local -n/declare -n: this repo targets macOS system bash 3.2.
 _lib_words_start_with() {
   local -a words=()

@@ -2766,8 +2766,8 @@ class TestReviewTrace:
     def test_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
-        branch_filter must select by that per-event value, not the session's first
-        record's branch (the 53-session class from row 4 of the GH-482 plan)."""
+        branch_filter must select by that per-event value, not the session's
+        first record's branch."""
         records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",

@@ -1623,6 +1623,26 @@ def _words_start_with(words: tuple[str, ...], prefix: tuple[str, ...]) -> int:
     return result.returncode
 
 
+class TestWordsStartWith:
+    """Direct unit tests of _lib_words_start_with through the harness above,
+    unit-speed and bypassing _lib_command_invokes_tool_subcmd's own
+    fragment-parsing machinery."""
+
+    def test_full_length_exact_match(self) -> None:
+        assert _words_start_with(("pr", "merge"), ("pr", "merge")) == 0
+
+    def test_mismatch_at_interior_index(self) -> None:
+        """Mismatch at a non-zero index, not index 0 -- exercises the loop
+        continuing past an already-matched leading word before it finds
+        the disagreement."""
+        assert _words_start_with(("pr", "merge", "291"), ("pr", "edit")) == 1
+
+    def test_empty_prefix_always_matches(self) -> None:
+        """An empty PREFIX gives the while loop nothing to disagree on, so
+        it returns success without ever comparing a word."""
+        assert _words_start_with(("pr", "merge"), ()) == 0
+
+
 class TestCommandInvokesToolSubcmd:
     def test_bare_match(self) -> None:
         assert _command_invokes_tool_subcmd("gh pr merge 291 --squash", "gh", "pr", "merge") == 0
@@ -1686,17 +1706,22 @@ class TestCommandInvokesToolSubcmd:
         assert _command_invokes_tool_subcmd("gh pr", "gh", "pr", "merge") == 1
 
     def test_literal_double_dash_in_words_misaligns_the_prefix_sentinel(self) -> None:
-        """_lib_words_start_with's caller flattens WORDS and PREFIX across
-        the call boundary with a bare `--` sentinel between them. A literal
-        `--` inside WORDS itself is indistinguishable from that sentinel, so
-        the scan stops at WORDS's own `--` instead of the real boundary,
-        truncating WORDS and shifting PREFIX -- a silent wrong-answer
-        failure mode (this call's true answer is a match: WORDS starts with
-        `foo`), not a crash. Not reachable today:
-        _lib_tool_argv_from_subcmd's `-*` flag branch consumes any literal
-        `--` in a real command before it reaches got_subcmd, and
-        want_subcmd is always a hardcoded literal with no `--` word."""
+        """A literal `--` inside WORDS collides with the caller's own `--`
+        sentinel, truncating WORDS and shifting PREFIX. This produces a
+        silent wrong answer rather than a crash: WORDS actually starts with
+        `foo`, but the collision misreports it as a mismatch. See
+        _lib_words_start_with's own header comment for why this is
+        unreachable via _lib_command_invokes_tool_subcmd today."""
         assert _words_start_with(("foo", "--", "bar"), ("foo",)) == 1
+
+    def test_literal_double_dash_in_a_real_gh_command_still_matches(self) -> None:
+        """End-to-end lock on the invariant the test above documents as
+        currently unreachable: _lib_tool_argv_from_subcmd strips a literal
+        `--` before it reaches got_subcmd, so it never collides with
+        _lib_words_start_with's own `--` sentinel. A future change to that
+        stripping that lets `--` through would regress this rather than
+        the isolated helper test."""
+        assert _command_invokes_tool_subcmd("gh pr merge -- 291", "gh", "pr", "merge") == 0
 
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(

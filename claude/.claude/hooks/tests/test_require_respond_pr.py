@@ -996,13 +996,13 @@ class TestRequireRespondPr:
 
 
 class TestRespondPrStructuralInvariants:
-    """GH-483's two acceptance-criteria tests. Neither is a behavioral
+    """Two structural-invariant tests. Neither is a behavioral
     hook-gate test like the classes above: both are source/doc scans,
     because the two invariants they pin have no runtime code path this
     hook (or any script) executes — see each test's own docstring."""
 
     def test_documented_reply_commands_all_carry_claude_code_attribution(self):
-        """GH-483 acceptance criterion 1: 'a comment posted through
+        """The requirement pinned by this test: 'a comment posted through
         /respond-pr carries the [Claude Code] prefix'. The whole gate
         exists to route writes into /respond-pr for that guarantee, but
         nothing enforces it in code — the attribution is a prose

@@ -135,13 +135,26 @@ def test_no_ticket_prefixed_identifier(source_file: Path) -> None:
 
 
 # --- Plan-phase-label detection ---------------------------------------------
-# Consecutive comment lines and consecutive docstring lines are joined into
-# single logical blocks, with whitespace collapsed, before the pattern is
-# applied -- a line-at-a-time regex misses a label split across a line
-# break (e.g. "GH-783 Phase" / "# 2's").
+# Consecutive comment lines are joined into a single logical block, with
+# whitespace collapsed, only when the prior line ends mid-qualifier (a bare
+# "Phase" or "Step" with no number yet). A line-at-a-time regex would miss a
+# label split across a line break (e.g. "GH-783 Phase" / "# 2's"). Joining
+# unconditionally would instead coincidentally match two unrelated adjacent
+# comments (a tracker-ID citation followed by an unrelated "Step N" mention).
+# Known gap, accepted rather than closed: a wrap point at the tracker-ID
+# boundary (e.g. "GH-905" / "# Phase 2 replaces the old flow") evades this
+# heuristic. That shape is syntactically identical to the false-positive
+# shape above (a bare tracker ID ending one line, a "Phase"/"Step" word
+# starting the next). Closing it would reopen the false positive this
+# heuristic exists to avoid. comment-discipline-reviewer remains the
+# backstop for this shape.
+# Docstring lines are joined unconditionally by a separate function below,
+# since a whole docstring is already one logical unit regardless of its
+# internal line breaks.
 _TRACKER_ID = r"[A-Z]{2,}-\d+"
 _PHASE_STEP_QUALIFIER_RE = re.compile(rf"\b{_TRACKER_ID}\s+(?:Phase|Step)\s+\d+\b", re.IGNORECASE)
 _DOCSTRING_RE = re.compile(r'"""(.*?)"""|\'\'\'(.*?)\'\'\'', re.DOTALL)
+_DANGLING_PHASE_STEP_QUALIFIER_RE = re.compile(r"\b(?:Phase|Step)$", re.IGNORECASE)
 
 
 def _joined_comment_blocks(content: str) -> list[str]:
@@ -150,6 +163,9 @@ def _joined_comment_blocks(content: str) -> list[str]:
     for line in content.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
+            if current and not _DANGLING_PHASE_STEP_QUALIFIER_RE.search(current[-1]):
+                blocks.append(" ".join(current))
+                current = []
             current.append(stripped.lstrip("#").strip())
         elif current:
             blocks.append(" ".join(current))
@@ -231,3 +247,110 @@ def test_bare_tracker_id_citation_is_not_flagged() -> None:
     blocks = _joined_comment_blocks(content)
     hits = [hit for block in blocks for hit in _PHASE_STEP_QUALIFIER_RE.findall(block)]
     assert not hits, "a bare tracker-ID citation with no phase/step qualifier must not be flagged"
+
+
+def test_adjacent_unrelated_comment_lines_are_not_joined_into_false_match() -> None:
+    """A bare tracker-ID citation immediately followed by an unrelated 'Step N'
+    mention on the next comment line must not be joined into a coincidental
+    phase/step qualifier match -- unlike a genuine wrapped label, neither line
+    ends mid-qualifier."""
+    content = "# Fixed in GH-901\n# Step 4 configures the retry timeout\n"
+    blocks = _joined_comment_blocks(content)
+    hits = [hit for block in blocks for hit in _PHASE_STEP_QUALIFIER_RE.findall(block)]
+    assert not hits, "two unrelated adjacent comments must not coincidentally form a phase/step qualifier"
+
+
+def test_id_boundary_wrap_is_an_accepted_gap_not_a_regression() -> None:
+    """A genuine wrapped label split right after the tracker ID (rather than
+    mid-qualifier) currently evades this detector. This is an accepted gap:
+    closing it would reintroduce the false positive the test above guards
+    against. comment-discipline-reviewer remains the backstop for this
+    shape."""
+    content = "# Recorded in GH-905\n# Phase 2 replaces the old flow\n"
+    blocks = _joined_comment_blocks(content)
+    hits = [hit for block in blocks for hit in _PHASE_STEP_QUALIFIER_RE.findall(block)]
+    assert not hits, "documents the accepted ID-boundary-wrap gap; a pass here means the gap still exists"
+
+
+# --- Duplicate top-level test-name detection ---------------------------------
+# A second top-level `def test_x` or `class TestX` in the same file silently
+# shadows the first under Python's last-definition-wins name-binding rule --
+# pytest then collects only the surviving definition, with no collection
+# error to signal the loss.
+_TOP_LEVEL_DEF_OR_CLASS_RE = re.compile(r"^(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _tracked_test_py_files_under_claude_or_plugins() -> list[Path]:
+    output = subprocess.run(
+        ["git", "ls-files", "-z", "--", "claude", "plugins"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    files = []
+    for rel in output.split("\0"):
+        if not rel:
+            continue
+        name = Path(rel).name
+        if name.startswith("test_") and name.endswith(".py"):
+            files.append(REPO_ROOT / rel)
+    return sorted(files)
+
+
+def _top_level_test_declaration_names(content: str) -> list[str]:
+    names = []
+    for line in content.splitlines():
+        if not (m := _TOP_LEVEL_DEF_OR_CLASS_RE.match(line)):
+            continue
+        name = m.group(1)
+        if name.startswith("test_") or name.startswith("Test"):
+            names.append(name)
+    return names
+
+
+_TEST_PY_FILES_UNDER_CLAUDE_OR_PLUGINS = _tracked_test_py_files_under_claude_or_plugins()
+_TEST_PY_FILE_IDS = [str(p.relative_to(REPO_ROOT)) for p in _TEST_PY_FILES_UNDER_CLAUDE_OR_PLUGINS]
+
+
+def test_test_py_corpus_under_claude_or_plugins_is_non_empty() -> None:
+    """Guard against a broken git-ls-files invocation silently collecting
+    zero files, which would make the check below vacuously pass."""
+    assert _TEST_PY_FILES_UNDER_CLAUDE_OR_PLUGINS, (
+        f"expected at least one tracked test_*.py file under claude/ or plugins/, found none under {REPO_ROOT}"
+    )
+
+
+@pytest.mark.parametrize("source_file", _TEST_PY_FILES_UNDER_CLAUDE_OR_PLUGINS, ids=_TEST_PY_FILE_IDS)
+def test_no_duplicate_top_level_test_name_within_a_file(source_file: Path) -> None:
+    content = source_file.read_text(encoding="utf-8", errors="ignore")
+    names = _top_level_test_declaration_names(content)
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    assert not duplicates, (
+        f"{source_file.relative_to(REPO_ROOT)} declares duplicate top-level test name(s) "
+        f"{duplicates} -- Python's last-definition-wins silently drops every earlier "
+        "definition and pytest collects only the survivor"
+    )
+
+
+def test_positive_control_duplicate_test_name_detector_matches_synthetic_violation() -> None:
+    content = "def test_x():\n    pass\n\n\ndef test_x():\n    pass\n"
+    names = _top_level_test_declaration_names(content)
+    assert sorted({name for name in names if names.count(name) > 1}) == ["test_x"]
+
+
+def test_positive_control_duplicate_class_name_detector_matches_synthetic_violation() -> None:
+    """Direct coverage of the class alternation branch, mirroring the def
+    control above. The negative control only proves class names extract
+    correctly, not that the duplicate-counting logic is exercised on them."""
+    content = "class TestFoo:\n    pass\n\n\nclass TestFoo:\n    pass\n"
+    names = _top_level_test_declaration_names(content)
+    assert sorted({name for name in names if names.count(name) > 1}) == ["TestFoo"]
+
+
+def test_negative_control_duplicate_test_name_detector_ignores_same_named_methods_in_different_classes() -> None:
+    """A method named test_x inside two different classes is not a top-level
+    collision -- each lives in its own class namespace, not the module's."""
+    content = (
+        "class TestFoo:\n    def test_x(self):\n        pass\n\n"
+        "class TestBar:\n    def test_x(self):\n        pass\n"
+    )
+    names = _top_level_test_declaration_names(content)
+    assert names == ["TestFoo", "TestBar"]
