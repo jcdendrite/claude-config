@@ -21,7 +21,8 @@
 # Input (environment):
 #   CI_CHECKS_GH_TOKEN  -- optional; used only for the two `gh pr checks`
 #                           calls, since fine-grained PATs 403 on the Checks
-#                           API. Unset leaves behavior unchanged.
+#                           API. Unset leaves behavior unchanged. See
+#                           docs/scripts.md for provisioning guidance.
 #
 # Usage: ci-watch.sh <pr-number>
 
@@ -91,7 +92,7 @@ if ! SNAPSHOT_JSON=$(gh_with_checks_token pr checks "$PR_NUMBER" \
   REASON=$(tr '\n' ' ' < "$STDERR_FILE")
   HINT=""
   if [[ -z "${CI_CHECKS_GH_TOKEN:-}" ]]; then
-    HINT=" (if this is a 403: fine-grained PATs cannot reach the Checks API at all, and no CI_CHECKS_GH_TOKEN override was set for this call)"
+    HINT=" (if this is a 403: fine-grained PATs cannot reach the Checks API at all, and no CI_CHECKS_GH_TOKEN override was set for this call; see docs/scripts.md for how to provision one)"
   fi
   echo "CI_RESULT: error gh pr checks --json failed after --watch resolved: ${REASON:-unknown gh failure}${HINT}"
   exit 1
