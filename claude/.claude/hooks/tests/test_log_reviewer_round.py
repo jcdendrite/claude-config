@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -148,26 +149,68 @@ def _launch_hook_with_path_prefix(
     payload: dict, cwd: Path, home: Path, path_prefix: Path
 ) -> subprocess.Popen:
     """Like the plain hook launches elsewhere in this file, but prepends
-    path_prefix to PATH -- for racing against a PATH-shimmed command (see
-    _write_mkdir_barrier_shim). Writes the full payload to stdin and closes
-    it immediately, then returns without waiting for exit, so N launches
-    can be in flight concurrently."""
+    path_prefix to PATH, for racing against a PATH-shimmed command (see
+    _write_mkdir_barrier_shim). Writes the payload into a temp file, flushes
+    and rewinds it, then hands that file to Popen as stdin, returning
+    without waiting for exit so N launches can be in flight concurrently.
+    The write/flush/seek(0) must happen before Popen() is called, not
+    after, because Popen dup2's the fd at construction time and shares the
+    parent's file offset."""
     env = {**os.environ, "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
     env["PATH"] = f"{path_prefix}:{env['PATH']}"
-    proc = subprocess.Popen(
-        [str(LOG_REVIEWER_ROUND_HOOK)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-        env=env,
-    )
-    assert proc.stdin is not None
-    proc.stdin.write(json.dumps(payload))
-    proc.stdin.close()
+    # TemporaryFile, not PIPE: on CPython 3.12 (CI's pinned version), closed-PIPE
+    # stdin makes Popen.communicate() raise ValueError, and file-backed stdin
+    # avoids it by leaving Popen.stdin None.
+    payload_stdin = tempfile.TemporaryFile("w+")
+    payload_stdin.write(json.dumps(payload))
+    payload_stdin.flush()
+    payload_stdin.seek(0)
+    try:
+        proc = subprocess.Popen(
+            [str(LOG_REVIEWER_ROUND_HOOK)],
+            stdin=payload_stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            env=env,
+        )
+    finally:
+        payload_stdin.close()
     return proc
+
+
+class TestLaunchHookWithPathPrefixStdinContract:
+    """Pins the file-backed stdin invariant _launch_hook_with_path_prefix
+    relies on. It is isolated from the hook script, git repo setup, and
+    test_n_concurrent_dispatches_at_same_state_produce_exactly_one_entry
+    (TestLogReviewerRoundConcurrency), which is flaky under N-way
+    concurrency. It guarantees that a TemporaryFile-backed stdin, flushed
+    and rewound before Popen(), lets communicate() run without raising and
+    delivers the full payload to the child."""
+
+    def test_communicate_does_not_raise_and_child_reads_full_payload(self):
+        payload = "hello from a file-backed stdin\n"
+        stdin_file = tempfile.TemporaryFile("w+")
+        stdin_file.write(payload)
+        stdin_file.flush()
+        stdin_file.seek(0)
+        try:
+            proc = subprocess.Popen(
+                ["cat"],
+                stdin=stdin_file,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        finally:
+            stdin_file.close()
+
+        stdout, stderr = proc.communicate()
+
+        assert proc.returncode == 0, f"cat failed: {stderr}"
+        assert stdout == payload
 
 
 class TestLogReviewerRoundStateAppend:
