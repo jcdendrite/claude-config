@@ -194,6 +194,15 @@ def _is_skill_md_change(path: str) -> bool:
     return _is_under(path, SKILLS_DIR) and Path(path).name == "SKILL.md"
 
 
+# test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR) scans every
+# REFERENCES.md and ROUTING.md sibling of a SKILL.md, not just SKILL.md itself.
+# This set must stay in sync with _citation_sources_for_skill_md's sibling
+# names in test_skills.py — a shared constant would be warranted if a third
+# auxiliary filename type is ever added.
+def _is_skill_auxiliary_md_change(path: str) -> bool:
+    return _is_under(path, SKILLS_DIR) and Path(path).name in {"REFERENCES.md", "ROUTING.md"}
+
+
 def _is_hooks_or_skills_change(path: str) -> bool:
     return _is_under(path, HOOKS_DIR) or _is_skill_md_change(path)
 
@@ -249,6 +258,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, SCRIPTS_DIR), (SCRIPTS_TESTS_DIR,)),
     (_is_skill_md_change, (SKILLS_TESTS_DIR,)),
+    (_is_skill_auxiliary_md_change, (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, SKILLS_TESTS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
     (lambda p: _is_under(p, PLANS_DIR), ()),

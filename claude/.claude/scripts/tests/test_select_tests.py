@@ -95,11 +95,26 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB}
 
-    def test_non_skill_md_file_under_skills_is_unmatched_and_falls_open(self):
-        """Only SKILL.md changes trigger the skills domain rule -- a sibling
-        file (REFERENCES.md, ROUTING.md) under the same skill directory does
-        not, and falls open instead."""
+    def test_skill_auxiliary_md_change_selects_skills_tests(self):
+        """test_skill_citations_resolve_to_real_headings (SKILLS_TESTS_DIR)
+        scans every REFERENCES.md/ROUTING.md sibling of a SKILL.md, not just
+        SKILL.md itself -- a REFERENCES.md-only diff must domain-select
+        rather than fall open to the full suite."""
         result = _mod.select_pytest_targets(["claude/.claude/skills/test-conventions/REFERENCES.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_skill_routing_md_change_selects_skills_tests(self):
+        """Same rule as the REFERENCES.md case above, for the other
+        auxiliary filename _is_skill_auxiliary_md_change matches."""
+        result = _mod.select_pytest_targets(["claude/.claude/skills/plan-review/ROUTING.md"])
+        assert result.is_full_suite is False
+        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+
+    def test_non_skill_auxiliary_file_under_skills_is_unmatched_and_falls_open(self):
+        """A skill-directory file that is neither SKILL.md, REFERENCES.md,
+        nor ROUTING.md matches no skills domain rule and falls open."""
+        result = _mod.select_pytest_targets(["claude/.claude/skills/test-conventions/scratch.md"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
