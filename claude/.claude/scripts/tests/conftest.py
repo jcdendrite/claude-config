@@ -48,9 +48,13 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 # gh-credential env vars that must never leak from a contributor's real
 # shell into a test's PATH-shimmed subprocess (see _base_test_env).
+# NODE_AUTH_TOKEN is an npm-registry variable, not a gh one, but a container
+# that provisions a classic PAT exports it carrying that identical secret,
+# so it needs the same scrubbing.
 _SENSITIVE_ENV_VARS = frozenset({
     "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
     "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
+    "CI_CHECKS_GH_TOKEN", "NODE_AUTH_TOKEN",
 })
 
 
