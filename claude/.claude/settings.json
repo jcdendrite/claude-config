@@ -67,6 +67,9 @@
     ]
   },
   "model": "sonnet",
+  "theme": "dark",
+  "tui": "fullscreen",
+  "agentPushNotifEnabled": true,
   "disableArtifact": true,
   "disableWorkflows": true,
   "skillOverrides": {
