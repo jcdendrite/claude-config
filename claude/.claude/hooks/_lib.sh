@@ -1147,38 +1147,25 @@ _lib_valid_session_id_component() {
 }
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
-# Returns 0 (true) iff $HOME/.claude/MARKER_DIR_NAME/SESSION_ID holds the PID
-# of a live process — that is, the skill which writes this marker is running
-# right now, in this session. Returns 1 in every other case, and evicts the
-# marker as an orphan when it exists but its stored PID is dead or unreadable,
-# so a session that died before its cleanup step cannot wedge a gate open.
-#
-# Session-id validation lives here rather than at each call site, which makes
-# "never build a filesystem path out of an unvalidated session id" a property
-# of this function instead of something every caller has to remember. An empty
-# or path-escaping id returns 1 having touched the filesystem not at all.
-#
-# This function reports only whether the marker is live; it takes no position
-# on the tool call itself. What a 1 means is the caller's to decide, and it
-# differs by gate shape: where the marker grants an exception to a standing
-# deny, a 1 withholds the exception and the deny stands; where the gate has
-# further checks below, a 1 just means those checks decide instead.
-#
-# Deliberately tree-agnostic, and narrower than it looks. The marker path holds
-# a session id and no repo hash, so a live marker releases its gate for every
-# repo and worktree the session touches while the owning skill runs — unlike
-# the completion markers, which _marker_lib_repo_hash binds to one tree. That
-# is the intended reading of "a review is running in THIS process right now".
-#
-# The weak part is the liveness test rather than the keying. The stored PID is
-# the session's, and a session outlives any one skill invocation, so the bypass
-# outlasts what it was scoped to in two ways: a skill that halts between its
-# activate and deactivate steps leaves the gate released until the process
-# exits, and a tree switch inside the window carries the release across. Both
-# predate this function's extraction. Bounding the marker's age would cover
-# both — require-routing-read.sh already gates a sibling marker that way, and
-# session-marker-dashboard.sh already reports these as stale past an hour with
-# no gate acting on it. Repo-keying the path would cover only the second.
+# - Returns 0 iff $HOME/.claude/MARKER_DIR_NAME/SESSION_ID holds a live PID
+#   within the 60-minute idle window; evicts the marker (dead/unreadable
+#   PID, or aged-out mtime) and returns 1 otherwise, so a session that
+#   never cleaned up can't wedge a gate open indefinitely.
+# - Session-id validation lives here so callers can't forget it. An empty
+#   or path-escaping id returns 1 having touched the filesystem not at all.
+# - Reports only liveness, not a verdict on the tool call: a 1 withholds a
+#   standing exception where the marker is the sole gate, or lets further
+#   checks below decide where the gate has more of them.
+# - Marker path has no repo hash, so a live marker releases its gate for
+#   every tree the session touches while the skill runs, unlike hash-bound
+#   completion markers.
+# - Side-effect-free on mtime regardless of outcome. The refresh that
+#   slides the idle window forward lives in
+#   _lib_active_bypass_marker_live_and_touch below, so a status-only read
+#   can never keep a marker artificially fresh.
+# See docs/hooks.md's "Gate deadlock recovery" section for the tree-switching
+# gap this leaves open and why 60 minutes matches
+# session-marker-dashboard.sh's own staleness threshold.
 #
 # Usage: if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then exit 0; fi
 _lib_active_bypass_marker_live() {
@@ -1209,11 +1196,50 @@ _lib_active_bypass_marker_live() {
   # caller would then abort mid-gate-check rather than fall through to the
   # eviction below. No caller sets `-e` today — this keeps that from mattering.
   stored_pid=$(cat "$marker" 2>/dev/null | tr -d '[:space:]') || true
-  if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null; then
+  # `find -mmin -60` mirrors require-routing-read.sh's own freshness idiom.
+  # This is not a hard age cap: the touch-on-use wrapper below slides this
+  # same 60-minute window forward on every gating call that finds the marker
+  # live.
+  if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null \
+    && [ -n "$(find "$marker" -mmin -60 2>/dev/null)" ]; then
     return 0
   fi
   rm -f "$marker" 2>/dev/null
   return 1
+}
+
+# _lib_active_bypass_marker_live_and_touch MARKER_DIR_NAME SESSION_ID
+# - Same liveness verdict as _lib_active_bypass_marker_live, but on a live
+#   marker also refreshes its mtime, sliding the 60-minute idle window
+#   forward instead of letting it expire mid-run.
+# - Callers, each refreshing on its own gate-check cadence rather than
+#   narrowly on the owning skill's own activity — see docs/hooks.md's "Gate
+#   deadlock recovery" section for what triggers each hook's check:
+#   - require-plan-review.sh, require-ready-for-review.sh,
+#     require-respond-pr.sh, require-memory-skill.sh, on their own gate check.
+#   - nudge-handoff-near-context-cap.sh, for its .handoff-active.d label
+#     only, inside its otherwise status-only marker-family enumeration.
+# - Every other status-only reader (marker.sh status's
+#   _status_report_active_bypass; nudge-handoff-near-context-cap.sh's other
+#   four enumerated labels) must keep calling the unrefreshing predicate
+#   directly — see its own docstring for why the refresh can't live there.
+#
+# Usage: if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then exit 0; fi
+_lib_active_bypass_marker_live_and_touch() {
+  [ "$#" -eq 2 ] || return 1
+  local marker_dir_name="$1" session_id="$2"
+  _lib_active_bypass_marker_live "$marker_dir_name" "$session_id" || return 1
+  local config_dir
+  config_dir=$(_lib_config_dir) || return 0
+  # `-c` (no-create): a concurrent eviction (clear-stale, deactivate, another
+  # gate hit) can remove the marker between the liveness check above and this
+  # touch. Without -c, a bare `touch` would recreate it as an empty file with
+  # no PID -- resurrecting a marker this call didn't itself find live. Fail
+  # silent, matching the eviction idiom in the predicate above: a touch
+  # failure must not turn a verdict this call already committed to into a
+  # hook-process abort.
+  touch -c "$config_dir/$marker_dir_name/$session_id" 2>/dev/null || true
+  return 0
 }
 
 # _lib_first_live_linked_worktree REPO_ROOT

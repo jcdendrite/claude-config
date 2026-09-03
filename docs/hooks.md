@@ -106,7 +106,22 @@ With `jq` unavailable (missing from `PATH`, failing, or hung past its 5s timeout
 
 `check-claude-md-length.sh`, `check-skill-length.sh`, `require-code-review.sh`, `block-gh-pr-merge.sh`, `deny-escaped-backticks-in-pr-body.sh`, and `deny-invisible-commit-content.sh` add `sed`/`tr` as further hard-block dependencies beyond `jq`; `require-respond-pr.sh` (GH-801) adds `awk`. Each denies (rather than silently allowing) when its own `sed`/`tr`/`awk` fork fails — missing, killed, or erroring — so a deadlock traced to one of those tools rather than `jq` blocks only that hook's own gated surface, not every Bash call, and recovers the same way: the `!` shell escape to install or repair the missing tool. See each hook's own header comment for the exact status-2 deny message it emits.
 
-Active-bypass markers from sessions that crash before cleanup evict themselves automatically: the hooks check `kill -0` against the stored PID and evict dead entries on the next gate hit. The remaining case is a *live session* whose review skill cannot execute — harness-blocked, failing to load, or unable to produce a completion marker due to a tool error.
+Active-bypass markers from sessions that crash before cleanup evict themselves automatically: the hooks check `kill -0` against the stored PID and evict dead entries on the next gate hit. They also evict a marker whose mtime has aged more than 60 minutes past its last gating call even when the PID is still alive, bounding the case of a skill that halts between its activate and deactivate steps without the session process itself dying. This cutoff matches `session-marker-dashboard.sh`'s own staleness threshold (`age_min -ge 60`), so the dashboard's "stale" label and the gate's own eviction agree on the same marker.
+
+The marker path carries no repo hash, so a live marker releases its gate for every tree the session touches while the skill runs, not only the tree where it was activated. Switching trees inside the idle window carries the release across trees with it, since the window bounds how long the marker has gone idle, not which tree it applies to. This gap predates the touch-on-use refresh below and is unchanged by it.
+
+The four gate hooks that grant the bypass (`require-plan-review.sh`, `require-ready-for-review.sh`, `require-respond-pr.sh`, `require-memory-skill.sh`) refresh a marker's mtime on every gate check that reaches the marker, so this 60-minute window is a touch-on-use idle window, not a hard cap, for as long as the hook's own trigger condition keeps firing. What keeps a given hook's checks firing is the hook's own dispatch condition, not narrowly the owning skill's own progress, and it differs per hook:
+
+- `require-respond-pr.sh` refreshes on every Bash tool call in the session, not only ones touching PR comments.
+- `require-plan-review.sh` refreshes on any Write/Edit/MultiEdit to a non-plan file while a plan is outstanding, not only writes belonging to the review itself.
+- `require-ready-for-review.sh` refreshes only on a command shape matching `git push`, `gh pr ready`, or `gh pr create`.
+- `require-memory-skill.sh` refreshes only on a Write/Edit/MultiEdit targeting a memory-file path.
+
+A session that goes fully idle for 60+ minutes, with no tool call matching any of the four hooks' trigger conditions, loses the bypass. For `require-respond-pr.sh`, and to a lesser extent `require-plan-review.sh`, the trigger condition is broad enough that ordinary session activity unrelated to the halted skill keeps the marker alive for the practical duration of the session.
+
+`nudge-handoff-near-context-cap.sh` refreshes only its own `.handoff-active.d` label, on every fire, because the hook firing at all is itself evidence the session is still taking turns — the same signal a long multi-turn `/handoff` write needs to avoid expiring mid-run. Every other marker family it enumerates, and `marker.sh status`'s own enumeration, stays on the unrefreshing base predicate, so reading status can never itself extend a marker's life.
+
+The remaining case is a *live session* whose review skill cannot execute — harness-blocked, failing to load, or unable to produce a completion marker due to a tool error.
 
 For three gates, the gating condition is removable via Bash without destroying work:
 
