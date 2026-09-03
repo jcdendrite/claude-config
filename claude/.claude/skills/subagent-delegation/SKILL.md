@@ -74,11 +74,10 @@ entries needed.
 
 ### Heavy command output — run inline
 
-Run check commands (test suites, lint, typecheck, build) directly via the
-parent's Bash tool — never delegate them. Bash output truncates at 30 KB,
-well above typical check-suite size, so an inline heavy run costs the
-parent only the ~2 KB failure tail, not the full suite output, with no
-follow-up read needed.
+Run checks (tests, lint, typecheck, build) via the parent's Bash tool — never delegate. Harness
+output truncates past a threshold, so the returned preview tends to miss the failure. See
+`subagent-delegation/REFERENCES.md` §
+"Heavy command output — harness truncation and check-suite sizes" for the threshold and sizes.
 
 - **Enumerate check commands and run them one at a time** (test, then lint,
   then typecheck) or as a single chained command when they share a working
@@ -133,8 +132,9 @@ Explore/general-purpose split as Codebase discovery above. Pass an explicit
 The parent reasons over the returned diagnosis, designs the fix, applies
 the edit, and re-runs the check inline.
 
-See `root-cause-analysis` for the diagnosis discipline (establish the
-full symptom before forming a hypothesis).
+See `root-cause-analysis` for the diagnosis discipline (establish the full symptom
+before forming a hypothesis). A CI-failure diagnosis dispatches the whole skill instead
+— see `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one".
 
 ### Implementation work → `code-writer`
 

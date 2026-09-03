@@ -39,7 +39,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -2208,6 +2210,441 @@ def test_blank_frontmatter_excludes_metadata_from_the_scan() -> None:
     document = "---\nname: demo\nhomepage: https://example.test\n---\n\nBody prose.\n"
     assert not _URL_RE.search(_blank_frontmatter(document))
     assert "Body prose." in _blank_frontmatter(document)
+
+
+# --- Cross-reference integrity: `target` § "Heading" citations resolve ---
+#
+# A citation like `subagent-delegation/SKILL.md` § "Heavy command output" lets
+# one skill point at a section of another (or of a REFERENCES.md/doc) instead
+# of restating it — CLAUDE.md's single-source-of-truth rule applied to skill
+# prose. Nothing else in the repo checks that the target file still exists or
+# that its heading still reads exactly as quoted, so a rename on either side
+# leaves a stale pointer with no reader-visible symptom until someone follows
+# it. This section resolves every such citation in the skill tree against a
+# real file and a real heading in it.
+
+# The backticked target must be adjacent to `§`, with only whitespace (which
+# may include a single newline, so hard-wrapped prose still matches) between
+# the closing backtick and the section mark, and between the mark and the
+# opening quote.
+_CITATION_WITH_TARGET_RE = re.compile(r'`(?P<target>[^`\n]+)`\s+§\s+"(?P<heading>[^"\n]+)"')
+# A bare `§ "Heading"` with no adjacent backticked target resolves against the
+# citing file's own headings. Every with-target match above also satisfies
+# this pattern (the `§ "..."` tail is a substring of it), so callers must
+# discard a bare match whose span falls inside a with-target match's span —
+# see _extract_citations.
+_BARE_CITATION_RE = re.compile(r'§\s+"(?P<heading>[^"\n]+)"')
+
+# Known limit, deliberately not closed: this extractor can't tell a live
+# citation from an illustrative example of the citation grammar, so an
+# example inside a scanned SKILL.md/REFERENCES.md will false-fail. Currently
+# safe only because the grammar's own explanation lives outside the scanned
+# corpus (`.claude/rules/skill-and-agent-self-review.md`).
+
+
+class _Citation(NamedTuple):
+    line: int
+    target: str | None  # None means "resolve against the citing file itself"
+    heading: str
+
+
+def _extract_citations(markdown_text: str) -> list[_Citation]:
+    """Every `` `target` § "Heading" `` (or bare `§ "Heading"`) citation in a
+    markdown document.
+
+    Excludes frontmatter (`_blank_frontmatter`) and any citation whose match
+    starts on a line inside a *closed* fenced code block
+    (`_closed_fence_line_indices`) — deliberately not `_blank_code_regions`,
+    which blanks inline code spans and would blank the citation's own target.
+    """
+    prose = _blank_frontmatter(markdown_text)
+    lines = prose.split("\n")
+    fenced_lines = _closed_fence_line_indices(lines)
+
+    def _lineno(start: int) -> int:
+        return prose.count("\n", 0, start) + 1
+
+    citations: list[_Citation] = []
+    consumed_spans: list[tuple[int, int]] = []
+
+    for match in _CITATION_WITH_TARGET_RE.finditer(prose):
+        consumed_spans.append(match.span())
+        lineno = _lineno(match.start())
+        if (lineno - 1) in fenced_lines:
+            continue
+        citations.append(_Citation(lineno, match.group("target"), match.group("heading")))
+
+    for match in _BARE_CITATION_RE.finditer(prose):
+        if any(start <= match.start() < end for start, end in consumed_spans):
+            continue
+        lineno = _lineno(match.start())
+        if (lineno - 1) in fenced_lines:
+            continue
+        citations.append(_Citation(lineno, None, match.group("heading")))
+
+    return citations
+
+
+_HEADING_LINE_RE = re.compile(r"^#{1,6}\s+.+$")
+_HEADING_STRIP_CHARS_RE = re.compile(r"[`*_]")
+
+
+def _normalize_heading(text: str) -> str:
+    """Normalize a heading for citation comparison.
+
+    Strips leading/trailing `#`, strips every backtick/`*`/`_` character
+    anywhere in the text (so a heading containing inline code or emphasis is
+    citable in plain text), collapses whitespace runs, then strips the ends.
+    Both sides of a comparison run through this before the exact-equality
+    check, so `### Debug-investigation probe → \\`general-purpose\\` or
+    \\`Explore\\`` is citable as "Debug-investigation probe → general-purpose
+    or Explore".
+    """
+    text = text.strip("#")
+    text = _HEADING_STRIP_CHARS_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _heading_texts(markdown_text: str) -> set[str]:
+    """Every normalized ATX heading in a markdown document."""
+    return {
+        _normalize_heading(line)
+        for line in markdown_text.split("\n")
+        if _HEADING_LINE_RE.match(line)
+    }
+
+
+def _resolve_citation_target(
+    target: str | None,
+    *,
+    citing_file: Path,
+    repo_root: Path,
+    skill_md_files: Callable[[], list[Path]] = _all_skill_md_files,
+) -> Path | None:
+    """Resolve a citation's target to a real file, or None if unresolvable.
+
+    Resolution order: (1) a repo-root-relative path that exists; (2)
+    `<skill-dir>/<file>` under any of `skill_md_files()`'s three roots; (3) a
+    bare filename with no `/`, as a same-directory sibling of the citing
+    file. `target is None` (a bare `§ "..."` citation) always resolves to
+    the citing file itself. A candidate that exists but is a directory does
+    not count as resolved — a directory has no headings to satisfy the
+    citation.
+
+    `skill_md_files` defaults to the real, repo-wide `_all_skill_md_files`
+    but is overridable so a `tmp_path`-rooted test can exercise the
+    cross-skill-directory branch without touching the real repo tree.
+    """
+    if target is None:
+        return citing_file
+
+    root_relative = repo_root / target
+    if root_relative.is_file():
+        return root_relative
+
+    if "/" in target:
+        skill_name, filename = target.split("/", 1)
+        for skill_md_path in skill_md_files():
+            if skill_md_path.parent.name == skill_name:
+                candidate = skill_md_path.parent / filename
+                if candidate.is_file():
+                    return candidate
+    else:
+        same_dir_candidate = citing_file.parent / target
+        if same_dir_candidate.is_file():
+            return same_dir_candidate
+
+    return None
+
+
+def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
+    """A SKILL.md plus its REFERENCES.md/ROUTING.md siblings, if present —
+    the two co-located auxiliary files `.claude/rules/skill-and-agent-self-review.md`
+    already names."""
+    sources = [skill_md_path]
+    # This set must stay in sync with select-tests.py's
+    # _is_skill_auxiliary_md_change — a shared constant would be warranted
+    # if a third auxiliary filename type is ever added.
+    for sibling_name in ("REFERENCES.md", "ROUTING.md"):
+        sibling = skill_md_path.parent / sibling_name
+        if sibling.exists():
+            sources.append(sibling)
+    return sources
+
+
+def _citation_report(skill_md_paths: Iterable[Path], *, repo_root: Path) -> list[str]:
+    """Glob (expand each SKILL.md into itself plus its auxiliary siblings) →
+    extract → resolve → aggregate → report, for a given set of SKILL.md
+    paths. Factored out from test_skill_citations_resolve_to_real_headings so
+    a synthetic-corpus test can drive the exact same pipeline without
+    depending on the real repo tree.
+    """
+    violations: list[str] = []
+    for skill_md_path in skill_md_paths:
+        for source_path in _citation_sources_for_skill_md(skill_md_path):
+            text = source_path.read_text()
+            relative_source = source_path.relative_to(repo_root)
+            for citation in _extract_citations(text):
+                resolved = _resolve_citation_target(
+                    citation.target, citing_file=source_path, repo_root=repo_root
+                )
+                if resolved is None:
+                    violations.append(
+                        f"{relative_source}:{citation.line} -> "
+                        f"unresolvable target {citation.target!r}"
+                    )
+                    continue
+                if _normalize_heading(citation.heading) not in _heading_texts(resolved.read_text()):
+                    violations.append(
+                        f"{relative_source}:{citation.line} -> target "
+                        f"{citation.target!r} resolved to "
+                        f"{resolved.relative_to(repo_root)} but it has no heading "
+                        f"matching {citation.heading!r}"
+                    )
+    return violations
+
+
+def test_skill_citations_resolve_to_real_headings() -> None:
+    """Every `` `target` § "Heading" `` citation in the skill tree resolves to
+    a real file and an exact heading in it.
+
+    Scanned corpus: every SKILL.md (`_all_skill_md_files`) plus every
+    REFERENCES.md/ROUTING.md sibling in those same skill directories —
+    widened past SKILL.md alone because a stale citation this test guards
+    against lives in review-permissions/REFERENCES.md.
+
+    Reports every violation at once rather than failing on the first, so a
+    contributor fixes the whole set in one pass — same convention as
+    test_skill_bodies_carry_no_citation_urls above.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    violations = _citation_report(_all_skill_md_files(), repo_root=repo_root)
+
+    assert not violations, (
+        "Skill-tree citations (`target` § \"Heading\") must resolve to a real "
+        "file and an exact heading in it — a rename on either side leaves a "
+        "stale pointer with no reader-visible symptom.\n"
+        + "\n".join(f"  {violation}" for violation in violations)
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_heading", "normalized"),
+    [
+        pytest.param("## Plain Heading", "Plain Heading", id="strips-leading-hashes"),
+        pytest.param(
+            "### Debug-investigation probe → `general-purpose` or `Explore`",
+            "Debug-investigation probe → general-purpose or Explore",
+            id="strips-backticks-mid-heading",
+        ),
+        pytest.param("## *Emphasized* heading", "Emphasized heading", id="strips-asterisk-emphasis"),
+        pytest.param("## _Emphasized_ heading", "Emphasized heading", id="strips-underscore-emphasis"),
+        pytest.param("##   Extra   spaces  ", "Extra spaces", id="collapses-whitespace-runs"),
+    ],
+)
+def test_normalize_heading(raw_heading: str, normalized: str) -> None:
+    """The real heading at subagent-delegation/SKILL.md:120 pins the
+    mid-heading-backtick case; the rest are synthetic but exercise the same
+    normalization independently."""
+    assert _normalize_heading(raw_heading) == normalized
+
+
+def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
+    for relative_path, content in files.items():
+        file_path = tmp_path / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content)
+
+
+@pytest.mark.parametrize(
+    ("skill_files", "expected_violation_count"),
+    [
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n"
+                    "```\n"
+                    'Fenced: `example-skill/SKILL.md` § "Nonexistent Heading"\n'
+                    "```\n"
+                ),
+            },
+            0,
+            # Would be 1 if the closed-fence exclusion broke — the fenced
+            # citation's heading does not exist.
+            id="citation-inside-closed-fence-not-scanned",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n"
+                    'Wrapped: `example-skill/SKILL.md`\n§ "Nonexistent Heading"\n'
+                ),
+            },
+            1,
+            # Would be 0 if \s+ didn't span the newline — the bad citation
+            # would never be extracted at all.
+            id="newline-wrapped-citation-is-matched",
+        ),
+        pytest.param(
+            {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'},
+            1,
+            id="unresolvable-target-fails",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": "## Real Heading\n",
+                "example-skill/ROUTING.md": (
+                    "## Routing\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'
+                ),
+            },
+            # Proves _citation_sources_for_skill_md actually walks into
+            # ROUTING.md — would be 0 if that sibling were never scanned.
+            1,
+            id="routing-md-sibling-is-scanned",
+        ),
+        pytest.param(
+            {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Real Heading"\n'},
+            0,
+            id="bare-citation-with-no-adjacent-target-resolves-same-file",
+        ),
+        pytest.param(
+            {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Nonexistent Heading"\n'},
+            1,
+            id="bare-citation-same-file-missing-heading-fails",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Home\n\n" 'Citation: `sibling.md` § "Config: "quoted" value"\n'
+                ),
+                "example-skill/sibling.md": '## Config: "quoted" value\n',
+            },
+            # The `[^"\n]+` heading class truncates at the first embedded
+            # quote, so the citation must fail loudly rather than
+            # prefix-match the real (longer) heading.
+            1,
+            id="heading-with-literal-quote-truncates-and-fails",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "---\nname: example-skill\ndescription: |\n"
+                    '  See `sibling.md` § "Nonexistent Heading" for details.\n'
+                    "---\n\n## Real Heading\n"
+                ),
+            },
+            # Would be 1 if frontmatter weren't blanked before extraction —
+            # pins _blank_frontmatter's exclusion for this extractor.
+            0,
+            id="citation-inside-frontmatter-is-excluded",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n" 'Citation: `sibling.md` § "Duplicate Heading"\n'
+                ),
+                "example-skill/sibling.md": "## Duplicate Heading\n\nFirst copy.\n\n## Duplicate Heading\n",
+            },
+            # Would be 1 if _heading_texts started requiring headings to be
+            # unique — today it returns a set, so two identical normalized
+            # headings in the target file still resolve.
+            0,
+            id="duplicate-headings-in-target-still-resolve",
+        ),
+    ],
+)
+def test_citation_report_cases(
+    tmp_path: Path, skill_files: dict[str, str], expected_violation_count: int
+) -> None:
+    _write_skill_files(tmp_path, skill_files)
+    violations = _citation_report([tmp_path / "example-skill" / "SKILL.md"], repo_root=tmp_path)
+    assert len(violations) == expected_violation_count, violations
+
+
+def test_citation_report_target_resolving_to_a_directory_fails(tmp_path: Path) -> None:
+    """A citation target that resolves to a directory, not a file, must fail
+    to resolve rather than raise when the resolver reads it for headings."""
+    skill_dir = tmp_path / "example-skill"
+    skill_dir.mkdir()
+    (skill_dir / "not-a-file").mkdir()
+    (skill_dir / "SKILL.md").write_text("## Home\n\n" 'Citation: `not-a-file` § "Whatever"\n')
+
+    violations = _citation_report([skill_dir / "SKILL.md"], repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert "not-a-file" in violations[0]
+
+
+def test_resolve_citation_target_cross_skill_directory_succeeds(tmp_path: Path) -> None:
+    """`skill-name/file` resolves via the injected `skill_md_files` seam when
+    a same-named skill directory holds the file, without touching the real
+    repo tree — this is what `_all_skill_md_files()` would do in production.
+
+    The real skill directory lives outside `repo_root` so the repo-relative
+    tier (1) cannot resolve it first — only the cross-skill-directory tier
+    (2), driven by the injected seam, can.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other_skill_md = tmp_path / "elsewhere" / "other-skill" / "SKILL.md"
+    other_skill_md.parent.mkdir(parents=True)
+    other_skill_md.write_text("## Home\n")
+    (other_skill_md.parent / "REFERENCES.md").write_text("## Target Heading\n")
+
+    resolved = _resolve_citation_target(
+        "other-skill/REFERENCES.md",
+        citing_file=repo_root / "example-skill" / "SKILL.md",
+        repo_root=repo_root,
+        skill_md_files=lambda: [other_skill_md],
+    )
+
+    assert resolved == other_skill_md.parent / "REFERENCES.md"
+
+
+def test_resolve_citation_target_cross_skill_directory_fails_on_unknown_skill(
+    tmp_path: Path,
+) -> None:
+    """A `skill-name/file` target whose skill name matches no directory
+    returned by the injected `skill_md_files` seam is unresolvable."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other_skill_md = tmp_path / "elsewhere" / "other-skill" / "SKILL.md"
+    other_skill_md.parent.mkdir(parents=True)
+    other_skill_md.write_text("## Home\n")
+
+    resolved = _resolve_citation_target(
+        "nonexistent-skill/REFERENCES.md",
+        citing_file=repo_root / "example-skill" / "SKILL.md",
+        repo_root=repo_root,
+        skill_md_files=lambda: [other_skill_md],
+    )
+
+    assert resolved is None
+
+
+def test_citation_report_names_citing_file_line_and_target_for_unresolvable_citation(
+    tmp_path: Path,
+) -> None:
+    """Drives the full glob → extract → resolve → aggregate → report path
+    over a small synthetic corpus with one resolvable and one unresolvable
+    citation. A later refactor that narrows the glob, swallows an exception,
+    or drops an aggregation branch would pass every helper-level test above
+    and only surface here.
+    """
+    skill_dir = tmp_path / "example-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "## Real Heading\n\n"
+        'Resolvable: `example-skill/SKILL.md` § "Real Heading".\n'
+        'Unresolvable: `missing-file.md` § "Some Heading".\n'
+    )
+
+    violations = _citation_report([skill_dir / "SKILL.md"], repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].startswith("example-skill/SKILL.md:4")
+    assert "missing-file.md" in violations[0]
 
 
 _INVALID_SKIP_HEADING = "**Invalid skip rationales.**"
