@@ -586,10 +586,7 @@ class TestRequirePlanReview:
         """The hook is wired to the touch-refreshing wrapper, not the bare
         liveness predicate -- a live-but-idle-window-aged marker's mtime must
         advance on a gate hit, or a reverted call site would pass every
-        allow/deny assertion in this file silently. Target path must be
-        in-repo (unlike the /tmp/foo.py shape other allow tests in this file
-        use) -- an out-of-repo target disarms the gate before it ever reaches
-        the marker check, which would allow without ever touching the marker."""
+        allow/deny assertion in this file silently."""
         sid = "session-active-touch"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
         marker_dir.mkdir(parents=True)
@@ -600,6 +597,9 @@ class TestRequirePlanReview:
         assert (
             run_hook(
                 REQUIRE_PLAN_REVIEW_HOOK,
+                # In-repo target, unlike the /tmp/foo.py shape other allow tests in
+                # this file use -- an out-of-repo target disarms the gate before it
+                # ever reaches the marker check, allowing without touching the marker.
                 {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
                 cwd=plan_review_repo,
             )

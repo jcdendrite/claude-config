@@ -335,11 +335,11 @@ class TestMarkerScriptClearStale:
 
     def test_clear_stale_evicts_idle_expired_alive_pid_entry(self, isolated_home, git_repo):
         """clear-stale must apply the same idle-window check as the gate
-        hooks' own liveness predicate -- an alive PID whose mtime has aged
-        past 60 minutes is stale to `status` and to every gate hook, and
-        must not be reported as "keep" here, or an operator following this
-        tool's own recovery procedure sees a marker left in place that every
-        other surface already treats as evicted."""
+        hooks' own liveness predicate: an alive PID whose mtime has aged past
+        60 minutes is stale everywhere else too. Reporting it as "keep" here
+        would leave a marker in place that every other surface already
+        treats as evicted, misleading an operator running this tool's own
+        recovery procedure."""
         d = self._make_active_dir(isolated_home, "plan-review")
         idle = d / "idle-session"
         idle.write_text(str(os.getpid()))
@@ -1727,6 +1727,30 @@ class TestMarkerScriptStatusActiveBypass:
         assert f"{label}: stale" in result.stdout
         assert not marker.exists(), (
             "a stale active-bypass marker must be evicted, not just labeled"
+        )
+
+    @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
+    def test_stale_when_pid_is_alive_but_mtime_is_idle_expired(
+        self, isolated_home, git_repo, label, dir_name
+    ):
+        """Pins the idle-timeout half of status's staleness definition
+        through its own CLI surface -- a reverted call site that special-cased
+        the dead-PID path would pass every other test in this class."""
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / dir_name
+        active_dir.mkdir(parents=True)
+        marker = active_dir / self.SID
+        marker.write_text(str(os.getpid()))
+        idle_time = time.time() - 3700  # just past the 60-minute idle window
+        os.utime(marker, (idle_time, idle_time))
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        # status's stale message doesn't distinguish dead-PID from idle-timeout
+        # (unlike clear-stale's), so the discriminating assertion here is that
+        # an *alive*-PID marker still evicts -- the label alone can't prove it.
+        assert f"{label}: stale" in result.stdout
+        assert not marker.exists(), (
+            "an idle-expired active-bypass marker must be evicted, not just labeled"
         )
 
     @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)

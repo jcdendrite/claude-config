@@ -630,13 +630,9 @@ fi
 # probed via _lib_active_bypass_marker_live's own subshell/cat/kill -0,
 # could otherwise chain 10-15 uncapped subprocess spawns in the worst case.
 # Every label but "handoff" reads through the unrefreshing base predicate, a
-# status-only read for this hook's SKILLS_FIELD display. "handoff" reads
-# through _lib_active_bypass_marker_live_and_touch instead: this hook firing
-# is itself evidence the session is still taking turns, the same "owning
-# skill still progressing" signal a long multi-turn /handoff write needs, so
-# refreshing .handoff-active.d here restores its pre-idle-window behavior of
-# never expiring while the session stays alive. See docs/hooks.md's "Gate
-# deadlock recovery" section.
+# status-only read for this hook's SKILLS_FIELD display. "handoff" alone
+# refreshes on read; see docs/hooks.md's "Gate deadlock recovery" section for
+# why.
 # Known gap: a single turn or tool batch spanning over 60 minutes with no
 # intervening Stop/PostToolBatch event still lets the marker idle-expire,
 # since this hook is the only place that touches it.

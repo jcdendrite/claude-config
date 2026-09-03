@@ -117,7 +117,7 @@ The four gate hooks that grant the bypass (`require-plan-review.sh`, `require-re
 - `require-ready-for-review.sh` refreshes only on a command shape matching `git push`, `gh pr ready`, or `gh pr create`.
 - `require-memory-skill.sh` refreshes only on a Write/Edit/MultiEdit targeting a memory-file path.
 
-This is a net improvement over the pre-diff behavior, where the marker had no idle bound at all and only a dead PID could clear it: a session that goes fully idle for 60+ minutes, with no tool call matching any of the four hooks' trigger conditions, now loses the bypass. For `require-respond-pr.sh`, and to a lesser extent `require-plan-review.sh`, the trigger condition is broad enough that ordinary session activity unrelated to the halted skill keeps the marker alive for the practical duration of the session.
+A session that goes fully idle for 60+ minutes, with no tool call matching any of the four hooks' trigger conditions, loses the bypass. For `require-respond-pr.sh`, and to a lesser extent `require-plan-review.sh`, the trigger condition is broad enough that ordinary session activity unrelated to the halted skill keeps the marker alive for the practical duration of the session.
 
 `nudge-handoff-near-context-cap.sh` refreshes only its own `.handoff-active.d` label, on every fire, because the hook firing at all is itself evidence the session is still taking turns — the same signal a long multi-turn `/handoff` write needs to avoid expiring mid-run. Every other marker family it enumerates, and `marker.sh status`'s own enumeration, stays on the unrefreshing base predicate, so reading status can never itself extend a marker's life.
 
