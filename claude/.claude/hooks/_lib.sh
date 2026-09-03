@@ -1072,23 +1072,46 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
+# _lib_autonomous_shipping_sentinel_present CONFIG_DIR
+# Returns 0 (true) iff the autonomous-shipping-required sentinel exists at
+# either CONFIG_DIR or the literal ~/.claude/autonomous-shipping-required —
+# a union, not a swap, so a sentinel armed before CLAUDE_CONFIG_DIR adoption
+# still activates.
+# Sentinel presence only: this is NOT the full autonomous-shipping-active
+# verdict, which also requires the per-repo .claude/autonomous-shipping-optout
+# check — see _lib_autonomous_shipping_active below.
+# CONFIG_DIR is a required argument rather than resolved internally via
+# _lib_config_dir so that a caller which already has it resolved (e.g. the
+# fast path, once per Stop event) skips a redundant _lib_config_dir call.
+# Inherits, rather than introduces, the case where CONFIG_DIR is set but
+# $HOME is empty or unset: the legacy-location check then evaluates against
+# a root-anchored path. This is unguarded by design.
+_lib_autonomous_shipping_sentinel_present() {
+  [ "$#" -eq 1 ] || return 1
+  local config_dir="$1"
+  [ -n "$config_dir" ] || return 1
+  [ -f "$config_dir/autonomous-shipping-required" ] || [ -f "$HOME/.claude/autonomous-shipping-required" ]
+}
+
 # _lib_autonomous_shipping_active REPO_ROOT
 # Returns 0 (true) when this machine has opted into autonomous shipping
 # (commit/push/PR without asking) for the given repo.
 #
-# NOT a generalization of _lib_worktree_enforcement_active above: that
-# function's committed-sentinel arm is safe because worktree enforcement
-# only restricts a hostile repo, while autonomous shipping removes a human
-# checkpoint — so a repo's own committed content must never grant it. There
-# is no repo-level "required" file in this code path; committing one has no
-# effect. Two tiers only: (1) machine sentinel, required — the resolved
-# config dir's autonomous-shipping-required, unioned with the literal
-# ~/.claude/autonomous-shipping-required so a sentinel armed before
-# CLAUDE_CONFIG_DIR adoption still activates; (2) per-repo opt-out
-# (.claude/autonomous-shipping-optout), narrows the machine default off for
-# this repo only. Every error path (filesystem error, empty $HOME, empty
-# REPO_ROOT, wrong argument count) fails toward NOT shipping — the safe
-# direction for a granting mechanism.
+# This function is not a generalization of _lib_worktree_enforcement_active
+# above: it has no committed-sentinel arm. That function's committed-sentinel
+# arm is safe because worktree enforcement only restricts a hostile repo.
+# Autonomous shipping removes a human checkpoint instead, so a repo's own
+# committed content must never grant it. There is no repo-level "required"
+# file in this code path; committing one has no effect. Two tiers only: (1)
+# machine sentinel, required — _lib_autonomous_shipping_sentinel_present's
+# union of the resolved config dir and the legacy ~/.claude location; (2)
+# per-repo opt-out (.claude/autonomous-shipping-optout), narrows the machine
+# default off for this repo only. Every error path fails toward NOT shipping
+# — the safe direction for a granting mechanism:
+#   - filesystem error
+#   - empty $HOME
+#   - empty REPO_ROOT
+#   - wrong argument count
 _lib_autonomous_shipping_active() {
   [ "$#" -eq 1 ] || return 1
   local repo_root="$1"
@@ -1101,11 +1124,7 @@ _lib_autonomous_shipping_active() {
   # than adding one.
   local config_dir
   config_dir=$(_lib_config_dir) || return 1
-  # Union, not swap, for this specific scenario only (not a full structural
-  # mirror of _lib_worktree_enforcement_active's fallback — see the
-  # fail-toward-NOT-shipping divergence in the header comment above): a
-  # machine-wide sentinel armed before CLAUDE_CONFIG_DIR adoption still activates.
-  [ -f "$config_dir/autonomous-shipping-required" ] || [ -f "$HOME/.claude/autonomous-shipping-required" ] || return 1
+  _lib_autonomous_shipping_sentinel_present "$config_dir" || return 1
   [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
   return 0
 }
