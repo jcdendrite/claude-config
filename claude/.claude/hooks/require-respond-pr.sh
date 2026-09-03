@@ -17,8 +17,9 @@
 # prevents one session's marker from leaking bypass to unrelated parallel
 # sessions — both of which the singleton design did not handle.
 #
-# Orphaned markers (from sessions that errored before cleanup) are evicted
-# automatically: the hook checks kill -0 on the stored PID; dead PID → rm.
+# Eviction (dead PID, or a live PID whose mtime has idled past 60 minutes)
+# and the touch-on-use refresh that keeps a live marker from expiring
+# mid-run are documented in docs/hooks.md's "Gate deadlock recovery" section.
 # The gate also covers `repos/{o}/{r}/(pulls|issues)/comments/{id}` (no
 # PR/issue-number segment) — the destructive PATCH endpoint that overwrites
 # a comment in place; gating it forces any edit to flow through
@@ -82,7 +83,7 @@ fi
 # Claude Code versions, payload-schema drift) or a path-escaping one falls
 # through to the gate.
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
-if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then
   exit 0
 fi
 

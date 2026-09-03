@@ -2461,10 +2461,10 @@ class TestHandoffActiveBypassMarkerSuppressesTheBlock:
 
 
 class TestNudgeLogTelemetry:
-    """Every `nudged` line carries ignored= (the repurposed re-arm counter,
-    now recorded rather than gating) and skills= (the active-bypass skill
-    markers live at fire time, or "-"). See docs/handoff-nudge.md's "Log
-    location" for the field contract."""
+    """Every `nudged` line carries ignored= (the count of ignored re-arms
+    since the last fire) and skills= (the active-bypass skill markers live
+    at fire time, or "-"). See docs/handoff-nudge.md's "Log location" for
+    the field contract."""
 
     def test_ignored_field_present_and_equals_ignored_marker_size(self, tmp_path):
         """ignored= is present on every nudged line: 0 on the first-ever
@@ -2575,6 +2575,49 @@ class TestNudgeLogTelemetry:
             line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
         ]
         assert "skills=handoff,memory-skill" in nudged_lines[-1]
+
+    def test_handoff_marker_mtime_advances_on_fire(self, tmp_path):
+        """The enumeration loop refreshes .handoff-active.d's mtime on every
+        fire through _lib_active_bypass_marker_live_and_touch -- this hook
+        firing is itself evidence the session is still taking turns, which is
+        what keeps a long multi-turn /handoff write from expiring under the
+        shared 60-minute idle window."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # aged, but within the 60-minute idle window
+        os.utime(marker, (old_time, old_time))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert marker.stat().st_mtime > old_time + 1, (
+            "the handoff label must refresh mtime through the touching wrapper"
+        )
+
+    def test_other_family_marker_mtime_does_not_advance_on_fire(self, tmp_path):
+        """The refresh is scoped to the handoff label only: a live sibling
+        marker for another skill family (memory-skill here), enumerated in
+        the same loop, must stay unrefreshed -- otherwise this hook's
+        near-every-turn fire cadence would defeat the idle window the other
+        four gate hooks rely on."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        handoff_marker = _handoff_active_marker_path(tmp_path)
+        handoff_marker.parent.mkdir(parents=True, exist_ok=True)
+        handoff_marker.write_text(str(os.getpid()))
+        memory_marker = _memory_skill_active_marker_path(tmp_path)
+        memory_marker.parent.mkdir(parents=True, exist_ok=True)
+        memory_marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300
+        os.utime(memory_marker, (old_time, old_time))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert memory_marker.stat().st_mtime == old_time, (
+            "only the handoff label may refresh mtime; other families read through the base predicate"
+        )
 
 
 class TestCheckMode:
@@ -2973,7 +3016,9 @@ class TestCheckMode:
         assert payload["model_recognized"] is False
 
     def test_reports_already_fired(self, tmp_path):
-        """Replaces the 'it fires once' caveat the skill bodies used to carry."""
+        """--check's already_fired field reports whether the session has
+        already fired, so a caller doesn't need the skill body to explain
+        re-fire behavior separately."""
         config_dir = self._seeded(tmp_path, total=ABOVE_LARGE)
         marker = _marker_path(tmp_path, config_dir=config_dir)
         marker.parent.mkdir(parents=True, exist_ok=True)

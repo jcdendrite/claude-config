@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 import pytest
 from helpers import (
@@ -374,6 +375,30 @@ class TestRequireRespondPr:
         assert (
             run_hook(RESPOND_PR_HOOK, bash_input(command, session_id=sid), cwd=current_repo_foo_bar)
             == "allow"
+        )
+
+    def test_active_marker_hit_advances_mtime(self, isolated_home, current_repo_foo_bar):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently."""
+        sid = "session-active-touch"
+        marker_dir = isolated_home / ".claude" / ".respond-pr-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5/comments", session_id=sid),
+                cwd=current_repo_foo_bar,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
         )
 
     def test_dead_pid_bypass_marker_evicts_and_denies(self, isolated_home, current_repo_foo_bar):

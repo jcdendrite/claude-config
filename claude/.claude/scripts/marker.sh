@@ -19,7 +19,8 @@ Subcommands:
   deactivate Remove the active-bypass marker for the given skill
   clear-stale [--dry-run]
              Evict active-bypass markers whose originating session is no
-             longer alive. --dry-run reports without removing.
+             longer alive, or whose mtime has aged past the 60-minute idle
+             window. --dry-run reports without removing.
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.
@@ -193,8 +194,12 @@ _status_reconciliation_flag() {
 # _status_report_active_bypass LABEL DIR_NAME SESSION_ID
 # Prints "  LABEL: live|stale|absent (...)" for `status`. Existence is
 # captured BEFORE calling _lib_active_bypass_marker_live, which evicts a
-# stale (dead-PID) marker as a side effect -- otherwise "stale" and "absent"
-# would be indistinguishable after the call evicts the file out from under us.
+# stale marker as a side effect (see that function's own docstring for its
+# two eviction triggers) -- otherwise "stale" and "absent" would be
+# indistinguishable after the call evicts the file out from under us. This
+# is a status-only read: it calls the unrefreshing predicate directly,
+# never _lib_active_bypass_marker_live_and_touch, so enumerating status
+# here can never itself extend a marker's life.
 _status_report_active_bypass() {
   local label="$1" dir_name="$2" session_id="$3"
   local marker_path="$CONFIG_DIR/$dir_name/$session_id"
@@ -203,7 +208,7 @@ _status_report_active_bypass() {
   if _lib_active_bypass_marker_live "$dir_name" "$session_id"; then
     printf '  %s: live (bypass marker present for this session)\n' "$label"
   elif [ "$existed_before" -eq 1 ]; then
-    printf '  %s: stale (dead-PID marker evicted)\n' "$label"
+    printf '  %s: stale (marker evicted: dead PID or idle timeout)\n' "$label"
   else
     printf '  %s: absent (no bypass marker for this session)\n' "$label"
   fi
@@ -445,16 +450,28 @@ case "$SUBCOMMAND" in
         esac
         stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
         entry_name=$(basename "$entry")
-        if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null; then
+        # Same two-part staleness definition _lib_active_bypass_marker_live
+        # uses: PID alive AND mtime within the 60-minute idle window. Kept
+        # as its own loop rather than delegating to that predicate, which
+        # has no dry-run mode and doesn't report which of the two triggers
+        # fired.
+        pid_alive=0
+        [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null && pid_alive=1
+        if [ "$pid_alive" -eq 1 ] && [ -n "$(find "$entry" -mmin -60 2>/dev/null)" ]; then
           KEPT=$((KEPT + 1))
           [ "$DRY_RUN" -eq 1 ] && printf '  keep: %s/%s (PID %s alive)\n' "$dir_name" "$entry_name" "$stored_pid"
         else
           EVICTED=$((EVICTED + 1))
+          if [ "$pid_alive" -eq 1 ]; then
+            reason="idle timeout, PID ${stored_pid} alive"
+          else
+            reason="PID ${stored_pid:-empty} dead"
+          fi
           if [ "$DRY_RUN" -eq 0 ]; then
             rm -f "$entry"
-            printf '  evict: %s/%s (PID %s dead)\n' "$dir_name" "$entry_name" "${stored_pid:-empty}"
+            printf '  evict: %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
           else
-            printf '  evict (dry-run): %s/%s (PID %s dead)\n' "$dir_name" "$entry_name" "${stored_pid:-empty}"
+            printf '  evict (dry-run): %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
           fi
         fi
       done
