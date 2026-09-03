@@ -126,6 +126,19 @@ fi
 
 [ -z "$COMMAND" ] && exit 0
 
+# Quote-stripped so an adjacent-quote split (`"git" push`, `gh pr
+# "create"`) can't dodge the fragment tokenizer below — same helper as
+# deny-network-installs.sh. The $(/backtick substitution checks further
+# down stay on raw $COMMAND — they detect substitution syntax, not words.
+# Checked and fail-closed, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by ready-for-review gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  exit 0
+fi
+
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
@@ -218,7 +231,12 @@ push_fragment_publishes_reviewable_change() {
 is_gated_git_push=false
 is_gh_pr_ready=false
 is_gh_pr_create=false
-FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+FRAGMENTS_SPLIT_EXIT=$?
+if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by ready-for-review gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  exit 0
+fi
 while IFS= read -r frag; do
   [ -z "$frag" ] && continue
   if _lib_fragment_invokes_git "$frag"; then

@@ -13,7 +13,7 @@ description: >
   already produced by this toolkit earlier in the session.
 ---
 
-The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Code config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`). Run it directly from the shell.
+The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly from the shell.
 
 ## Scope confirmation
 
@@ -102,23 +102,23 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ```bash
 # Survey all branches
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets
+python3 ~/.claude/scripts/transcript-analysis.py buckets
 
 # Check if a branch's debugging loop converged
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches feat-TICKET-101
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET-101
 
 # Compare two branches side by side
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches feat-TICKET-101,feat-TICKET-202
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET-101,feat-TICKET-202
 
 # Link branches to PRs and count one author's review comments
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" pr-link \
+python3 ~/.claude/scripts/transcript-analysis.py pr-link \
   --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
 
 # Find sessions that hit an enforcement-hook denial
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --deny-only
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
 
 # Review activity in a date window (e.g. before vs after a skill landed)
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --since 2026-01-01 --until 2026-03-31
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --since 2026-01-01 --until 2026-03-31
 ```
 
 For narrative case studies and annotated timelines built on top of these metrics, use `transcript-narrative`.

@@ -10,7 +10,7 @@ Analyzes a *delivered body of work* (many sessions and PRs, potentially spanning
 Identify the branches, PRs, sessions, and date range under analysis. Use `transcript-analysis.py buckets` to enumerate branches and models:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets --this-repo
+python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
 ```
 
 Always scope `--projects`/`--this-repo` — an unscoped run pools every project on the machine. See `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation, its gaps, and the subdirectory-session fallback.
@@ -129,7 +129,7 @@ A single run buckets one flat window. That's enough to tell you a failure mode e
 Split the Step 1 date range into successive sub-windows (weekly, or biweekly for a longer range) and re-run Steps 2–4 per sub-window using `--since`/`--until` on `review-trace` (and `--branches`/`--projects` held constant across sub-windows so the only thing varying is time):
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --projects '<glob>' --since <window-start> --until <window-end>
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --projects '<glob>' --since <window-start> --until <window-end>
 ```
 
 For each distinct error mode identified in Step 4, classify it against the sub-window sequence:

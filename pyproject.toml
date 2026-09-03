@@ -23,7 +23,7 @@ pythonpath = ["claude/.claude/tests", "claude/.claude/scripts", "evals", "plugin
 # collection error instead of a silently-unfiltered test.
 addopts = ["-n", "auto", "--strict-markers"]
 markers = [
-  "timing: asserts a wall-clock bound; run serially (-m timing -n0) to avoid parallel-load flakiness — see claude/.claude/tests/test_pytest_collection_config.py",
+  "timing: asserts a wall-clock bound, or needs serial isolation to avoid subprocess-spawn contention flakiness; run serially (-m timing -n0) — see claude/.claude/tests/test_pytest_collection_config.py",
 ]
 # Setting norecursedirs replaces pytest's built-in default list rather than
 # extending it, so all nine defaults are restated here alongside "worktrees" —

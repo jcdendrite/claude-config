@@ -397,7 +397,19 @@ _fragment_has_unsafe_redirect() {
 # _fragment_has_unsafe_redirect sed spawn per fragment with no ceiling.
 _FRAGMENT_COUNT_BUDGET=30
 
-SPLIT_FRAGMENTS="$(_lib_split_fragments "$COMMAND")"
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by review-orchestrator Bash gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) -- sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git/marker/checkpoint command. $SANCTIONED_ALTERNATIVE"
+  exit 0
+fi
+
+SPLIT_FRAGMENTS="$(_lib_split_fragments "$COMMAND_UNQUOTED")"
+SPLIT_FRAGMENTS_EXIT=$?
+if [ "$SPLIT_FRAGMENTS_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by review-orchestrator Bash gate: could not split the command into fragments (exit ${SPLIT_FRAGMENTS_EXIT}) -- sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git/marker/checkpoint command. $SANCTIONED_ALTERNATIVE"
+  exit 0
+fi
 FRAGMENT_COUNT=0
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue

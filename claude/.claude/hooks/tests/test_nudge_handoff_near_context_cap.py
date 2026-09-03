@@ -42,8 +42,11 @@ from helpers import (
     TRAVERSAL_SESSION_ID,
     build_path_without,
     extract_skill_command,
+    install_marker_script,
     plant_traversal_canary,
+    run_hook_until_marker_exists,
     run_skill_command,
+    skill_input,
 )
 
 HANDOFF_SKILL = SKILLS_DIR / "handoff" / "SKILL.md"
@@ -2419,6 +2422,42 @@ class TestHandoffActiveBypassMarkerSuppressesTheBlock:
         blocked = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
         assert blocked.returncode == 2
         assert blocked.stdout.strip() == ""
+
+    @pytest.mark.timing
+    def test_activate_handoff_bypass_hook_suppresses_the_block(self, tmp_path, monkeypatch):
+        """activate-handoff-bypass.sh (the PostToolUse Skill hook) sets the
+        marker on the very batch that loads /handoff, before the skill's own
+        marker.sh activate step -- the skill's first instructed step, but
+        still a Bash call that only runs after that batch resolves -- ever
+        runs. This is the assertion that proves the marker being live
+        actually suppresses the hard block; the per-hook unit tests in
+        test_activate_handoff_bypass.py don't exercise the nudge hook's own
+        block condition at all.
+
+        Uses run_hook_until_marker_exists (helpers.py) to retry the
+        activation hook call; see that helper's own comment for why a retry
+        is needed and why it's safe.
+        """
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        transcript, extra_env, _estimate = self._drive_to_block_point(tmp_path)
+        _seed_session(_default_config_dir(tmp_path), os.getpid(), SESSION_ID)
+        marker = _handoff_active_marker_path(tmp_path)
+
+        install_marker_script(tmp_path)
+        activate_hook = HOOKS_DIR / "activate-handoff-bypass.sh"
+        activation_payload = skill_input("handoff", session_id=SESSION_ID)
+        run_hook_until_marker_exists(activate_hook, activation_payload, marker, home=tmp_path)
+
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        payload = json.loads(result.stdout)
+        assert "hookSpecificOutput" in payload
+        nudged_lines = [
+            line for line in _log_path(tmp_path).read_text().splitlines() if line.startswith("nudged")
+        ]
+        assert nudged_lines, "no nudged line was logged"
+        assert "action=block" not in nudged_lines[-1]
 
 
 class TestNudgeLogTelemetry:

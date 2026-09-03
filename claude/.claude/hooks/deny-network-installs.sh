@@ -47,6 +47,10 @@
 #     including a mere `ls`/`chmod` argument — the same accepted over-deny
 #     direction as the operator-adjacency bullet above, extended to
 #     reference-only mentions.
+#   - COMMAND_UNQUOTED's sed/tr strip failure and the fragment split's own
+#     sed failure both fail closed: each exit status is checked immediately
+#     and denies rather than falling through to this hook's normal allow
+#     path with the install/curl-pipe-bash scan silently unscanned.
 #
 # Fail-closed on unparseable hook input.
 
@@ -74,7 +78,15 @@ fi
 
 # Quote-stripped so an adjacent-quote split (`"npm" install x`) can't dodge
 # has-token's boundary check — same helper as deny-credential-bash-reads.sh.
+# Checked and fail-closed, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation -- an unchecked failure here would silently
+# clear COMMAND_UNQUOTED and fall through to this hook's normal allow path.
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by network-install gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
+  exit 0
+fi
 
 _INSTALL_ALTERNATIVE="If this install is intentional, name the package, its exact version constraint, and why, then ask the user to run it themselves via the ! shell escape, which runs outside the tool-call path this hook gates."
 
@@ -311,6 +323,12 @@ SAW_DOWNLOADER_FRAGMENT=""
 SAW_INTERPRETER_FRAGMENT=""
 NETWORK_INSTALL_MATCHED_TOKEN=""
 
+FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+FRAGMENTS_SPLIT_EXIT=$?
+if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by network-install gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
+  exit 0
+fi
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
 
@@ -349,7 +367,7 @@ while IFS= read -r fragment; do
       SAW_INTERPRETER_FRAGMENT="$fragment"
     fi
   done
-done <<< "$(_lib_split_fragments "$COMMAND_UNQUOTED")"
+done <<< "$FRAGMENTS"
 
 if [ -n "$SAW_DOWNLOADER_FRAGMENT" ] && [ -n "$SAW_INTERPRETER_FRAGMENT" ]; then
   emit_deny "Blocked by network-install gate: this command both fetches content (curl/wget) and hands it to a shell or interpreter (bash/sh/zsh/python3/node/ruby/perl) in the same call — the download-and-execute pattern this hook blocks regardless of which operator connects the two, including curl/wget and the interpreter appearing in unrelated parts of a batched command. $_INSTALL_ALTERNATIVE"

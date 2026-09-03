@@ -139,7 +139,13 @@ Three skills that primarily apply to this repo's own workflow — editing `SKILL
 | `claude-hook-review@claude-config` | Review playbook for `.claude/hooks/*.sh` scripts and `settings.json` hook entries | Repos that author their own hook scripts |
 | `plugin-semver@claude-config` | Semver and version-field discipline for plugin manifests | Repos that author Claude Code plugins for a marketplace |
 
-Two more plugins also live in `plugins/` but are not part of this repo's own authoring workflow — they provide skills for downstream repos rather than for contributors to claude-config itself: `lovable-cloud@claude-config` for downstream Lovable Cloud project repos, and `npm-semver@claude-config` for downstream repos that publish an npm package (semver and version-field discipline for the package's own `package.json`, plus a commit-time hook and a reminder to propagate a bump to consumers).
+Three more plugins also live in `plugins/` but are not part of this repo's own authoring workflow — they provide skills for downstream repos rather than for contributors to claude-config itself:
+
+| Plugin | What it provides | When to install |
+|---|---|---|
+| `lovable-cloud@claude-config` | Lovable Cloud edge-function, knowledge-sync, and migration-sync skills | Downstream Lovable Cloud project repos |
+| `npm-semver@claude-config` | Semver and version-field discipline for the package's own `package.json`, plus a commit-time hook and a reminder to propagate a bump to consumers | Downstream repos that publish an npm package |
+| `linear-formatting@claude-config` | Issue-ID auto-linking and comment-formatting conventions for tracker writes | Downstream repos whose tracker MCP server is Linear |
 
 Each plugin is installed per-project via `claude plugin install`. For this to work, the claude-config marketplace must be registered on the machine:
 
