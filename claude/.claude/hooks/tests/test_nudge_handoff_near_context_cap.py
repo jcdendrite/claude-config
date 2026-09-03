@@ -2576,6 +2576,49 @@ class TestNudgeLogTelemetry:
         ]
         assert "skills=handoff,memory-skill" in nudged_lines[-1]
 
+    def test_handoff_marker_mtime_advances_on_fire(self, tmp_path):
+        """The enumeration loop refreshes .handoff-active.d's mtime on every
+        fire through _lib_active_bypass_marker_live_and_touch -- this hook
+        firing is itself evidence the session is still taking turns, which is
+        what keeps a long multi-turn /handoff write from expiring under the
+        shared 60-minute idle window."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        marker = _handoff_active_marker_path(tmp_path)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # aged, but within the 60-minute idle window
+        os.utime(marker, (old_time, old_time))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert marker.stat().st_mtime > old_time + 1, (
+            "the handoff label must refresh mtime through the touching wrapper"
+        )
+
+    def test_other_family_marker_mtime_does_not_advance_on_fire(self, tmp_path):
+        """The refresh is scoped to the handoff label only: a live sibling
+        marker for another skill family (memory-skill here), enumerated in
+        the same loop, must stay unrefreshed -- otherwise this hook's
+        near-every-turn fire cadence would defeat the idle window this PR
+        adds for the other four gate hooks."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE, model="claude-sonnet-5")])
+        handoff_marker = _handoff_active_marker_path(tmp_path)
+        handoff_marker.parent.mkdir(parents=True, exist_ok=True)
+        handoff_marker.write_text(str(os.getpid()))
+        memory_marker = _memory_skill_active_marker_path(tmp_path)
+        memory_marker.parent.mkdir(parents=True, exist_ok=True)
+        memory_marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300
+        os.utime(memory_marker, (old_time, old_time))
+
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.stdout.strip() != ""
+        assert memory_marker.stat().st_mtime == old_time, (
+            "only the handoff label may refresh mtime; other families read through the base predicate"
+        )
+
 
 class TestCheckMode:
     """Read-only --check mode: reports the session's estimate, writes nothing.

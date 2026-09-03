@@ -932,6 +932,192 @@ def test_active_bypass_marker_live_evicts_dead_pid_without_touching_sibling(
 # table for _lib_valid_session_id_component above, which includes "".
 
 
+# --- _lib_active_bypass_marker_live_and_touch -------------------------------
+#
+# The idle-window expiry (60 minutes) is touch-on-use, not a hard age cap: the
+# four gating hooks (require-{memory-skill,plan-review,ready-for-review,
+# respond-pr}.sh) call this wrapper, which refreshes a live marker's mtime so
+# the window keeps sliding for as long as the owning skill keeps gating. The
+# base predicate above must never do that refresh itself, or a status-only
+# read (marker.sh status, nudge-handoff-near-context-cap.sh's enumeration)
+# would keep every marker artificially fresh just by observing it.
+
+
+def _active_bypass_marker_live_and_touch(home: Path, session_id: str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_active_bypass_marker_live_and_touch "$1" "$2"',
+            "bash",
+            _MARKER_DIR_NAME,
+            session_id,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_active_bypass_marker_live_and_touch_advances_mtime_on_live_check(tmp_path) -> None:
+    """A gating call that finds the marker live must refresh its mtime -- this
+    is what makes the idle window slide forward instead of expiring a
+    long-running skill mid-review."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-touch-live", str(os.getpid()))
+    old_time = time.time() - 300  # well within the 60-minute idle window
+    os.utime(marker, (old_time, old_time))
+
+    assert _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-live")
+    assert marker.stat().st_mtime > old_time + 1, (
+        "a live check through the wrapper must refresh the marker's mtime"
+    )
+
+
+def test_active_bypass_marker_live_and_touch_does_not_touch_dead_pid_eviction(tmp_path) -> None:
+    """A dead-PID marker's eviction propagates through the wrapper's own
+    short-circuit, not just the underlying predicate called directly --
+    the predicate evicts before the wrapper's touch line is ever reached."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-touch-dead", "99999999")
+    old_time = time.time() - 300
+    os.utime(marker, (old_time, old_time))
+
+    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-dead")
+    assert not marker.exists(), "a dead-PID marker must be evicted, not refreshed and kept"
+
+
+def test_active_bypass_marker_live_and_touch_evicts_idle_expired_live_pid(tmp_path) -> None:
+    """The wrapper must reach the same idle-expiry verdict as the base
+    predicate for a live PID whose mtime has aged past the 60-minute window --
+    this is the exact combination the idle window exists to handle when
+    reached through a gate hook's own call path, not just inferable by
+    composing the wrapper's fresh-marker test with the predicate's own
+    idle-expiry test."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-touch-idle", str(os.getpid()))
+    stale_time = time.time() - 3700  # just past the 60-minute idle window
+    os.utime(marker, (stale_time, stale_time))
+
+    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-idle")
+    assert not marker.exists(), (
+        "an idle-expired marker reached through the wrapper must be evicted"
+    )
+
+
+def test_active_bypass_marker_live_and_touch_false_when_no_marker(tmp_path) -> None:
+    """Mirrors test_active_bypass_marker_live_false_when_no_marker for the
+    wrapper's hottest real-world call shape: the overwhelming majority of
+    gate-hook invocations find no active-bypass marker at all."""
+    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-absent")
+
+
+def test_active_bypass_marker_live_and_touch_toctou_stub_touch_deletes_marker_first(
+    tmp_path,
+) -> None:
+    """Regression test for the -c (no-create) contract under the exact race it
+    guards against: a concurrent eviction (clear-stale, deactivate, another
+    gate hit) removing the marker between the wrapper's liveness check and its
+    own touch call. Shadows touch on PATH with a stub that deletes the marker
+    immediately before exec'ing the real touch, forcing the race
+    deterministically -- the same PATH-stub technique
+    test_hung_jq_denied_within_timeout and
+    test_timeout_absent_fallback_valid_payload_returns_ok use above."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-toctou", str(os.getpid()))
+
+    real_touch = shutil.which("touch")
+    if not real_touch:
+        pytest.skip("touch not found in PATH")
+
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    stub_touch = stub_dir / "touch"
+    stub_touch.write_text(f'#!/bin/bash\nrm -f "{marker}"\nexec {real_touch} "$@"\n')
+    stub_touch.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_active_bypass_marker_live_and_touch "$1" "$2"',
+            "bash",
+            _MARKER_DIR_NAME,
+            "sess-toctou",
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        check=False,
+    )
+    assert result.returncode == 0, (
+        "the wrapper must still grant the verdict already committed before the race"
+    )
+    assert not marker.exists(), "touch -c must not resurrect a marker evicted mid-race"
+
+
+def test_active_bypass_marker_live_never_advances_mtime(tmp_path) -> None:
+    """Pins the gating/status-read split itself, not just the touch wrapper's
+    own behavior: the base predicate must stay side-effect-free on mtime
+    regardless of outcome, so status-only callers can safely share it."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-mtime-stable", str(os.getpid()))
+    old_time = time.time() - 300
+    os.utime(marker, (old_time, old_time))
+    before_mtime = marker.stat().st_mtime
+
+    assert _active_bypass_marker_live(tmp_path, "sess-mtime-stable")
+    assert marker.stat().st_mtime == before_mtime, "the base predicate must never refresh mtime"
+
+
+def test_marker_ages_out_despite_repeated_status_only_reads(tmp_path) -> None:
+    """Cross-hook-interference case: repeated status-only reads (the shape
+    marker.sh status and nudge-handoff-near-context-cap.sh's enumeration both
+    use) must neither refresh the marker's mtime nor prevent it from aging out
+    once the window has genuinely elapsed. Holds the marker in-window across
+    several reads first, then ages it past the boundary with no further gating
+    call, so the test actually exercises "idle detection survives repeated
+    reads while still in-window" rather than only "stays evicted once gone"."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-idle-ages-out", str(os.getpid()))
+    fresh_time = time.time() - 300  # well within the 60-minute idle window
+    os.utime(marker, (fresh_time, fresh_time))
+    before_mtime = marker.stat().st_mtime
+
+    for _ in range(3):
+        assert _active_bypass_marker_live(tmp_path, "sess-idle-ages-out")
+        assert marker.stat().st_mtime == before_mtime, (
+            "repeated status-only reads must not refresh the marker's mtime"
+        )
+
+    stale_time = time.time() - 3700  # just past the 60-minute idle window
+    os.utime(marker, (stale_time, stale_time))
+
+    assert not _active_bypass_marker_live(tmp_path, "sess-idle-ages-out")
+    assert not marker.exists(), (
+        "an idle-expired marker must be evicted even though prior status-only "
+        "reads left it untouched"
+    )
+
+
+def test_active_bypass_marker_live_at_3599_seconds_still_live(tmp_path) -> None:
+    """Brackets the 60-minute cutoff from the live side, 1 second inside the
+    window, rather than approaching it from a comfortable distance."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-boundary-live", str(os.getpid()))
+    boundary_time = time.time() - 3599
+    os.utime(marker, (boundary_time, boundary_time))
+
+    assert _active_bypass_marker_live(tmp_path, "sess-boundary-live")
+    assert marker.exists()
+
+
+def test_active_bypass_marker_live_at_3601_seconds_already_expired(tmp_path) -> None:
+    """Brackets the 60-minute cutoff from the expired side, 1 second past the
+    window."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-boundary-expired", str(os.getpid()))
+    boundary_time = time.time() - 3601
+    os.utime(marker, (boundary_time, boundary_time))
+
+    assert not _active_bypass_marker_live(tmp_path, "sess-boundary-expired")
+    assert not marker.exists()
+
+
 # --- Universal adoption of the session-id guard ----------------------------
 
 

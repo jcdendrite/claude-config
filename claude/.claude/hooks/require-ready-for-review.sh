@@ -297,7 +297,7 @@ fi
 # Active-marker bypass: the skill is currently running. An absent or
 # path-escaping id withholds the bypass, which just means the
 # completion-marker check further down decides the gate instead.
-if _lib_active_bypass_marker_live ".ready-for-review-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".ready-for-review-active.d" "$SESSION_ID"; then
   exit 0
 fi
 

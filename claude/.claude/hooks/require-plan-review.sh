@@ -230,7 +230,7 @@ SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # completion-marker check further down decides the gate instead — never less
 # safe than the bypass would have been.
 if [ "$TOOL_NAME" != "ExitPlanMode" ] \
-  && _lib_active_bypass_marker_live ".plan-review-active.d" "$SESSION_ID"; then
+  && _lib_active_bypass_marker_live_and_touch ".plan-review-active.d" "$SESSION_ID"; then
   exit 0
 fi
 

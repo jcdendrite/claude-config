@@ -629,6 +629,17 @@ fi
 # call on this hook's fire path, since up to five marker directories, each
 # probed via _lib_active_bypass_marker_live's own subshell/cat/kill -0,
 # could otherwise chain 10-15 uncapped subprocess spawns in the worst case.
+# Every label but "handoff" reads through the unrefreshing base predicate, a
+# status-only read for this hook's SKILLS_FIELD display. "handoff" reads
+# through _lib_active_bypass_marker_live_and_touch instead: this hook firing
+# is itself evidence the session is still taking turns, the same "owning
+# skill still progressing" signal a long multi-turn /handoff write needs, so
+# refreshing .handoff-active.d here restores its pre-idle-window behavior of
+# never expiring while the session stays alive. See docs/hooks.md's "Gate
+# deadlock recovery" section.
+# Known gap: a single turn or tool batch spanning over 60 minutes with no
+# intervening Stop/PostToolBatch event still lets the marker idle-expire,
+# since this hook is the only place that touches it.
 # shellcheck disable=SC2016 # single-quoted on purpose: $1/$2/$3 are the nested bash -c script's own positional params, meant to expand there, not in this outer shell.
 LIVE_SKILL_LABELS=$(_lib_capped_for 2 bash -c '
   . "$1"
@@ -640,7 +651,11 @@ LIVE_SKILL_LABELS=$(_lib_capped_for 2 bash -c '
     case "$label" in
       ""|*[!A-Za-z0-9_-]*) continue ;;
     esac
-    _lib_active_bypass_marker_live "$dir_name" "$3" && printf "%s\n" "$label"
+    if [ "$label" = "handoff" ]; then
+      _lib_active_bypass_marker_live_and_touch "$dir_name" "$3" && printf "%s\n" "$label"
+    else
+      _lib_active_bypass_marker_live "$dir_name" "$3" && printf "%s\n" "$label"
+    fi
   done
 ' _ "$(dirname "$0")/_lib.sh" "$CONFIG_DIR" "$SESSION_ID" 2>/dev/null)
 SKILLS_FIELD=$(printf '%s\n' "$LIVE_SKILL_LABELS" | sort | paste -sd, - 2>/dev/null)

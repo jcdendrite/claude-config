@@ -333,6 +333,23 @@ class TestMarkerScriptClearStale:
         assert result.returncode == 0, result.stderr
         assert alive.exists(), "clear-stale must not remove alive-PID marker"
 
+    def test_clear_stale_evicts_idle_expired_alive_pid_entry(self, isolated_home, git_repo):
+        """clear-stale must apply the same idle-window check as the gate
+        hooks' own liveness predicate -- an alive PID whose mtime has aged
+        past 60 minutes is stale to `status` and to every gate hook, and
+        must not be reported as "keep" here, or an operator following this
+        tool's own recovery procedure sees a marker left in place that every
+        other surface already treats as evicted."""
+        d = self._make_active_dir(isolated_home, "plan-review")
+        idle = d / "idle-session"
+        idle.write_text(str(os.getpid()))
+        stale_time = time.time() - 3700  # just past the 60-minute idle window
+        os.utime(idle, (stale_time, stale_time))
+        result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not idle.exists(), "clear-stale must evict an idle-expired alive-PID marker"
+        assert "idle timeout" in result.stdout
+
     def test_clear_stale_dry_run_does_not_remove(self, isolated_home, git_repo):
         """--dry-run reports would-evict entries without removing them."""
         d = self._make_active_dir(isolated_home, "memory-skill")

@@ -24,8 +24,9 @@ set -uo pipefail
 # `marker.sh deactivate memory-skill`. While THIS session's marker exists AND
 # its stored PID is alive (kill -0), the hook allows through so the skill's
 # own Write/Edit calls during the memory-write session are not re-blocked.
-# Orphaned markers (session errored before cleanup) are evicted automatically:
-# dead PID → rm on next gate hit.
+# Eviction (dead PID, or a live PID whose mtime has idled past 60 minutes)
+# and the touch-on-use refresh that keeps a live marker from expiring
+# mid-run are documented in docs/hooks.md's "Gate deadlock recovery" section.
 #
 # Fail-closed on parse error — if the hook cannot parse its input it denies
 # rather than allowing through.
@@ -134,7 +135,7 @@ fi
 # (e.g. containing "../") withholds the bypass and falls through to the deny
 # below rather than being treated as absent — the point of validating it is
 # to never build that path, not to grant the allow anyway.
-if _lib_active_bypass_marker_live ".memory-skill-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".memory-skill-active.d" "$SESSION_ID"; then
   exit 0
 fi
 

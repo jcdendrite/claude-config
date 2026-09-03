@@ -582,6 +582,33 @@ class TestRequirePlanReview:
             == "allow"
         )
 
+    def test_active_marker_hit_advances_mtime(self, plan_review_repo, plan_review_home):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently. Target path must be
+        in-repo (unlike the /tmp/foo.py shape other allow tests in this file
+        use) -- an out-of-repo target disarms the gate before it ever reaches
+        the marker check, which would allow without ever touching the marker."""
+        sid = "session-active-touch"
+        marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
+        )
+
     def test_fresh_active_marker_allows_edit(self, plan_review_repo, plan_review_home):
         sid = "session-active-edit"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
