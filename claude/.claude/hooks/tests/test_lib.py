@@ -1910,6 +1910,114 @@ class TestLibConfigDir:
         assert result.stdout == ""
 
 
+# _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
+# sentinel-presence check only, not the full autonomous-shipping-active
+# verdict.
+# The per-repo optout is covered separately by TestAutonomousShippingActive
+# below, which calls through this helper.
+
+
+def _autonomous_shipping_sentinel_present(home: Path, config_dir: str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1"',
+            "bash",
+            config_dir,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestAutonomousShippingSentinelPresent:
+    def test_absent_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert not _autonomous_shipping_sentinel_present(home, str(config_dir))
+
+    def test_absent_when_home_unset_and_neither_location_has_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors test_absent_when_neither_location_has_sentinel above with
+        HOME unset instead of populated. Covers the unguarded $HOME-unset
+        case documented on the helper itself."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1"',
+                "bash",
+                str(config_dir),
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": "", "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_present_when_config_dir_has_sentinel(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        (config_dir / "autonomous-shipping-required").touch()
+        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+
+    def test_present_when_only_legacy_home_claude_sentinel_present(
+        self, tmp_path: Path
+    ) -> None:
+        """GH-793: a config dir differentiated from $HOME/.claude, holding no
+        sentinel of its own, must not mask a sentinel armed at the legacy
+        $HOME/.claude location before CLAUDE_CONFIG_DIR adoption — union, not
+        swap."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+
+    def test_absent_on_empty_config_dir_argument(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        assert not _autonomous_shipping_sentinel_present(home, "")
+
+    def test_absent_on_wrong_arity(self, tmp_path: Path) -> None:
+        """Extra positional so $2 stays bound under set -u, isolating the
+        [ "$#" -eq 1 ] guard itself — mirrors
+        TestAutonomousShippingActive.test_inactive_on_wrong_arity below."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -u; . {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1" "$2"',
+                "bash",
+                str(tmp_path / "profile"),
+                "unexpected-extra-arg",
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "unbound variable" not in result.stderr
+
+
 # _lib_autonomous_shipping_active — direct unit coverage.
 #
 # _lib_worktree_enforcement_active has no such coverage anywhere in this
