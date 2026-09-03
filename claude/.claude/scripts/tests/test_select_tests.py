@@ -53,7 +53,7 @@ class TestSelectPytestTargets:
             _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.SCRIPTS_TESTS_DIR,
         }
 
-    def test_scripts_change_also_selects_hooks_tests(self):
+    def test_scripts_change_also_selects_ticket_reference_discipline_test(self):
         """test_ticket_reference_discipline.py statically scans every
         tracked .py file under claude/, including this one, for
         ticket-prefixed identifiers and plan-phase-qualified labels."""
@@ -596,6 +596,11 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets(["plugins/npm-semver/scripts/check.sh"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
+
+    def test_is_py_source_under_claude_or_plugins_rejects_path_outside_both_dirs(self):
+        """Direct assertion on the predicate: a .py file outside both
+        claude/ and plugins/ (e.g. SKILL_EVALS_RUNNER) must not match."""
+        assert _mod._is_py_source_under_claude_or_plugins(_mod.SKILL_EVALS_RUNNER) is False
 
 
 class TestBuildPytestArgv:

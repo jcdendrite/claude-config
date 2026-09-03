@@ -137,17 +137,11 @@ def test_no_ticket_prefixed_identifier(source_file: Path) -> None:
 # --- Plan-phase-label detection ---------------------------------------------
 # Consecutive comment lines are joined into a single logical block, with
 # whitespace collapsed, only when the prior line ends mid-qualifier (a bare
-# "Phase" or "Step" with no number yet). A line-at-a-time regex would miss a
-# label split across a line break (e.g. "GH-783 Phase" / "# 2's"). Joining
-# unconditionally would instead coincidentally match two unrelated adjacent
-# comments (a tracker-ID citation followed by an unrelated "Step N" mention).
-# Known gap, accepted rather than closed: a wrap point at the tracker-ID
-# boundary (e.g. "GH-905" / "# Phase 2 replaces the old flow") evades this
-# heuristic. That shape is syntactically identical to the false-positive
-# shape above (a bare tracker ID ending one line, a "Phase"/"Step" word
-# starting the next). Closing it would reopen the false positive this
-# heuristic exists to avoid. comment-discipline-reviewer remains the
-# backstop for this shape.
+# "Phase" or "Step" with no number yet), to avoid coincidentally joining
+# unrelated adjacent comments.
+# Accepted gap: a wrap exactly at the tracker-ID boundary (e.g. "GH-905" /
+# "# Phase 2 replaces the old flow") evades this join heuristic, and
+# comment-discipline-reviewer is the backstop to catch it.
 # Docstring lines are joined unconditionally by a separate function below,
 # since a whole docstring is already one logical unit regardless of its
 # internal line breaks.
@@ -219,10 +213,10 @@ def test_negative_control_identifier_detector_does_not_flag_hash_or_encoding_nam
 
 def test_negative_control_identifier_detector_flags_public_standard_number_collision() -> None:
     """rfc/cve are both ticket-prefix tokens and public-standard numbering
-    schemes this repo's own CLAUDE.md encourages citing (RFC/vendor docs
-    for protocol values) -- a future parse_rfc2119-style identifier would
-    collide and get flagged. Documents the accepted behavior as a known
-    boundary, not a design flaw to silently regress on."""
+    schemes. CLAUDE.md itself encourages citing them (RFC/vendor docs for
+    protocol values). A future parse_rfc2119-style identifier would collide
+    and get flagged. Documents that collision as an accepted boundary, not
+    a design flaw to silently regress on."""
     assert _ticket_prefixed_tokens("parse_rfc2119") == ["rfc2119"]
 
 
@@ -261,11 +255,8 @@ def test_adjacent_unrelated_comment_lines_are_not_joined_into_false_match() -> N
 
 
 def test_id_boundary_wrap_is_an_accepted_gap_not_a_regression() -> None:
-    """A genuine wrapped label split right after the tracker ID (rather than
-    mid-qualifier) currently evades this detector. This is an accepted gap:
-    closing it would reintroduce the false positive the test above guards
-    against. comment-discipline-reviewer remains the backstop for this
-    shape."""
+    """See the accepted-gap comment above _PHASE_STEP_QUALIFIER_RE for why
+    this shape evades the join heuristic."""
     content = "# Recorded in GH-905\n# Phase 2 replaces the old flow\n"
     blocks = _joined_comment_blocks(content)
     hits = [hit for block in blocks for hit in _PHASE_STEP_QUALIFIER_RE.findall(block)]

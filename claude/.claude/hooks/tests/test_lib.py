@@ -1642,6 +1642,13 @@ class TestWordsStartWith:
         it returns success without ever comparing a word."""
         assert _words_start_with(("pr", "merge"), ()) == 0
 
+    def test_words_shorter_than_prefix_is_a_documented_precondition_violation(self) -> None:
+        """The caller must already have checked WORDS has at least as many
+        words as PREFIX. Pins today's accidental behavior for the violation
+        case: a bash out-of-bounds array read yields an empty string, which
+        mismatches PREFIX's non-empty word at that index."""
+        assert _words_start_with(("pr",), ("pr", "merge")) == 1
+
 
 class TestCommandInvokesToolSubcmd:
     def test_bare_match(self) -> None:

@@ -50,9 +50,9 @@ CLAUDE_TOP_LEVEL_DIR = "claude"
 # cross-domain exception rather than folded into the scripts domain rule.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
 
-# test_ticket_reference_discipline.py statically scans every tracked .py file
-# under claude/ and plugins/ for ticket-prefixed identifiers, independent of
-# any import graph. Same undeclared-dependency shape as
+# test_ticket_reference_discipline.py statically scans every tracked .py and
+# .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
+# independent of any import graph. Same undeclared-dependency shape as
 # TRANSCRIPT_ANALYSIS_TEST_GLOB, naming the one dependent test file rather
 # than its containing domain.
 TICKET_REFERENCE_DISCIPLINE_TEST_PATH = "claude/.claude/hooks/tests/test_ticket_reference_discipline.py"
@@ -271,16 +271,16 @@ def _is_under_deliberately_unmapped_claude_dir(path: str) -> bool:
     )
 
 
-# test_ticket_reference_discipline.py statically scans every tracked .py file
-# under claude/ and plugins/ for ticket-prefixed identifiers and
-# plan-phase-qualified comment/docstring labels, independent of any import
-# graph -- same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB.
+# See TICKET_REFERENCE_DISCIPLINE_TEST_PATH's own comment above for what
+# that test scans. This predicate is deliberately .py-only. That test's .sh
+# coverage is achieved today only incidentally, through the existing
+# hooks/scripts shell-script domain rules.
 # Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly rather than the
 # HOOKS_TESTS_DIR domain it lives in. Excludes
-# DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS (claude/.claude/tests/) so
-# test_statusline_command.py and test_pytest_collection_config.py keep
-# falling open to the full suite via unmatched-path instead of narrowing to
-# TICKET_REFERENCE_DISCIPLINE_TEST_PATH's domain, which does not contain them.
+# DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS (claude/.claude/tests/):
+# - test_statusline_command.py and test_pytest_collection_config.py live there
+# - excluding them keeps those two files falling open to the full suite via
+#   unmatched-path, instead of narrowing to a domain that doesn't contain them
 def _is_py_source_under_claude_or_plugins(path: str) -> bool:
     return (
         path.endswith(".py")
