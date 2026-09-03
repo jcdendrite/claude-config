@@ -853,12 +853,13 @@ _lib_tool_argv_from_subcmd() {
 
 # _lib_words_start_with WORD... -- PREFIX...
 # Boolean exit status: 0 if WORD's first ${#PREFIX[@]} words equal PREFIX
-# word-for-word, 1 on the first mismatch. Caller must already have checked
-# WORD has at least as many words as PREFIX -- this never bounds-checks
-# against WORD's own length. Internal to _lib_command_invokes_tool_subcmd
-# below, the sole caller. That caller flattens both arrays across the call
-# boundary via "$@" plus a "--" sentinel. This is the same by-value idiom
-# want_subcmd uses at its own call boundary a few lines down.
+# word-for-word, 1 on the first mismatch or if WORD has fewer words than
+# PREFIX. Bounds-checks WORD against PREFIX's length itself, so it is safe to
+# call under set -u regardless of what the caller has already checked.
+# Internal to _lib_command_invokes_tool_subcmd below, the sole caller. That
+# caller flattens both arrays across the call boundary via "$@" plus a "--"
+# sentinel. This is the same by-value idiom want_subcmd uses at its own call
+# boundary a few lines down.
 # Invariant this sentinel depends on: neither WORDS nor PREFIX may contain
 # the literal string "--". WORDS-side: _lib_tool_argv_from_subcmd strips
 # every "-*"-shaped word, including a bare "--", before it reaches
@@ -872,6 +873,7 @@ _lib_words_start_with() {
   done
   shift
   local -a prefix_words=("$@")
+  [ "${#words[@]}" -lt "${#prefix_words[@]}" ] && return 1
   local i=0
   while [ "$i" -lt "${#prefix_words[@]}" ]; do
     [ "${words[$i]}" = "${prefix_words[$i]}" ] || return 1

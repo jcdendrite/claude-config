@@ -1642,12 +1642,58 @@ class TestWordsStartWith:
         it returns success without ever comparing a word."""
         assert _words_start_with(("pr", "merge"), ()) == 0
 
-    def test_words_shorter_than_prefix_is_a_documented_precondition_violation(self) -> None:
-        """The caller must already have checked WORDS has at least as many
-        words as PREFIX. Pins today's accidental behavior for the violation
-        case: a bash out-of-bounds array read yields an empty string, which
-        mismatches PREFIX's non-empty word at that index."""
+    def test_words_shorter_than_prefix_returns_no_match(self) -> None:
+        """WORDS having fewer words than PREFIX is a normal, safe case: the
+        function bounds-checks WORDS against PREFIX's length itself and
+        returns 1 before the comparison loop can index out of bounds."""
         assert _words_start_with(("pr",), ("pr", "merge")) == 1
+
+    def test_words_shorter_than_prefix_is_safe_under_set_dash_u(self) -> None:
+        """Every real caller sources _lib.sh under set -uo pipefail, where
+        indexing an array past its length aborts the script instead of
+        returning 1 -- this reproduces that shell option directly, unlike
+        the harness above which sources _lib.sh with no set -u at all."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_words_start_with "$@"',
+                "bash",
+                "pr",
+                "--",
+                "pr",
+                "merge",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert "unbound variable" not in result.stderr
+
+    def test_full_length_exact_match_is_safe_under_set_dash_u(self) -> None:
+        """The match branch is the one that actually fires emit_deny in a
+        calling gate hook like block-gh-pr-merge.sh -- this reproduces the
+        set -uo pipefail shell options every real caller runs under, unlike
+        the harness above which sources _lib.sh with no set -u at all."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_words_start_with "$@"',
+                "bash",
+                "pr",
+                "merge",
+                "--",
+                "pr",
+                "merge",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "unbound variable" not in result.stderr
 
 
 class TestCommandInvokesToolSubcmd:
