@@ -105,12 +105,21 @@ fi
 # would be reading a command the shell never runs. A bare newline separates
 # commands, and joins with a space.
 #
-# Parameter expansion, not `printf | tr`: a subshell pipeline that fails to
-# exec leaves COMMAND_FLAT empty, every arm below misses, and the gate falls
-# through to allow — a fail-open in a fail-closed gate. This form cannot fail
-# and spares the forks on a hook that fires on every Bash call.
-COMMAND_UNWRAPPED=${COMMAND//\\$'\n'/}
-COMMAND_FLAT=${COMMAND_UNWRAPPED//$'\n'/ }
+# GH-801: awk with RS = "\0" (matching _mask_shell_quotes's identical
+# technique in deny-invisible-commit-content.sh), not a per-line sed —
+# a per-line tool never sees an embedded newline character to substitute in
+# the first place, since the newline itself is what separates its input
+# into lines; slurping the whole command as one record is what lets a
+# single gsub reach across it. Checked and fail-closed: awk missing,
+# killed, or erroring denies explicitly below rather than falling through
+# to this gate's normal "no arm matched, allow" path — matching
+# deny-invisible-commit-content.sh's own COMMAND_UNQUOTED precedent.
+COMMAND_FLAT=$(printf '%s' "$COMMAND" | awk 'BEGIN { RS = "\0" } { gsub(/\\\n/, ""); gsub(/\n/, " "); printf "%s", $0 }')
+COMMAND_FLAT_EXIT=$?
+if [ "$COMMAND_FLAT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by respond-pr gate: could not flatten the command text (exit ${COMMAND_FLAT_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than evaluating an unflattened command that could hide a gated pattern across a line break."
+  exit 0
+fi
 
 # Match PR comment read/write patterns. Forms:
 #   gh api .../pulls/N/comments       (inline review comments)

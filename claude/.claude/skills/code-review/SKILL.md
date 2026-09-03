@@ -323,6 +323,27 @@ Format: inline `ADDRESS:` / `DEFER (<criterion>):` tags when there are ≤2 find
 
 Follow the disposition with a mandatory **Fix route:** line, mirroring **Spawn decisions:** above. Write `code-writer` when every ADDRESS row is dispatched as one round per `subagent-delegation`'s "Implementation work → `code-writer`" rule. Otherwise write `inline — <reason>`, naming whichever of that rule's carve-outs applies. DEFER rows carry no route — they produce no fix. As with Spawn decisions, an empty rationale is the failure mode this line closes.
 
+<!-- DISPOSITION_RULE:code-review-new-primitive-route start -->
+**A fix that would introduce a mechanism heavier, more privileged, or wider-scope than the surface already under review is a design question, not a fix.** Per `subagent-delegation`'s "Still being re-decided" carve-out, it routes to `plan-architect` for that one finding, not to `code-writer`. Either limb below fires the gate on whether the fix introduces such a mechanism — not on whether it merely touches a file outside the diff; a new test, fixture, or doc file alone does not fire it.
+
+- **Primary (observable).** The fix cannot be expressed as a change to a file already in the diff under review.
+- **Secondary (judgment).** The fix adds a new mechanism inside a file already in the diff, heavier, more privileged, or wider-scope than that file's own existing mechanism — CLAUDE.md §Engineering Judgment's over-powered-primitive vocabulary: a heavier abstraction, a more privileged execution context, a more complex coordination pattern, a more invasive integration.
+
+Not a valid reason to skip the dispatch:
+
+- Reuses an existing mechanism — valid only when nothing new is added; a new arm or instance of an already-generic, already-tested mechanism still fires the gate.
+- The reviewer's Suggested-fix field already names the fix — naming a fix is not a design review of it.
+
+Route on whether `.claude/plans/<slug>.md` exists on the branch:
+
+- **Plan file exists.** Dispatch `plan-it` Step 5's revision re-dispatch with that plan's path, the finding, and the fix you were about to make.
+- **No plan file.** Dispatch `plan-architect` directly with `MODE=consult` as the prompt's first line, carrying the finding, the fix, and the paths it would touch. An endorsed new mechanism still enters through `/plan-it` on its own terms, not as a review fix.
+
+Relay the return verbatim. A disagreement between the orchestrator and the returned recommendation is a blocking stop-and-ask to the human, per the enforcement-invariant rule below.
+
+The gate diverts the finding that trips it, not the round: state `plan-architect — <plan path>` or `plan-architect — consult` on the `Fix route:` line for that finding, and leave the remaining ADDRESS rows on whichever route they would otherwise have had. State the gate's verdict even when it doesn't fire, per the *Spawn decisions:* no-match precedent above.
+<!-- DISPOSITION_RULE:code-review-new-primitive-route end -->
+
 **DEFER criteria (closed list).** A finding may be tagged DEFER only when it matches one of:
 
 1. **Orthogonal scope** — addresses code or a concern truly unrelated to this change and not covered by tests already running in this PR's verification. Not orthogonal if this change touches the code the finding lands in, or if this change is what activates the finding (a new caller reaching a latent bug, a migration that flips a table a bug reads) — those are ADDRESS: scope is set by the bug, not by where the symptom first surfaced.

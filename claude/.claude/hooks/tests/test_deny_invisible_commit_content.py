@@ -404,13 +404,16 @@ class TestDenyInvisibleCommitContent:
     # silently allow an unscanned git commit                              #
     # ------------------------------------------------------------------ #
 
-    def test_grep_absent_from_path_denied(self, tmp_path):
-        """The fast-reject grep is the first grep fork this hook takes —
-        COMMAND_UNQUOTED's sed+tr quote-strip forks ahead of it, on every
-        Bash call, but grep itself still runs unconditionally right after.
-        A missing grep denies every Bash call regardless of content, the
-        same broad outcome class sed/tr's own absence below produces
-        too."""
+    def test_grep_absent_from_path_does_not_affect_the_gate(self, tmp_path):
+        """GH-783 Phase 2: the fast-reject swapped its grep-based match for
+        _lib_command_invokes_git_subcmd (sed/tr and a bash word-walk, no
+        grep), so grep is no longer a dependency of this hook at all — a
+        plain, otherwise-allowed `git commit -m x` (nothing that trips arm
+        1 or arm 2) still allows with grep absent from PATH. Pins that
+        grep's disappearance from this file's own fork list didn't
+        silently change the gate's fail posture; sed/tr below are still a
+        real dependency, since the fast-reject's own internal quote-strip
+        needs them."""
         farm_dir = tmp_path / "path-without-grep"
         farm_dir.mkdir()
         restricted_path = build_path_without("grep", farm_dir)
@@ -418,7 +421,7 @@ class TestDenyInvisibleCommitContent:
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("git commit -m x"),
             extra_env={"PATH": restricted_path},
-        ) == "deny"
+        ) == "allow"
 
     def test_awk_absent_from_path_denied(self, tmp_path):
         """`_mask_shell_quotes`'s single-pass scan is the earliest awk fork
@@ -435,10 +438,10 @@ class TestDenyInvisibleCommitContent:
 
     def test_sed_absent_from_path_denied(self, tmp_path):
         """`_lib_strip_shell_quotes` computing COMMAND_UNQUOTED is the
-        earliest sed fork this hook reaches — ahead of the fast-reject grep
-        itself — so a missing sed denies every Bash call, not only ones
-        mentioning `git commit`, the same broad outcome class the grep
-        case above has."""
+        earliest sed fork this hook reaches — the fast-reject's own
+        internal quote-strip (inside _lib_command_invokes_git_subcmd) also
+        depends on sed, but COMMAND_UNQUOTED forks first — so a missing sed
+        denies every Bash call, not only ones mentioning `git commit`."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -449,10 +452,10 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_tr_absent_from_path_denied(self, tmp_path):
-        """tr backs only `_lib_strip_shell_quotes`, called once for
-        COMMAND_UNQUOTED ahead of the fast-reject grep — so a missing tr
-        denies every Bash call, not only ones mentioning `git commit`, the
-        same broad outcome class the grep case above has."""
+        """tr backs `_lib_strip_shell_quotes`, called first for
+        COMMAND_UNQUOTED and again inside the fast-reject's own
+        _lib_command_invokes_git_subcmd — so a missing tr denies every
+        Bash call, not only ones mentioning `git commit`."""
         farm_dir = tmp_path / "path-without-tr"
         farm_dir.mkdir()
         restricted_path = build_path_without("tr", farm_dir)

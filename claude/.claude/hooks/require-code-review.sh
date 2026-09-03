@@ -5,7 +5,8 @@
 # WARNING: Do NOT remove the internal git commit check below.
 # The "if" field in settings.json is unreliable — it has been observed
 # to fire this hook on ALL Bash commands (e.g., git reset, date).
-# The internal grep is the actual gate. The "if" field is a hint only.
+# The internal _lib_command_invokes_git_subcmd check is the actual gate.
+# The "if" field is a hint only.
 #
 # How it works:
 # - The /code-review skill writes
@@ -57,11 +58,16 @@ if [ "$TOOL_NAME" != "Bash" ]; then
 fi
 
 # Only gate git commit commands — exit 0 (no opinion) for everything else.
-# Match `git commit` at the start of the command OR after a shell separator
-# (`&&`, `||`, `;`, `|`, `&`), so chained forms like `git add . && git commit`
-# are also caught. The trailing `(\s|$)` ensures we don't match `git commit-tree`
-# or other `git commit`-prefixed subcommands.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
+# Checked and fail-closed: an undetermined match (sed/tr missing, killed, or
+# erroring inside the helper) must not silently let an unscanned commit
+# through the review gate.
+_lib_command_invokes_git_subcmd "$COMMAND" commit
+GIT_COMMIT_MATCH_STATUS=$?
+if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
+  exit 0
+fi
+if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
+  emit_deny "Blocked by code-review gate: could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
   exit 0
 fi
 

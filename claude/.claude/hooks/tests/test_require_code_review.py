@@ -14,11 +14,13 @@ from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     extract_skill_command,
     git_toplevel,
     marker_path,
     run_hook,
+    run_hook_reason,
     run_skill_command,
     staged_diff_hash,
     write_marker,
@@ -467,6 +469,44 @@ class TestRequireCodeReview:
             )
             == "deny"
         )
+
+    # ------------------------------------------------------------------ #
+    # GH-783 Phase 2: quote-split and fail-closed status-2 regression      #
+    # ------------------------------------------------------------------ #
+
+    def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, git_repo):
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form — the fragment matcher strips
+        quote characters before word-walking, unlike a raw regex over
+        unstripped $COMMAND."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input('"git" commit -m foo', session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_sed_absent_from_path_denies(self, isolated_home, git_repo, tmp_path):
+        """Status-2 propagation: the matcher could not determine whether
+        this command invokes git commit, and this gate's own documented
+        fail-closed posture means an undetermined match denies rather than
+        silently falling through to allow. Asserts the distinguishing
+        reason text, not just the verdict, so this test cannot be
+        satisfied by an ordinary missing-review deny reaching "deny" for
+        the wrong reason."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        reason = run_hook_reason(
+            CODE_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason
 
 
 class TestRequireCodeReviewHonorsConfigDir:

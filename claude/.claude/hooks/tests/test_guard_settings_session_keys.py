@@ -9,6 +9,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     run_hook,
     run_hook_reason,
@@ -454,14 +455,15 @@ class TestGuardSettingsSessionKeys:
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
         (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
-        `grep` for the git-commit/staged-file matches, `git` for the
+        `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+        (GH-783 Phase 2), `grep` for the staged-file match, `git` for the
         _lib_capped-wrapped diff/show calls), omitting both timeout(1) and
         gtimeout(1). Mirrors test_require_worktree_for_git_writes.py's
         test_python3_absent_denies shape; skips (does not silently
         under-symlink) when a needed real binary is itself absent."""
         stub_bin = tmp_path / "_stub_bin"
         stub_bin.mkdir()
-        for tool in ("cat", "dirname", "git", "grep", "jq"):
+        for tool in ("cat", "dirname", "git", "grep", "jq", "sed", "tr"):
             real_path = shutil.which(tool)
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
@@ -507,6 +509,29 @@ class TestGuardSettingsSessionKeys:
                 bash_input("git commit -m 'add unrelated key'"),
                 cwd=repo,
                 extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
+
+    def test_sed_absent_from_path_still_allows(self, settings_repo, tmp_path):
+        """Mirror-image of the checked hooks' status-2 deny tests: this
+        hook is deliberately, correctly unchecked (see its header's fail-
+        open posture), so a guarded-key change under a sed-absent PATH
+        must still ALLOW -- the fast-reject can't determine a match,
+        treats that the same as "no match", and the guarded-key check
+        below never runs. Pins the accepted fail-open posture as an
+        executable invariant rather than leaving it implicit."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+                extra_env={"PATH": restricted_path},
             )
             == "allow"
         )

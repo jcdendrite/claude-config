@@ -67,6 +67,8 @@ Source: [Claude Code settings — skillOverrides](https://code.claude.com/docs/e
 
 Note: `skillOverrides` does not apply to plugin skills — plugin visibility is managed via the `/plugin` command and `enabledPlugins` in settings.json.
 
+For a plugin skill that never needs model-initiated invocation, `disable-model-invocation: true` in its own `SKILL.md` frontmatter is a real fix instead. Unlike `skillOverrides`, it is read directly from the file, so it applies to plugin skills too. `issue-triage` uses this: it is human-invoked only via `/issue-triage`, so its description is fully excluded from the listing budget. `skill-review` can't take the same fix, because `/code-review` and the `require-skill-review` hook dispatch it by name — `disable-model-invocation: true` would block that dispatch too, which is why it keeps the minimized, always-counted description described above instead.
+
 ## Bundled skills disabled by default
 
 Claude Code ships a set of bundled skills alongside its custom-skill support. Ten bundled skills are disabled in this repo's `settings.json` via `skillOverrides: "off"`, and two (`/loop`, `/simplify`) are set to `name-only` — invokable by name with no description-budget cost. The reason in each case is either redundancy with a more capable repo-specific skill or low utility relative to the description-budget cost. All skill descriptions contribute to the `skillListingBudgetFraction` context allocation; `/doctor` reports a warning when the budget overflows and descriptions are dropped. The disabled skills freed budget for the always-relevant `user-invocable: false` skills that auto-trigger during the engineering workflow.
@@ -131,13 +133,14 @@ classify which skill a query should match (`description-fidelity`). See
 
 ## Project-scoped plugins
 
-Three skills that primarily apply to this repo's own workflow — editing `SKILL.md` files, authoring hook scripts, and managing plugin versioning — live as project-scoped plugins in `plugins/` rather than stowed user-scope skills. This keeps them out of the always-loaded skill catalog for downstream projects that stow claude-config but rarely touch these surfaces.
+Four skills that primarily apply to this repo's own workflow — editing `SKILL.md` files, authoring hook scripts, managing plugin versioning, and triaging this repo's own GitHub issue backlog — live as project-scoped plugins in `plugins/` rather than stowed user-scope skills. This keeps them out of the always-loaded skill catalog for downstream projects that stow claude-config but rarely touch these surfaces.
 
 | Plugin | What it provides | When to install |
 |---|---|---|
 | `skill-management@claude-config` | Commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing), plus behavioral-equivalence audit via `/skill-review` | Repos that author their own `SKILL.md` files |
 | `claude-hook-review@claude-config` | Review playbook for `.claude/hooks/*.sh` scripts and `settings.json` hook entries | Repos that author their own hook scripts |
 | `plugin-semver@claude-config` | Semver and version-field discipline for plugin manifests | Repos that author Claude Code plugins for a marketplace |
+| `issue-triage@claude-config` | `/issue-triage`: stateless, report-only triage of open GitHub issues — batched evidence-gathering, cross-batch synthesis, and a claim-verification pass | Repos willing to accept: the operator's own ambient `gh` credential's reach, untrusted issue/comment input, and unredacted artifact retention — no command-level enforcement exists |
 
 Three more plugins also live in `plugins/` but are not part of this repo's own authoring workflow — they provide skills for downstream repos rather than for contributors to claude-config itself:
 
@@ -159,6 +162,7 @@ Then Claude Code will resolve the plugins from the marketplace. To install any p
 claude plugin install skill-management@claude-config --scope project
 claude plugin install claude-hook-review@claude-config --scope project
 claude plugin install plugin-semver@claude-config --scope project
+claude plugin install issue-triage@claude-config --scope project
 ```
 
 **Version field convention:** a plugin's `version` is declared in its `.claude-plugin/plugin.json` only — never in a `marketplace.json` entry. Claude Code resolves `plugin.json` first and silently masks any marketplace value, so adding `version` to a marketplace entry only creates drift.

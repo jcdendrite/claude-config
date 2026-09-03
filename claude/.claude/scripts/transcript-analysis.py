@@ -1098,8 +1098,15 @@ _DENIAL_HOOK_NAME_COLON_RE = re.compile(
 _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     # "blocked by <name> hook/gate" — one entry per hooks/*.sh label.
     "gh-pr-merge",  # block-gh-pr-merge.sh:49
-    "CLAUDE.md length",  # check-claude-md-length.sh:42
-    "skill length",  # check-skill-length.sh:41
+    # Still producible today by check-claude-md-length.sh's and
+    # check-skill-length.sh's bootstrap (source-failure) and
+    # parse-input-failure paths, both untouched by the hook-family-
+    # standardization Phase 2 extraction. The commit-detection fail-closed
+    # path that used to share these two labels now goes through the
+    # extracted _lib_staged_length_gate and shares "AGENTS.md length" /
+    # "Skill length" below instead.
+    "CLAUDE.md length",  # check-claude-md-length.sh:51,55
+    "skill length",  # check-skill-length.sh:56,60
     "credential-path Bash",  # deny-credential-bash-reads.sh:27
     "credential-file read",  # deny-credential-file-reads.sh:27
     "data-file read",  # deny-data-file-reads.sh:65

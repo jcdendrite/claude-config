@@ -36,6 +36,8 @@ Both pointing to delegate ⇒ dispatch the **objective** — not the individual 
 - `Edit`/`Write` sequences where you are still deciding approach, scope, or the substantive content — the judgment is the parent's and the edit stays inline. See the **Read-then-edit: decision-made test** in the `code-writer` section below for the narrow exception.
 - The failure output or diff you reason over line by line — the artifact itself, not the investigation that precedes it.
 
+**A dispatch must return something the parent does not already have.** Never dispatch an agent — of any type — whose instructions are to do no work: report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing — waiting isn't an action a dispatch can perform — yet still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one.
+
 **No permission cost.** A subagent inherits the parent's permission mode, so under auto mode its read-only diagnostics clear the same classifier as the parent's — no extra prompts, no `permissions.allow` entries needed.
 
 ## Step 2 — Pick the right subagent

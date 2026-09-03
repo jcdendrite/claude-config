@@ -1010,6 +1010,245 @@ _lib_fragment_has_token() {
   [[ "$fragment" =~ (^|[[:space:]])${token}([[:space:]]|$) ]]
 }
 
+# _lib_command_invokes_git_subcmd COMMAND SUBCMD
+# Tri-state via exit status: 0 if any fragment of COMMAND invokes `git
+# SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
+# or the fragment-split) failed and the answer could not be determined.
+# Composes _lib_strip_shell_quotes, _lib_split_fragments,
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so GH-783 Phase
+# 2's eight gate hooks share one fragment-aware matcher instead of each
+# hand-copying a raw regex over unstripped $COMMAND (which a quote-split
+# defeats, e.g. `"git" commit`).
+#
+# Call-site contract (load-bearing): never picks a fail posture itself —
+# every caller must check for status 2 and decide allow-or-deny for its own
+# gate, the same discipline _lib_split_fragments's own call-site contract
+# already requires. GH-783 Phase 2's six checked-fail-closed hooks deny on
+# status 2; its two correctly-fail-open hooks (guard-settings-session-keys.sh,
+# require-stow-reminder.sh) treat anything other than 0 as "no match" and
+# stay silent about the distinction, matching their own documented posture.
+_lib_command_invokes_git_subcmd() {
+  [ "$#" -eq 2 ] || return 2
+  local command="$1" subcmd="$2"
+  local command_unquoted fragments fragment
+  command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
+  fragments=$(_lib_split_fragments "$command_unquoted") || return 2
+  while IFS= read -r fragment; do
+    [ -z "$fragment" ] && continue
+    _lib_fragment_invokes_git "$fragment" || continue
+    if [ "$(_lib_extract_git_subcmd "$fragment")" = "$subcmd" ]; then
+      return 0
+    fi
+  done <<< "$fragments"
+  return 1
+}
+
+# Print a tool fragment's subcommand-word sequence, one word per line, after
+# walking past the tool's own command word (matched the same way
+# _lib_fragment_invokes_tool does: exact, or a path ending in "/$tool") and
+# any of its value-taking global flags. Mirrors _lib_git_argv_from_subcmd's
+# state machine, but the value-taking-flag set is looked up per TOOL rather
+# than hardcoded, since each CLI defines its own global-flag surface.
+# Internal to _lib_command_invokes_tool_subcmd below, not a documented
+# call-site contract of its own — gh is its only caller today.
+#
+# gh 2.98.0 (fetched 2026-09-02 via `gh help pr merge` and `gh help issue
+# create`, whose INHERITED FLAGS sections both list only -R/--repo as
+# value-taking): the sole global flag that can precede or interpose in a gh
+# subcommand's own word sequence. A future gh release adding another one
+# needs this list updated by hand — see test_lib.py's regression test
+# asserting this list stays a subset of the CI runner's actual `gh --help`
+# surface.
+#
+# Any TOOL other than gh falls to the empty flag set: every "-*" word is
+# treated as a flag consuming no separate-word value. That default can miss
+# a real subcommand match for a tool with its own value-taking global flags
+# (the same failure shape a future unaudited gh release would reintroduce),
+# but never over-consumes a positional word as a flag's value, so it cannot
+# produce a false match.
+_lib_tool_argv_from_subcmd() {
+  local fragment="$1" tool="$2"
+  local saved_opts=$-
+  set -f
+  local value_taking_flags=""
+  case "$tool" in
+    gh) value_taking_flags=" -R --repo " ;;
+  esac
+  local past_tool=false skip_next=false word
+  for word in $fragment; do
+    if ! $past_tool; then
+      if [[ "$word" == "$tool" || "$word" == */"$tool" ]]; then
+        past_tool=true
+      fi
+      continue
+    fi
+    if $skip_next; then
+      skip_next=false
+      continue
+    fi
+    case "$word" in
+      -*)
+        # Glued value forms (`--repo=owner/repo`, `-Rowner/repo`) carry
+        # their value in the same word — a gh-specific shape, so only
+        # recognized for tool=gh, matching value_taking_flags's own scoping.
+        if [ "$tool" = gh ]; then
+          case "$word" in
+            --repo=*|-R?*) continue ;;
+          esac
+        fi
+        case "$value_taking_flags" in
+          *" $word "*) skip_next=true ;;
+        esac
+        continue
+        ;;
+    esac
+    printf '%s\n' "$word"
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+}
+
+# _lib_command_invokes_tool_subcmd COMMAND TOOL SUBCMD...
+# Tri-state via exit status, same 0/1/2 contract as
+# _lib_command_invokes_git_subcmd above: 0 if any fragment of COMMAND
+# invokes TOOL followed by exactly the given SUBCMD word sequence (e.g. `gh`
+# `pr` `merge`), 1 if no fragment does, 2 if a needed fork failed.
+#
+# WHY command-word, not any-word (unlike the git helper above): a gh-family
+# caller (block-gh-pr-merge.sh) must allow `echo "gh pr merge"` through,
+# which any-word matching would falsely block. Resolving the fragment's
+# command word (via _lib_fragment_invokes_tool, quote-blind by contract)
+# delivers that: on the quote-stripped fragment `echo gh pr merge`, the
+# command word resolves to `echo`, not `gh`.
+# The same resolution also matches a quote-split subcommand word, an
+# independent capability: `gh pr "merge"` quote-strips to a bare `merge`
+# token, which this word-sequence match catches — see block-gh-pr-merge.sh
+# for the regression test.
+#
+# Call-site contract (load-bearing): never picks a fail posture itself,
+# same discipline as _lib_command_invokes_git_subcmd above — every caller
+# must check for status 2 and decide allow-or-deny for its own gate.
+#
+# Accepted cost, not cached: deny-escaped-backticks-in-pr-body.sh and
+# require-stow-reminder.sh each call this 2-3 times per hook invocation on
+# the same $COMMAND, and every call re-pays the full quote-strip-plus-
+# fragment-split baseline from scratch.
+_lib_command_invokes_tool_subcmd() {
+  [ "$#" -ge 3 ] || return 2
+  local command="$1" tool="$2"
+  shift 2
+  local -a want_subcmd=("$@")
+  local command_unquoted fragments fragment
+  command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
+  fragments=$(_lib_split_fragments "$command_unquoted") || return 2
+  while IFS= read -r fragment; do
+    [ -z "$fragment" ] && continue
+    _lib_fragment_invokes_tool "$fragment" "$tool" || continue
+    local -a got_subcmd=()
+    while IFS= read -r word; do
+      got_subcmd+=("$word")
+    done < <(_lib_tool_argv_from_subcmd "$fragment" "$tool")
+    [ "${#got_subcmd[@]}" -lt "${#want_subcmd[@]}" ] && continue
+    local matched=true i=0
+    while [ "$i" -lt "${#want_subcmd[@]}" ]; do
+      if [ "${got_subcmd[$i]}" != "${want_subcmd[$i]}" ]; then
+        matched=false
+        break
+      fi
+      i=$((i + 1))
+    done
+    $matched && return 0
+  done <<< "$fragments"
+  return 1
+}
+
+# _lib_staged_length_gate PATTERN GATE_LABEL
+# Shared body behind check-skill-length.sh and check-claude-md-length.sh:
+# deny a git commit when a staged file matching PATTERN (a grep -E pattern
+# over `git diff --cached --name-only` output) is over its per-file limit
+# AND longer than the previously committed version — reducing an
+# already-over-limit file commit by commit is allowed; new bloat is not.
+#
+# Callback-by-convention, the same shape _lib_parse_tool_input_or_deny
+# already establishes: CALLER MUST define `emit_deny` (as every gate hook
+# does, per that function's own contract comment) and `limit_for` (a
+# function mapping a repo-root-relative staged path to its line-count
+# limit) before calling this. Also relies on the caller having already
+# populated $COMMAND and $TOOL_NAME via _lib_parse_tool_input_or_deny, and
+# on the caller having already exited for a non-Bash TOOL_NAME.
+#
+# GATE_LABEL is the exact sentence (through its trailing period) each caller
+# already used as its own over-limit deny message's lead-in before this
+# extraction — verbatim, not a generic template, because
+# transcript-analysis.py's _denial_hook_label parses that exact wording
+# ("AGENTS.md length", "Skill length") out of live deny text to attribute a
+# denial to its hook; see _DENIAL_HOOK_LABELS there.
+#
+# Checked fail-closed on the commit-match check, matching both callers'
+# documented fail-closed posture: an undetermined match (sed/tr missing,
+# killed, or erroring inside _lib_command_invokes_git_subcmd) denies rather
+# than silently skipping the length check.
+#
+# The fail-closed message below deliberately reuses GATE_LABEL's own prefix
+# (via ${gate_label%%:*}), so it now classifies into the same
+# transcript-analysis.py _DENIAL_HOOK_LABELS bucket as the over-limit
+# message below — the two were distinct buckets before this extraction; the
+# merge is a deliberate simplification, not an oversight.
+#
+# The git calls below are capped via _lib_capped, which degrades to allow
+# (not just to not-hanging) on timeout: a locked index or network mount
+# silently skips the length check rather than blocking the commit. That is
+# a deliberate choice for a style/lint gate, not a security-relevant
+# scanner — contrast deny-pii-in-commits.sh, which fails closed on the same
+# class of timeout because an unscanned commit there is an unscanned leak
+# vector.
+#
+# The rev-parse and diff calls' cap-engagement characterization tests live
+# only in test_check_skill_length.py, valid for both callers because these
+# capped calls are caller-invariant; the two show calls have no dedicated
+# cap-engagement test anywhere, a pre-existing gap this extraction doesn't
+# close.
+_lib_staged_length_gate() {
+  local pattern="$1" gate_label="$2"
+  _lib_command_invokes_git_subcmd "$COMMAND" commit
+  local git_commit_match_status=$?
+  if [ "$git_commit_match_status" -eq 1 ]; then
+    return 0
+  fi
+  if [ "$git_commit_match_status" -ne 0 ]; then
+    emit_deny "Blocked by ${gate_label%%:*}: could not determine whether this command invokes git commit (status ${git_commit_match_status}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
+    return 0
+  fi
+
+  # Fail closed if a caller forgot to define limit_for, rather than letting
+  # `limit=$(limit_for "$f")` silently yield empty and skip the length check.
+  if ! declare -f limit_for >/dev/null 2>&1; then
+    emit_deny "Blocked by ${gate_label%%:*}: internal error — limit_for is not defined. This is a caller-contract violation, not a policy violation; report it."
+    return 0
+  fi
+
+  if [ "$(_lib_capped git rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
+    return 0
+  fi
+
+  local fail=0 messages="" f new old limit
+  while IFS= read -r f; do
+    new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
+    old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
+    limit=$(limit_for "$f")
+    if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
+      messages="${messages}  $f: $new lines (was $old, limit $limit)\n"
+      fail=1
+    fi
+  done < <(_lib_capped git diff --cached --name-only 2>/dev/null | grep -E "$pattern")
+
+  if [ "$fail" -eq 1 ]; then
+    local reason
+    reason=$(printf '%s Reduce to the limit or fewer lines before committing:\n%b' "$gate_label" "$messages")
+    emit_deny "$reason"
+  fi
+  return 0
+}
+
 # Decide whether a command chains `marker.sh write <skill>` before its first
 # `git commit`. PreToolUse hooks fire once per Bash tool call before the chain
 # runs, so an on-disk marker check denies naturally-typed forms like
@@ -1827,9 +2066,15 @@ _lib_config_lines() {
 # partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
 # computation for the pattern.
 _lib_strip_shell_quotes() {
-  printf '%s' "$1" \
-    | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g' \
-    | tr -d "\"'"
+  local stripped stripped_exit result result_exit
+  stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
+  stripped_exit=$?
+  [ "$stripped_exit" -ne 0 ] && return 1
+  result=$(printf '%s' "$stripped" | tr -d "\"'")
+  result_exit=$?
+  [ "$result_exit" -ne 0 ] && return 1
+  printf '%s' "$result"
+  return 0
 }
 
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
@@ -2061,7 +2306,15 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 # - Residual gap: a channel reference spliced right after a fabricated
 #   closing bracket evades this detector, same class as the all-digit
 #   GitHub-issue exclusion above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^(])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+# - Excludes bash parameter-expansion-length syntax (`${#array[@]}`,
+#   `${#string}`): the first alternative also requires the hash not be
+#   immediately preceded by `{`, the exact adjacent sequence that shape
+#   always produces.
+# - Residual gap: a channel reference wrapped as `{#slug}` (e.g. a
+#   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
+#   evades this detector via the same exclusion, same class as the two
+#   residual gaps above.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^({])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a

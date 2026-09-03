@@ -86,11 +86,12 @@ parent hands its children the main checkout. Naming a working
 directory in the agent's prompt does not change where its commands
 run.
 
-Hold the anchor still for the life of any write-capable dispatch — the
-write check re-evaluates it for the whole dispatch, not just at
-launch, and re-anchoring mid-dispatch gets the subagent's Write/Edit
-calls denied outright (not redirected) unless pinned at launch via
-`isolation: worktree` or an explicit cwd.
+Hold the anchor still for the life of any dispatch, read-only ones
+included — the isolation check re-evaluates it for the whole dispatch,
+not just at launch. Re-anchoring mid-dispatch denies the subagent's
+Write/Edit calls outright, not redirected. Pin `isolation: worktree`
+or an explicit cwd at launch to avoid this denial. Its Bash calls are
+denied too, a bare `pwd` included, for the rest of the run.
 
 The anchor is session-scoped. A resumed session starts unanchored, so
 re-enter the worktree before running *any* other command or

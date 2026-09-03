@@ -2357,6 +2357,21 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_structural_slack_bash_array_length_syntax_allowed(self, claude_config_repo):
+        """Bash parameter-expansion-length syntax, `${#array[@]}`, is
+        excluded: the `{` immediately before `#` is what distinguishes this
+        common shell idiom from a real channel mention, mirroring the
+        markdown-inline-link exclusion's use of adjacency rather than
+        charset to disambiguate."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Guard the empty-array case: [ \"${#items[@]}\" -eq 0 ]'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_structural_slack_parenthetical_mention_not_adjacent_denied(self, claude_config_repo):
         """A real Slack-channel mention written inside prose parentheses,
         separated from `(` by other words, must still be caught — caught

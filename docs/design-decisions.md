@@ -742,3 +742,99 @@ The correct alternative already lives in this repo. `handoff/SKILL.md`'s collect
 - `claude/.claude/hooks/consume-durable-continuity-file-on-read.sh` — the advisory-nudge shape considered and declined here.
 - `claude/.claude/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
 - `.claude/plans/harness-context-mismatched-tool-dispatch.md` — full assumption ledger, per-mechanism reasoning, and the corpus-evidence sourcing this entry summarizes.
+
+## 42. `/code-review`'s Fix-route step routes a mechanism-inventing fix through `plan-architect`, dispatched rather than hooked (2026-09-02)
+
+Step 1's implementation-fitness gate evaluates the diff as written; nothing in `/code-review` evaluated the fix a finding's own disposition was about to cause. An ADDRESS finding whose proposed fix introduces a mechanism heavier, more privileged, or wider-scope than the surface already under review — a new hook, a new agent, a new coordination primitive — could be authored inline or dispatched straight to `code-writer` like any other fix, bypassing every design gate the surrounding work went through to get written in the first place. `code-review/SKILL.md`'s `## Finding disposition` step now closes that gap: such a fix is a design question, not a fix, and is routed to `plan-architect` — through `plan-it` Step 5's existing revision re-dispatch when the branch has a plan file, or a direct `MODE=consult` dispatch when it doesn't — before anyone writes it.
+
+**A dispatch, not a hook.** A `PreToolUse` gate on `Write`/`Edit` was rejected on three independent grounds. The tool payload carries a path and content, never a semantic label for "this is a fix I designed mid-review" — there is no predicate at the decision point. A Write-time gate would also fire after the design choice is already made, the wrong moment to catch it. The same need would recur here: distinguishing a legitimately-planned new mechanism from an unplanned one needs its own cross-turn marker, the identical compounding-layers shape §41 already declined for a structurally different case (an unenforceable `ScheduleWakeup` misuse). Both cases add a defensive layer whose only job is to close a gap the layer below it created.
+
+**The plan-file route is hook-backed in practice, even though the rule itself is advisory.** The new `code-review` paragraph is prose the model must choose to follow, the same enforcement tier as any other skill instruction. But its compliance act — inserting `plan-architect`'s returned sections into the plan file — is *editing the plan file*, and `require-plan-review.sh` re-arms on any modified plan file and denies every subsequent non-plan `Write`/`Edit` until a marker covering the new plan state exists. The failure this closes escaped detection precisely because the plan file was never touched: the design shipped as prose, across several autonomous handoffs, with no plan-review gate ever re-arming. Routing the fix through the plan file converts an advisory rule into a hook-backed one on the branch where the failure actually occurred, without writing a hook. The no-plan-file consult route carries no equivalent backstop — it stays advisory, same as the rest of `code-review`'s disposition step.
+
+**§37's ad hoc consult gate is unchanged; this is a second, skill-prescribed call site.** `plan-architect.md`'s description and `claude/.claude/CLAUDE.md`'s Model & Effort Routing bullet both bar a session from dispatching `MODE=consult` on its own initiative — that constraint governs a session's own judgment that a decision looks architecturally significant, and it stays exactly as strict. `/code-review`'s Fix-route step is not that: it is a skill prescribing the dispatch, which CLAUDE.md's Agent Briefing section already covers under "a prescribed dispatch is an authorized dispatch." Both surfaces got a one-clause pointer to that rule rather than a restatement, because the failure direction of a misread is a session declining the dispatch and free-handing the design instead — the exact failure this entry closes.
+
+**The rejected alternative: consult `plan-architect` unconditionally on every ADDRESS finding, no gate.** This repo logged 319 `/code-review` invocations across 120 distinct branches in the 2026-08-01+ window, against 41 `plan-architect` runs over the same 30-day window (both published in `docs/case-studies/opus-frontload-review-rounds.md`). An unconditional route would put a ceiling of roughly 9x current `plan-architect` volume. No corpus instrument today reports ADDRESS-findings-per-round, so that multiplier's floor cannot be narrowed further. The alternative was set aside on three further grounds:
+
+- It does not remove the contestable judgment, only relocates it to arguing the rule's scope — the same failure this file's existing invalid-rationale lists already document happening elsewhere in this skill.
+- It does not shrink the design — the consult-vs-revision routing choice and the dispatch's own question both survive, and a third de facto genre inside `MODE=consult` would re-open what §37's explicit mode literal exists to close.
+- It is inconsistent with *Ripple effect triage* one section earlier in the same file, which resolved the identical dispatch-cost-vs-under-dispatch tension as gate-plus-mandatory-visible-rationale, not spawn-everything.
+
+**Revisit** if either of these:
+
+- A later `review-trace` pass shows the gate firing at or near zero while fixes that add a new hook, agent, or coordination primitive keep landing — evidence the trigger's two limbs are being reasoned around rather than the gate simply not firing often.
+- `plan-architect`'s monthly run count attributable to this call site drifts unboundedly instead of tracking the observed ADDRESS-finding rate for mechanism-proposing fixes — checkable via `subagent-mix --this-repo`'s per-`agentType` `Runs`, mirroring §37's own spend-focused falsifiable prediction for its call site.
+
+This is a third frequency-bound call site alongside §30's and §37's, extended rather than restated: bounded by how often a review finding proposes a new mechanism, not by a session's own asking rate (§37) or by once-per-plan-run (§30).
+
+### Sources
+
+- `.claude/plans/repo-scoped-issue-triage.md` (PR #807) — the originating incident: an ADDRESS finding's fix invented a new agent and hook in prose across several handoffs before being caught.
+- That plan's assumption row 19 — the hardest sub-decision behind this entry's closed list of invalid skip rationales.
+- `docs/design-decisions.md` §30 and §37 — the frequency-bound reasoning this entry extends with a third call site, without editing either entry.
+- `docs/design-decisions.md` §41 — the compounding-layers precedent for declining a marker-based hook here.
+- `docs/case-studies/opus-frontload-review-rounds.md:35,112` — the 319/41 repo-scoped volume figures cited above.
+- `claude/.claude/hooks/require-plan-review.sh` — the re-arm-on-plan-file-modification behavior that hook-backs the plan-file route.
+
+## 43. UI and notification preference keys ship as shared defaults in the stow-source settings file (2026-09-02)
+
+Stow installs `claude/.claude/settings.json` as every consumer's user-scope
+`~/.claude/settings.json`. Claude Code's settings precedence has five
+levels: managed policy, command line, project-local
+(`.claude/settings.local.json`), shared project (`.claude/settings.json`),
+and user (`~/.claude/settings.json`). None of the five is a user-scope
+*local* file.
+`~/.claude/settings.local.json`, where a stow user's own
+`claude/.claude/settings.local.json` lands, therefore corresponds to no
+documented scope, and a direct test confirmed `tui`, `theme`, and
+`agentPushNotifEnabled` are not honored there. While the user settings file
+is a symlink into this repo, a personal preference and a shipped default are
+the same bytes; overriding one means editing the tracked file, the tradeoff
+every key in that file already carries.
+
+All three are committed here. `tui: "fullscreen"` has the functional case —
+the alternate-screen renderer offers three things the classic renderer
+doesn't:
+
+- No redraw flicker.
+- Flat memory across long conversations.
+- Mouse support (click-to-expand tool output, click-and-drag selection,
+  copy-to-clipboard on mouse release).
+
+`theme: "dark"` and `agentPushNotifEnabled: true` have no equivalent
+justification; they are defaults, not capabilities.
+
+**The session-keys guard is a drift gate, not a presence ban.**
+`guard-settings-session-keys.sh` compares the staged file against `main` key
+by key, so a guarded key holding a committed value keeps its protection: a
+later `/config` theme change or `/tui classic` still denies the commit that
+would ship it. `model: "sonnet"` already sits in this file under that
+arrangement. The gate has no agent-side proceed path by design, so the
+commit that first introduces a guarded key's value is run by the engineer
+directly rather than by a Claude Code session, and the guarded key list stays
+untouched. Dropping `theme` and `tui` from that list to unblock one commit
+was rejected. Claude Code writes both keys itself. The file is also
+reachable through the user-scope symlink, the accidental-commit path the
+keys were added to catch in the first place.
+
+**Two entries this file cannot host.** `enabledPlugins` has no per-account
+expression under this layout — every Claude Code account on a machine
+resolves `settings.json` through the same symlink, so a plugin enabled for
+one account is enabled for all. A toggle wanted for a single account, and an
+`extraKnownMarketplaces` entry naming one machine's absolute checkout path,
+were both dropped rather than committed; the second would be wrong for any
+other consumer, whose checkout is elsewhere. A real per-account settings file
+belongs in the machine's own provisioning, outside this repo.
+
+**Open discrepancy, not resolved here.** The settings reference lists
+`enabledPlugins` and `agentPushNotifEnabled` with scope "Any file", defined
+there as effective in all four settings locations including Local.
+`.claude/rules/settings-json-conventions.md` states the opposite for
+`enabledPlugins`. Both cannot be right, and nothing in this repo tests the
+question.
+
+### Sources
+
+- [Claude Code settings](https://code.claude.com/docs/en/settings) — the five-level precedence model and each level's file path.
+- [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference) — per-key scope column, including the "Any file" scope cited above.
+- [Fullscreen mode](https://code.claude.com/docs/en/fullscreen) — alternate-screen renderer behavior, memory, and mouse support.
+- `claude/.claude/hooks/guard-settings-session-keys.sh` and [`docs/hooks.md`](hooks.md) — the guarded key set and the staged-vs-`main` comparison.
