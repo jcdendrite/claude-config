@@ -766,13 +766,17 @@ is a symlink into this repo, a personal preference and a shipped default are
 the same bytes; overriding one means editing the tracked file, the tradeoff
 every key in that file already carries.
 
-All three are committed here. `tui: "fullscreen"` has the functional case:
-the alternate-screen renderer removes redraw flicker, holds memory flat
-across long conversations, and adds mouse support — click-to-expand tool
-output, click-and-drag selection, and copy-to-clipboard on mouse release —
-none of which the classic renderer offers. `theme: "dark"` and
-`agentPushNotifEnabled: true` have no equivalent justification; they are
-defaults, not capabilities.
+All three are committed here. `tui: "fullscreen"` has the functional case —
+the alternate-screen renderer offers three things the classic renderer
+doesn't:
+
+- No redraw flicker.
+- Flat memory across long conversations.
+- Mouse support (click-to-expand tool output, click-and-drag selection,
+  copy-to-clipboard on mouse release).
+
+`theme: "dark"` and `agentPushNotifEnabled: true` have no equivalent
+justification; they are defaults, not capabilities.
 
 **The session-keys guard is a drift gate, not a presence ban.**
 `guard-settings-session-keys.sh` compares the staged file against `main` key
