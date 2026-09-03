@@ -507,6 +507,77 @@ class TestConventionSkillWiring:
         assert "write the handoff file in the same turn" in body
 
 
+class TestMemorySkillSectionOrdinalCrossReferences:
+    """Pin every cross-reference this repo rewrote when
+    ai-instruction-and-memory-files/SKILL.md's sections were renumbered
+    (§2→§1, §3→§2, §5→§3) and its §1/§4 content moved to
+    claude/.claude/rules/claude-md-conventions.md.
+
+    A renumber silently redirects any pointer that still cites the old
+    ordinal to whatever content now sits at that number, rather than
+    breaking — `plugins/lovable-cloud/skills/lovable-cloud-knowledge/
+    SKILL.md` had already drifted this way undetected, citing "§3" for
+    content that had moved to §2, and a manual `git grep` sweep would not
+    have caught it because the ordinal still resolved to a real heading,
+    just the wrong one. These tests fail if a future edit changes what a
+    cited ordinal or named heading means without updating the citing text.
+    """
+
+    @staticmethod
+    def _section_body(full_body: str, ordinal: str) -> str:
+        """Body text of `## <ordinal>. <title>` up to the next `## ` heading."""
+        heading = re.search(rf"^## {ordinal}\. .+$", full_body, re.MULTILINE)
+        assert heading, f"no '## {ordinal}. ' heading found"
+        start = heading.end()
+        next_heading = re.search(r"^## ", full_body[start:], re.MULTILINE)
+        end = start + next_heading.start() if next_heading else len(full_body)
+        return full_body[start:end]
+
+    def _memory_skill_body(self) -> str:
+        return _skill_body("ai-instruction-and-memory-files")
+
+    def test_step1_item1_ordinals_resolve_to_named_content(self):
+        """SKILL.md:25 cites '§2 advisory vs deterministic, §3 anti-duplication
+        heuristic' — §2 must still discuss advisory/deterministic and §3 must
+        still carry the anti-duplication heuristic."""
+        body = self._memory_skill_body()
+        section_2 = self._section_body(body, "2")
+        assert "advisory" in section_2 and "deterministic" in section_2
+        section_3 = self._section_body(body, "3")
+        assert "Anti-duplication heuristic" in section_3
+
+    def test_step1_closing_line_ordinal_resolves_to_routing_table(self):
+        """SKILL.md:31 cites '§3 for the full routing table' — §3 must still
+        carry the CLAUDE.md-vs-memory routing table."""
+        body = self._memory_skill_body()
+        section_3 = self._section_body(body, "3")
+        assert "Where does a given rule belong?" in section_3
+
+    def test_routing_table_row_ordinal_resolves_to_advisory_section(self):
+        """The '## 3. Claude Code auto-memory' routing table's 'Restatement of
+        a rule already in CLAUDE.md / AGENTS.md' row cites '§2 advisory vs
+        deterministic' — same target section as the Step 1 item 1 citation
+        above."""
+        body = self._memory_skill_body()
+        section_2 = self._section_body(body, "2")
+        assert "advisory" in section_2 and "deterministic" in section_2
+
+    def test_lovable_cloud_pointer_names_real_length_and_behavior_test_content(self):
+        """lovable-cloud-knowledge/SKILL.md points at 'the length-targets and
+        behavior-test guidance in ai-instruction-and-memory-files' with no
+        ordinal — the named content must still exist under that description.
+        An ordinal-based pointer to this same content is exactly the drift
+        the class docstring above describes; the no-ordinal form is immune
+        to a renumber, but only as long as the described content stays put."""
+        # Normalized so the drafted line-wrap doesn't break the pin.
+        lovable_body = " ".join(_skill_file("lovable-cloud-knowledge").read_text().split())
+        assert "the length-targets and behavior-test guidance in ai-instruction-and-memory-files" in lovable_body
+        body = self._memory_skill_body()
+        section_1 = self._section_body(body, "1")
+        assert "under 200 lines per CLAUDE.md file" in section_1
+        assert "The behavior test" in section_1
+
+
 class TestCodeWriterSelfReviewScope:
     """Pin code-writer's self-review diffing instructions.
 

@@ -19,9 +19,6 @@
 # pr-description/SKILL.md is capped at 210: it writes one paragraph per
 # line with no hard-wrap, so trimming words never reduces the line count,
 # only removing a whole paragraph, heading, or blank line does.
-# ai-instruction-and-memory-files/SKILL.md is capped at 215: the
-# require-memory-skill.sh gate loads it at the exact moment a memory write
-# is happening, so its routing content can't move to a narrower surface.
 #
 # The "if" field in settings.json is unreliable — the internal
 # _lib_command_invokes_git_subcmd check is the actual gate. See
@@ -71,8 +68,6 @@ limit_for() {
       echo 500 ;;
     claude/.claude/skills/pr-description/SKILL.md)
       echo 210 ;;
-    claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md)
-      echo 215 ;;
     *)
       echo 200 ;;
   esac

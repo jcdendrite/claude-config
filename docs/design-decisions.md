@@ -566,7 +566,7 @@ The new section's "one idea per sentence" restates the core of §Code Comments' 
 
 - `claude/.claude/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
 - `claude/.claude/agents/comment-discipline-reviewer.md` — the six review angles, all already covered by existing CLAUDE.md rules.
-- `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md` §2 — the 200-line cap and the per-line behavior test each promoted line was drafted against.
+- `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
 - `claude/.claude/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
 
 ## 39. `claudeMdExcludes` suppresses the nested-discovery duplicate of `claude/.claude/CLAUDE.md` (2026-08-31)

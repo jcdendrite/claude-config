@@ -17,6 +17,40 @@ Source for `claude/.claude/rules/sql-ddl-conventions.md`.
 - Schema-shape conventions distilled and specialist-verified from this repo's
   `staff-data-engineer.md` / `staff-analytics-engineer.md` review agents.
 
+## CLAUDE.md and AGENTS.md conventions
+
+Source for `claude/.claude/rules/claude-md-conventions.md`. Fetched
+2026-09-03 against `code.claude.com/docs/en/memory`.
+
+- [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
+  — CLAUDE.md-loaded-not-AGENTS.md and the `@AGENTS.md` import pattern.
+
+  > "Claude Code reads CLAUDE.md, not AGENTS.md. If your repository already uses
+  > AGENTS.md for other coding agents, create a CLAUDE.md that imports it so both
+  > tools read the same instructions without duplicating them."
+
+  Independently corroborated: zero AGENTS.md entries in the Claude Code
+  changelog, and Claude Code is absent from agents.md's supported-tools list.
+
+### Glob decision for the rule's `paths` frontmatter
+
+The rule's ten `paths` entries pair a `**/`-led glob with a bare-basename
+glob for each of five instruction-file shapes (`CLAUDE.md`, `AGENTS.md`,
+`CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/AGENTS.md`). This is
+defensive, not redundant: whether a leading `**/` matches zero path
+segments is undocumented, so a `**/CLAUDE.md`-only glob set risks silently
+never firing for the single most important case — a plain repo-root
+`CLAUDE.md`. The bare-basename entries exist specifically to cover that
+repo-root case regardless of how `**/` resolves at zero segments.
+
+A bare basename with no directory separator (`CLAUDE.md`, `AGENTS.md`,
+`CLAUDE.local.md`) is portable across every repo this rule installs into,
+because it names a canonical filename rather than a repo-specific path
+segment. A bare entry that does carry a separator (`.claude/CLAUDE.md`,
+`.claude/AGENTS.md`) is allowed only because its leading segment is
+`.claude/`, itself a canonical location in every repo — not one repo's
+particular layout.
+
 ## GitHub Actions workflow conventions
 
 Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
