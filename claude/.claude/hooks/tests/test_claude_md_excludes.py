@@ -15,7 +15,10 @@ a correct `**` middle segment from one narrowed to a single `*` that would
 silently miss a multi-segment slug. Only a manual check, reading a file in
 a fresh interactive session anchored in a worktree and inspecting that
 session's on-disk transcript for `nested_memory` attachment records, would
-catch a future edit that silently narrows it. See docs/design-decisions.md §47.
+catch a future edit that silently narrows it. A second, separate gap: the
+pattern's `/**` tail has only ever been observed matching a direct child, not
+a rule file in a subdirectory — no rule file occupies one today. See
+docs/design-decisions.md §47.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
 STOW_SOURCE_SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.json"
 STOW_SOURCE_RULES_DIR = REPO_ROOT / "claude" / ".claude" / "rules"
+PROJECT_SCOPE_RULES_DIR = REPO_ROOT / ".claude" / "rules"
 EXCLUDED_CLAUDE_MD_PATTERN = "**/claude/.claude/CLAUDE.md"
 EXCLUDED_WORKTREE_RULES_PATTERN = "**/.claude/worktrees/**/claude/.claude/rules/**"
 EXPECTED_CLAUDE_MD_EXCLUDES = [
@@ -41,11 +45,26 @@ EXPECTED_CLAUDE_MD_EXCLUDES = [
 _STOW_SOURCE_RULE_FILES = sorted(STOW_SOURCE_RULES_DIR.rglob("*.md"))
 _STOW_SOURCE_RULE_IDS = [str(f.relative_to(REPO_ROOT)) for f in _STOW_SOURCE_RULE_FILES]
 
+# Same rationale as _STOW_SOURCE_RULE_FILES, applied to the sibling
+# project-scope directory: globs rather than names a rule file, so a
+# rule-file rename cannot break this module. This does not close
+# select-tests.py's routing gap for this file (CROSS_DOMAIN_EXCEPTIONS
+# routes a change under this directory to SKILLS_TESTS_DIR only, never
+# HOOKS_TESTS_DIR, regardless of how this module discovers the files) —
+# an agent's scoped select-tests.py run won't locally catch a regression
+# here; only full CI will. Same accepted, pre-existing cost as the sibling
+# _STOW_SOURCE_RULE_FILES glob.
+_PROJECT_SCOPE_RULE_FILES = sorted(PROJECT_SCOPE_RULES_DIR.rglob("*.md"))
+_PROJECT_SCOPE_RULE_IDS = [str(f.relative_to(REPO_ROOT)) for f in _PROJECT_SCOPE_RULE_FILES]
+
 
 class TestClaudeMdExcludes:
     def test_claude_md_excludes_matches_expected_entries(self):
         settings = json.loads(SETTINGS_PATH.read_text())
-        assert settings.get("claudeMdExcludes") == EXPECTED_CLAUDE_MD_EXCLUDES, (
+        # Order-independent (sorted(), not set()): nothing in the vendor docs
+        # suggests claudeMdExcludes array order is semantically meaningful,
+        # but an accidental duplicate entry should still fail this assertion.
+        assert sorted(settings.get("claudeMdExcludes", [])) == sorted(EXPECTED_CLAUDE_MD_EXCLUDES), (
             "claudeMdExcludes should hold exactly these two patterns; an extra "
             "entry would silently accumulate unrelated excludes"
         )
@@ -64,9 +83,12 @@ class TestClaudeMdExcludes:
         assert not fnmatch.fnmatch(str(root_claude_md), EXCLUDED_CLAUDE_MD_PATTERN)
 
     def test_rule_files_exist(self):
-        """Sanity check the discovery glob itself isn't silently empty."""
+        """Sanity check both discovery globs aren't silently empty."""
         assert _STOW_SOURCE_RULE_FILES, (
             f"Expected at least one rule file under {STOW_SOURCE_RULES_DIR}"
+        )
+        assert _PROJECT_SCOPE_RULE_FILES, (
+            f"Expected at least one rule file under {PROJECT_SCOPE_RULES_DIR}"
         )
 
     @pytest.mark.parametrize(
@@ -102,26 +124,23 @@ class TestClaudeMdExcludes:
             str(main_checkout_rule_file), EXCLUDED_WORKTREE_RULES_PATTERN
         )
 
-    def test_worktree_rules_pattern_does_not_match_a_synthetic_project_scope_rules_file(
-        self,
+    @pytest.mark.parametrize(
+        "rule_file", _PROJECT_SCOPE_RULE_FILES, ids=_PROJECT_SCOPE_RULE_IDS
+    )
+    def test_worktree_rules_pattern_does_not_match_a_project_scope_rules_file(
+        self, rule_file
     ):
         # See the comment on the sibling negative test above for why a
         # negative-only fnmatch assertion is sound for this pattern. This one
         # guards against over-match onto the worktree's own repo-root
         # project-scope `.claude/rules/` (no `claude/` segment before
         # `.claude/rules/`), which is correctly project-scoped and must keep
-        # loading exactly once even inside a worktree. Uses the real
-        # settings-json-conventions.md file at REPO_ROOT/.claude/rules/,
-        # matching V3 Fail C's shape exactly — REPO_ROOT is already a
+        # loading exactly once even inside a worktree. REPO_ROOT is already a
         # worktree root when this suite runs its own documented way (see the
         # sibling test above), so no extra `.claude/worktrees/<slug>` prefix
         # is added here; that would model a worktree nested inside another
         # worktree instead.
-        project_scope_rules_file = REPO_ROOT / ".claude" / "rules" / "settings-json-conventions.md"
-        assert project_scope_rules_file.is_file()
-        assert not fnmatch.fnmatch(
-            str(project_scope_rules_file), EXCLUDED_WORKTREE_RULES_PATTERN
-        )
+        assert not fnmatch.fnmatch(str(rule_file), EXCLUDED_WORKTREE_RULES_PATTERN)
 
     def test_stow_source_settings_has_no_claude_md_excludes_entry(self):
         """docs/design-decisions.md §39: an entry in the stow-source settings.json
