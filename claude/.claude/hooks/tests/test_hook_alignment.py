@@ -324,6 +324,41 @@ def test_schedulewakeup_stays_denied_in_settings() -> None:
     )
 
 
+def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
+    """The allow-path sibling to `test_schedulewakeup_stays_denied_in_settings`.
+
+    Guards against a future edit silently widening `permissions.deny` to
+    swallow tools this PR's own documentation depends on staying available.
+    `CronCreate`, `ListAgents`, and `TaskOutput` are each named in the
+    CHANGELOG's ScheduleWakeup entry and `docs/design-decisions.md` §48's
+    Blast-radius section as unaffected by the deny. `Agent` is not argued
+    there — it's guarded because it's the dispatch this PR's own Context
+    names as the trigger the misfire follows, not because either doc claims
+    its continued availability.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    deny = settings.get("permissions", {}).get("deny", [])
+    documented = (
+        "the CHANGELOG and design-decisions.md §48 both claim this tool "
+        "stays unaffected by the ScheduleWakeup deny"
+    )
+    dispatch_trigger = (
+        "it is the dispatch this PR's Context names as the trigger the "
+        "ScheduleWakeup misfire follows"
+    )
+    rationale = {
+        "CronCreate": documented,
+        "ListAgents": documented,
+        "TaskOutput": documented,
+        "Agent": dispatch_trigger,
+    }
+    for tool_name, why in rationale.items():
+        assert tool_name not in deny, (
+            f"'{tool_name}' present in permissions.deny in "
+            f"{_SETTINGS_PATH.name} — {why}"
+        )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
