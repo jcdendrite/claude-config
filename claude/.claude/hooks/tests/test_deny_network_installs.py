@@ -344,6 +344,29 @@ class TestDenyNetworkInstalls:
             == "allow"
         )
 
+    # ------------------------------------------------------------------ #
+    # Allow — claude/.claude/rules/python-environment-conventions.md's    #
+    # prescribed create/detect/restore recipe                             #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python3 -m venv .venv",
+            "poetry install",
+            "pipenv install",
+        ],
+    )
+    def test_python_environment_conventions_recipe_allowed(self, isolated_home, command):
+        """claude/.claude/rules/python-environment-conventions.md prescribes
+        these three commands for its declared-tool detection branches. The
+        rule's other prescribed forms (`.venv/bin/pip install -r
+        requirements.txt`, `uv sync`, `uv pip install -r requirements.txt`)
+        are already pinned as allowed by test_install_dev_sh_own_invocation_allowed,
+        test_uv_sync_restore_allowed, and test_pip_family_restore_allowed
+        elsewhere in this file."""
+        assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow"
+
     def test_editable_vcs_url_allowed_is_a_named_false_allow(self, isolated_home):
         """`-e`/`--editable`'s value is always skipped, whether it is a
         local path or a fetchable VCS URL — a genuine false-allow, accepted
