@@ -3873,9 +3873,9 @@ class TestStowedScriptPathContract:
 # rows cited in the docstrings below are that plan's assumption ledger.
 #
 # Three tests: the recipe-sync tripwire between code-review/SKILL.md and
-# ROUTING.md, the reviewer-contract coverage backstop for row-14's
-# findings_path-grant condition, and mechanical execution of ROUTING.md's
-# own HOOK_TEST_FIXTURE recipe.
+# ROUTING.md, the reviewer-contract coverage backstop for the requirement
+# that only contract-carrying reviewers receive a findings_path, and
+# mechanical execution of ROUTING.md's own HOOK_TEST_FIXTURE recipe.
 
 _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 
