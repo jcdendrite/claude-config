@@ -123,7 +123,7 @@ def _count_skill_overrides_off() -> int:
 
 # Builtin Claude Code skills carried in skillOverrides: name-only despite having
 # no repo SKILL.md. Mirrors BUILTIN_NAME_ONLY_SKILLS in
-# claude/.claude/skills/tests/test_skills.py — duplicated locally rather than
+# claude-skills/skills/tests/test_skills.py — duplicated locally rather than
 # imported across test directories, since pytest only adds a collected file's
 # own directory to sys.path.
 _BUILTIN_NAME_ONLY_SKILLS = {"loop", "simplify"}

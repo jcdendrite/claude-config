@@ -14355,13 +14355,13 @@ class TestDenialHookLabelEnumerationRealHooks:
         path, mirroring test_check_skill_length.py's own git-repo fixture
         pattern."""
         repo = tmp_path / "repo"
-        skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+        skill_dir = repo / "claude-skills" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         skill_md = skill_dir / "SKILL.md"
-        skill_path = "claude/.claude/skills/my-skill/SKILL.md"
+        skill_path = "claude-skills/skills/my-skill/SKILL.md"
         skill_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
         subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)

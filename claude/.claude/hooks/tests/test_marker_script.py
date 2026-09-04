@@ -653,7 +653,7 @@ class TestMarkerScriptEmptyStagedGuard:
 
     def _make_skill_md(self, repo):
         """Create a tracked SKILL.md inside the repo at the expected pathspec."""
-        skill_dir = repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir = repo / "claude-skills" / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("# test skill\n")
@@ -709,8 +709,8 @@ class TestMarkerScriptEmptyStagedGuard:
     def _make_routing_md_like_file(self, repo, skill_name="other-skill"):
         """Create a tracked ROUTING.md outside plan-review — same filename,
         different skill directory, so it is out of scope for the hardcoded
-        `claude/.claude/skills/plan-review/ROUTING.md` pathspec."""
-        skill_dir = repo / "claude" / ".claude" / "skills" / skill_name
+        `claude-skills/skills/plan-review/ROUTING.md` pathspec."""
+        skill_dir = repo / "claude-skills" / "skills" / skill_name
         skill_dir.mkdir(parents=True)
         routing_md = skill_dir / "ROUTING.md"
         routing_md.write_text("# not the gated ROUTING.md\n")
@@ -724,7 +724,7 @@ class TestMarkerScriptEmptyStagedGuard:
 
     def _make_plan_review_routing_md(self, repo):
         """Create a tracked plan-review/ROUTING.md — the exact hardcoded pathspec."""
-        routing_dir = repo / "claude" / ".claude" / "skills" / "plan-review"
+        routing_dir = repo / "claude-skills" / "skills" / "plan-review"
         routing_dir.mkdir(parents=True, exist_ok=True)
         routing_md = routing_dir / "ROUTING.md"
         routing_md.write_text("# test routing\n")
@@ -741,7 +741,7 @@ class TestMarkerScriptEmptyStagedGuard:
     ):
         """An unstaged change to a ROUTING.md-*named* file outside
         plan-review is out of scope for the hardcoded
-        `claude/.claude/skills/plan-review/ROUTING.md` pathspec — the guard
+        `claude-skills/skills/plan-review/ROUTING.md` pathspec — the guard
         must not fire, proving the pathspec is the exact path, not a
         generic `**/ROUTING.md` glob."""
         _seed_session(isolated_home, self.SID)
@@ -1657,7 +1657,7 @@ class TestMarkerScriptStatusCompletionMarkers:
     SID = "test-session-status"
 
     def _make_skill_md(self, repo):
-        skill_dir = repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir = repo / "claude-skills" / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("# test skill\n")
@@ -2664,7 +2664,7 @@ class TestMarkerScriptStatusReconciliationFlag:
 
     def test_skill_review_flag_fires_on_unstaged_skill_md_change(self, isolated_home, git_repo):
         _seed_session(isolated_home, self.SID)
-        skill_dir = git_repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir = git_repo / "claude-skills" / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("# test skill\n")
@@ -2684,7 +2684,7 @@ class TestMarkerScriptStatusReconciliationFlag:
         skill-review flag -- mirrors TestMarkerScriptEmptyStagedGuard's
         pathspec discipline for the write-side guard."""
         _seed_session(isolated_home, self.SID)
-        skill_dir = git_repo / "claude" / ".claude" / "skills" / "test-skill"
+        skill_dir = git_repo / "claude-skills" / "skills" / "test-skill"
         skill_dir.mkdir(parents=True)
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text("# test skill\n")
