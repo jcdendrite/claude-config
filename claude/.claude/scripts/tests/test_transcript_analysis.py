@@ -79,6 +79,28 @@ def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_p
     return total
 
 
+def _column_values_for_matching_rows(
+    out: str, *, header_contains: str, label: str, row_prefix: str
+) -> list[str]:
+    """Sibling to _sum_column_across_rows for a caller that needs each
+    matched row's own column value -- e.g. asserting several rows stayed
+    distinct rather than merging into a sum. Same header-token-anchored
+    column lookup, not a bare line.split()[N] index."""
+    lines = out.splitlines()
+    headers = [ln for ln in lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header_idx = lines.index(headers[0])
+    col_idx = headers[0].split().index(label)
+    values = []
+    for ln in lines[header_idx + 1:]:
+        if ln == "":
+            break
+        if ln.startswith(row_prefix):
+            values.append(ln.split()[col_idx])
+    assert values, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
+    return values
+
+
 def _extract_arm_dollars(out: str, arm_label: str) -> float:
     """Read plan-boundary's per-arm dollar figure (e.g. arm_label='C: fresh
     Sonnet handoff') by row-label prefix, not by the row's full formatted
@@ -911,6 +933,24 @@ class TestSubagentMix:
         assert "\x1b" not in out
         assert "\x07" not in out
 
+    def test_control_byte_differing_branches_do_not_merge_into_one_row(self, fake_projects, capsys):
+        """Two raw gitBranch values that differ only in a stripped control
+        byte sanitize to the same display label but must stay distinct
+        rows -- aggregating on the sanitized label instead of the raw value
+        would silently sum their session/spawn counts into one row."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="feat\x01", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        sess_values = _column_values_for_matching_rows(
+            out, header_contains="Sess", label="Sess", row_prefix="feat "
+        )
+        assert sess_values == ["1", "1"], f"expected two distinct 'feat' rows, each Sess=1: {sess_values}"
+
 
 def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str) -> None:
     """Write a minimal on-disk agent file with a `model:` frontmatter pin,
@@ -1105,6 +1145,38 @@ class TestSubagentMixModelMix:
         _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
         out = capsys.readouterr().out
         assert "(1 meta.json files failed to parse, excluded)" in out
+
+    def test_control_byte_differing_subagent_types_do_not_merge_model_mix_rows(
+        self, fake_projects, capsys
+    ):
+        """Two raw subagent_type values that differ only in a stripped
+        control byte sanitize to the same AgentType label but must stay
+        distinct model-mix rows -- aggregating on the sanitized label
+        instead of the raw value would silently sum their Runs and dollar
+        figures into one row."""
+        session_id = "sess-collide"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet\x01"),
+                _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet\x01",
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        runs_values = _column_values_for_matching_rows(
+            out, header_contains="Runs", label="Runs", row_prefix="staff-sdet "
+        )
+        assert runs_values == ["1", "1"], f"expected two distinct 'staff-sdet' rows, each Runs=1: {runs_values}"
 
 
 class TestSubagentMixDollars:
@@ -1868,6 +1940,12 @@ class TestSubagentMixMultiRoot:
         args._this_repo_slugs = ["-home-user-testrepo"]
         _mod.cmd_subagent_mix(args)  # no SystemExit
         out = capsys.readouterr().out
+        # Substring-on-combined-stdout, not a per-table _table_cols extract:
+        # _mix_branch_label/_stype_label are idempotent per (root_idx, value)
+        # key, so both tables render the same label for the same key even
+        # though each computes it independently at its own print time -- a
+        # future change breaking that idempotence would need this test
+        # tightened to catch a per-table divergence.
         assert "account-1/feat" in out
         assert "account-2/feat" in out
         assert "account-1/staff-sdet" in out
@@ -12324,6 +12402,24 @@ class TestSubagentsByteGroupingByTool:
         _mod.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "unknown" in out
+
+    def test_tool_name_output_strips_control_characters(self, fake_projects, capsys):
+        """tool_use.name is transcript-sourced, not validated -- an
+        OSC-injection payload must not reach the byte-by-tool table's Tool
+        column raw, the same invariant cmd_subagents' branch column already
+        enforces (test_single_root_branch_output_strips_control_characters)."""
+        payload = "\x1b]0;PWNED-TOOL\x07\x1b[31mFAKE-TOOL-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                {"type": "tool_use", "id": "t1", "name": payload, "input": {}},
+            ]),
+            _user_msg([_tool_result("t1", "z" * 16)], branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-TOOL[31mFAKE-TOOL-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
 
 
 class TestSubagentsSince:

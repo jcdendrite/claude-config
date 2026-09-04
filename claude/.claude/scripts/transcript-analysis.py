@@ -814,7 +814,9 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     --since: a branch used by a real main-thread session outside the
     current --since window still discloses, since the question being
     answered is "did this repo ever use this branch," not "does this
-    exact record appear in the displayed table."
+    exact record appear in the displayed table." The same is true of
+    --branches -- attestation is recorded before that filter too, though
+    only the --since case carries a dedicated regression test.
     --this-repo's disclosure is repo-agnostic: it applies to whichever repo
     --this-repo resolves to for the invoking CWD, not specifically to
     claude-config.
@@ -858,10 +860,10 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     branch_tool_bytes: dict[tuple[int | None, str], dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
-    # (root_index_or_None, raw gitBranch) pairs a non-sidechain record
-    # attested -- --this-repo discloses a branch raw only when it's a member
-    # of this set, since a sidechain record's own gitBranch can silently
-    # name a different repo than its parent session's.
+    # (root_index_or_None, raw gitBranch) pairs a non-sidechain record attested.
+    # --this-repo discloses a branch raw only when it's a member of this set,
+    # since a sidechain record's own gitBranch can silently name a different
+    # repo than its parent session's.
     main_thread_branches: set[tuple[int | None, str]] = set()
     corpus_spawns = 0
     corpus_sidechain_turns = 0
@@ -980,7 +982,7 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                         continue
                     row_label = label if first else ""
                     first = False
-                    print(f"{row_label:<40} {thread:<10} {tool_name:<20} {nbytes:>18,}")
+                    print(f"{row_label:<40} {thread:<10} {_sanitize_table_cell(tool_name):<20} {nbytes:>18,}")
 
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
@@ -2268,8 +2270,12 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     are redacted (_root_scoped_display_label) — subagent_type can name a
     project-scoped custom agent definition, the same disclosure risk
     gitBranch carries.
-    The model-mix table is keyed on the redacted (root, subagent_type) pair
-    so two accounts' same-named agentType never merge into one row.
+    Both tables aggregate on the raw (root, branch) / (root, subagent_type)
+    pair, not the printed label — the redacted or disclosed label is
+    computed lazily at print time (idempotently, so a value requested by
+    both tables renders the same label each time), so two accounts'
+    same-named agentType (or two raw values differing only in stripped
+    control bytes) never merge into one row.
     --per-session is refused outright under multi-root, since it would
     otherwise join a foreign account's own session-id prefix to its branch
     name.
@@ -2352,17 +2358,26 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     # matching root_idx's None-under-single-root convention below.
     agent_dirs = [root.parent / "agents" for root in roots]
 
-    data: dict[str, dict] = defaultdict(
+    # Keyed on (root_index_or_None, raw gitBranch, session_suffix_or_None) —
+    # raw, never the (possibly-sanitized) display label, so two raw branch
+    # values that differ only in stripped control bytes stay distinct rows
+    # instead of silently merging their spawn/session counts. session_suffix
+    # is jsonl.stem[:8] under --per-session (always root_idx=None, since
+    # multi-root refuses --per-session), and None when sessions on the same
+    # branch aggregate into one row. The printed label (_mix_branch_label,
+    # below) translates root_idx through redact_ordinals only at print time.
+    data: dict[tuple[int | None, str, str | None], dict] = defaultdict(
         lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
     )
-    # (possibly redacted) agentType label -> model-mix row. Only created for
-    # a type that has at least one meta.json match (even a dangling one) —
-    # a dispatch with no matching meta.json at all is excluded entirely,
-    # matching cmd_reviewer_yield's own precedent for the same join. Under
-    # multi-root, keying on the redacted label (rather than the raw
-    # subagent_type) also root-scopes this table: two accounts' same-named
-    # agentType get distinct labels and never merge into one row.
-    model_mix: dict[str, dict] = defaultdict(lambda: {
+    # (root_index_or_None, raw subagent_type) -> model-mix row. Only created
+    # for a type that has at least one meta.json match (even a dangling
+    # one) — a dispatch with no matching meta.json at all is excluded
+    # entirely, matching cmd_reviewer_yield's own precedent for the same
+    # join. Keyed on the raw tuple (not the display label) for the same
+    # reason as `data` above: root_idx alone already root-scopes two
+    # accounts' same-named agentType apart, with no dependency on the label
+    # string encoding that uniqueness.
+    model_mix: dict[tuple[int | None, str], dict] = defaultdict(lambda: {
         "runs": 0,
         "dangling": 0,
         "requested": defaultdict(int),
@@ -2399,24 +2414,15 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
                     stype = inp.get("subagent_type") or "unknown"
-                    stype_label = (
-                        _root_scoped_display_label(
-                            "agent-type", redact_ordinals[resolved_roots[root_idx]],
-                            stype, subagent_type_redact_map,
-                            disclose=this_repo and stype in _repo_tracked_agent_type_names(),
-                        )
-                        if root_idx is not None
-                        else _sanitize_table_cell(stype)
-                    )
-                    session_data[branch]["spawns"][stype_label] += 1
+                    session_data[branch]["spawns"][stype] += 1
 
                     paired = dispatch_index.get(block.get("id") or "")
                     if paired is not None:
                         paired_jsonl, requested_model = paired
-                        row = model_mix[stype_label]
+                        row = model_mix[(root_idx, stype)]
                         # _declared_pin reads from the on-disk agent file, so it
                         # needs the real subagent_type (stype), never the
-                        # redacted display label (stype_label).
+                        # (possibly-redacted) display label built at print time.
                         row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
                         (
                             observed, actual_dollars, _dollars_by_class, counterfactual_dollars,
@@ -2442,15 +2448,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                         session_data[branch]["skills"][skill] += 1
 
         for branch, sd in session_data.items():
-            branch_label = (
-                _root_scoped_display_label(
-                    "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map,
-                    disclose=this_repo,
-                )
-                if root_idx is not None
-                else _sanitize_table_cell(branch)
-            )
-            key = f"{branch_label} [{jsonl.stem[:8]}]" if per_session else branch_label
+            key = (root_idx, branch, jsonl.stem[:8] if per_session else None)
             d = data[key]
             d["sessions"] += 1
             for stype, cnt in sd["spawns"].items():
@@ -2462,15 +2460,40 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print("No data found.")
         return
 
+    def _mix_branch_label(key: tuple[int | None, str, str | None]) -> str:
+        root_idx, branch, session_suffix = key
+        label = (
+            _root_scoped_display_label(
+                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map,
+                disclose=this_repo,
+            )
+            if root_idx is not None
+            else _sanitize_table_cell(branch)
+        )
+        return f"{label} [{session_suffix}]" if session_suffix is not None else label
+
+    def _stype_label(key: tuple[int | None, str]) -> str:
+        root_idx, stype = key
+        return (
+            _root_scoped_display_label(
+                "agent-type", redact_ordinals[resolved_roots[root_idx]], stype, subagent_type_redact_map,
+                disclose=this_repo and stype in _repo_tracked_agent_type_names(),
+            )
+            if root_idx is not None
+            else _sanitize_table_cell(stype)
+        )
+
     print(f"{'Branch':<45} {'Sess':>5} {'Spawns':>7} {'CR':>3} {'PR':>3} {'RR':>3}  Top subagent types")
     print("-" * 120)
     for key in sorted(data):
         d = data[key]
+        root_idx = key[0]
+        branch_label = _mix_branch_label(key)
         spawns_total = sum(d["spawns"].values())
         top = sorted(d["spawns"].items(), key=lambda kv: (-kv[1], kv[0]))
-        top_str = ", ".join(f"{t}({n})" for t, n in top[:5]) or "—"
+        top_str = ", ".join(f"{_stype_label((root_idx, t))}({n})" for t, n in top[:5]) or "—"
         print(
-            f"{key:<45} {d['sessions']:>5} {spawns_total:>7} "
+            f"{branch_label:<45} {d['sessions']:>5} {spawns_total:>7} "
             f"{d['skills'].get('code-review', 0):>3} {d['skills'].get('plan-review', 0):>3} "
             f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
         )
@@ -2482,8 +2505,9 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         header += f" {'Requested':<30} Observed"
         print(f"\n{header}")
         print("-" * len(header))
-        for stype_label in sorted(model_mix):
-            row = model_mix[stype_label]
+        for mix_key in sorted(model_mix):
+            row = model_mix[mix_key]
+            stype_label = _stype_label(mix_key)
             declared = "/".join(sorted(row["declared_seen"])) or _DECLARED_PIN_BUILT_IN
             requested_str = ", ".join(
                 f"{k}({v})" for k, v in sorted(row["requested"].items(), key=lambda kv: (-kv[1], kv[0]))
@@ -2546,9 +2570,9 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
-# Claude Code built-in subagent_type values, present in every install and
-# unable to identify a project, so always allowlisted for --this-repo
-# subagent_type disclosure regardless of whether this repo's own agents/
+# Built-in Claude Code subagent_type values -- present in every install, so
+# they can't identify a project. Always allowlisted for --this-repo
+# subagent_type disclosure, regardless of whether this repo's own agents/
 # tree tracks a same-named file.
 _BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
 
