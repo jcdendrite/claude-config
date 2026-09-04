@@ -171,7 +171,7 @@ per-user memory:
 
 Two checks apply only to rule files:
 1. **Glob-set/body-applicability match** — every `paths:` glob must have the whole body applicable to what it matches, or the body must qualify bullets by name.
-2. **Stowed-rule portability** — a stowed rule's globs carry no literal segment before a wildcard (a fully literal glob with no wildcard is exempt); its referent is every consumer's repo.
+2. **Stowed-rule portability** — a stowed rule's globs carry no literal prefix beyond a bare filename or a two-segment `.claude/`-anchored path; its referent is every consumer's repo.
 
 ## Final step — Deactivate gate session
 

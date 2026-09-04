@@ -26,8 +26,11 @@ rules", fetched 2026-09-03. Full citations and verbatim quotes live in
   root-level file) are all `[unverified]`** — not stated at the primary
   source above; don't fill them in by inference.
 - **A stowed rule's referent is every consumer's repo, not this one** — a
-  `paths:` glob with a wildcard must carry no literal segment before it
-  (e.g. `**/`-led), since a literal prefix before a wildcard either is a
-  typo or wrongly assumes some other repo's layout. A fully literal glob
-  with no wildcard anywhere (e.g. `CLAUDE.md`) is exempt: it targets one
-  exact path, not an assumed directory.
+  `paths:` glob's literal prefix must carry no leading segment beyond two
+  narrow exemptions, since any other literal prefix either is a typo or
+  wrongly assumes some other repo's layout. Exempt: a bare filename with
+  no wildcard anywhere (e.g. `CLAUDE.md`, which targets one exact path,
+  not an assumed directory), and a two-segment `.claude/`-anchored literal
+  path (e.g. `.claude/CLAUDE.md` — `.claude/` is a Claude Code convention
+  directory present or absent uniformly in every repo, but a 3rd+ segment
+  beneath it names something as repo-specific as any other literal path).

@@ -6,8 +6,9 @@ applies to every repo the user opens):
 - Every entry is a non-empty string.
 - A project rule's literal prefix resolves to a real path — a directory if
   a wildcard remainder follows, an existing file or directory if not.
-- A stowed rule's literal prefix, if not a bare filename or
-  `.claude/`-anchored, carries no wildcard remainder.
+- A stowed rule's literal prefix is empty, a bare filename, or a
+  two-segment `.claude/`-anchored path — no other leading literal
+  segment.
 
 This catches a syntactically-valid but wrong/typo'd glob such as
 `"cluade/.claude/rules/**"`.
@@ -123,8 +124,11 @@ def rule_frontmatter_violations(
     since its referent is every consumer's repo, not this one. Two shapes
     are exempt: a bare filename with no wildcard (e.g. `CLAUDE.md`, which
     targets one exact path rather than assuming a directory), and a
-    `.claude/`-anchored path (e.g. `.claude/CLAUDE.md`, a Claude Code
-    convention directory present or absent uniformly in every repo). A
+    two-segment `.claude/`-anchored path (e.g. `.claude/CLAUDE.md` —
+    `.claude/` is a Claude Code convention directory present or absent
+    uniformly in every repo, but a 3rd+ segment beneath it is as
+    repo-specific as any other literal path, so the exemption doesn't
+    extend past depth 2). A
     project rule (`.claude/rules/`) may have a literal prefix. A fully
     literal glob (no wildcard remainder) must resolve to an existing path;
     a glob with a wildcard remainder must resolve its literal prefix to an
@@ -190,7 +194,13 @@ def rule_frontmatter_violations(
         prefix = _literal_prefix_segments(glob)
         if is_stowed:
             is_bare_filename = bool(prefix) and len(parsed.parts) == 1
-            is_dotclaude_anchored = bool(prefix) and prefix[0] == ".claude"
+            # Bounded to exactly 2 segments (".claude/<filename>"): ".claude/"
+            # itself is a universal Claude Code convention directory, but a
+            # 3rd+ literal segment beneath it (a specific skill, agent, or
+            # rule name) is exactly as repo-specific as any other literal
+            # path — unbounded depth would exempt e.g.
+            # ".claude/skills/<repo-specific-name>/**".
+            is_dotclaude_anchored = len(prefix) == 2 and prefix[0] == ".claude"
             if prefix and not (is_bare_filename or is_dotclaude_anchored):
                 violations.append(
                     f"{rule_file} `paths` entry {glob!r} carries a leading "
@@ -198,10 +208,11 @@ def rule_frontmatter_violations(
                     "every stow consumer's repo and must be fully portable "
                     "(no leading literal segment, e.g. `**/`-led). Exempt: "
                     "a bare filename with no wildcard (e.g. `CLAUDE.md`) or "
-                    "a `.claude/`-anchored path (e.g. `.claude/CLAUDE.md`) "
-                    "— both are Claude Code convention locations, present "
-                    "or absent uniformly across every consumer repo, not "
-                    "an assumption about this repo's own layout."
+                    "a two-segment `.claude/`-anchored path (e.g. "
+                    "`.claude/CLAUDE.md`) — both are Claude Code convention "
+                    "locations, present or absent uniformly across every "
+                    "consumer repo, not an assumption about this repo's "
+                    "own layout."
                 )
         else:
             is_fully_literal = bool(prefix) and len(prefix) == len(parsed.parts)
@@ -397,13 +408,25 @@ class TestRuleFrontmatterViolations:
 
     def test_dotclaude_anchored_literal_glob_in_stowed_rule_passes(self, tmp_path):
         # ".claude/" is a Claude Code convention directory, present or
-        # absent uniformly across every consumer repo — a multi-segment
-        # literal glob anchored there is still portable, unlike one
-        # anchored at this repo's own top-level directory names.
+        # absent uniformly across every consumer repo — a 2-segment literal
+        # glob anchored there is still portable, unlike one anchored at
+        # this repo's own top-level directory names.
         f = self._write_rule(
             tmp_path, '---\npaths:\n  - ".claude/CLAUDE.md"\n---\n\nbody\n'
         )
         assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_dotclaude_anchored_deep_literal_glob_in_stowed_rule_fails(self, tmp_path):
+        # The ".claude/"-anchored exemption is bounded to exactly 2
+        # segments. A 3rd+ literal segment names a specific skill, agent,
+        # or rule — exactly as repo-specific as any other literal path,
+        # so unbounded depth must not be exempt.
+        f = self._write_rule(
+            tmp_path,
+            '---\npaths:\n  - ".claude/skills/repo-specific-skill/**"\n---\n\nbody\n',
+        )
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be fully portable" in violations[0]
 
     def test_multisegment_literal_glob_in_stowed_rule_fails(self, tmp_path):
         # No wildcard anywhere, but the literal path is multi-segment and
