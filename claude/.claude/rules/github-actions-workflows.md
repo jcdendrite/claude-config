@@ -25,7 +25,7 @@ per-claim citations):
 - **Does not transfer — no such key in the composite `action.yml` schema:**
   `permissions:`, `concurrency:`, `runs-on:` runner-image pinning, and
   composite-step `timeout-minutes`. The calling workflow remains the sole
-  control point for all three. A composite action meant for reuse should
+  control point for all four. A composite action meant for reuse should
   document its token-scope and time-budget requirements for callers, since
   `action.yml` itself has no way to declare or enforce either.
 - **Transfers directly:**

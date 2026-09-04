@@ -2,11 +2,15 @@
 
 Validates `paths:` frontmatter on both project rules (`.claude/rules/`) and
 stowed rules (`claude/.claude/rules/`, installs to `~/.claude/rules/` and
-applies to every repo the user opens): non-empty string list, a project
-rule's literal prefix resolves to a real repo directory, and a stowed
-rule's wildcarded glob carries no literal segment before the wildcard (a
-fully literal glob with no wildcard at all is exempt). This catches a
-syntactically-valid but wrong/typo'd glob such as `"cluade/.claude/rules/**"`.
+applies to every repo the user opens):
+- Every entry is a non-empty string.
+- A project rule's literal prefix resolves to a real path — a directory if
+  a wildcard remainder follows, an existing file or directory if not.
+- A stowed rule's literal prefix, if not a bare filename or
+  `.claude/`-anchored, carries no wildcard remainder.
+
+This catches a syntactically-valid but wrong/typo'd glob such as
+`"cluade/.claude/rules/**"`.
 
 It does NOT catch a typo inside a wildcard-interior segment (e.g.
 `"**/.github/wrokflows/*.yml"`) — rejecting that would also reject a
@@ -114,16 +118,21 @@ def rule_frontmatter_violations(
     even though Claude Code treats an absent key as a legitimate
     unconditional-load choice in general.
 
-    `is_stowed` selects which glob-portability rule applies: a stowed rule
-    (`claude/.claude/rules/`) must carry no literal path segment before a
-    wildcard (its referent is every consumer's repo, so a directory-anchored
-    wildcard can't assume one exists). A fully literal glob with no wildcard
-    anywhere is exempt — it targets one exact path, not an assumed
-    directory. A project rule (`.claude/rules/`) may have a literal prefix,
-    but it must resolve to a real directory under `repo_root`. `repo_root`
-    defaults to `_REPO_ROOT`; tests pass a synthetic `tmp_path`-rooted tree
-    instead so a directory-resolution fixture doesn't depend on this repo's
-    real layout.
+    `is_stowed` selects which glob-portability rule applies. A stowed rule
+    (`claude/.claude/rules/`) must carry no leading literal path segment,
+    since its referent is every consumer's repo, not this one. Two shapes
+    are exempt: a bare filename with no wildcard (e.g. `CLAUDE.md`, which
+    targets one exact path rather than assuming a directory), and a
+    `.claude/`-anchored path (e.g. `.claude/CLAUDE.md`, a Claude Code
+    convention directory present or absent uniformly in every repo). A
+    project rule (`.claude/rules/`) may have a literal prefix. A fully
+    literal glob (no wildcard remainder) must resolve to an existing path;
+    a glob with a wildcard remainder must resolve its literal prefix to an
+    existing directory, both under `repo_root`.
+
+    `repo_root` defaults to `_REPO_ROOT`. Tests pass a synthetic
+    `tmp_path`-rooted tree instead, so a directory-resolution fixture
+    doesn't depend on this repo's real layout.
     """
     repo_root = _REPO_ROOT if repo_root is None else repo_root
     content = rule_file.read_text()
@@ -180,20 +189,32 @@ def rule_frontmatter_violations(
 
         prefix = _literal_prefix_segments(glob)
         if is_stowed:
-            has_wildcard_remainder = len(prefix) < len(parsed.parts)
-            if prefix and has_wildcard_remainder:
+            is_bare_filename = bool(prefix) and len(parsed.parts) == 1
+            is_dotclaude_anchored = bool(prefix) and prefix[0] == ".claude"
+            if prefix and not (is_bare_filename or is_dotclaude_anchored):
                 violations.append(
                     f"{rule_file} `paths` entry {glob!r} carries a leading "
-                    "literal path segment before a wildcard — stowed rule "
-                    "globs apply in every stow consumer's repo and a "
-                    "directory-anchored wildcard must be fully portable (no "
-                    "leading literal segment, e.g. `**/`-led). A fully "
-                    "literal glob with no wildcard anywhere (e.g. "
-                    "`CLAUDE.md`) is exempt: it targets one exact path, not "
-                    "an assumed directory."
+                    "literal path segment — stowed rule globs apply in "
+                    "every stow consumer's repo and must be fully portable "
+                    "(no leading literal segment, e.g. `**/`-led). Exempt: "
+                    "a bare filename with no wildcard (e.g. `CLAUDE.md`) or "
+                    "a `.claude/`-anchored path (e.g. `.claude/CLAUDE.md`) "
+                    "— both are Claude Code convention locations, present "
+                    "or absent uniformly across every consumer repo, not "
+                    "an assumption about this repo's own layout."
                 )
         else:
-            if prefix and not repo_root.joinpath(*prefix).is_dir():
+            is_fully_literal = bool(prefix) and len(prefix) == len(parsed.parts)
+            if is_fully_literal:
+                # No wildcard remainder: the glob targets one exact file, so
+                # existence (file or directory) is the right check, not
+                # is_dir() — a literal single-file paths: entry is valid.
+                if not repo_root.joinpath(*prefix).exists():
+                    violations.append(
+                        f"{rule_file} `paths` entry {glob!r} does not resolve "
+                        f"to an existing path under {repo_root}"
+                    )
+            elif prefix and not repo_root.joinpath(*prefix).is_dir():
                 violations.append(
                     f"{rule_file} `paths` entry {glob!r} does not resolve to "
                     f"an existing directory under {repo_root}"
@@ -373,6 +394,50 @@ class TestRuleFrontmatterViolations:
         # the leading-literal-segment portability check.
         f = self._write_rule(tmp_path, '---\npaths:\n  - "CLAUDE.md"\n---\n\nbody\n')
         assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_dotclaude_anchored_literal_glob_in_stowed_rule_passes(self, tmp_path):
+        # ".claude/" is a Claude Code convention directory, present or
+        # absent uniformly across every consumer repo — a multi-segment
+        # literal glob anchored there is still portable, unlike one
+        # anchored at this repo's own top-level directory names.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - ".claude/CLAUDE.md"\n---\n\nbody\n'
+        )
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_multisegment_literal_glob_in_stowed_rule_fails(self, tmp_path):
+        # No wildcard anywhere, but the literal path is multi-segment and
+        # not ".claude/"-anchored — it only resolves inside this repo's own
+        # layout, not a target this rule could match in a typical consumer
+        # repo. The bare-filename and ".claude/"-anchored exemptions must
+        # not widen to cover this shape.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - "claude/.claude/skills/tests"\n---\n\nbody\n'
+        )
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be fully portable" in violations[0]
+
+    def test_fully_literal_single_file_glob_in_project_rule_passes(self, tmp_path):
+        # No wildcard anywhere: the glob targets one exact file. Requiring
+        # it to resolve to a directory (the wildcard-bearing branch's rule)
+        # would wrongly reject a legitimate single-file paths: entry.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - "docs/notes.md"\n---\n\nbody\n'
+        )
+        repo_root = self._make_repo_root(tmp_path, files=("docs/notes.md",))
+        assert rule_frontmatter_violations(f, is_stowed=False, repo_root=repo_root) == []
+
+    def test_fully_literal_nonexistent_file_glob_in_project_rule_fails(self, tmp_path):
+        # No wildcard, but the target doesn't exist — still a typo, just
+        # without a wildcard remainder to trigger the directory-resolution
+        # branch. The fully-literal carve-out must check existence, not
+        # skip validation entirely.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - "docs/cluade-notes.md"\n---\n\nbody\n'
+        )
+        repo_root = self._make_repo_root(tmp_path, dirs=("docs",))
+        violations = rule_frontmatter_violations(f, is_stowed=False, repo_root=repo_root)
+        assert violations and "does not resolve to an existing path" in violations[0]
 
     def test_typo_in_third_segment_of_project_rule_fails(self, tmp_path):
         f = self._write_rule(

@@ -164,8 +164,10 @@ Carries over — plus, for a rule file, *which globs it needs*:
 - Anti-duplication (§3).
 - Step 1 item 2 placement.
 
-Does NOT carry over: §1's 200-line CLAUDE.md cap, and §3's auto-memory
-mechanics — a rule file is neither.
+Does NOT carry over — a rule file is neither an instruction file nor
+per-user memory:
+- §1's 200-line CLAUDE.md cap.
+- §3's auto-memory mechanics.
 
 Two checks apply only to rule files:
 1. **Glob-set/body-applicability match** — every `paths:` glob must have the whole body applicable to what it matches, or the body must qualify bullets by name.
