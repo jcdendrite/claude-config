@@ -24,9 +24,9 @@ repo.
   event, not merely a scoping slip.
 - **A `**/`-led pattern also matches a root-level file.** `**/CLAUDE.md`
   fires on a repo-root `CLAUDE.md`, so pairing it with a bare `CLAUDE.md`
-  entry adds nothing. Established by measurement in `-p` mode, not shown to
-  transfer to interactive sessions and not stated by the source above
-  (method and limits: `docs/rules-references.md`).
+  entry adds nothing. Established by measurement in both `-p` and
+  interactive sessions, not stated by the source above (method and
+  limits: `docs/rules-references.md`).
 - **`?` support, leading-`/` anchoring, and trailing-`/` semantics are all
   `[unverified]`** — not stated at the primary source above; don't fill
   them in by inference.

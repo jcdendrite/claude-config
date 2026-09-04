@@ -228,9 +228,9 @@ competing implementation) to triangulate against.
 - **No `paths:` key** — the rule loads unconditionally at launch, "with the
   same priority as `.claude/CLAUDE.md`."
 - **Zero-segment `**/` match — established by measurement, not by this
-  source.** A `**/`-led pattern also matches a root-level file, confirmed
-  via `InstructionsLoaded`-hook instrumentation. Not shown to transfer to
-  interactive (non-`-p`) sessions. See
+  source.** A `**/`-led pattern also matches a root-level file. Confirmed
+  in `-p` sessions by five hook-instrumented trials, and in one
+  interactive session by the harness's own load notice. See
   `docs/case-studies/claude-md-glob-zero-segment.md` for the full trial
   record.
 - **`?` support, leading-`/` anchoring, and trailing-`/` semantics are not

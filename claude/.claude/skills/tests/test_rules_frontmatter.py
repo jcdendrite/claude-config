@@ -114,7 +114,7 @@ def _matches_paths_glob(candidate_path: str, pattern: str) -> bool:
     also matches a root-level file, which `fnmatch` cannot express in a
     single pattern because it has no `**` path-segment concept — so the
     leading `**/` is stripped and both forms are tried. Provenance for the
-    zero-segment behavior, and its one stated limit, live in
+    zero-segment behavior, and its stated limits, live in
     `docs/rules-references.md`.
     """
     forms = [pattern]
