@@ -38,6 +38,11 @@ _EMPTY_SLUG_SUFFIX_RE = re.compile(r"^[0-9]+-$")
 _CODE_REVIEW_SKILL_MD = SKILLS_DIR / "code-review" / "SKILL.md"
 _FINDINGS_PATH_TEMPLATE = "agent-reviews/<agent-name>-<suffix>.md"
 
+# ready-for-review/SKILL.md hardcodes the agent name into its own template
+# rather than reusing code-review's generic <agent-name> placeholder.
+_READY_FOR_REVIEW_SKILL_MD = SKILLS_DIR / "ready-for-review" / "SKILL.md"
+_READY_FOR_REVIEW_FINDINGS_PATH_TEMPLATE = "agent-reviews/skill-fidelity-reviewer-<suffix>.md"
+
 
 def _run_script(cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -160,6 +165,42 @@ class TestRecombinationWithDispatcherTemplate:
         ), f"composed path {findings_path!r} does not match the documented findings_path shape"
 
 
+class TestRecombinationWithReadyForReviewTemplate:
+    """ready-for-review/SKILL.md hardcodes `skill-fidelity-reviewer` into its
+    own findings_path template rather than reusing code-review/SKILL.md's
+    generic `<agent-name>` placeholder, so
+    TestRecombinationWithDispatcherTemplate above never exercises this
+    literal. A typo in ready-for-review's own template (wrong separator,
+    `.mkd` instead of `.md`, `<sufix>`) would currently pass every other
+    test in this file.
+
+    The template half is read out of ready-for-review/SKILL.md's own text
+    rather than hand-typed here, so a real template edit in that file fails
+    this test instead of leaving two independently-authored copies to drift.
+    """
+
+    def test_suffix_plus_template_matches_documented_findings_path_shape(self, tmp_path):
+        ready_for_review_text = _READY_FOR_REVIEW_SKILL_MD.read_text()
+        assert _READY_FOR_REVIEW_FINDINGS_PATH_TEMPLATE in ready_for_review_text, (
+            f"{_READY_FOR_REVIEW_SKILL_MD}: findings_path template "
+            f"{_READY_FOR_REVIEW_FINDINGS_PATH_TEMPLATE!r} not found -- this test's template half "
+            "would silently stop tracking the real contract"
+        )
+
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit(repo, "init")
+
+        result = _run_script(repo)
+        assert result.returncode == 0
+        suffix = result.stdout.strip()
+
+        findings_path = _READY_FOR_REVIEW_FINDINGS_PATH_TEMPLATE.replace("<suffix>", suffix)
+        assert re.fullmatch(
+            r"agent-reviews/skill-fidelity-reviewer-\d+-[A-Za-z0-9-]{1,20}\.md", findings_path
+        ), f"composed path {findings_path!r} does not match the documented findings_path shape"
+
+
 class TestNotAGitRepo:
     def test_exit_one_and_no_stdout(self, tmp_path):
         cwd = tmp_path / "not-a-repo"
@@ -169,6 +210,7 @@ class TestNotAGitRepo:
 
         assert result.returncode == 1
         assert result.stdout == ""
+        assert result.stderr.strip() != ""
 
 
 class TestUnbornHead:

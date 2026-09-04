@@ -3876,13 +3876,14 @@ class TestStowedScriptPathContract:
 # only the contract statement (path template, spawn-synchronously rule,
 # read-back protocol).
 #
-# Four tests: the recipe-sync tripwire between code-review/SKILL.md and
-# ROUTING.md for the two contract tokens that still must match verbatim, the
-# reviewer-contract coverage backstop for the requirement that only
-# contract-carrying reviewers receive a findings_path, a script-invocation
-# presence check across the three dispatchers, and a retired-recipe absence
-# scan across every skill body (so a fourth dispatcher copy-pasting the old
-# recipe fails rather than passing unseen).
+# Four tests:
+# 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
+#    verbatim on the two surviving contract tokens.
+# 2. Reviewer-contract coverage backstop: only contract-carrying reviewers
+#    may receive a findings_path.
+# 3. Script-invocation presence check across the three dispatchers.
+# 4. Retired-recipe absence scan across every skill body, so a fourth
+#    dispatcher copy-pasting the old recipe fails rather than passing unseen.
 
 _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 

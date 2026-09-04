@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # Prepare this round's reviewer findings destination and print its <epoch>-<slug> suffix.
-# Exit 0: the suffix is printed on stdout as the last line of output -- any earlier line
-#         (e.g. a stderr warning, when a caller merges stdout and stderr) is discardable.
-#         A failed ignore-list update warns on stderr and still exits 0 -- the update is
-#         best-effort, not the enforcement point.
+# Exit 0: suffix printed on stdout as the last line; earlier lines (e.g. a
+#         stderr warning) are discardable.
+# Exit 0 also covers a failed ignore-list update -- it warns on stderr but
+#         does not change the exit code (best-effort, not the enforcement point).
 # Exit 1: not a git repository, or HEAD does not resolve -- no stdout.
 #
-# The info/exclude append is duplicate-tolerant, not idempotent: two concurrent
-# invocations (e.g. from two linked worktrees) can race between the grep check and the
-# append, leaving a benign duplicate "agent-reviews/" line.
+# The info/exclude append is duplicate-tolerant, not idempotent -- see docs/design-decisions.md §12.
 set -euo pipefail
 
 SCRIPT_NAME="findings-path-suffix.sh"
