@@ -48,9 +48,13 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
+
+# pyproject.toml's pythonpath also puts claude/.claude/tests on the import
+# path, where this shared test helper lives.
+from helpers import REPO_ROOT
 from validate_skill_structure import parse_frontmatter
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+_REPO_ROOT = REPO_ROOT
 _PROJECT_RULES_DIR = _REPO_ROOT / ".claude" / "rules"
 _STOWED_RULES_DIR = _REPO_ROOT / "claude" / ".claude" / "rules"
 _CLAUDE_MD_CONVENTIONS_RULE = _STOWED_RULES_DIR / "claude-md-conventions.md"

@@ -27,8 +27,8 @@ HOOKS_DIR = "claude/.claude/hooks"
 HOOKS_TESTS_DIR = "claude/.claude/hooks/tests"
 SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
-SKILLS_DIR = "claude/.claude/skills"
-SKILLS_TESTS_DIR = "claude/.claude/skills/tests"
+SKILLS_DIR = "claude-skills/skills"
+SKILLS_TESTS_DIR = "claude-skills/skills/tests"
 AGENTS_DIR = "claude/.claude/agents"
 RULES_DIR = "claude/.claude/rules"
 # Common ancestor for the plugin-generic hooks/skills/agents predicates below.
@@ -43,6 +43,10 @@ SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
 # Common ancestor for the repo-wide-scan cross-domain exception below,
 # mirroring PLUGINS_DIR's role for the plugin-generic predicates.
 CLAUDE_TOP_LEVEL_DIR = "claude"
+# Top-level stow package for the skills tree, mirroring CLAUDE_TOP_LEVEL_DIR's
+# role in the repo-wide-scan predicate below (see root CLAUDE.md's repo-layout
+# bullet for why it's a separate package).
+CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
 
 # test_transcript_analysis.py and its two siblings shell into specific hook
 # scripts and read specific SKILL.md files by path, not by import.
@@ -80,15 +84,15 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # below because test_check_handoff.py lives in SCRIPTS_TESTS_DIR, not
 # HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
 # this file's second target.
-HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
+HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
 
-CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
-PLAN_REVIEW_ROUTING_MD = "claude/.claude/skills/plan-review/ROUTING.md"
-PLAN_REVIEW_SKILL_MD = "claude/.claude/skills/plan-review/SKILL.md"
-RESPOND_PR_SKILL_MD = "claude/.claude/skills/respond-pr/SKILL.md"
-ERROR_MODE_ANALYSIS_SKILL_MD = "claude/.claude/skills/error-mode-analysis/SKILL.md"
-READY_FOR_REVIEW_SKILL_MD = "claude/.claude/skills/ready-for-review/SKILL.md"
-AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
+CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
+PLAN_REVIEW_ROUTING_MD = "claude-skills/skills/plan-review/ROUTING.md"
+PLAN_REVIEW_SKILL_MD = "claude-skills/skills/plan-review/SKILL.md"
+RESPOND_PR_SKILL_MD = "claude-skills/skills/respond-pr/SKILL.md"
+ERROR_MODE_ANALYSIS_SKILL_MD = "claude-skills/skills/error-mode-analysis/SKILL.md"
+READY_FOR_REVIEW_SKILL_MD = "claude-skills/skills/ready-for-review/SKILL.md"
+AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
 SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
 
 # Every SKILL.md a HOOKS_TESTS_DIR test reads by exact path rather than by
@@ -187,11 +191,11 @@ ROOT_SETTINGS_JSON = ".claude/settings.json"
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
 # directory absent from both this set and DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
 # means some test's cross-domain file-path or subprocess read into it was
-# never audited into this table.
+# never audited into this table. SKILLS_DIR has no member here: it points
+# at claude-skills/skills, outside claude/.claude/.
 MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
     Path(HOOKS_DIR).name,
     Path(SCRIPTS_DIR).name,
-    Path(SKILLS_DIR).name,
     Path(AGENTS_DIR).name,
     Path(RULES_DIR).name,
 })
@@ -216,10 +220,10 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
 })
 
 # Matches CI's own collectible pytest scope verbatim (see
-# .github/workflows/tests.yml's `pytest claude/.claude/ plugins/` step).
+# .github/workflows/tests.yml's `pytest claude/.claude/ claude-skills/ plugins/` step).
 # Targeting plugins/ instead of enumerating individual plugin subtrees means
 # a new plugin gaining a tests/ directory is covered automatically.
-FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "plugins/")
+FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
 
 # Each path below forces a full-suite run rather than a domain selection:
 # - claude/.claude/tests/helpers.py is imported by every domain's own test dir
@@ -320,7 +324,11 @@ def _is_under_deliberately_unmapped_claude_dir(path: str) -> bool:
 def _is_py_source_under_claude_or_plugins(path: str) -> bool:
     return (
         path.endswith(".py")
-        and (_is_under(path, CLAUDE_TOP_LEVEL_DIR) or _is_under(path, PLUGINS_DIR))
+        and (
+            _is_under(path, CLAUDE_TOP_LEVEL_DIR)
+            or _is_under(path, CLAUDE_SKILLS_TOP_LEVEL_DIR)
+            or _is_under(path, PLUGINS_DIR)
+        )
         and not _is_under_deliberately_unmapped_claude_dir(path)
     )
 

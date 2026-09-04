@@ -13,7 +13,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+# pyproject.toml's pythonpath also puts claude/.claude/tests on the import
+# path, where this shared test helper lives.
+from helpers import REPO_ROOT
+
+_REPO_ROOT = REPO_ROOT
 _MARKETPLACE_JSON = _REPO_ROOT / ".claude-plugin" / "marketplace.json"
 _PLUGINS_DIR = _REPO_ROOT / "plugins"
 

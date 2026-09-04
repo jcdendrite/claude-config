@@ -39,7 +39,7 @@ _SEED_REPO_PATHS: dict[str, str] = {
     "REPO_ROOT": "",
     "CLAUDE_DIR": "claude/.claude",
     "HOOKS_DIR": "claude/.claude/hooks",
-    "SKILLS_DIR": "claude/.claude/skills",
+    "SKILLS_DIR": "claude-skills/skills",
     "SCRIPTS_DIR": "claude/.claude/scripts",
 }
 
@@ -138,11 +138,11 @@ def _resolve_module_level_repo_paths(source: str, *, test_file_relpath: str) -> 
 def _test_corpus(repo_root: Path) -> list[str]:
     """Repo-relative paths of every test_*.py file the completeness scanner
     parses: claude/.claude/hooks/tests/, claude/.claude/scripts/tests/,
-    claude/.claude/skills/tests/, and plugins/*/tests/."""
+    claude-skills/skills/tests/, and plugins/*/tests/."""
     patterns = (
         "claude/.claude/hooks/tests/test_*.py",
         "claude/.claude/scripts/tests/test_*.py",
-        "claude/.claude/skills/tests/test_*.py",
+        "claude-skills/skills/tests/test_*.py",
         "plugins/*/tests/test_*.py",
     )
     corpus = [
@@ -162,7 +162,7 @@ class TestModuleLevelRepoPathResolver:
 
     def test_seeded_name_resolves_to_its_seed_value(self):
         resolved = _resolve_module_level_repo_paths("X = SKILLS_DIR\n", test_file_relpath=self._TEST_FILE)
-        assert resolved["X"] == "claude/.claude/skills"
+        assert resolved["X"] == "claude-skills/skills"
 
     def test_path_dunder_file_resolves_to_the_scanned_files_own_relpath(self):
         resolved = _resolve_module_level_repo_paths(
@@ -450,7 +450,7 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_md_change_selects_skills_tests_and_transcript_analysis(self):
-        result = _mod.select_pytest_targets(["claude/.claude/skills/test-conventions/SKILL.md"])
+        result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB}
 
@@ -459,7 +459,7 @@ class TestSelectPytestTargets:
         scans every REFERENCES.md/ROUTING.md sibling of a SKILL.md, not just
         SKILL.md itself -- a REFERENCES.md-only diff must domain-select
         rather than fall open to the full suite."""
-        result = _mod.select_pytest_targets(["claude/.claude/skills/test-conventions/REFERENCES.md"])
+        result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/REFERENCES.md"])
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
@@ -469,14 +469,14 @@ class TestSelectPytestTargets:
         ROUTING.md is also PLAN_REVIEW_ROUTING_MD (GH-847): see
         test_plan_review_routing_md_change_also_selects_hooks_tests for that
         cross-domain exception's own coverage."""
-        result = _mod.select_pytest_targets(["claude/.claude/skills/plan-review/ROUTING.md"])
+        result = _mod.select_pytest_targets(["claude-skills/skills/plan-review/ROUTING.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_non_skill_auxiliary_file_under_skills_is_unmatched_and_falls_open(self):
         """A skill-directory file that is neither SKILL.md, REFERENCES.md,
         nor ROUTING.md matches no skills domain rule and falls open."""
-        result = _mod.select_pytest_targets(["claude/.claude/skills/test-conventions/scratch.md"])
+        result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/scratch.md"])
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
@@ -896,11 +896,11 @@ class TestSelectPytestTargets:
         domains' own blanket `_is_under()` rules, so a file anywhere under
         the skills test tree -- not just a literal `SKILL.md` -- selects
         `SKILLS_TESTS_DIR`. TICKET_REFERENCE_DISCIPLINE_TEST_PATH is also
-        selected: this is a .py file under claude/, which that test
+        selected: this is a .py file under claude-skills/, which that test
         statically scans. SELECT_TESTS_TEST_PATH is selected too:
         test_skills.py is itself in _test_corpus(), so a change to it can
         introduce a module-level constant the completeness scan must see."""
-        result = _mod.select_pytest_targets(["claude/.claude/skills/tests/test_skills.py"])
+        result = _mod.select_pytest_targets(["claude-skills/skills/tests/test_skills.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.SELECT_TESTS_TEST_PATH,
@@ -980,9 +980,9 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
-    def test_is_py_source_under_claude_or_plugins_rejects_path_outside_both_dirs(self):
-        """Direct assertion on the predicate: a .py file outside both
-        claude/ and plugins/ (e.g. SKILL_EVALS_RUNNER) must not match."""
+    def test_is_py_source_under_claude_or_plugins_rejects_path_outside_all_three_dirs(self):
+        """Direct assertion on the predicate: a .py file outside claude/,
+        claude-skills/, and plugins/ (e.g. SKILL_EVALS_RUNNER) must not match."""
         assert _mod._is_py_source_under_claude_or_plugins(_mod.SKILL_EVALS_RUNNER) is False
 
 
@@ -1092,29 +1092,29 @@ _FILE_TARGETS: frozenset[str] = frozenset({
 # SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
 _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
     ("claude/.claude/hooks/tests/test_reconciliation_block_consistency.py",
-     "claude/.claude/skills/code-review/SKILL.md"),
+     "claude-skills/skills/code-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_reconciliation_block_consistency.py",
-     "claude/.claude/skills/plan-review/ROUTING.md"),
+     "claude-skills/skills/plan-review/ROUTING.md"),
     ("claude/.claude/hooks/tests/test_require_memory_skill.py",
-     "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"),
+     "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_plan_review.py",
-     "claude/.claude/skills/plan-review/SKILL.md"),
+     "claude-skills/skills/plan-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_ready_for_review.py",
-     "claude/.claude/skills/ready-for-review/SKILL.md"),
+     "claude-skills/skills/ready-for-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_respond_pr.py",
-     "claude/.claude/skills/error-mode-analysis/SKILL.md"),
+     "claude-skills/skills/error-mode-analysis/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_respond_pr.py",
-     "claude/.claude/skills/respond-pr/SKILL.md"),
+     "claude-skills/skills/respond-pr/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_routing_read.py",
-     "claude/.claude/skills/plan-review/SKILL.md"),
+     "claude-skills/skills/plan-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_skill_review.py",
      "plugins/skill-management/skills/skill-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_claude_enable_tool.py",
      "claude/.claude/settings.json"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
-     "claude/.claude/skills/code-review/SKILL.md"),
+     "claude-skills/skills/code-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
-     "claude/.claude/skills/ready-for-review/SKILL.md"),
+     "claude-skills/skills/ready-for-review/SKILL.md"),
 )
 
 
@@ -1207,6 +1207,19 @@ class TestRuleTablePathFidelity:
             "-- audit whether any test reads into this directory by path or "
             "subprocess and add the corresponding table entry"
         )
+
+    def test_every_mapped_top_level_dir_exists_on_disk(self):
+        """Reverse of test_every_real_top_level_claude_dir_is_mapped_or_allowlisted
+        above: that test catches a missing entry, this one catches a stale
+        extra one. SKILLS_DIR is the motivating case -- it now points outside
+        claude/.claude/, but a constant of that name could still linger in
+        the set."""
+        claude_claude_dir = _REPO_ROOT / "claude" / ".claude"
+        for name in _mod.MAPPED_TOP_LEVEL_DIRS:
+            assert (claude_claude_dir / name).is_dir(), (
+                f"claude/.claude/{name} is named in MAPPED_TOP_LEVEL_DIRS but "
+                "does not exist as a directory -- drop the stale entry"
+            )
 
     def test_every_real_root_claude_dir_is_mapped(self):
         """Mirrors test_every_real_top_level_claude_dir_is_mapped_or_allowlisted

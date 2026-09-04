@@ -10,8 +10,8 @@ govern any contribution (human or agent).
 ./install.sh                                                 # first-time setup (stow + plugin registration)
 ./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
 .venv/bin/python3 claude/.claude/scripts/select-tests.py     # test suite, scoped to the domains your changes touch
-.venv/bin/pytest claude/.claude/                             # full test suite (hooks + skills)
-.venv/bin/ruff check claude/.claude/                         # lint (Python)
+.venv/bin/pytest claude/.claude/ claude-skills/              # full test suite (hooks + skills)
+.venv/bin/ruff check claude/.claude/ claude-skills/          # lint (Python)
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
 ```
 
