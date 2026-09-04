@@ -566,6 +566,10 @@ printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 # arm above is what makes the overall property hold; do not read this arm
 # as a complete boundary on its own.
 #
+# test_marker_script.py's TestMarkerScriptArgumentGrammarIsPositional is the
+# regression guard for the positional-argument-grammar invariant this arm's
+# command-word detector depends on.
+#
 # Accepted false-deny: a review-only agent grepping for the literal string
 # `marker.sh write` while reviewing this repo is denied. Matching the op
 # keyword rather than the bare tool name keeps plain `grep -rn marker.sh`
