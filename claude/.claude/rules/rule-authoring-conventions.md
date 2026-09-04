@@ -6,8 +6,9 @@ paths:
 ## `paths:` glob-dialect conventions
 
 Sources verified against `code.claude.com/docs/en/memory` §"Path-specific
-rules", fetched 2026-09-03. Full citations and verbatim quotes live in
-`docs/rules-references.md` in the claude-config repo.
+rules", fetched 2026-09-03; re-verify by 2026-12-03. Full citations and
+verbatim quotes live in `docs/rules-references.md` in the claude-config
+repo.
 
 - **Brace expansion is supported.** `src/*.{ts,tsx}` expands to two
   patterns (full citation and verbatim quote: `docs/rules-references.md`).
@@ -21,10 +22,13 @@ rules", fetched 2026-09-03. Full citations and verbatim quotes live in
 - **A rule with no `paths:` key loads unconditionally at launch**, with the
   same priority as `.claude/CLAUDE.md` — a missing key is a context-budget
   event, not merely a scoping slip.
-- **`?` support, leading-`/` anchoring, trailing-`/` semantics, and whether
-  `**/` matches zero leading directory segments (i.e. also matches a
-  root-level file) are all `[unverified]`** — not stated at the primary
-  source above; don't fill them in by inference.
+- **`?` support, leading-`/` anchoring, and trailing-`/` semantics are all
+  `[unverified]`** — not stated at the primary source above; don't fill
+  them in by inference.
+- **A leading `**/` matches zero leading directory segments** — a
+  `**/`-led glob also matches a project-root file. Not stated at the
+  primary source above, but confirmed empirically
+  (`docs/rules-references.md`).
 - **A stowed rule's referent is every consumer's repo, not this one** — a
   `paths:` glob's literal prefix must carry no leading segment beyond two
   narrow exemptions, since any other literal prefix either is a typo or

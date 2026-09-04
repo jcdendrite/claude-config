@@ -173,6 +173,8 @@ Two checks apply only to rule files:
 1. **Glob-set/body-applicability match** — every `paths:` glob must have the whole body applicable to what it matches, or the body must qualify bullets by name.
 2. **Stowed-rule portability** — a stowed rule's globs carry no literal prefix beyond a bare filename or a two-segment `.claude/`-anchored path; its referent is every consumer's repo.
 
+Rule-file review stays inline here rather than becoming its own skill (like `skill-review`); move it out once the review-time-check list above grows to three or four items — see `docs/design-decisions.md` §45.
+
 ## Final step — Deactivate gate session
 
 <!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->

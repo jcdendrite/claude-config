@@ -243,6 +243,16 @@ against `code.claude.com/docs/en/memory` §"Path-specific rules", fetched
   matches nothing, and the rule's other patterns keep working."
 - **No `paths:` key** — the rule loads unconditionally at launch, "with the
   same priority as `.claude/CLAUDE.md`."
-- **Several `paths:` glob-dialect behaviors are not stated at this
-  source** — recorded as `[unverified]` in the rule body
+- **`?` support, leading-`/` anchoring, and trailing-`/` semantics are not
+  stated at this source** — recorded as `[unverified]` in the rule body
   (`rule-authoring-conventions.md`) rather than restated or inferred here.
+- **A leading `**/` matches zero leading path segments** (i.e. a `**/`-led
+  glob also matches a project-root file) — not stated at this source, but
+  now confirmed empirically (GH-844). Five one-shot, non-interactive
+  sessions each performed one designated file read, instrumented via the
+  `InstructionsLoaded` hook event. Each showed a `**/`-led stowed rule's
+  glob firing against a repo-root file with no bare-basename sibling entry
+  present. Two positive controls (a depth-3 read, a depth-zero read against
+  a rule that does carry a bare-basename sibling) ran first to prove the
+  instrument and depth-zero loading both work. Interactive-mode behavior is
+  untested — all trials ran in `-p` (non-interactive) mode.
