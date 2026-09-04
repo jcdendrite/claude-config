@@ -15,11 +15,9 @@ verbatim quotes, and fetch dates live in `docs/rules-references.md` in the
 claude-config repo — re-confirm there if precision matters.
 
 **This rule also matches composite `action.yml` files.** Not every bullet
-below applies to one. The `**/action.yml` / `**/action.yaml` frontmatter
-globs above do match a root-level `action.yml` — a leading `**/` matches
-zero leading path segments (`docs/rules-references.md`). Verified against
-GitHub's Actions documentation, fetched 2026-09-03; re-verify by
-2026-12-03 (see `docs/rules-references.md` for per-claim citations):
+below applies to one. Verified against GitHub's Actions documentation,
+fetched 2026-09-03; re-verify by 2026-12-03 (see `docs/rules-references.md`
+for per-claim citations):
 
 - **Does not transfer — no such key in the composite `action.yml` schema:**
   `permissions:`, `concurrency:`, `runs-on:` runner-image pinning, and

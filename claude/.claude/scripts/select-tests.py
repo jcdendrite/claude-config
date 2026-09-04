@@ -59,6 +59,12 @@ TICKET_REFERENCE_DISCIPLINE_TEST_PATH = "claude/.claude/hooks/tests/test_ticket_
 
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 
+# test_select_tests.py's own TestCrossDomainReadCompleteness parses every
+# test_*.py under HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR, and
+# plugins/*/tests/ for module-level repo-path constants, so a change to any
+# of those files can introduce a read this table hasn't declared yet.
+SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
+
 # test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
 # by path, not by import.
 # Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB.
@@ -70,12 +76,38 @@ LOVABLE_CLOUD_PLUGIN_MANIFEST = "plugins/lovable-cloud/.claude-plugin/plugin.jso
 # check-handoff.py hardcodes this path.
 # test_check_handoff.py reads it directly by path, not by import.
 # Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB and
-# LOVABLE_CLOUD_PLUGIN_MANIFEST.
+# LOVABLE_CLOUD_PLUGIN_MANIFEST. Stays outside SKILL_FILES_READ_BY_HOOK_TESTS
+# below because test_check_handoff.py lives in SCRIPTS_TESTS_DIR, not
+# HOOKS_TESTS_DIR -- that set's shared (HOOKS_TESTS_DIR,) row doesn't carry
+# this file's second target.
 HANDOFF_SKILL_MD = "claude/.claude/skills/handoff/SKILL.md"
 
-# test_reconciliation_block_consistency.py reads this exact file by path to
-# diff its Reconciliation block against plan-review/ROUTING.md.
 CODE_REVIEW_SKILL_MD = "claude/.claude/skills/code-review/SKILL.md"
+PLAN_REVIEW_ROUTING_MD = "claude/.claude/skills/plan-review/ROUTING.md"
+PLAN_REVIEW_SKILL_MD = "claude/.claude/skills/plan-review/SKILL.md"
+RESPOND_PR_SKILL_MD = "claude/.claude/skills/respond-pr/SKILL.md"
+ERROR_MODE_ANALYSIS_SKILL_MD = "claude/.claude/skills/error-mode-analysis/SKILL.md"
+READY_FOR_REVIEW_SKILL_MD = "claude/.claude/skills/ready-for-review/SKILL.md"
+AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
+SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
+
+# Every SKILL.md a HOOKS_TESTS_DIR test reads by exact path rather than by
+# domain membership. TestCrossDomainReadCompleteness
+# (claude/.claude/scripts/tests/test_select_tests.py) derives and enforces
+# this set from each reading test's own module-level path constant, so no
+# per-member citation comment is kept here. HANDOFF_SKILL_MD stays a
+# standalone exception rather than joining this set -- see its own comment
+# above for why.
+SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
+    CODE_REVIEW_SKILL_MD,
+    PLAN_REVIEW_ROUTING_MD,
+    PLAN_REVIEW_SKILL_MD,
+    RESPOND_PR_SKILL_MD,
+    ERROR_MODE_ANALYSIS_SKILL_MD,
+    READY_FOR_REVIEW_SKILL_MD,
+    AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
+    SKILL_REVIEW_SKILL_MD,
+})
 
 # test_ci_path_filter.py reads this exact file by path.
 GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflows.md"
@@ -85,6 +117,8 @@ GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflow
 # skillOverrides counts. test_skills.py (SKILLS_TESTS_DIR) reads its
 # skillOverrides map at line 153, its docs/skills.md cross-check at line 1686,
 # and its destructive-cleanup permissions check at line 1724.
+# test_claude_enable_tool.py (SCRIPTS_TESTS_DIR) reads it by path to assert
+# which settings payload backs a re-enabled session.
 CLAUDE_SETTINGS_JSON = "claude/.claude/settings.json"
 
 # No test reads any file under this directory by path or subprocess.
@@ -289,6 +323,19 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
     )
 
 
+# Matches exactly the corpus SELECT_TESTS_TEST_PATH's own comment describes:
+# a test_*.py file directly inside a tests/ directory under claude/ or
+# plugins/. A stricter subset of _is_py_source_under_claude_or_plugins,
+# since only a test file can introduce a new module-level repo-path
+# constant for that scanner to miss.
+def _is_test_source_change(path: str) -> bool:
+    return (
+        _is_py_source_under_claude_or_plugins(path)
+        and Path(path).parent.name == "tests"
+        and Path(path).name.startswith("test_")
+    )
+
+
 # (predicate, target paths added when it matches) — a plain domain rule.
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
@@ -302,10 +349,21 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
-# Nothing here checks completeness against real cross-domain file reads in
-# the test suite. When a test starts reading a file outside its own
-# domain-rule tree by path or subprocess, audit this table by hand and add
-# the matching entry.
+# TestCrossDomainReadCompleteness (claude/.claude/scripts/tests/test_select_tests.py)
+# derives this table's required entries by scanning test sources, so a new
+# undeclared cross-domain read fails CI.
+# It resolves only module-level constants built as a Path chain of string
+# literals rooted at __file__ or at a path constant from
+# claude/.claude/tests/helpers.py. A path assembled inside a function body,
+# from a plain string, or from any other call still needs a hand-added entry
+# here.
+# It matches a constant by its presence, not by checking that the name is
+# later passed to a read call, so a constant left behind by a refactor keeps
+# its row alive with no signal to prune it.
+# It verifies precision, not recall: a read whose constant the resolver
+# cannot see is invisible to both the scan and the hand-written audit list.
+# A green run therefore means no known read is unmapped, not that none
+# exists.
 #
 # _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB shells into hook
 # scripts and reads SKILL.md files by path.
@@ -330,8 +388,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # SCRIPTS_DIR for a .sh executable-bit check, non-recursively; the
 # corresponding exception below over-selects for a nested SCRIPTS_DIR script
 # that glob wouldn't catch, since over-selection is the safe direction.
-# CODE_REVIEW_SKILL_MD: test_reconciliation_block_consistency.py
-# (HOOKS_TESTS_DIR) reads this exact file by path.
+# SKILL_FILES_READ_BY_HOOK_TESTS: see that frozenset's own comment above for
+# what it covers and why HANDOFF_SKILL_MD isn't a member.
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
@@ -358,6 +416,11 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # _is_py_source_under_claude_or_plugins: see its own comment above for
 # citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly, not a
 # domain directory.
+# _is_test_source_change: see SELECT_TESTS_TEST_PATH's own comment above for
+# citation. A strict subset of _is_py_source_under_claude_or_plugins, since
+# only a test file under one of the four selectable test directories can
+# introduce a constant TestCrossDomainReadCompleteness's own scan would need
+# to see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
@@ -367,7 +430,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_plugin_agents_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
     (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: p == CODE_REVIEW_SKILL_MD, (HOOKS_TESTS_DIR,)),
+    (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
@@ -377,13 +440,14 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
-    (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
     (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),
+    (_is_test_source_change, (SELECT_TESTS_TEST_PATH,)),
 )
 
 

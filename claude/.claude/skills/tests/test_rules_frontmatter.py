@@ -6,9 +6,8 @@ applies to every repo the user opens):
 - Every entry is a non-empty string.
 - A project rule's literal prefix resolves to a real path — a directory if
   a wildcard remainder follows, an existing file or directory if not.
-- A stowed rule's literal prefix is empty, a bare filename, or a
-  two-segment `.claude/`-anchored path — no other leading literal
-  segment.
+- A stowed rule carries no leading literal path segment — every entry is
+  `**/`-led.
 
 This catches a syntactically-valid but wrong/typo'd glob such as
 `"cluade/.claude/rules/**"`.
@@ -45,7 +44,6 @@ from __future__ import annotations
 
 import fnmatch
 import itertools
-import re
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -60,13 +58,8 @@ _CLAUDE_MD_CONVENTIONS_RULE = _STOWED_RULES_DIR / "claude-md-conventions.md"
 # `paths` list targets: bare root, one directory down, root `.claude/`, and
 # a nested `.claude/` — plus CLAUDE.local.md, which has no `.claude/` form.
 # Every basename (CLAUDE.md, AGENTS.md, CLAUDE.local.md) gets both a root
-# and a `.claude/`-prefixed candidate so every one of the ten `paths`
-# patterns is exercised by at least one candidate below — fnmatch has no
-# `**` path-segment awareness, so a `.claude/`-prefixed bare pattern like
-# `.claude/AGENTS.md` always co-matches with its `**/AGENTS.md` sibling and
-# can never be the sole match for any candidate; "exercised" here means
-# "appears in some candidate's match list," not "is that candidate's only
-# match."
+# and a `.claude/`-prefixed candidate so every `paths` pattern is exercised
+# by at least one candidate below.
 _CLAUDE_MD_CANDIDATE_PATHS = [
     "CLAUDE.md",
     "sub/CLAUDE.md",
@@ -77,6 +70,17 @@ _CLAUDE_MD_CANDIDATE_PATHS = [
     ".claude/AGENTS.md",
     "CLAUDE.local.md",
     "sub/CLAUDE.local.md",
+]
+
+# claude-md-conventions.md's expected `paths` list, in its own file order —
+# pins against a substitution (e.g. a typo'd pattern) that a bare length
+# check would miss.
+_CLAUDE_MD_EXPECTED_PATHS = [
+    "**/CLAUDE.md",
+    "**/AGENTS.md",
+    "**/CLAUDE.local.md",
+    "**/.claude/CLAUDE.md",
+    "**/.claude/AGENTS.md",
 ]
 
 # `{` is included even though `glob.has_magic()` doesn't treat it as magic.
@@ -103,31 +107,20 @@ def _literal_prefix_segments(glob: str) -> tuple[str, ...]:
     return tuple(itertools.takewhile(_is_literal_segment, parts))
 
 
-_BRACE_SEGMENT_RE = re.compile(r"^\{[^{}]+\}$")
+def _matches_paths_glob(candidate_path: str, pattern: str) -> bool:
+    """True if `pattern` matches `candidate_path` under Claude Code's `paths:` dialect.
 
-
-def _is_portable_brace_alternation(segment: str) -> bool:
-    """True if segment is a brace group whose every alternative is itself a bare literal.
-
-    `.claude/{skills,agents}/**` is semantically two globs, `.claude/skills/**`
-    and `.claude/agents/**`, each independently exempt under the two-segment
-    `.claude/`-anchored portability rule (see `rule_frontmatter_violations`).
-    `_literal_prefix_segments` halts its literal run at `{` (a documented
-    metacharacter, since brace expansion means the segment isn't literal in
-    general), so the combined form's prefix stops one segment short of the
-    expanded forms' — this recognizes that specific shape as still portable,
-    without weakening the metacharacter treatment `_literal_prefix_segments`
-    needs elsewhere (a project rule can't resolve a brace group's directory
-    existence without expanding it first).
+    Argument order mirrors `fnmatch.fnmatch(name, pat)`. A `**/`-led pattern
+    also matches a root-level file, which `fnmatch` cannot express in a
+    single pattern because it has no `**` path-segment concept — so the
+    leading `**/` is stripped and both forms are tried. Provenance for the
+    zero-segment behavior, and its stated limits, live in
+    `docs/rules-references.md`.
     """
-    match = _BRACE_SEGMENT_RE.match(segment)
-    if not match:
-        return False
-    alternatives = segment[1:-1].split(",")
-    return all(
-        alt and not any(ch in _GLOB_METACHARACTERS for ch in alt)
-        for alt in alternatives
-    )
+    forms = [pattern]
+    if pattern.startswith("**/"):
+        forms.append(pattern.removeprefix("**/"))
+    return any(fnmatch.fnmatch(candidate_path, form) for form in forms)
 
 
 def _discover_rule_files() -> list[tuple[Path, bool]]:
@@ -149,18 +142,11 @@ def rule_frontmatter_violations(
 
     `is_stowed` selects which glob-portability rule applies. A stowed rule
     (`claude/.claude/rules/`) must carry no leading literal path segment,
-    since its referent is every consumer's repo, not this one. Two shapes
-    are exempt: a bare filename with no wildcard (e.g. `CLAUDE.md`, which
-    targets one exact path rather than assuming a directory), and a
-    two-segment `.claude/`-anchored path (e.g. `.claude/CLAUDE.md` —
-    `.claude/` is a Claude Code convention directory present or absent
-    uniformly in every repo, but a 3rd+ segment beneath it is as
-    repo-specific as any other literal path, so the exemption doesn't
-    extend past depth 2). A
-    project rule (`.claude/rules/`) may have a literal prefix. A fully
-    literal glob (no wildcard remainder) must resolve to an existing path;
-    a glob with a wildcard remainder must resolve its literal prefix to an
-    existing directory, both under `repo_root`.
+    since its referent is every consumer's repo, not this one. A project
+    rule (`.claude/rules/`) may have a literal prefix. A fully literal glob
+    (no wildcard remainder) must resolve to an existing path; a glob with a
+    wildcard remainder must resolve its literal prefix to an existing
+    directory, both under `repo_root`.
 
     `repo_root` defaults to `_REPO_ROOT`. Tests pass a synthetic
     `tmp_path`-rooted tree instead, so a directory-resolution fixture
@@ -221,45 +207,16 @@ def rule_frontmatter_violations(
 
         prefix = _literal_prefix_segments(glob)
         if is_stowed:
-            is_bare_filename = bool(prefix) and len(parsed.parts) == 1
-            # Bounded to exactly 2 segments (".claude/<filename>"): ".claude/"
-            # itself is a universal Claude Code convention directory, but a
-            # 3rd+ literal segment beneath it (a specific skill, agent, or
-            # rule name) is exactly as repo-specific as any other literal
-            # path — unbounded depth would exempt e.g.
-            # ".claude/skills/<repo-specific-name>/**".
-            is_dotclaude_anchored = len(prefix) == 2 and prefix[0] == ".claude"
-            # A brace group right after ".claude/" (e.g. ".claude/{skills,agents}/**")
-            # is semantically several independently-exempt two-segment paths at
-            # once, but halts _literal_prefix_segments's walk one segment short
-            # (prefix == (".claude",)) since "{" is a metacharacter. Recognize
-            # that specific shape too, so the pre-expansion and post-expansion
-            # forms of the same portable glob set agree — this doesn't relax the
-            # 3rd-segment cutoff: parts[2] (if present) must still itself carry a
-            # metacharacter, or a literal segment beyond the brace would sneak
-            # through unchecked the same way an unbounded depth-3 literal would.
-            is_dotclaude_brace_anchored = (
-                len(prefix) == 1
-                and prefix[0] == ".claude"
-                and len(parsed.parts) >= 2
-                and _is_portable_brace_alternation(parsed.parts[1])
-                and (
-                    len(parsed.parts) == 2
-                    or any(ch in _GLOB_METACHARACTERS for ch in parsed.parts[2])
-                )
-            )
-            if prefix and not (is_bare_filename or is_dotclaude_anchored or is_dotclaude_brace_anchored):
+            if prefix:
                 violations.append(
-                    f"{rule_file} `paths` entry {glob!r} carries a leading "
-                    "literal path segment — stowed rule globs apply in "
-                    "every stow consumer's repo and must be fully portable "
-                    "(no leading literal segment, e.g. `**/`-led). Exempt: "
-                    "a bare filename with no wildcard (e.g. `CLAUDE.md`) or "
-                    "a two-segment `.claude/`-anchored path (e.g. "
-                    "`.claude/CLAUDE.md`) — both are Claude Code convention "
-                    "locations, present or absent uniformly across every "
-                    "consumer repo, not an assumption about this repo's "
-                    "own layout."
+                    f"{rule_file} `paths` entry {glob!r} carries a leading literal "
+                    "path segment — a stowed rule's globs apply in every stow "
+                    "consumer's repo, so every entry must be `**/`-led. A leading "
+                    "literal directory assumes some other repo's layout. A bare "
+                    "filename or a `.claude/`-anchored literal matches a strict "
+                    "subset of its `**/`-led form, which covers the root-level file "
+                    "as well as nested ones. Matching a root-level file and no "
+                    "nested one has no representable form here."
                 )
         else:
             is_fully_literal = bool(prefix) and len(prefix) == len(parsed.parts)
@@ -306,28 +263,73 @@ def test_rule_has_parseable_paths_frontmatter(rule_file: Path, is_stowed: bool):
 )
 @pytest.mark.parametrize("candidate_path", _CLAUDE_MD_CANDIDATE_PATHS)
 def test_claude_md_conventions_globs_match_representative_paths(candidate_path: str):
-    """Self-consistency check: claude-md-conventions.md's ten `paths` globs,
+    """Self-consistency check: claude-md-conventions.md's five `paths` globs,
     taken together, must fire on every representative instruction-file
     location it targets.
 
-    This uses `fnmatch` against a literal repo-root-relative string, which is
-    NOT the same matcher Claude Code's harness runs — whether a leading
-    `**/` matches zero path segments is undocumented (see
-    `docs/rules-references.md`'s glob-decision note), so a pass here is not
-    proof the real matcher fires. It only catches the typo/self-inconsistency
-    class this module's own docstring names (e.g. `"cluade/.claude/rules/**"`):
-    a candidate path matched by none of the ten globs signals a broken or
-    dropped pattern, which is exactly the failure this rule's defensive
-    bare-basename-plus-`**/`-led pairing is meant to prevent.
+    Matches via `_matches_paths_glob`, not plain `fnmatch`, so a root-level
+    candidate is covered the same way Claude Code's real harness covers it
+    (provenance: `docs/rules-references.md`). This only catches the
+    typo/self-inconsistency class this module's own docstring names (e.g.
+    `"cluade/.claude/rules/**"`): a candidate path matched by none of the
+    five globs signals a broken or dropped pattern.
     """
     frontmatter = parse_frontmatter(_CLAUDE_MD_CONVENTIONS_RULE)
     paths = frontmatter["paths"]
-    assert len(paths) == 10
-    matched = [pattern for pattern in paths if fnmatch.fnmatch(candidate_path, pattern)]
+    matched = [pattern for pattern in paths if _matches_paths_glob(candidate_path, pattern)]
     assert matched, (
         f"{candidate_path!r} matched none of {paths!r} — "
         "typo or dropped pattern in claude-md-conventions.md's paths list"
     )
+
+
+@pytest.mark.skipif(
+    not _CLAUDE_MD_CONVENTIONS_RULE.is_file(),
+    reason="claude-md-conventions.md not present",
+)
+def test_claude_md_conventions_paths_list_is_unchanged():
+    """Pins claude-md-conventions.md's `paths` list to its exact expected contents, in order.
+
+    An exact-list comparison catches a substitution (a typo'd pattern that
+    preserves the count), which no count assertion can. Revisit
+    `_CLAUDE_MD_CANDIDATE_PATHS` alongside any change to this list.
+    """
+    frontmatter = parse_frontmatter(_CLAUDE_MD_CONVENTIONS_RULE)
+    assert frontmatter["paths"] == _CLAUDE_MD_EXPECTED_PATHS, (
+        "claude-md-conventions.md's `paths` list changed — revisit "
+        "_CLAUDE_MD_CANDIDATE_PATHS alongside this change"
+    )
+
+
+class TestMatchesPathsGlob:
+    """Unit tests for `_matches_paths_glob()`, independent of any rule file's
+    actual `paths` list — the parametrized test above only ever exercises
+    claude-md-conventions.md's five pinned patterns.
+    """
+
+    def test_leading_double_star_matches_root_level_candidate(self):
+        assert _matches_paths_glob("CLAUDE.md", "**/CLAUDE.md")
+
+    def test_leading_double_star_matches_nested_candidate(self):
+        assert _matches_paths_glob("sub/CLAUDE.md", "**/CLAUDE.md")
+
+    def test_leading_double_star_rejects_non_matching_candidate(self):
+        assert not _matches_paths_glob("sub/AGENTS.md", "**/CLAUDE.md")
+
+    def test_non_double_star_pattern_matches_its_candidate(self):
+        assert _matches_paths_glob("claude/.claude/rules/foo.md", "claude/.claude/rules/*.md")
+
+    def test_non_double_star_pattern_rejects_non_matching_candidate(self):
+        assert not _matches_paths_glob("other/foo.md", "claude/.claude/rules/*.md")
+
+    def test_bare_double_star_slash_matches_nothing(self):
+        """Pins the current behavior of the degenerate "**/" pattern: it
+        matches nothing, via both fnmatch's translation and the
+        stripped-empty fallback. No rule uses this shape, so False here is
+        accepted rather than treated as a bug.
+        """
+        assert not _matches_paths_glob("CLAUDE.md", "**/")
+        assert not _matches_paths_glob("sub/CLAUDE.md", "**/")
 
 
 class TestRuleFrontmatterViolations:
@@ -438,102 +440,92 @@ class TestRuleFrontmatterViolations:
         )
         assert rule_frontmatter_violations(f, is_stowed=True) == []
 
+    def test_bare_double_star_led_filename_glob_in_stowed_rule_passes(self, tmp_path):
+        # The valid shape for a root-level file: a "**/"-led glob with no
+        # literal segment before it.
+        f = self._write_rule(tmp_path, '---\npaths:\n  - "**/CLAUDE.md"\n---\n\nbody\n')
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_dotclaude_anchored_double_star_led_glob_in_stowed_rule_passes(self, tmp_path):
+        # The valid shape for a ".claude/"-nested file: a "**/"-led glob in
+        # front of the ".claude/" anchor.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - "**/.claude/CLAUDE.md"\n---\n\nbody\n'
+        )
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
     def test_nonportable_glob_in_stowed_rule_fails(self, tmp_path):
         f = self._write_rule(
             tmp_path, '---\npaths:\n  - "claude/.claude/skills/**"\n---\n\nbody\n'
         )
         violations = rule_frontmatter_violations(f, is_stowed=True)
-        assert violations and "must be fully portable" in violations[0]
+        assert violations and "must be `**/`-led" in violations[0]
 
-    def test_fully_literal_glob_in_stowed_rule_passes(self, tmp_path):
-        # No wildcard anywhere in the glob: it targets one exact path in
-        # every consumer's repo (e.g. a root-level CLAUDE.md), not a
-        # directory this repo's own layout happens to have — exempt from
-        # the leading-literal-segment portability check.
+    def test_bare_filename_glob_in_stowed_rule_fails(self, tmp_path):
+        # A bare filename with no wildcard anywhere matches a strict subset
+        # of its `**/`-led form (`**/CLAUDE.md`), which already covers the
+        # root-level file — not exempt from the leading-literal-segment
+        # portability check.
         f = self._write_rule(tmp_path, '---\npaths:\n  - "CLAUDE.md"\n---\n\nbody\n')
-        assert rule_frontmatter_violations(f, is_stowed=True) == []
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be `**/`-led" in violations[0]
 
-    def test_dotclaude_anchored_literal_glob_in_stowed_rule_passes(self, tmp_path):
-        # ".claude/" is a Claude Code convention directory, present or
-        # absent uniformly across every consumer repo — a 2-segment literal
-        # glob anchored there is still portable, unlike one anchored at
-        # this repo's own top-level directory names.
+    def test_dotclaude_anchored_literal_glob_in_stowed_rule_fails(self, tmp_path):
+        # A ".claude/"-anchored literal matches a strict subset of its
+        # `**/`-led form (`**/.claude/CLAUDE.md`) — not exempt, even though
+        # ".claude/" itself is a Claude Code convention directory present or
+        # absent uniformly across every consumer repo.
         f = self._write_rule(
             tmp_path, '---\npaths:\n  - ".claude/CLAUDE.md"\n---\n\nbody\n'
         )
-        assert rule_frontmatter_violations(f, is_stowed=True) == []
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be `**/`-led" in violations[0]
 
     def test_dotclaude_anchored_deep_literal_glob_in_stowed_rule_fails(self, tmp_path):
-        # The ".claude/"-anchored exemption is bounded to exactly 2
-        # segments. A 3rd+ literal segment names a specific skill, agent,
-        # or rule — exactly as repo-specific as any other literal path,
-        # so unbounded depth must not be exempt.
+        # A 3rd+ literal segment beneath ".claude/" names a specific skill,
+        # agent, or rule — exactly as repo-specific as any other literal
+        # path, and equally non-portable as the shallower 2-segment
+        # ".claude/"-anchored case.
         f = self._write_rule(
             tmp_path,
             '---\npaths:\n  - ".claude/skills/repo-specific-skill/**"\n---\n\nbody\n',
         )
         violations = rule_frontmatter_violations(f, is_stowed=True)
-        assert violations and "must be fully portable" in violations[0]
+        assert violations and "must be `**/`-led" in violations[0]
 
-    def test_dotclaude_anchored_directory_glob_in_stowed_rule_passes(self, tmp_path):
-        # Pins the wildcard-remainder case of the two-segment ".claude/"-anchor
-        # exemption (as opposed to the no-remainder ".claude/CLAUDE.md" case
-        # already covered above): the exemption is stated in terms of the
-        # literal prefix's length, not the whole glob's literalness, so a
-        # wildcard remainder after the two literal segments must still pass.
+    def test_dotclaude_anchored_directory_glob_in_stowed_rule_fails(self, tmp_path):
+        # A ".claude/"-anchored literal prefix is still a leading literal
+        # segment with a wildcard remainder after it, same as the
+        # no-remainder ".claude/CLAUDE.md" case above — it matches a strict
+        # subset of its `**/`-led form (`**/.claude/skills/**`).
         f = self._write_rule(
             tmp_path, '---\npaths:\n  - ".claude/skills/**"\n---\n\nbody\n'
         )
-        assert rule_frontmatter_violations(f, is_stowed=True) == []
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be `**/`-led" in violations[0]
 
-    def test_dotclaude_anchored_brace_alternation_glob_in_stowed_rule_passes(self, tmp_path):
-        # ".claude/{skills,agents}/**" is semantically the union of
-        # ".claude/skills/**" and ".claude/agents/**", each independently
-        # exempt above — the combined brace form must agree with its own
-        # expansions rather than being rejected as a 1-segment-literal-prefix
-        # glob merely because "{" halts _literal_prefix_segments's walk.
+    def test_dotclaude_anchored_brace_alternation_glob_in_stowed_rule_fails(self, tmp_path):
+        # A brace group right after ".claude/" still leaves a 1-segment
+        # leading literal prefix (".claude",) — `_literal_prefix_segments`
+        # halts its walk at "{", a documented metacharacter — so it matches
+        # a strict subset of its `**/`-led form the same as any other
+        # `.claude/`-anchored literal.
         f = self._write_rule(
             tmp_path, '---\npaths:\n  - ".claude/{skills,agents}/**"\n---\n\nbody\n'
         )
-        assert rule_frontmatter_violations(f, is_stowed=True) == []
-
-    def test_dotclaude_anchored_brace_alternation_with_literal_third_segment_in_stowed_rule_fails(
-        self, tmp_path
-    ):
-        # The brace-alternation exemption must not widen the 3rd-segment
-        # cutoff: a literal segment after the brace group is exactly as
-        # repo-specific as an unbounded-depth literal anywhere else.
-        f = self._write_rule(
-            tmp_path,
-            '---\npaths:\n  - ".claude/{skills,agents}/sub/**"\n---\n\nbody\n',
-        )
         violations = rule_frontmatter_violations(f, is_stowed=True)
-        assert violations and "must be fully portable" in violations[0]
-
-    def test_dotclaude_anchored_brace_alternation_with_wildcard_alternative_in_stowed_rule_fails(
-        self, tmp_path
-    ):
-        # A brace alternative that itself carries a metacharacter isn't a
-        # bare literal name, so it doesn't reduce to a portable two-segment
-        # expansion the way "{skills,agents}" does.
-        f = self._write_rule(
-            tmp_path,
-            '---\npaths:\n  - ".claude/{skills,repo-specific-*}/**"\n---\n\nbody\n',
-        )
-        violations = rule_frontmatter_violations(f, is_stowed=True)
-        assert violations and "must be fully portable" in violations[0]
+        assert violations and "must be `**/`-led" in violations[0]
 
     def test_multisegment_literal_glob_in_stowed_rule_fails(self, tmp_path):
-        # No wildcard anywhere, but the literal path is multi-segment and
-        # not ".claude/"-anchored — it only resolves inside this repo's own
-        # layout, not a target this rule could match in a typical consumer
-        # repo. The bare-filename and ".claude/"-anchored exemptions must
-        # not widen to cover this shape.
+        # A fully literal, multi-segment path with no wildcard remainder
+        # anywhere and not ".claude/"-anchored — distinct from
+        # test_nonportable_glob_in_stowed_rule_fails above, which carries a
+        # wildcard remainder after its literal segments.
         f = self._write_rule(
             tmp_path, '---\npaths:\n  - "claude/.claude/skills/tests"\n---\n\nbody\n'
         )
         violations = rule_frontmatter_violations(f, is_stowed=True)
-        assert violations and "must be fully portable" in violations[0]
+        assert violations and "must be `**/`-led" in violations[0]
 
     def test_fully_literal_single_file_glob_in_project_rule_passes(self, tmp_path):
         # No wildcard anywhere: the glob targets one exact file. Requiring
