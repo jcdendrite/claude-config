@@ -21,7 +21,8 @@ scans the whole staged diff, not only added lines, so the blast radius is
 wider than commits that introduce one. Intended outcome: cross-file anchor
 links inside real markdown link syntax stop being denied, while a bare
 `#<anchor-name>`-shaped fragment written outside `[...](...)` syntax stays
-denied exactly as today.
+denied exactly as today — except for the narrow fabricated-bracket splice
+gap documented in the assumption ledger (Row 5).
 
 ## Approach
 
@@ -86,14 +87,20 @@ mechanisms below anchor to it.
    `[verified: claude/.claude/hooks/deny-private-project-refs.sh:649-653,
    689, 695]`
 4. All nine existing pinned assertions keep their current verdicts;
-   bare-mention detection and same-page-link handling do not loosen.
+   bare-mention detection and same-page-link handling do not loosen,
+   except for the narrow fabricated-bracket splice gap (Row 5).
    `[engineer-verified]`
-5. The `](x#<slug>` splice — a mention written after a fabricated closing
-   bracket and a destination-shaped run — stays open and documented rather
-   than closed by a fourth regex branch. Reason: it is the same accepted
-   class as three gaps already documented on this constant, and closing it
-   by requiring a `.` or `/` in the destination would deny legitimate
-   extensionless links. `[engineer-verified]`
+5. The `](x#<slug>)` splice — a mention written after a fabricated closing
+   bracket and a filler destination run — newly evades the detector under
+   the new pattern. Its zero-content form, `](#<slug>)`, was already
+   unreachable under the old pattern. This diff extends the exemption to
+   any filler content between the fabricated bracket and the `#`. It
+   stays open rather than closed by a fourth regex branch. Reason:
+   closing it requires rejecting a `(` preceded by `]` unless a
+   well-formed `[text` opened it first — a negation over a
+   variable-length prefix, which POSIX ERE (Given 3) cannot express.
+   `[engineer-verified]` `[verified: grep -Eq executed against both regex
+   constants this session]`
 6. The verification surface is the pinned pytest cases, not a live
    reproduction of the currently-blocked line on another branch. Given 1
    makes such a reproduction meaningless anyway: any hook invocation
@@ -103,10 +110,12 @@ mechanisms below anchor to it.
    `[engineer-verified]`
 8. The new pattern is monotone against the old one across a 22-case
    corpus — it never denies anything the old one allowed, and the nine
-   pinned shapes keep their verdicts (5 deny, 4 allow). The four flips are
+   pinned shapes keep their verdicts (5 deny, 4 allow). The five flips are
    all old-DENY to new-ALLOW: a cross-file anchor link in real link
    syntax, a deep path inside a link, a link preceded earlier in the line
-   by a `)`, and a same-line link after an unrelated close-paren.
+   by a `)`, a same-line link after an unrelated close-paren, and a
+   channel-shaped mention spliced after a fabricated closing bracket and a
+   filler destination run (`](x#<slug>)`).
    `[engineer-verified: corpus executed against both patterns this
    session]`
 9. The new constant's own source line is self-non-matching under the
@@ -207,7 +216,7 @@ see M6 for why this does not split.
   detected; the all-digit exclusion; the reachability predicate that
   excludes a markdown link destination; the parameter-expansion-length
   exclusion; and the residual gaps. Five residuals to name: the
-  `](x#<slug>` splice, the `{#<slug>}` brace wrap, the all-digit
+  `](x#<slug>)` splice, the `{#<slug>}` brace wrap, the all-digit
   exclusion, the CommonMark angle-bracket destination form
   `[t](<a b.md#<slug>>)` (which stays denied), and the link exemption
   trusting any link-shaped destination without verifying it resolves to a
@@ -323,9 +332,15 @@ grep -nE '(^|[)[:space:]]|(^|[^]])\()([^()[:space:]]*[^(){[:space:]])?#[a-z0-9_-
 ```
 
 Accept only if the new pattern's hit set is a strict subset of the old
-one (monotonicity — nothing newly denied), and every line that drops out
-carries a markdown cross-file link. A line appearing only in the second
-output is a regression, not a finding to explain away.
+one (monotonicity — nothing newly denied). Every line that drops out
+either carries a markdown cross-file link or matches the
+fabricated-bracket splice shape (`](x#<slug>)`, Row 5). That splice
+shape is the sole sanctioned non-link drop-out. It appears twice in the
+test module: an illustrative docstring literal and the test's own input
+literal. Any other line appearing only in the second output is a
+regression, not a finding to explain away. The differential run above
+predates this acceptance criterion's splice-shape callout, so it does
+not independently verify that callout.
 
 This differential is a one-time check, not a persisted assertion: it runs
 during this change and never again. The twelve added pinned cases plus the
@@ -390,14 +405,18 @@ shape needing the angle-bracket form, not a bug in this plan.
 - **The other five structural detectors** — IPv4 literal, SSH key path
   reference, home-rooted path, long hex identifier, internal hostname. No
   behavior change, no comment change. (Row 7.)
-- **Bare-mention and same-page-link detection.** Neither loosens; a
-  `#<slug>`-shaped fragment outside link syntax stays denied exactly as
-  today. (Row 4.)
-- **Closing the `](x#<slug>` splice gap.** Documented as a residual
+- **Bare-mention and same-page-link detection.** Neither loosens except
+  for the fabricated-bracket splice gap this diff widens (Row 5); a
+  `#<slug>`-shaped fragment outside link syntax otherwise stays denied
+  exactly as today. (Row 4.)
+- **Closing the `](x#<slug>)` splice gap.** Documented as a residual
   instead. (Row 5.)
-- **The three pre-existing residual gaps** (fabricated closing bracket,
-  `{#<slug>}` brace wrap, all-digit runs) and the CommonMark
-  angle-bracket destination form that stays denied. Documented, not fixed.
+- **Residual gaps on this constant**: the fabricated-bracket splice gap,
+  the `{#<slug>}` brace wrap, and all-digit runs, plus the CommonMark
+  angle-bracket destination form that stays denied. All are documented,
+  not fixed. The splice gap's zero-content form (`](#<slug>)`) predates
+  this diff; its filler-content form (`](x#<slug>)`) is newly opened by
+  it — see Row 5.
 - **The generalized link-destination-trust gap.** The new pattern's link
   exemption does not verify the destination resolves to a real file; any
   well-formed `[text](destination#<slug>)` is exempt regardless of

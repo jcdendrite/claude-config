@@ -2081,9 +2081,10 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 # - The destination run's required terminal character also excludes `{`,
 #   which is what still excludes bash parameter-expansion-length syntax
 #   (`${#array[@]}`, `${#string}`) from matching.
-# - Residual gap: a channel reference spliced right after a fabricated
-#   closing bracket and a filler destination run (`](x#<slug>`) evades this
-#   detector, same class as the all-digit GitHub-issue exclusion above.
+# - Residual gap: the exemption fires on any `](`, whether or not a
+#   well-formed `[text preceded it and regardless of what the destination
+#   run contains, so a splice like `](x#<slug>)` right after a bare `]`
+#   also evades this detector.
 # - Residual gap: a channel reference wrapped as `{#<slug>}` (e.g. a
 #   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
 #   evades this detector.

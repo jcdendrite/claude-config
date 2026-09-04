@@ -2850,14 +2850,18 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_structural_slack_accepted_splice_after_fabricated_bracket_allowed(self, claude_config_repo):
-        """A channel-shaped fragment written directly after a fabricated
+        """A channel-shaped fragment spliced directly after a fabricated
         `](` with a filler run and no real link text before it, e.g.
-        `](x#slug)`, is not caught: the exemption is purely syntactic and
-        doesn't verify that a genuine `[text` opened the link. This gap is
-        accepted and pinned so a later edit can't widen or close it
-        silently, the same way
+        `](x#slug)`, is not caught. The exemption fires on the bracket
+        shape alone: it never verifies that a genuine `[text` opened the
+        link. The zero-filler form, `](#slug)`, is allowed by the same
+        exemption too. Its real-`[text` variant is independently pinned by
+        test_structural_slack_markdown_inline_link_anchor_allowed; this
+        fabricated-bracket, zero-filler compound is not itself pinned by
+        any test. Pinned the same way
         test_structural_slack_github_issue_reference_not_flagged_allowed
-        pins the all-digit exclusion."""
+        pins the all-digit exclusion, so a later edit can't silently
+        change this fragment's verdict."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
