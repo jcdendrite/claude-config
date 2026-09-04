@@ -4027,11 +4027,10 @@ def test_findings_path_dispatcher_calls_suffix_script(dispatcher_name: str) -> N
 # These three shell expressions must not appear in any skill body now that
 # findings-path-suffix.sh computes them. Absence is checked across the whole
 # skill corpus (below), not just the three known dispatchers — a copy-paste
-# of the retired recipe into a fourth skill would otherwise pass unseen. See
-# "Making the absence assertion paraphrase-proof" in
-# .claude/plans/findings-path-script.md's Out of scope section for why a
-# live-branch alternate spelling (e.g. `date '+%s'`) is not caught by a
-# literal-substring check like this one.
+# of the retired recipe into a fourth skill would otherwise pass unseen. A
+# literal-substring check like this one can't catch an equivalent alternate
+# spelling (e.g. `date '+%s'`) — it only closes the copy-paste regression
+# shape, not every possible reimplementation.
 _RETIRED_FINDINGS_PATH_RECIPE_EXPRESSIONS = (
     "$(date +%s)",
     "$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)",

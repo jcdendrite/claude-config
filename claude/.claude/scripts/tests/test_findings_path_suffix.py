@@ -22,7 +22,15 @@ from .conftest import _commit, _init_repo, _make_feature_branch, _make_repo_with
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "findings-path-suffix.sh"
 
+# Requires a non-empty slug: the well-formed-branch shape every test below
+# uses except TestNonUtf8BranchNameEntirelyInvalid, which has its own local
+# pattern for the one case where the slug can legitimately be empty.
 _BARE_SUFFIX_RE = re.compile(r"^[0-9]+-[A-Za-z0-9-]{1,20}$")
+
+# A branch name stripped to zero `[A-Za-z0-9-]` bytes produces exactly this
+# empty-slug shape -- legitimate only for TestNonUtf8BranchNameEntirelyInvalid,
+# whose two inputs are provably all-stripped, not merely permitted to be.
+_EMPTY_SLUG_SUFFIX_RE = re.compile(r"^[0-9]+-$")
 
 # The findings_path template as it appears in code-review/SKILL.md's dispatch
 # contract -- kept in sync with test_skills.py's _FINDINGS_PATH_RECIPE_TOKENS,
@@ -266,17 +274,20 @@ class TestIgnoreFileMissingTrailingNewline:
 class TestNonAsciiBranchNameTruncation:
     """`cut -c1-20` truncates by byte position, not Unicode codepoint, in
     this environment -- a branch name containing multibyte UTF-8 characters
-    can be truncated mid-sequence, producing invalid UTF-8 that would
-    otherwise be spliced into a findings_path and passed as a `Write` tool
-    file path argument."""
+    could be truncated mid-sequence if truncation ran before filtering. The
+    script filters to `[A-Za-z0-9-]` with `tr -cd` before the `cut`
+    truncation, so no multibyte byte ever reaches the truncation boundary."""
 
     def test_suffix_is_valid_utf8_when_branch_name_straddles_truncation_boundary(self, tmp_path):
         repo = tmp_path / "repo"
         _init_repo(repo)
         _commit(repo, "init")
 
-        # "feature-ab" (10 bytes) plus five 3-byte Hiragana characters (15 bytes) is 25
-        # bytes total, so a 20-byte cut lands one byte into the fourth Hiragana character.
+        # `tr -cd 'A-Za-z0-9-'` strips every Hiragana byte before `cut` runs, so the
+        # filtered slug is just "feature-ab" (10 chars), nowhere near the 20-char
+        # truncation boundary. This test would catch a regression where `cut`
+        # truncates before `tr -cd` filters, or where sanitization runs only after
+        # truncation.
         branch_name = "feature/ab" + "あいうえお"
         subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
 
@@ -287,4 +298,89 @@ class TestNonAsciiBranchNameTruncation:
             suffix = result.stdout.decode("utf-8").strip()
         except UnicodeDecodeError as exc:
             pytest.fail(f"script emitted invalid UTF-8 in its suffix bytes {result.stdout!r}: {exc}")
-        assert re.match(r"^\d+-", suffix), f"script output {suffix!r} missing the <epoch>- prefix"
+        assert _BARE_SUFFIX_RE.fullmatch(suffix), (
+            f"script output {suffix!r} does not match the documented <epoch>-<slug> shape"
+        )
+
+
+class TestNonUtf8BranchNameEntirelyInvalid:
+    """Unlike TestNonAsciiBranchNameTruncation above, where only the bytes
+    straddling the truncation boundary are non-ASCII, the two branch names
+    below contain no byte at all inside `tr -cd`'s `A-Za-z0-9-` class: one
+    is undecodable as UTF-8, the other is fully valid UTF-8 but entirely
+    non-ASCII. The operative condition is byte-class membership, not UTF-8
+    validity, so both hit the identical empty-slug path. A branch name
+    stripped to nothing by the filter still produces a valid, well-shaped
+    suffix rather than corrupted output."""
+
+    def test_suffix_is_valid_utf8_when_branch_name_is_entirely_invalid_utf8(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit(repo, "init")
+
+        # 0xF5-0xFF are never valid UTF-8 lead or continuation bytes, so no
+        # prefix of this name decodes -- `tr -cd 'A-Za-z0-9-'` strips it to nothing.
+        branch_name = b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8"
+        subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
+
+        result = subprocess.run([str(_SCRIPT)], cwd=str(repo), capture_output=True, check=False)
+
+        assert result.returncode == 0
+        try:
+            suffix = result.stdout.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"script emitted invalid UTF-8 in its suffix bytes {result.stdout!r}: {exc}")
+        assert _EMPTY_SLUG_SUFFIX_RE.fullmatch(suffix), (
+            f"script output {suffix!r} does not match the documented <epoch>-<slug> shape"
+        )
+
+    def test_suffix_is_valid_utf8_when_branch_name_is_valid_utf8_but_entirely_non_ascii(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit(repo, "init")
+
+        # Fully valid UTF-8, but every character falls outside `A-Za-z0-9-`, so
+        # this exercises the same empty-slug path as the invalid-UTF-8 case above
+        # via a different route: valid-but-filtered rather than undecodable.
+        branch_name = "ветка"
+        subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
+
+        result = subprocess.run([str(_SCRIPT)], cwd=str(repo), capture_output=True, check=False)
+
+        assert result.returncode == 0
+        try:
+            suffix = result.stdout.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"script emitted invalid UTF-8 in its suffix bytes {result.stdout!r}: {exc}")
+        assert _EMPTY_SLUG_SUFFIX_RE.fullmatch(suffix), (
+            f"script output {suffix!r} does not match the documented <epoch>-<slug> shape"
+        )
+
+
+class TestPunctuationAndAccentedCharacterStripping:
+    """ASCII punctuation (underscores, dots) and complete non-ASCII
+    characters both fall outside `tr -cd`'s `A-Za-z0-9-` class and are
+    silently stripped, not just invalid trailing bytes. Real branch names
+    commonly carry this shape (PROJ_123, v1.2.3, snake_case). The stripping
+    is intentional per the character-class filter design, not an unverified
+    side effect."""
+
+    def test_underscore_dot_and_accented_character_are_stripped(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit(repo, "init")
+
+        branch_name = "fix_bug.123-café"
+        expected_slug = "fixbug123-caf"
+        subprocess.run(["git", "checkout", "-q", "-b", branch_name], cwd=repo, check=True)
+
+        result = _run_script(repo)
+        assert result.returncode == 0
+
+        suffix = result.stdout.strip()
+        match = re.fullmatch(r"(\d+)-([A-Za-z0-9-]+)", suffix)
+        assert match, f"script output {suffix!r} does not match the documented <epoch>-<slug> shape"
+        assert match.group(2) == expected_slug, (
+            f"derived slug {match.group(2)!r} from branch {branch_name!r}, expected the underscore, "
+            f"dot, and accented character (é) stripped by `tr -cd 'A-Za-z0-9-'`, leaving {expected_slug!r}"
+        )

@@ -13,8 +13,7 @@ set -euo pipefail
 
 SCRIPT_NAME="findings-path-suffix.sh"
 # Sibling branches sharing a prefix beyond this length can produce identical slugs --
-# acceptable because the slug is a human-readable hint, not an identifier
-# (.claude/plans/findings-path-script.md:44).
+# acceptable because the slug is a human-readable hint, not an identifier.
 SLUG_MAX_LENGTH=20
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -39,17 +38,8 @@ grep -qxF "agent-reviews/" "$EXCLUDE_FILE" 2>/dev/null || {
 
 EPOCH=$(date +%s)
 # Detached HEAD collapses to the literal string "HEAD" and is deliberately not
-# special-cased, matching the pre-existing recipe's behavior
-# (.claude/plans/findings-path-script.md:44).
-RAW_SLUG=$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-"$SLUG_MAX_LENGTH")
-# `cut -c` truncates by byte position in this environment's locale, which can split a
-# multibyte UTF-8 sequence at the boundary. iconv's //IGNORE drops any resulting
-# incomplete trailing bytes -- it also exits non-zero whenever it drops something, so
-# the sanitized stdout, not the exit status, is what this relies on.
-if command -v iconv >/dev/null 2>&1; then
-  SLUG=$(printf '%s' "$RAW_SLUG" | iconv -f UTF-8 -t UTF-8//IGNORE 2>/dev/null || true)
-  SLUG="${SLUG:-$RAW_SLUG}"
-else
-  SLUG="$RAW_SLUG"
-fi
+# special-cased.
+# Filtering to `[A-Za-z0-9-]` before `cut -c` truncation means no multibyte
+# UTF-8 sequence is ever split.
+SLUG=$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | tr -cd 'A-Za-z0-9-' | cut -c1-"$SLUG_MAX_LENGTH")
 echo "${EPOCH}-${SLUG}"
