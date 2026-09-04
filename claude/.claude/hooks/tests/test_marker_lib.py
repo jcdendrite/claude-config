@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,16 @@ def _run_lib_fn(fn_call: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _hash_diff_text(text: str) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_hash_diff_text against `text`, positional
+    (not string-interpolated) so arbitrary diff text needs no shell quoting."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_hash_diff_text "$1"', "_hash_diff_text", text],
+        capture_output=True,
+        text=True,
+    )
 
 
 def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
@@ -130,6 +141,115 @@ class TestMarkerLibRepoHash:
         assert from_lib == from_inline, (
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
         )
+
+
+class TestLibHashDiffText:
+    """Direct coverage for _lib_hash_diff_text -- the shared sha256 recipe
+    marker.sh's `write cumulative-review` arm and _lib_cumulative_diff_hash's
+    own post-hash step both call, so a read-side and write-side digest for
+    the same text always agree by construction (see _lib.sh's header on
+    byte-identical output across the read and write sides)."""
+
+    def test_known_text_matches_python_sha256(self):
+        text = "diff --git a/f b/f\n+line\n"
+        expected = hashlib.sha256(text.encode()).hexdigest()
+        result = _hash_diff_text(text)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_empty_text_is_not_a_failure(self):
+        """sha256 of an empty string is itself a valid, non-empty digest --
+        TEXT emptiness is a business-rule concern for marker.sh's own [ -s ]
+        precondition on the subject file, not a failure this helper reports."""
+        expected = hashlib.sha256(b"").hexdigest()
+        result = _hash_diff_text("")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_digest_emptiness_guard_exercised_directly(self):
+        """The post-hash [ -n "$digest" ] guard, exercised without going
+        through _lib_cumulative_diff_hash's own subprocess-produced diff --
+        a broken sha256sum must exit nonzero with empty stdout rather than
+        silently succeed."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; sha256sum() {{ :; }}; _lib_hash_diff_text "some text"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
+
+
+class TestLibRepoRoot:
+    """Direct coverage for _lib_repo_root -- the raw resolution recipe shared
+    by marker.sh's _resolve_repo_root and pr-diff-against-base.sh --record,
+    so both sides resolve a given tree to the identical REPO_ROOT string."""
+
+    def test_matches_git_rev_parse_show_toplevel(self, tmp_path):
+        repo = tmp_path / "repo-root-repo"
+        _init_repo(repo)
+        expected = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        actual = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert actual == expected
+
+    def test_fails_closed_outside_a_git_repository(self, tmp_path):
+        outside = tmp_path / "not-a-repo"
+        outside.mkdir()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.timing
+    def test_hung_git_is_bounded_by_lib_capped(self, tmp_path):
+        """A locked .git/index or a stale NFS mount can make `git
+        rev-parse` block indefinitely -- _lib_repo_root must route through
+        _lib_capped so callers (marker.sh's _resolve_repo_root,
+        pr-diff-against-base.sh --record) fail fast instead of hanging for
+        however long the harness's own outer Bash-tool timeout allows."""
+        timeout_path = shutil.which("timeout")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            # 30s, well past _lib_capped's 5s cap -- avoids a race against
+            # the cap firing at the same instant a shorter sleep would end.
+            'if [ "$1" = "rev-parse" ]; then sleep 30; fi\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode != 0
+        assert elapsed < 8, f"_lib_repo_root took {elapsed:.1f}s — the git call is not capped"
 
 
 class TestLibActivePlanFiles:

@@ -247,6 +247,24 @@ _lib_parse_tool_input_or_deny() {
   esac
 }
 
+# Raw repo-root resolution, shared so every caller resolving a given tree
+# lands on the identical REPO_ROOT string. marker.sh's _resolve_repo_root
+# layers _refuse_main_tree_under_enforcement on top of this; that check is
+# write-specific and stays in marker.sh. Callers needing the same string on a
+# read-only path (e.g. pr-diff-against-base.sh --record) call this directly.
+# tr -d '\n' is load-bearing: git rev-parse appends a trailing newline that
+# both sides must strip identically to agree on REPO_HASH. _lib_capped bounds
+# a locked .git/index or a stale NFS mount, the same hazard
+# _lib_cumulative_diff_hash's own git-dependent call guards against below.
+# Exit 1, empty stdout: not inside a git repository, git is absent, or the
+# call timed out.
+_lib_repo_root() {
+  local root
+  root=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
+  [ -n "$root" ] || return 1
+  printf '%s' "$root"
+}
+
 # Compute the marker repo-hash for an absolute repo-toplevel path.
 # Input must have no trailing newline -- printf '%s' omits one, so the SHA
 # covers exactly the bytes of $1.
@@ -488,20 +506,35 @@ _lib_active_plan_hash() {
   printf '%s' "$digest"
 }
 
+# _lib_hash_diff_text TEXT
+# Hashes TEXT via the shared sha256 recipe every cumulative-review value must
+# use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
+# `write cumulative-review` arm, which hashes a recorded subject through this
+# same function rather than a second, possibly-drifting copy of the recipe.
+# TEXT may be empty -- sha256 of an empty string is still a valid digest, so
+# this function doesn't treat empty input as failure; refusing an empty
+# subject is marker.sh's precondition, not this helper's.
+# Exit 0, non-empty stdout: the sha256 hex digest of TEXT.
+# Exit 1, empty stdout: sha256sum/awk produced no output (tool misbehavior).
+_lib_hash_diff_text() {
+  local text="$1"
+  local digest
+  digest=$(printf '%s' "$text" | sha256sum | awk '{print $1}')
+  [ -n "$digest" ] || return 1
+  printf '%s' "$digest"
+}
+
 # _lib_cumulative_diff_hash REPO_ROOT PR_DIFF_SCRIPT
 # Hashes PR_DIFF_SCRIPT's (pr-diff-against-base.sh's) stdout for REPO_ROOT --
-# the completion-marker value for the `cumulative-review` kind. marker.sh's
-# `write cumulative-review` and `status` arms both call this helper so they
-# use the identical capture-then-hash recipe (see docs/design-decisions.md
-# §42).
+# the completion-marker value for the `cumulative-review` kind. Only `status`
+# calls this helper; `write cumulative-review` hashes a recorded subject via
+# _lib_hash_diff_text instead (design-decisions.md §50).
 #
 # Two-outcome contract, matching _lib_active_plan_hash:
 #   - exit 0, non-empty stdout: the sha256 hex digest of the diff.
 #   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, or was
-#     killed by the cap. Callers MUST fail closed -- the write arm aborts the
-#     write instead of recording an empty-diff marker, and the status arm
-#     degrades to reporting the marker absent rather than erroring the whole
-#     report.
+#     killed by the cap. Callers MUST fail closed -- status degrades to
+#     reporting the marker absent rather than erroring the whole report.
 _lib_cumulative_diff_hash() {
   local repo_root="$1" pr_diff_script="$2"
   local diff_output
@@ -510,10 +543,7 @@ _lib_cumulative_diff_hash() {
   # `gh pr view`.
   diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
   [ -n "$diff_output" ] || return 1
-  local digest
-  digest=$(printf '%s' "$diff_output" | sha256sum | awk '{print $1}')
-  [ -n "$digest" ] || return 1
-  printf '%s' "$digest"
+  _lib_hash_diff_text "$diff_output"
 }
 
 # _lib_is_repo_plan_file REPO_ROOT ABS_PATH
@@ -1412,6 +1442,23 @@ _lib_resolve_claude_pid() {
     pid=$(_lib_capped ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' \t')
   done
   return 2
+}
+
+# _lib_resolve_session_id
+# Prints this session's live, path-safe session id and returns 0. Wraps
+# _lib_resolve_claude_pid's ancestor walk with
+# _lib_valid_session_id_component's validation. pr-diff-against-base.sh
+# --record needs this resolve-then-validate pair to key its own
+# subject-marker file the way marker.sh already keys every completion marker.
+# Exit 1, empty stdout: no live ancestor session found, or the resolved id
+# fails path-safety validation. Silent on failure -- callers print their own
+# context-specific error message.
+_lib_resolve_session_id() {
+  local out sid
+  out=$(_lib_resolve_claude_pid) || return 1
+  sid="${out%% *}"
+  _lib_valid_session_id_component "$sid" || return 1
+  printf '%s' "$sid"
 }
 
 # _lib_worktree_lock_pid WORKTREE_ROOT PORCELAIN_TEXT

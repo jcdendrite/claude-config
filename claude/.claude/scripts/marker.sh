@@ -9,9 +9,9 @@
 
 set -u
 
-# Sibling script, same directory as marker.sh itself -- shared by the `write
-# cumulative-review` arm and the `status` arm below, both via
-# _lib_cumulative_diff_hash.
+# Sibling script, same directory as marker.sh itself -- used by the `status`
+# arm below via _lib_cumulative_diff_hash. The `write cumulative-review` arm
+# reads a recorded subject instead of calling this script directly.
 PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 
 usage() {
@@ -120,15 +120,15 @@ _refuse_main_tree_under_enforcement() {
 }
 
 _resolve_repo_root() {
-  # tr -d '\n' is load-bearing: git rev-parse appends a trailing newline.
-  # require-* hooks compute the hash via printf '%s' "$REPO_ROOT" (no newline),
-  # so both sides must strip it to produce the same sha256 and matching paths.
+  # _lib_repo_root is the raw resolution recipe, shared with
+  # pr-diff-against-base.sh --record so both sides resolve a given tree to
+  # the identical REPO_ROOT string. require-* hooks compute the hash via
+  # printf '%s' "$REPO_ROOT" (no newline), so every side must agree exactly.
   local root
-  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
-  if [ -z "$root" ]; then
+  root=$(_lib_repo_root) || {
     printf 'marker.sh: not inside a git repository\n' >&2
     return 2
-  fi
+  }
   _refuse_main_tree_under_enforcement "$root" || return 2
   printf '%s' "$root"
 }
@@ -359,17 +359,46 @@ case "$SUBCOMMAND" in
         # No _guard_staged_vs_unstaged call: this marker covers the
         # committed PR-vs-base diff, not the staged diff, so that guard's
         # staged-vs-unstaged question does not apply here.
+        #
+        # Reads the subject `pr-diff-against-base.sh --record` captured at
+        # step 3 entry rather than recomputing (design-decisions.md §50).
+        # Emptiness is checked on the canonicalized text below, not the raw
+        # file's byte count, to use one definition of "recorded" throughout.
+        SUBJECT_FILE="$CONFIG_DIR/cumulative-review-subject-markers/$REPO_HASH.$SESSION_ID"
+        if [ ! -e "$SUBJECT_FILE" ]; then
+          # shellcheck disable=SC2016 # single-quoted for literal display text (the
+          # backtick-quoted command is markdown-style formatting, not command
+          # substitution); %s below is the only intended expansion.
+          printf 'marker.sh: no recorded cumulative-review subject for %s. Run `~/.claude/scripts/pr-diff-against-base.sh --record` (step 3 already runs this) before writing this marker. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          exit 2
+        fi
+        # Command substitution strips trailing newlines the same way
+        # _lib_cumulative_diff_hash's own diff_output capture does, so the
+        # two hashing paths agree byte-for-byte on the same underlying text.
+        if ! SUBJECT_TEXT=$(cat "$SUBJECT_FILE" 2>/dev/null); then
+          # shellcheck disable=SC2016 # same literal-display-text reasoning as above.
+          printf 'marker.sh: could not read the recorded cumulative-review subject at %s (permission denied or similar). Run `~/.claude/scripts/pr-diff-against-base.sh --record` before writing this marker. Abort without writing a marker.\n' "$SUBJECT_FILE" >&2
+          exit 2
+        fi
+        if [ -z "$SUBJECT_TEXT" ]; then
+          # shellcheck disable=SC2016 # same literal-display-text reasoning as above.
+          printf 'marker.sh: the recorded cumulative-review subject for %s is empty. Run `~/.claude/scripts/pr-diff-against-base.sh --record` (step 3 already runs this) before writing this marker. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          exit 2
+        fi
         # Compute before redirecting -- same shape as every other write arm
         # above: `>` truncates the marker before the pipeline runs, so a
         # failed hash would destroy a valid marker and silently force a
         # re-review.
-        if ! MARKER_VALUE=$(_lib_cumulative_diff_hash "$REPO_ROOT" "$PR_DIFF_SCRIPT"); then
-          printf 'marker.sh: could not resolve the cumulative PR-vs-base diff (pr-diff-against-base.sh failed, produced no output, or timed out after 15s). Abort without writing a marker.\n' >&2
+        MARKER_VALUE=$(_lib_hash_diff_text "$SUBJECT_TEXT") || {
+          printf 'marker.sh: could not hash the recorded cumulative-review subject. Abort without writing a marker.\n' >&2
           exit 2
-        fi
+        }
         mkdir -p "$CONFIG_DIR/cumulative-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID"
+        # Consumed on success: bounds a recorded-but-unreviewed subject to
+        # authorizing at most one write.
+        rm -f "$SUBJECT_FILE"
         ;;
       *)
         printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review\n" "$SKILL" >&2
@@ -437,6 +466,17 @@ case "$SUBCOMMAND" in
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
+        # Best-effort: bounds this session's own recorded-but-unwritten
+        # cumulative-review subject to this gate run. Session-suffixed so
+        # this only ever removes this session's subject, never another
+        # session's still-pending one. Repo-root resolution is unrelated to
+        # the session-scoped removal above, so a failure here must not abort
+        # it -- skip the subject cleanup instead.
+        if REPO_ROOT=$(_resolve_repo_root 2>/dev/null); then
+          rm -f "$CONFIG_DIR/cumulative-review-subject-markers/$(_marker_lib_repo_hash "$REPO_ROOT").$SESSION_ID"
+        else
+          printf 'marker.sh: could not resolve repo root; skipping cumulative-review subject cleanup.\n' >&2
+        fi
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2

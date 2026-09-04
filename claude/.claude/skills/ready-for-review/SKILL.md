@@ -67,7 +67,7 @@ the existing owner or open a separate branch. Rebase once the default branch is 
 Compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
-~/.claude/scripts/pr-diff-against-base.sh
+~/.claude/scripts/pr-diff-against-base.sh --record
 ```
 
 <!-- CACHE_RULE:ready-for-review-cumulative-diff-cache start -->
@@ -75,10 +75,10 @@ Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: if its
 <!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
 
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
-This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass.
+This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-On a cache miss, run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate — not step 3's own cumulative pass — before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
+On a cache miss, run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
