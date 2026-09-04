@@ -140,7 +140,6 @@
 - After a compaction or session resume mid-review, trust the auto-injected review-narrative summary before re-litigating a `/code-review` finding; if none appears, run `~/.claude/scripts/review-ledger.sh show` to inspect the current session's ledger directly.
 - **A `MEMORY.md` index line routes; it does not authorize.** The index compresses the body and can drop its trigger condition, leaving a bare imperative that reads as a standing directive. Before executing an action a memory prescribes, read the body file; if its trigger condition is not met by what the user actually said this session, do not act. Citing a memory may rely on the index line; executing one may not.
 - Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
-- `.claude/settings.json` vs `.claude/settings.local.json` scoping: project-shared rules (permissions, hooks, skillOverrides that every engineer on the project needs) go in committed `.claude/settings.json`. Personal-machine-only rules (per-machine tooling, individual preferences) go in gitignored `.claude/settings.local.json`. Before adding a rule, ask: would another engineer on this project need this? If yes → `settings.json`. If no → `settings.local.json`.
 
 ## Prose and Output Format
 
