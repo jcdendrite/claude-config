@@ -320,16 +320,10 @@ class TestMatchesPathsGlob:
         assert not _matches_paths_glob("other/foo.md", "claude/.claude/rules/*.md")
 
     def test_bare_double_star_slash_matches_nothing(self):
-        """Pins the current, empirically-verified behavior of the degenerate
-        `"**/"` pattern (nothing after the slash): it matches neither a
-        root-level nor a nested candidate, because fnmatch has no `**`
-        path-segment concept — `"**/"` translates to two `*` wildcards
-        followed by a literal `/`, which only matches a string ending in
-        `/`, and the stripped fallback form (`""`) only matches the empty
-        string. No stowed or project rule uses a bare `"**/"` entry, and an
-        empty-remainder pattern isn't a meaningful `paths:` entry in the
-        first place, so `False` here is defensible rather than a bug to
-        fix.
+        """Pins the current behavior of the degenerate "**/" pattern: it
+        matches nothing, via both fnmatch's translation and the
+        stripped-empty fallback. No rule uses this shape, so False here is
+        accepted rather than treated as a bug.
         """
         assert not _matches_paths_glob("CLAUDE.md", "**/")
         assert not _matches_paths_glob("sub/CLAUDE.md", "**/")
@@ -440,6 +434,20 @@ class TestRuleFrontmatterViolations:
         f = self._write_rule(
             tmp_path,
             '---\npaths:\n  - "**/.github/actions/**/action.yml"\n---\n\nbody\n',
+        )
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_bare_double_star_led_filename_glob_in_stowed_rule_passes(self, tmp_path):
+        # The valid shape for a root-level file: a "**/"-led glob with no
+        # literal segment before it.
+        f = self._write_rule(tmp_path, '---\npaths:\n  - "**/CLAUDE.md"\n---\n\nbody\n')
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_dotclaude_anchored_double_star_led_glob_in_stowed_rule_passes(self, tmp_path):
+        # The valid shape for a ".claude/"-nested file: a "**/"-led glob in
+        # front of the ".claude/" anchor.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - "**/.claude/CLAUDE.md"\n---\n\nbody\n'
         )
         assert rule_frontmatter_violations(f, is_stowed=True) == []
 
