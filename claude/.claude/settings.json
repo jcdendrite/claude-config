@@ -65,7 +65,8 @@
       "Bash(dnf install *)",
       "Bash(apk add *)",
       "Bash(zypper install *)",
-      "EnterPlanMode"
+      "EnterPlanMode",
+      "ScheduleWakeup"
     ]
   },
   "model": "sonnet",

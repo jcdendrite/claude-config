@@ -304,6 +304,26 @@ def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     )
 
 
+def test_schedulewakeup_stays_denied_in_settings() -> None:
+    """The declared config-value backing the ScheduleWakeup deny.
+
+    This proves the *declared* config state — `"ScheduleWakeup"` is present
+    in `permissions.deny` — not that the harness actually removes the tool
+    from context at runtime. That live-session verification lives outside
+    pytest (see `.claude/plans/prevent-non-loop-schedulewakeup-calls.md`'s
+    pre-implementation gate); this test only pins the declaration so a
+    future edit can't drop it silently. A membership check on the exact
+    bare string also catches a later weakening into the parenthesized
+    `"ScheduleWakeup(*)"` form, which leaves the tool visible in context.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert "ScheduleWakeup" in settings.get("permissions", {}).get("deny", []), (
+        f"'ScheduleWakeup' missing from permissions.deny in "
+        f"{_SETTINGS_PATH.name} — out-of-/loop wakeup scheduling is no "
+        f"longer prevented"
+    )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
