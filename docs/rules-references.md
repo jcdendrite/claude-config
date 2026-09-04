@@ -32,25 +32,6 @@ Source for `claude/.claude/rules/claude-md-conventions.md`. Fetched
   Independently corroborated: zero AGENTS.md entries in the Claude Code
   changelog, and Claude Code is absent from agents.md's supported-tools list.
 
-### Glob decision for the rule's `paths` frontmatter
-
-The rule's ten `paths` entries pair a `**/`-led glob with a bare-basename
-glob for each of five instruction-file shapes (`CLAUDE.md`, `AGENTS.md`,
-`CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/AGENTS.md`). This is
-defensive, not redundant: whether a leading `**/` matches zero path
-segments is undocumented, so a `**/CLAUDE.md`-only glob set risks silently
-never firing for the single most important case — a plain repo-root
-`CLAUDE.md`. The bare-basename entries exist specifically to cover that
-repo-root case regardless of how `**/` resolves at zero segments.
-
-A bare basename with no directory separator (`CLAUDE.md`, `AGENTS.md`,
-`CLAUDE.local.md`) is portable across every repo this rule installs into,
-because it names a canonical filename rather than a repo-specific path
-segment. A bare entry that does carry a separator (`.claude/CLAUDE.md`,
-`.claude/AGENTS.md`) is allowed only because its leading segment is
-`.claude/`, itself a canonical location in every repo — not one repo's
-particular layout.
-
 ## GitHub Actions workflow conventions
 
 Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
@@ -246,16 +227,17 @@ competing implementation) to triangulate against.
   matches nothing, and the rule's other patterns keep working."
 - **No `paths:` key** — the rule loads unconditionally at launch, "with the
   same priority as `.claude/CLAUDE.md`."
+- **Zero-segment `**/` match — established by measurement, not by this
+  source.** A `**/`-led pattern also matches a root-level file. Confirmed
+  in `-p` sessions by five hook-instrumented trials, and in one
+  interactive session by the harness's own load notice. See
+  `docs/case-studies/claude-md-glob-zero-segment.md` for the full trial
+  record.
 - **`?` support, leading-`/` anchoring, and trailing-`/` semantics are not
   stated at this source** — recorded as `[unverified]` in the rule body
   (`rule-authoring-conventions.md`) rather than restated or inferred here.
-- **A leading `**/` matches zero leading path segments** (i.e. a `**/`-led
-  glob also matches a project-root file) — not stated at this source, but
-  now confirmed empirically (GH-844). Five one-shot, non-interactive
-  sessions each performed one designated file read, instrumented via the
-  `InstructionsLoaded` hook event. Each showed a `**/`-led stowed rule's
-  glob firing against a repo-root file with no bare-basename sibling entry
-  present. Two positive controls (a depth-3 read, a depth-zero read against
-  a rule that does carry a bare-basename sibling) ran first to prove the
-  instrument and depth-zero loading both work. Interactive-mode behavior is
-  untested — all trials ran in `-p` (non-interactive) mode.
+- **One intermediate segment is still unmeasured.** The trials above cover
+  zero and three intermediate segments, so whether `**/CLAUDE.md` subsumes
+  `**/.claude/CLAUDE.md` is open. `claude-md-conventions.md` keeps both
+  forms for that reason, not by oversight. A depth-1 trial on the same
+  instrument would settle it.
