@@ -120,7 +120,8 @@ def validate(skill_file: Path) -> list[str]:
             state = repr(background) if has_background else "absent"
             violations.append(
                 f"{skill_file}: context: fork requires an explicit "
-                f"background: true or background: false; background is "
+                f"background: <boolean value> (any YAML-recognized boolean "
+                f"spelling, e.g. true/false/yes/no); background is "
                 f"{state}. Omitting it defaults background to true, "
                 f"producing a background fork with a narrowed tool set and "
                 f"edits applied outside /rewind checkpoints, with no error "

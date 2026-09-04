@@ -185,7 +185,7 @@ this plan *could* change and deliberately will not. They are listed in
     identity (row 1). Forking converts `general-purpose`'s escape-hatch trust
     basis from "a human's per-call decision to delegate" into a standing,
     automatic arrangement. `[verified: error-mode-analysis/SKILL.md Step 3;
-    _lib.sh:2066-2069; docs/hooks.md:93,101]`
+    _lib.sh:2162-2172; docs/hooks.md:93,101]`
 22. `mktemp -d` creates its directory with mode `0700`, so the no-argument
     default output path is not world-readable. A *caller-supplied* path carries
     no such guarantee and may resolve inside a git-tracked tree.
@@ -211,11 +211,23 @@ this plan *could* change and deliberately will not. They are listed in
     row 23, not a new blocking condition. `[engineer-verified]`
 25. Whether a `background: false` fork's `Bash` call pauses for an
     interactive permission prompt (giving an attentive human a mid-fork chance
-    to interrupt) versus auto-denying or auto-allowing is unverified.
-    `background: false` is chosen here for a functional reason only — row 5's
-    default otherwise omits `Bash`, which both skills require — not for any
-    supervision property; treat turn-by-turn human visibility into a fork's
-    tool calls as unverified rather than assumed. `[unverified]`
+    to interrupt) versus auto-denying or auto-allowing is unverified in
+    general. For the one path M9 exists to bound specifically, it is not open:
+    `settings.json`'s `permissions.allow` pre-approves the exact `marker.sh
+    write`/`marker.sh activate` command strings M9 disclaims, so those calls
+    never trigger a permission prompt regardless of fork status — that
+    checkpoint never existed for this path, in the main session today exactly
+    as much as inside a fork. Forking removes only the informal turn-by-turn
+    human co-reading that partially compensated for its absence. For any
+    *other*, non-allowlisted `Bash` call a fork might make, whether it pauses
+    for a prompt with no human present to answer remains unverified — treat
+    that general question as open, distinct from the marker-command case just
+    settled. `background: false` is chosen here for a functional reason
+    only — row 5's default otherwise omits `Bash`, which both skills
+    require — not for any supervision property. `[verified:
+    claude/.claude/settings.json permissions.allow entries for marker.sh
+    write/activate, cross-checked against M9's disclaimed commands; general
+    non-marker Bash-call case remains unverified]`
 26. Artifact A's Step 5 "manually scan before persisting" instruction has no
     mechanical enforcement — the same prose-only limitation as M9, applied to
     PII/credential content rather than gate release. Forking removes the
@@ -268,7 +280,7 @@ check applies. Five lighter primitives, each anchored:
 `anchors: row5, row2`. Without it, row 5's default gives a background fork
 whose narrowed tool set may lack `Bash` and whose edits escape `/rewind`.
 Omitting `agent:` keeps both forks on the default `general-purpose`, which is
-deliberately absent from `_LIB_NO_GATE_RELEASE_AGENTS` (`_lib.sh:2066-2073`) —
+deliberately absent from `_LIB_NO_GATE_RELEASE_AGENTS` (`_lib.sh:2162-2172`) —
 pinning a review-only agent type would categorically forbid marker writes for
 any future forked skill. Row 21 establishes that this choice is only safe when
 paired with M9; the two ship together or neither ships.

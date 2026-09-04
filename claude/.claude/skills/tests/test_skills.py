@@ -1533,6 +1533,18 @@ class TestValidateContextForkRequiresExplicitBackground:
         f = self._make_skill(tmp_path, "a", ["context: fork", "background: false"])
         assert not self._background_violations(validate(f))
 
+    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path):
+        """PyYAML's safe_load coerces yes/on/True (any case) to real
+        booleans, so Check 3's isinstance(background, bool) check accepts
+        them today — pinning this so a future change to the accepted-input
+        semantics doesn't silently narrow (or the message doesn't silently
+        drift from behavior) without a test noticing."""
+        for spelling in ("yes", "on", "True", "TRUE"):
+            f = self._make_skill(tmp_path, f"a_{spelling}", ["context: fork", f"background: {spelling}"])
+            assert not self._background_violations(validate(f)), (
+                f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
+            )
+
     def test_context_not_fork_skips_the_check_regardless_of_background(self, tmp_path):
         f = self._make_skill(tmp_path, "a", ["context: something-else"])
         assert not self._background_violations(validate(f))
