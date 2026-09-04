@@ -44,22 +44,9 @@ When you spawn: pick the specialist that serves the question (table below is ref
 
 Project-level plan-review skills may extend this table with project-specific reviewer roles, but must not remove or narrow the `ciso-reviewer` trigger conditions.
 
-When spawning any reviewer that carries the file-based-output contract (`Write` tool plus a `### File-based output` section — see `agent-review` checklist item 15), pass `findings_path: agent-reviews/<agent-name>-<epoch>-<slug>.md` in the prompt.
+Before the first spawn this round, run `~/.claude/scripts/findings-path-suffix.sh` once and reuse its printed `<suffix>` for every reviewer spawned in this round — the script also adds `agent-reviews/` to the repo's ignore list, duplicate-tolerant rather than strictly idempotent under concurrent invocations. When spawning any reviewer that carries the file-based-output contract (`Write` tool plus a `### File-based output` section — see `agent-review` checklist item 15), pass `findings_path: agent-reviews/<agent-name>-<suffix>.md` in the prompt, where `<agent-name>` is the agent's name.
 
-- `<agent-name>` — the agent's name
-- `epoch` — `$(date +%s)`
-- `slug` — `$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)`
-
-A project-layer reviewer that lacks the contract must not receive a `findings_path` — passing one anyway re-arms the heredoc-abort-on-large-findings failure the contract exists to prevent. Before the first spawn, add `agent-reviews/` to `$(git rev-parse --git-path info/exclude)` idempotently (grep-check before appending). Spawn synchronously (not `run_in_background`) — the mandatory read-back step must execute in the same turn. After the reviewer returns: if it reported a successful write, `Read` the findings file, starting with `## Recommendations` and reading the full file when the count is non-zero. If it reported a write failure, use the inline findings it fell back to instead. See `docs/design-decisions.md` §12 for the mechanism, its measurements, and rationale.
-
-<!-- HOOK_TEST_FIXTURE: findings-path-recipe — the skills test suite executes this recipe (a bash equivalent of the wiring paragraph above) to verify the info/exclude append is idempotent and the findings-file path resolves to the documented template shape. Do not duplicate the recipe elsewhere; the test re-reads it from here. This fenced block is pytest-executed, never typed into an agent's Bash tool — matching the declare-planmode-path block's own exclusion note in plan-review/SKILL.md, so test_skills.py's Trigger-A regression scan skips it. -->
-```bash
-EXCLUDE_FILE=$(git rev-parse --git-path info/exclude)
-grep -qxF "agent-reviews/" "$EXCLUDE_FILE" 2>/dev/null || echo "agent-reviews/" >> "$EXCLUDE_FILE"
-EPOCH=$(date +%s)
-SLUG=$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)
-echo "agent-reviews/${AGENT_NAME}-${EPOCH}-${SLUG}.md"
-```
+A project-layer reviewer that lacks the contract must not receive a `findings_path` — passing one anyway re-arms the heredoc-abort-on-large-findings failure the contract exists to prevent. Spawn synchronously (not `run_in_background`) — the mandatory read-back step must execute in the same turn. After the reviewer returns: if it reported a successful write, `Read` the findings file, starting with `## Recommendations` and reading the full file when the count is non-zero. If it reported a write failure, use the inline findings it fell back to instead. See `docs/design-decisions.md` §12 for the mechanism, its measurements, and rationale.
 
 Other spawned specialists — those without a `findings_path`, and reviewers that fell back to inline output after a write failure — must return ≤2K tokens of structured findings (checklist-item-keyed bullets), not narrative prose. If findings genuinely exceed the budget, the agent must prioritize by severity and explicitly note that lower-severity items were omitted. When spawning, include this constraint in the agent prompt. Findings written to a file must still be checklist-item-keyed, so item attribution survives the switch to file-based output.
 
