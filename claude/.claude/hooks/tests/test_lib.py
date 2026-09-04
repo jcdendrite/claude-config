@@ -1545,11 +1545,11 @@ def _command_invokes_git_subcmd(command: str, subcmd: str, env: dict | None = No
 
 # --- _lib_tool_argv_from_subcmd -------------------------------------------
 #
-# Direct coverage arrives now because a second consumer of the word walk
-# (deny-private-project-refs.sh's fragment_gh_gated_surface) means the
-# function's contract can no longer be inferred solely from
-# _lib_command_invokes_tool_subcmd's own black-box tests, the same rationale
-# as the _lib_extract_git_subcmd_args banner above.
+# _lib_tool_argv_from_subcmd has two independent consumers
+# (_lib_command_invokes_tool_subcmd and deny-private-project-refs.sh's
+# fragment_gh_gated_surface), so its contract needs its own direct test
+# coverage rather than relying on either consumer's black-box tests -- the
+# same rationale as the _lib_extract_git_subcmd_args banner above.
 
 
 def _tool_argv_from_subcmd(fragment: str, tool: str) -> list[str]:
@@ -1581,23 +1581,138 @@ class TestToolArgvFromSubcmd:
         and deny-private-project-refs.sh's own walker) to one flag grammar."""
         assert _tool_argv_from_subcmd(fragment, "gh")[:2] == ["pr", "create"]
 
-    def test_non_value_taking_flag_is_dropped_not_skipped_as_value(self) -> None:
-        """A boolean flag like --web (no entry in gh's pinned value-taking
-        list) is dropped on its own -- the next word (`pr`) is NOT
-        mistakenly consumed as its value."""
-        assert _tool_argv_from_subcmd("gh --web pr create", "gh") == ["pr", "create"]
+    def test_leaf_flag_registered_at_root_scope_consumes_the_next_word(self) -> None:
+        """A long flag not glued with "=" consumes the next token per gh's
+        cobra resolution: `--web` (a leaf flag, unregistered at gh's root
+        scope) takes `pr` as its value while gh resolves the subcommand,
+        so only `create` remains in the stream -- gh itself never reaches
+        `pr create` in this form."""
+        assert _tool_argv_from_subcmd("gh --web pr create", "gh") == ["create"]
+
+    @pytest.mark.parametrize(
+        "fragment, want_leading_pair",
+        [
+            ("gh pr --title x create", ("pr", "create")),
+            ("gh pr --title x edit 42", ("pr", "edit")),
+            ("gh pr --body x merge 42", ("pr", "merge")),
+            ("gh issue --title x create", ("issue", "create")),
+            ("gh issue --body placeholder comment 42", ("issue", "comment")),
+            ("gh issue --title x edit 42", ("issue", "edit")),
+            ("gh pr -t x create", ("pr", "create")),
+        ],
+        ids=[
+            "pr-title-create",
+            "pr-title-edit",
+            "pr-body-merge",
+            "issue-title-create",
+            "issue-body-comment",
+            "issue-title-edit",
+            "pr-short-flag-create",
+        ],
+    )
+    def test_leaf_flag_interposed_before_subcommand_leads_the_stream(
+        self, fragment: str, want_leading_pair: tuple[str, str]
+    ) -> None:
+        """A leaf flag written between the surface word and its subcommand
+        is consumed by gh, along with its value, while gh resolves the
+        subcommand -- so the pair still leads the emitted stream.
+        `pr merge` is included here, not only in test_block_gh_pr_merge.py,
+        since nothing else in this matrix exercised the `merge` verb at
+        the shared-helper level before this addition."""
+        assert tuple(_tool_argv_from_subcmd(fragment, "gh")[:2]) == want_leading_pair
+
+    def test_two_sequential_leaf_flags_interposed_before_subcommand_leads_the_stream(self) -> None:
+        """Two leaf flags in a row, each consuming its own value, must both
+        be skipped before the subcommand still leads the emitted stream --
+        not just a single interposed flag."""
+        assert tuple(_tool_argv_from_subcmd("gh pr --title x --body y create", "gh")[:2]) == ("pr", "create")
+
+    def test_leaf_flag_value_shaped_like_a_flag_is_still_consumed_as_a_value(self) -> None:
+        """A leaf flag's value is skipped unconditionally by position, even
+        when the value word itself starts with "-" and would otherwise be
+        read as a flag of its own."""
+        assert tuple(_tool_argv_from_subcmd("gh pr --title -x create", "gh")[:2]) == ("pr", "create")
+
+    def test_leaf_help_flag_swallows_the_subcommand_word(self) -> None:
+        """Pins the accepted gap _lib.sh's _lib_tool_argv_from_subcmd header
+        comment documents: -h has no value placeholder, so gh's cobra
+        resolution consumes `create` as -h's value while resolving the
+        subcommand. This is a safe gap, not a bug, because gh prints help
+        and exits before any create/comment/edit network call happens."""
+        assert _tool_argv_from_subcmd("gh pr -h create", "gh") == ["pr"]
+
+    @pytest.mark.parametrize(
+        "fragment, want",
+        [
+            ("gh pr --title=x create", ["pr", "create"]),
+            ("gh issue --title=x create", ["issue", "create"]),
+        ],
+        ids=["pr-equals-glued", "issue-equals-glued"],
+    )
+    def test_equals_glued_flag_does_not_consume_the_next_word(self, fragment: str, want: list[str]) -> None:
+        """A flag containing "=" carries its value in the same word, the
+        first of cobra's three non-consuming shapes -- the next word stays
+        a genuine positional rather than being skipped as a flag's value."""
+        assert _tool_argv_from_subcmd(fragment, "gh") == want
+
+    @pytest.mark.parametrize(
+        "fragment, want",
+        [
+            ("gh pr -tx create", ["pr", "create"]),
+            ("gh pr -tx merge", ["pr", "merge"]),
+        ],
+        ids=["pr-short-glued-create", "pr-short-glued-merge"],
+    )
+    def test_short_flag_longer_than_two_characters_does_not_consume_the_next_word(
+        self, fragment: str, want: list[str]
+    ) -> None:
+        """A short flag longer than two characters (its value glued into
+        the same word, e.g. -tx) is dropped whole -- the second of cobra's
+        three non-consuming shapes."""
+        assert _tool_argv_from_subcmd(fragment, "gh") == want
+
+    @pytest.mark.parametrize(
+        "fragment, want",
+        [
+            ("gh pr -- create", ["pr"]),
+            ("gh issue -- comment 42", ["issue"]),
+        ],
+        ids=["pr-double-dash", "issue-double-dash"],
+    )
+    def test_bare_double_dash_ends_the_stream(self, fragment: str, want: list[str]) -> None:
+        """A bare "--" ends cobra's positional scan entirely, so no word
+        after it -- including the subcommand -- is ever emitted; the third
+        of cobra's three non-consuming shapes."""
+        assert _tool_argv_from_subcmd(fragment, "gh") == want
 
     def test_no_subcommand_words_yields_empty(self) -> None:
         assert _tool_argv_from_subcmd("gh --repo o/r", "gh") == []
 
     def test_unrecognized_tool_has_no_pinned_flags(self) -> None:
-        """A TOOL other than gh falls to the empty flag set, so every "-*"
-        word is dropped as a bare flag rather than having its value
-        skipped -- `dir` is never treated as --chdir's value and is
+        """A TOOL other than gh falls to the never-consume default, so
+        every "-*" word is dropped as a bare flag rather than having its
+        value skipped -- `dir` is never treated as --chdir's value and is
         emitted as a positional word, which can miss a real subcommand
         match but never over-consumes a positional word as a flag's
-        value."""
+        value. This is the executable proof that the gh-only cobra grammar
+        (gated on `tool = gh`) leaves every other TOOL's never-consume
+        default untouched, which is what keeps
+        enforce-marker-script-shape.sh's fail-closed `marker.sh` gate from
+        regressing."""
         assert _tool_argv_from_subcmd("terraform --chdir dir apply", "terraform") == ["dir", "apply"]
+
+    def test_repo_shaped_flag_against_non_gh_tool_is_not_skipped(self) -> None:
+        """Demonstrates the documented non-gh-tool limitation as a real
+        boundary, not merely an assertion that happens not to contradict
+        it: an -R/--repo-shaped flag against a non-gh tool drops the flag
+        word itself (the never-consume default), but does NOT skip its
+        would-be value (`fake`) as gh's grammar would -- `fake` lands as a
+        stray positional ahead of `write`, which would make a caller
+        checking for a leading `write` subcommand miss a real invocation.
+        This is the exact miss shape enforce-marker-script-shape.sh's
+        marker.sh consumer would hit if marker.sh ever grew a leading flag
+        of its own."""
+        assert _tool_argv_from_subcmd("faketool -R fake write", "faketool") == ["fake", "write"]
 
 
 def _command_invokes_tool_subcmd(command: str, tool: str, *subcmd: str, env: dict | None = None) -> int:
@@ -1859,23 +1974,62 @@ class TestCommandInvokesToolSubcmd:
 
 # --- gh --help drift guard -----------------------------------------------
 #
-# Row 4's own boundary: gh is a user-installed CLI outside this repo's
-# control, so nothing else fails when a future gh release adds a new
-# value-taking global flag. This test at least catches drift on this CI
-# runner's own gh, the same lightweight self-check row 4 asks for.
+# The only way _lib_tool_argv_from_subcmd can silently drop a real surface
+# word is a future gh flag with no value placeholder, registered at a
+# traversal scope gh actually walks while resolving a gated leaf (root,
+# `pr`, or `issue`). INHERITED FLAGS is exactly that scope's flagset for a
+# leaf; FLAGS is that scope's flagset for the root. A failure here means a
+# new gh flag has reopened GH-559/GH-430's interposed-flag bypass, not a
+# routine CI flake.
 
 
-def _gh_help_inherited_value_taking_flags(help_text: str) -> set[str]:
-    """Parses `gh help ...` output's INHERITED FLAGS section into the set of
-    flag names (short and long) that take a value -- distinguished from a
-    boolean flag by an extra non-flag token in the flag-spec column before
-    the 2+-space gap that starts the description column (e.g. `-R, --repo
+def _require_gh() -> str:
+    """Resolve gh, failing rather than skipping when running in CI.
+
+    Skipping locally is right for a contributor who has not installed gh.
+    Skipping in CI is not: this is the only test in the suite whose entire
+    purpose is catching a future gh flag with no value placeholder at a
+    gated traversal scope, so a silently-absent gh would leave that
+    residual unguarded in practice while the job still reports green.
+    """
+    gh_path = shutil.which("gh")
+    if gh_path is None:
+        if os.environ.get("CI"):
+            pytest.fail(
+                "gh is not on PATH in CI -- this is the only test guarding "
+                "against a future gh flag with no value placeholder at a "
+                "gated traversal scope reopening GH-559/GH-430's "
+                "interposed-flag bypass; failing rather than skipping so "
+                "this cannot silently degrade to a no-op."
+            )
+        pytest.skip("gh not found in PATH")
+    return gh_path
+
+
+def test_require_gh_fails_in_ci_when_gh_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_require_gh` is a small test-infrastructure helper, not production
+    logic -- this pins that its CI branch actually calls pytest.fail rather
+    than silently skipping, which would degrade every gh-drift-guard test
+    below to a silent no-op in CI."""
+    monkeypatch.setenv("CI", "1")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(pytest.fail.Exception):
+        _require_gh()
+
+
+def _gh_help_flags_by_section(help_text: str, section_heading: str) -> tuple[set[str], set[str]]:
+    """Parses a `gh help ...` section (INHERITED FLAGS or FLAGS) into
+    (value_taking_flags, no_value_placeholder_flags) -- distinguished by
+    whether the flag-spec column carries an extra non-flag token before the
+    2+-space gap that starts the description column (e.g. `-R, --repo
     [HOST/]OWNER/REPO` has the placeholder `[HOST/]OWNER/REPO`; `--help` has
-    none)."""
+    none). "No value placeholder" names gh help's own observable property --
+    the underlying cobra mechanism (NoOptDefVal) also covers count-style
+    flags, not only bool-typed ones."""
     in_section = False
     section_lines: list[str] = []
     for line in help_text.splitlines():
-        if line.strip() == "INHERITED FLAGS":
+        if line.strip() == section_heading:
             in_section = True
             continue
         if not in_section:
@@ -1884,6 +2038,7 @@ def _gh_help_inherited_value_taking_flags(help_text: str) -> set[str]:
             break
         section_lines.append(line)
     value_taking_flags: set[str] = set()
+    no_value_placeholder_flags: set[str] = set()
     for line in section_lines:
         spec = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
         tokens = spec.split()
@@ -1891,29 +2046,32 @@ def _gh_help_inherited_value_taking_flags(help_text: str) -> set[str]:
         has_value_placeholder = any(not t.startswith("-") for t in tokens)
         if has_value_placeholder:
             value_taking_flags |= flag_tokens
-    return value_taking_flags
+        else:
+            no_value_placeholder_flags |= flag_tokens
+    return value_taking_flags, no_value_placeholder_flags
 
 
 @pytest.mark.parametrize(
     "gh_help_args",
-    [("pr", "merge"), ("issue", "create")],
-    ids=["pr-merge", "issue-create"],
+    [
+        ("pr", "create"),
+        ("pr", "edit"),
+        ("pr", "merge"),
+        ("issue", "create"),
+        ("issue", "comment"),
+        ("issue", "edit"),
+    ],
+    ids=["pr-create", "pr-edit", "pr-merge", "issue-create", "issue-comment", "issue-edit"],
 )
-def test_gh_pinned_value_taking_flags_are_a_subset_of_gh_help_output(gh_help_args: tuple[str, str]) -> None:
-    """_lib_tool_argv_from_subcmd's pinned gh value_taking_flags list
-    (-R/--repo) must be a SUPERSET of this runner's actual `gh help ...`
-    INHERITED FLAGS value-taking set for each gated gh subcommand tree --
-    not merely contain -R/--repo. `pr` and `issue` are independently
-    defined cobra command trees that merely share identical inherited
-    flags today, so checking only `pr merge` would leave `issue create`'s
-    own drift unguarded even though one pinned flag list now serves both
-    deny-private-project-refs.sh consumers. A future gh release adding a
-    new value-taking global flag not in the pinned list would misread
-    that flag's value as the subcommand word and silently miss a real
-    invocation; this fails loudly on that drift instead."""
-    gh_path = shutil.which("gh")
-    if not gh_path:
-        pytest.skip("gh not found in PATH")
+def test_gh_gated_leaf_inherited_no_value_placeholder_flags_stay_within_help(
+    gh_help_args: tuple[str, str],
+) -> None:
+    """Each gated leaf's INHERITED FLAGS section is the flagset cobra scans
+    with while resolving that leaf -- a flag there with no value
+    placeholder is exactly the shape _lib_tool_argv_from_subcmd's grammar
+    would over-consume. See the module-level comment above for what a
+    failure here means."""
+    gh_path = _require_gh()
     result = subprocess.run(
         [gh_path, "help", *gh_help_args],
         capture_output=True,
@@ -1921,21 +2079,42 @@ def test_gh_pinned_value_taking_flags_are_a_subset_of_gh_help_output(gh_help_arg
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    real_value_taking_flags = _gh_help_inherited_value_taking_flags(result.stdout)
+    _, no_value_placeholder_flags = _gh_help_flags_by_section(result.stdout, "INHERITED FLAGS")
     gh_help_command = " ".join(("gh", "help", *gh_help_args))
-    assert real_value_taking_flags, (
-        f"parsed no value-taking flags from `{gh_help_command}`'s INHERITED "
-        "FLAGS section -- gh's help output format may have changed "
-        "(e.g. a different 'INHERITED FLAGS' heading), silently degrading "
-        "this test's subset check below to a no-op; update "
-        "_gh_help_inherited_value_taking_flags's parser."
+    assert no_value_placeholder_flags, (
+        f"parsed no flags from `{gh_help_command}`'s INHERITED FLAGS section "
+        "-- gh's help output format may have changed (e.g. a different "
+        "'INHERITED FLAGS' heading), silently degrading this test's subset "
+        "check below to a no-op; update _gh_help_flags_by_section's parser."
     )
-    pinned_value_taking_flags = {"-R", "--repo"}
-    assert real_value_taking_flags <= pinned_value_taking_flags, (
-        f"{gh_help_command}'s INHERITED FLAGS lists a value-taking flag not "
-        f"in _lib_tool_argv_from_subcmd's pinned gh value_taking_flags list: "
-        f"{real_value_taking_flags - pinned_value_taking_flags} -- update "
-        "_lib.sh's _lib_tool_argv_from_subcmd value_taking_flags case for gh."
+    assert no_value_placeholder_flags <= {"-h", "--help"}, (
+        f"{gh_help_command}'s INHERITED FLAGS lists a flag with no value "
+        f"placeholder outside {{-h, --help}}: "
+        f"{no_value_placeholder_flags - {'-h', '--help'}} -- gh has reopened "
+        "GH-559/GH-430's interposed-flag bypass: this flag would be "
+        "over-consumed by _lib_tool_argv_from_subcmd's cobra grammar, "
+        "swallowing a real subcommand word."
+    )
+
+
+def test_gh_help_root_no_value_placeholder_flags_stay_within_help_and_version() -> None:
+    """The root traversal step's own FLAGS section (INHERITED FLAGS is
+    empty at the root) -- see the gated-leaf test above for what property
+    this guards and what a failure here means."""
+    gh_path = _require_gh()
+    result = subprocess.run([gh_path, "help"], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    _, no_value_placeholder_flags = _gh_help_flags_by_section(result.stdout, "FLAGS")
+    assert no_value_placeholder_flags, (
+        "parsed no flags from `gh help`'s FLAGS section -- gh's help output "
+        "format may have changed; update _gh_help_flags_by_section's parser."
+    )
+    assert no_value_placeholder_flags <= {"-h", "--help", "--version"}, (
+        "`gh help`'s FLAGS section lists a flag with no value placeholder "
+        f"outside {{-h, --help, --version}}: "
+        f"{no_value_placeholder_flags - {'-h', '--help', '--version'}} -- gh "
+        "has reopened GH-559/GH-430's interposed-flag bypass at the root "
+        "traversal scope."
     )
 
 

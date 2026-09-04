@@ -110,16 +110,17 @@
 #   both fail closed: each exit status is checked and denies with an
 #   explicit message rather than falling through to this hook's normal
 #   "nothing gated"/pre-patch raw-only-scan allow path.
-# - Every body/message-source file read in this hook — the gh pr / gh
-#   issue --body-file/-F read, the git commit -F/--file read, the gh api
-#   --input read, and the gh api -f/-F/--field/--raw-field key=@<path>
-#   read — is timeout-capped via _lib_capped and fails closed on a
-#   nonzero exit, so a path pointing at a FIFO with no writer cannot hang
-#   the hook at any of the five sites. The readability check above only
-#   proves the path is readable, not that reading it terminates. This
-#   guarantee holds only when timeout(1) or gtimeout(1) is on PATH — see
-#   _lib_capped_for's own "neither binary present" fallback caveat in
-#   _lib.sh, which still applies here.
+# - Every body/message-source file read in this hook is timeout-capped
+#   via _lib_capped and fails closed on a nonzero exit, so a FIFO with
+#   no writer cannot hang the hook. Capped sites:
+#     - gh pr / gh issue --body-file / -F
+#     - git commit -F / --file
+#     - gh api --input
+#     - gh api -f/-F/--field/--raw-field key=@<path>
+#   The readability check above only proves the path is readable, not
+#   that reading it terminates. This guarantee holds only when timeout(1)
+#   or gtimeout(1) is on PATH — see _lib_capped_for's own "neither binary
+#   present" fallback caveat in _lib.sh, which still applies here.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -222,22 +223,19 @@ fi
 #     subcommands such as `gh pr comment`).
 #
 # Positional words come from _lib_tool_argv_from_subcmd (_lib.sh), which
-# skips gh's value-taking global flags from one pinned list, so a flag
-# between a surface word and its subcommand cannot separate the pair —
-# contingent on that pinned list staying current, per
-# _lib_tool_argv_from_subcmd's own docstring caveat in _lib.sh. That
-# helper forks nothing, so this walker adds no exit status to check —
-# the hook's COMMAND_UNQUOTED and _lib_split_fragments calls above
-# already fail closed on the forks it does depend on. Dropping flag words
-# can make two words of argument prose adjacent, costing a redundant scan
-# — an accepted false positive. Callers must pass an already
-# quote-stripped fragment (see COMMAND_UNQUOTED above). This function's
-# own word comparisons stay quote-blind by design, matching _lib.sh's
-# shared matchers.
+# reproduces cobra's own subcommand-resolution rule: a flag interposed
+# before a subcommand consumes the following word as its value, so an
+# interposed flag cannot separate a surface word from its subcommand. That
+# helper forks nothing, so this walker adds no exit status to check — the
+# hook's COMMAND_UNQUOTED and _lib_split_fragments calls above already fail
+# closed on the forks it does depend on. Dropping flag words can make two
+# words of argument prose adjacent, costing a redundant scan — an accepted
+# false positive. Callers must pass an already quote-stripped fragment (see
+# COMMAND_UNQUOTED above). This function's own word comparisons stay
+# quote-blind by design, matching _lib.sh's shared matchers.
 #   - `pr` surface: a word `pr` immediately followed by `create` / `edit`.
 #     A two-word command path is always contiguous (cobra resolves it as a
-#     unit); hoisted flags land before `pr` or after `create`/`edit`, never
-#     between them.
+#     unit).
 #   - `issue` surface: a word `issue` immediately followed by `create` /
 #     `comment` / `edit`, same contiguous-word-path reasoning as `pr`
 #     above.
@@ -246,6 +244,20 @@ fi
 #     body-flag check still has to pass before IS_GH_API is set.
 # Trailing non-[alnum/_/-] is stripped from each word (fragment splitting
 # can leave `create)` from a paren group).
+#
+# Known gaps, specific to this function (distinct from the file-header
+# Known gaps list above). This list is the canonical home for this hook's
+# gaps; docs/private-project-redaction.md defers to it rather than
+# restating it.
+# - A gh flag with no value placeholder, registered at `gh`/`gh pr`/`gh
+#   issue` scope, has its following word consumed by
+#   _lib_tool_argv_from_subcmd, dropping a real surface word. See
+#   _lib.sh's _lib_tool_argv_from_subcmd header comment for why this is an
+#   accepted gap rather than a bug.
+# - `gh alias`-expanded invocations (`gh co`, or a user alias resolving to
+#   `pr create`) are undetectable by this walker, statically — the same
+#   unscannable class as the `$(...)` and wrapper forms the file-header
+#   Known gaps list above already names.
 fragment_gh_gated_surface() {
   local fragment="$1"
   # Substring fast-path: a strict superset of _lib_tool_argv_from_subcmd's

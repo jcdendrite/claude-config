@@ -26,6 +26,12 @@ Bash call as the gated command self-matches the home-rooted-path detector
 below even when the diff and message are clean — run the `cd` as its own
 earlier call and issue the gated command alone.
 
+`gh pr`/`gh issue` surface detection resolves positional words through gh's
+own cobra-based subcommand grammar, so a flag interposed before the
+subcommand cannot separate a surface word from it; see
+`deny-private-project-refs.sh`'s own `fragment_gh_gated_surface` header
+comment for that grammar's one residual rather than restating it here.
+
 `deny-private-project-refs.sh` runs three scans, in order:
 
 1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens

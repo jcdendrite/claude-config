@@ -818,9 +818,10 @@ _lib_command_invokes_git_subcmd() {
 # Print a tool fragment's subcommand-word sequence, one word per line, after
 # walking past the tool's own command word (matched the same way
 # _lib_fragment_invokes_tool does: exact, or a path ending in "/$tool") and
-# any of its value-taking global flags. Mirrors _lib_git_argv_from_subcmd's
-# state machine, but the value-taking-flag set is looked up per TOOL rather
-# than hardcoded, since each CLI defines its own global-flag surface.
+# any flags interposed before the subcommand. Mirrors _lib_git_argv_from_subcmd's
+# state machine, but the flag-consumption rule is a per-TOOL grammar rather
+# than a hardcoded flag list, since only gh's cobra-based resolution is
+# modeled below.
 #
 # Call-site contract: caller passes an already quote-stripped fragment, the
 # same discipline as _lib_fragment_command_word and its siblings. The
@@ -830,28 +831,29 @@ _lib_command_invokes_git_subcmd() {
 # _lib_command_invokes_tool_subcmd below, and deny-private-project-refs.sh's
 # fragment_gh_gated_surface (its gh pr / gh issue redaction-gate keying).
 #
-# gh 2.98.0 (fetched 2026-09-02 via `gh help pr merge` and `gh help issue
-# create`, whose INHERITED FLAGS sections both list only -R/--repo as
-# value-taking): the sole global flag that can precede or interpose in a gh
-# subcommand's own word sequence. A future gh release adding another one
-# needs this list updated by hand — see test_lib.py's regression test
-# asserting this list stays a subset of the CI runner's actual `gh --help`
-# surface.
-#
-# Any TOOL other than gh falls to the empty flag set: every "-*" word is
-# treated as a flag consuming no separate-word value. That default can miss
-# a real subcommand match for a tool with its own value-taking global flags
-# (the same failure shape a future unaudited gh release would reintroduce),
-# but never over-consumes a positional word as a flag's value, so it cannot
-# produce a false match.
+# gh is cobra-based, and while resolving a subcommand cobra treats any flag
+# not registered on the command being traversed as taking the next word as
+# its value, so a leaf flag written between a surface word and its
+# subcommand is consumed by gh along with its value. Three shapes do not
+# consume the next word:
+#   - a flag containing "="
+#   - a short flag longer than two characters
+#   - a bare "--" (which also ends the emitted stream, not just itself)
+# Every other TOOL keeps the never-consume default, which can miss a real
+# subcommand match but cannot over-consume a positional word, so it cannot
+# produce a false match. The residual gap is a gh flag with no value
+# placeholder, registered at a gated traversal scope (root, `pr`, `issue`),
+# that this grammar would over-consume. `-h`/`--help` (and `--version` at
+# root) are already present-day instances of that gap class. They're
+# excluded from concern because they're execution-terminating: gh prints
+# help or version output and exits before any create/comment/edit network
+# call happens, so there is no real body ever sent for the redaction gate to
+# miss. test_lib.py's traversal-scope-no-value-placeholder guard is what
+# fails if gh ever adds a non-terminating flag of this shape.
 _lib_tool_argv_from_subcmd() {
   local fragment="$1" tool="$2"
   local saved_opts=$-
   set -f
-  local value_taking_flags=""
-  case "$tool" in
-    gh) value_taking_flags=" -R --repo " ;;
-  esac
   local past_tool=false skip_next=false word
   for word in $fragment; do
     if ! $past_tool; then
@@ -866,17 +868,19 @@ _lib_tool_argv_from_subcmd() {
     fi
     case "$word" in
       -*)
-        # Glued value forms (`--repo=owner/repo`, `-Rowner/repo`) carry
-        # their value in the same word — a gh-specific shape, so only
-        # recognized for tool=gh, matching value_taking_flags's own scoping.
+        # gh-only cobra grammar: a flag not registered on the command
+        # being traversed consumes the next token as its value, except the
+        # three shapes below. Every other TOOL falls straight through to
+        # the unconditional "continue" and never sets skip_next.
         if [ "$tool" = gh ]; then
           case "$word" in
-            --repo=*|-R?*) continue ;;
+            *=*) ;;
+            --) break ;;
+            --?*) skip_next=true ;;
+            -?) skip_next=true ;;
+            *) ;;
           esac
         fi
-        case "$value_taking_flags" in
-          *" $word "*) skip_next=true ;;
-        esac
         continue
         ;;
     esac

@@ -552,8 +552,7 @@ printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 # _lib_command_invokes_tool_subcmd's SUBCMD... sequence-matches
 # positionally from index 0, so a single call passing both ops together
 # (`marker.sh write activate`) would require the literal two-word sequence
-# "write activate" and never match a real single-op invocation — verified
-# empirically against the helper, not assumed from its docstring. Two
+# "write activate" and never match a real single-op invocation. Two
 # calls, one per op, are what its actual contract requires. Status 2
 # (could not determine, e.g. sed/tr missing) denies, matching this hook's
 # fail-closed posture rather than silently falling through as "no match."
