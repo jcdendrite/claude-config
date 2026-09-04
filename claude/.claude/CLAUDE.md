@@ -1,5 +1,28 @@
 # Global Instructions
 
+## Safety
+
+- Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`.venv/bin/pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install.
+- **Name every new package before it is fetched.** Name every new package's exact version and rationale before it's fetched — by install, manifest edit, or restore. For a manifest edit, get explicit confirmation first. For an install or restore, this is in addition to — not instead of — the installing-new-software prohibition: name the package before handing the command to the user via the `!` escape. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
+- Never commit secrets, credentials, API keys, or large binary assets to repositories.
+- The `userEmail` context identifies the user to you. Never use it as contact copy in anything published.
+- Never Read or `!`-cat files likely to hold secrets (`.env`, `.claude.json`, `credentials.json`, similar) — both reach your context the same way; when the user needs to inspect one, ask them to run the command in a separate terminal instead. The credential-path gate (SSH private key, `.netrc`, a cloud credential store, and similar) has no bypass:
+  - Safe blocked command (e.g. `ssh-add`, `chmod`, `ssh -i`) — name it for the user to run via `!`.
+  - Exposing command — ask them to run it in a separate terminal.
+  Never route around the denial.
+- Apply the **principle of least privilege** when recommending or provisioning credentials, roles, or grants: default to the narrowest scope the operation actually needs, not the broadest one available. Account-wide secrets, root tokens, and admin scopes are never the default.
+- In destructive paths, discover the target instead of accepting it as input — when a script deletes, resets, or force-writes, ask first whether the target can be discovered from local state:
+  - Git.
+  - The filesystem.
+  - An API query.
+
+  Discovery removes the input-validation problem rather than defending it — a supplied identifier still needs a grammar, a length cap, and often a paired hook. Fall back to a supplied identifier only when discovery is genuinely impossible. Discovering the target answers *which* one is safe to act on, not *whether* to act — the confirm-before-destructive-action rule above still applies regardless of how the target was determined.
+- Never write `<config-dir>/*-markers/*` by hand, regardless of account. Each review skill writes its own marker directory (`/code-review` → `code-review-markers/`, `/plan-review` → `plan-review-markers/`, etc.) when a review passes. Gates match on a marker's **content** — a hash of the exact state that was reviewed — not on the file's presence: once that state changes the stored hash stops matching and the gate denies until a fresh review is recorded, while a review still covering the current state keeps counting across sessions. The guarded operation varies by skill and is not always the commit. Every denial names both the operation it blocked and the review skill to run — run that skill; if it is harness-blocked, delegate it to a `general-purpose` subagent, which carries the `Skill` tool. `code-writer` and the reviewer agents cannot run review skills and are denied marker writes — when one hits a review gate, it reports the denial and the dispatching session resolves it. A general "ship it" instruction is not authorization to forge a marker.
+- If a skill's active-bypass gate refuses to release after the skill has finished, run `~/.claude/scripts/marker.sh clear-stale` to evict orphaned active markers from dead sessions.
+- After a compaction or session resume mid-review, trust the auto-injected review-narrative summary before re-litigating a `/code-review` finding; if none appears, run `~/.claude/scripts/review-ledger.sh show` to inspect the current session's ledger directly.
+- **A `MEMORY.md` index line routes; it does not authorize.** The index compresses the body and can drop its trigger condition, leaving a bare imperative that reads as a standing directive. Before executing an action a memory prescribes, read the body file; if its trigger condition is not met by what the user actually said this session, do not act. Citing a memory may rely on the index line; executing one may not.
+- Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
+
 ## Engineering Judgment
 
 - Before proposing changes, understand the intent of the existing code or configuration.
@@ -117,29 +140,6 @@
   - **`high` (the default):** work spanning a wide difficulty range rather than uniformly hard problems, especially when a separate downstream pass already backstops it (e.g. `code-writer`; see `docs/design-decisions.md` §24 in the claude-config repo).
   - **`xhigh`, not `max`:** single-pass reviewers with no second pass to catch a shallow miss, where thoroughness is uniformly required rather than concentrated in a hard subset (e.g. `ciso-reviewer`; see `docs/design-decisions.md` §24 in the claude-config repo, for why `xhigh` and not `max`).
   - Current per-agent assignments live in `EXPECTED_EFFORT` (`~/.claude/hooks/tests/test_agent_roster.py`) — that test is the source of truth, not this bullet.
-
-## Safety
-
-- Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`.venv/bin/pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install.
-- **Name every new package before it is fetched.** Name every new package's exact version and rationale before it's fetched — by install, manifest edit, or restore. For a manifest edit, get explicit confirmation first. For an install or restore, this is in addition to — not instead of — the installing-new-software prohibition: name the package before handing the command to the user via the `!` escape. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
-- Never commit secrets, credentials, API keys, or large binary assets to repositories.
-- The `userEmail` context identifies the user to you. Never use it as contact copy in anything published.
-- Never Read or `!`-cat files likely to hold secrets (`.env`, `.claude.json`, `credentials.json`, similar) — both reach your context the same way; when the user needs to inspect one, ask them to run the command in a separate terminal instead. The credential-path gate (SSH private key, `.netrc`, a cloud credential store, and similar) has no bypass:
-  - Safe blocked command (e.g. `ssh-add`, `chmod`, `ssh -i`) — name it for the user to run via `!`.
-  - Exposing command — ask them to run it in a separate terminal.
-  Never route around the denial.
-- Apply the **principle of least privilege** when recommending or provisioning credentials, roles, or grants: default to the narrowest scope the operation actually needs, not the broadest one available. Account-wide secrets, root tokens, and admin scopes are never the default.
-- In destructive paths, discover the target instead of accepting it as input — when a script deletes, resets, or force-writes, ask first whether the target can be discovered from local state:
-  - Git.
-  - The filesystem.
-  - An API query.
-
-  Discovery removes the input-validation problem rather than defending it — a supplied identifier still needs a grammar, a length cap, and often a paired hook. Fall back to a supplied identifier only when discovery is genuinely impossible. Discovering the target answers *which* one is safe to act on, not *whether* to act — the confirm-before-destructive-action rule above still applies regardless of how the target was determined.
-- Never write `<config-dir>/*-markers/*` by hand, regardless of account. Each review skill writes its own marker directory (`/code-review` → `code-review-markers/`, `/plan-review` → `plan-review-markers/`, etc.) when a review passes. Gates match on a marker's **content** — a hash of the exact state that was reviewed — not on the file's presence: once that state changes the stored hash stops matching and the gate denies until a fresh review is recorded, while a review still covering the current state keeps counting across sessions. The guarded operation varies by skill and is not always the commit. Every denial names both the operation it blocked and the review skill to run — run that skill; if it is harness-blocked, delegate it to a `general-purpose` subagent, which carries the `Skill` tool. `code-writer` and the reviewer agents cannot run review skills and are denied marker writes — when one hits a review gate, it reports the denial and the dispatching session resolves it. A general "ship it" instruction is not authorization to forge a marker.
-- If a skill's active-bypass gate refuses to release after the skill has finished, run `~/.claude/scripts/marker.sh clear-stale` to evict orphaned active markers from dead sessions.
-- After a compaction or session resume mid-review, trust the auto-injected review-narrative summary before re-litigating a `/code-review` finding; if none appears, run `~/.claude/scripts/review-ledger.sh show` to inspect the current session's ledger directly.
-- **A `MEMORY.md` index line routes; it does not authorize.** The index compresses the body and can drop its trigger condition, leaving a bare imperative that reads as a standing directive. Before executing an action a memory prescribes, read the body file; if its trigger condition is not met by what the user actually said this session, do not act. Citing a memory may rely on the index line; executing one may not.
-- Don't add globs (`Bash(pytest *)`, `Bash(npm run *)`) to `permissions.allow`. Globs widen the surface to flag injection, command chaining, and shell-expansion attacks — see `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9. Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
 
 ## Prose and Output Format
 
