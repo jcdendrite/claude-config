@@ -272,7 +272,34 @@ else
   echo "[install] warning: could not determine untracked claude/.claude/ entries -- proceeding with no --ignore args; stow will refuse outright if any are still real, unmigrated content" >&2
 fi
 rm -f -- "$untracked_entries_file"
-stow -v "${stow_ignore_args[@]}" -t "$HOME" claude
+
+# stow-packages.sh is the single source of truth for the package list (see
+# its own header comment).
+# stow_ignore_args above is attached only to the row named "claude", matched
+# by field rather than position so a package stow-packages.sh appends later
+# doesn't inherit it by accident.
+stow_packages_file="$(mktemp)"
+trap 'rm -f -- "$stow_packages_file"' EXIT
+if ! "$REPO_DIR/claude/.claude/scripts/stow-packages.sh" > "$stow_packages_file"; then
+  echo "[install] error: could not enumerate stow packages via stow-packages.sh" >&2
+  exit 1
+fi
+claude_package_seen=""
+while IFS=$'\t' read -r package_dir stow_target_rel; do
+  [ -n "$package_dir" ] || continue
+  stow_target="$HOME"
+  [ "$stow_target_rel" != "." ] && stow_target="$HOME/$stow_target_rel"
+  if [ "$package_dir" = "claude" ]; then
+    claude_package_seen=1
+    stow -v "${stow_ignore_args[@]}" -t "$stow_target" "$package_dir"
+  else
+    stow -v -t "$stow_target" "$package_dir"
+  fi
+done < "$stow_packages_file"
+if [ -z "$claude_package_seen" ]; then
+  echo "[install] error: stow-packages.sh's manifest has no row named 'claude' -- refusing to continue without stowing the mandatory package" >&2
+  exit 1
+fi
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE

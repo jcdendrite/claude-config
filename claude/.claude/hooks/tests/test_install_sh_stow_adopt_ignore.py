@@ -68,6 +68,12 @@ def _make_package(tmp_path: Path) -> Path:
     scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "_stow_migration_lib.sh").symlink_to(SCRIPTS_DIR / "_stow_migration_lib.sh")
+    # The extracted block shells out to "$REPO_DIR/claude/.claude/scripts/
+    # stow-packages.sh" -- symlinked in the same way as _stow_migration_lib.sh
+    # above, rather than duplicated: stow-packages.sh self-locates via its own
+    # $0, so following this symlink resolves to the real repo's checkout and
+    # prints its real package list regardless of pkg_root's own layout.
+    (scripts_dir / "stow-packages.sh").symlink_to(SCRIPTS_DIR / "stow-packages.sh")
 
     subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
     # `git add`, deliberately no `git commit`: `git ls-files` (default, no
@@ -198,14 +204,17 @@ class TestStowAdoptIgnorePattern:
 
 def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
     """Runs the real --ignore-arg-construction loop from the extracted
-    block, but replaces the trailing `stow -v ...` line with a printf of
-    the constructed array -- isolates the loop's own set -e/continue
+    block, replacing everything from the manifest loop onward with a printf
+    of the constructed array. Isolates the loop's own set -e/continue
     behavior from real stow's separate, unrelated all-or-nothing conflict
-    handling (a failure on one --ignore'd name makes real stow refuse the
+    handling: a failure on one --ignore'd name makes real stow refuse the
     *entire* invocation, which would make "did the loop still process the
-    other names" unobservable through stow's own exit code)."""
+    other names" unobservable through stow's own exit code. Splits on the
+    manifest loop's `while IFS=$'\\t' read ...` line rather than a comment,
+    since that line is syntactically unique within the block and so survives
+    a comment rewrap that would move a prose-anchored split point."""
     block = _extract_stow_adopt_block()
-    stow_line_start = block.index("stow -v")
+    stow_line_start = block.index("while IFS=$'\\t' read -r package_dir stow_target_rel")
     loop_only = block[:stow_line_start]
     script = (
         f'. "{SCRIPTS_DIR / "_stow_migration_lib.sh"}"\n'
