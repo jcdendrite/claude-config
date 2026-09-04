@@ -985,3 +985,24 @@ See §39 for the sibling `CLAUDE.md` exclusion and for why the stow-source `clau
 - [Claude Code memory docs](https://code.claude.com/docs/en/memory), "Exclude specific CLAUDE.md files" — the either-path symlink rule and absolute-path matching.
 - [Claude Code large-codebases docs](https://code.claude.com/docs/en/large-codebases.md) — the rules-file reach of `claudeMdExcludes`.
 - `.claude/plans/dedupe-nested-rules-dir.md` — full assumption ledger, mechanism-by-mechanism reasoning, and verification steps.
+
+## 48. Full-suite pytest drift traced to two stale pre-`select-tests.py` plans; no handoff-validation mechanism added (2026-09-04)
+
+A transcript-corpus audit of this repository's own project directories (684 transcripts, 2026-08-04 to 2026-09-04 — scoped to claude-config's own history rather than mixed with private-project data, so the counts below are safe to publish) investigated whether a session running the full pytest suite instead of `select-tests.py` was a one-off or a recurring pattern. Of 29 sessions whose Bash history matched a full-suite-shaped pytest invocation after the rule shipped (`7200d727`/`bf215df9`, 2026-08-25), only 15 genuinely ran the bare full-suite command; the rest were decoys, `--collect-only` checks, or subdirectory-scoped runs (manual classification of full-suite-shaped commands is error-prone; a closer per-session read found fewer genuine full-suite runs than an initial pass over the same data had counted). 11 of those 15 (73%) inherited the command from a handoff whose own text cited "the handoff" as its authority. All 11 trace to two plan files, each on its own still-active branch: `.claude/plans/prevent-runaway-subagent-cost.md` (written 2026-08-21) and `.claude/plans/review-pipeline-orchestrator-subagent.md` (written 2026-08-23) — both 2-4 days before `select-tests.py` shipped. Their Verification sections named the raw full-suite command because it was the project's only test command at the time. Neither plan was revised after the rule shipped, so each branch's successive handoffs carried the stale command forward unexamined.
+
+A systemic fix was drafted and rejected. The design added a `check-handoff.py` soft check plus a `handoff/SKILL.md` §3 clause requiring a handoff's named verification command be re-derived from the project's current documentation rather than copied from its plan. `/plan-review` found a foundation-level defect: CLAUDE.md's second full-suite exception ("a plan's Verification step... genuinely calls for a whole-repo claim") is a condition on intent, not a machine-readable predicate, so any mechanism checking "does this command match the default" would silently override a legitimate whole-repo Verification claim on some future plan — trading the observed defect for a different one. This forecloses the whole family of "just check the command against the default" fixes, not only the one drafted here.
+
+The two stale plan files are not fixed by this decision. That correction was handed directly to the two branches' own sessions rather than made from this unrelated branch, since editing another branch's plan file re-arms `require-plan-review.sh` there until re-reviewed. The full ledger, evidence, and rejected design live in `.claude/plans/select-tests-handoff-drift.md`, kept on this branch as the durable record rather than restated here.
+
+**Revisit** if any of:
+
+- A future inherited full-suite run traces to a plan file that postdates `select-tests.py` (2026-08-25) — that would mean the drift is live and recurring rather than two aging plans working through their own backlog, and would reopen the systemic-fix question.
+- Either of the two branches above merges without its Verification section corrected — the stale command becomes a merged, harder-to-notice instruction rather than a live one two sessions were told about directly.
+- `review-pipeline-orchestrator-subagent.md`'s proposed (not yet built) Bash-mutation-restriction hook ships with its command allowlist still omitting `select-tests.py` — that would convert this from a stale instruction into an enforced one.
+
+### Sources
+
+- `.claude/plans/select-tests-handoff-drift.md` — full assumption ledger, per-session provenance classification, and the rejected mechanism's design and `/plan-review` rejection.
+- `CLAUDE.md`'s Commands section — the `select-tests.py` rule and its two named exceptions.
+- `.claude/plans/prevent-runaway-subagent-cost.md` and `.claude/plans/review-pipeline-orchestrator-subagent.md` (each on its own branch) — the two stale Verification sections this entry traces the drift to.
+- `.claude/plans/select-tests-fallback-audit.md` (merged, GH-765) — the prior related audit that fixed five other propagation surfaces without flagging `handoff/SKILL.md`'s silence as one of them.
