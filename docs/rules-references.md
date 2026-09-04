@@ -229,7 +229,10 @@ Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
 
 Source for `claude/.claude/rules/rule-authoring-conventions.md`. Verified
 against `code.claude.com/docs/en/memory` §"Path-specific rules", fetched
-2026-09-03.
+2026-09-03. Single-sourced deliberately, not by omission: the `paths:`
+glob dialect is Claude Code's own closed-source, single-vendor behavior,
+with no second independent first-tier origin (spec, standards body, or
+competing implementation) to triangulate against.
 
 - **Brace expansion** — "You can specify multiple patterns and use brace
   expansion to match multiple extensions in one pattern"; `src/*.{ts,tsx}`
