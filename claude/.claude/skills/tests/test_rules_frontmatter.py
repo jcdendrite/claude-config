@@ -313,6 +313,9 @@ class TestMatchesPathsGlob:
     def test_leading_double_star_matches_nested_candidate(self):
         assert _matches_paths_glob("sub/CLAUDE.md", "**/CLAUDE.md")
 
+    def test_leading_double_star_rejects_non_matching_candidate(self):
+        assert not _matches_paths_glob("sub/AGENTS.md", "**/CLAUDE.md")
+
     def test_non_double_star_pattern_matches_its_candidate(self):
         assert _matches_paths_glob("claude/.claude/rules/foo.md", "claude/.claude/rules/*.md")
 
