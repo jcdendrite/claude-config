@@ -42,7 +42,14 @@ binds at import time and misses later reassignment or monkeypatching.
 
 Project-label pseudonymization: the redact map (`_build_redact_map`), the corpus fingerprint,
 and session/branch/subagent-type label assignment. Reads `scope.PROJECTS_DIR` and
-`scope._redaction_ordinals` by attribute access, per the discipline above.
+`scope._redaction_ordinals` by attribute access, per the discipline above. Also imports
+`render._sanitize_table_cell` directly (not by attribute access, since it's a pure function with
+no reassignable state) to strip control characters from a `--this-repo`-disclosed raw label
+before it reaches a table row. No cycle: `render.py` stays a leaf with no dependency back on
+`redaction.py`. The shim's own `cmd_subagents`/`cmd_subagent_mix` call `_sanitize_table_cell`
+directly on their single-root (no `--config-dir`) branch/subagent-type labels too, so every
+value these two subcommands print is control-character-sanitized unconditionally, independent
+of the `--this-repo`/multi-root disclosure gating this section otherwise describes.
 
 ### `pricing.py`
 

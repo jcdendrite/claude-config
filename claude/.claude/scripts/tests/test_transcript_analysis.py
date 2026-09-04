@@ -892,6 +892,25 @@ class TestSubagentMix:
         out = capsys.readouterr().out
         assert "No data found." in out
 
+    def test_single_root_output_strips_control_characters_from_branch_and_subagent_type(
+        self, fake_projects, capsys
+    ):
+        """gitBranch and subagent_type are both transcript-sourced, not
+        validated, before this table prints them -- same invariant as
+        cmd_subagents' single-root branch sanitization, extended here to
+        subagent_type since this table has its own second raw-value column."""
+        branch_payload = "\x1b]0;PWNED-BRANCH\x07"
+        stype_payload = "\x1b[31mPWNED-TYPE\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch=branch_payload, content=[_agent_use("a1", stype_payload)]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-BRANCH" in out
+        assert "[31mPWNED-TYPE[0m(1)" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
 
 def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str) -> None:
     """Write a minimal on-disk agent file with a `model:` frontmatter pin,
@@ -902,8 +921,9 @@ def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str)
 
 
 class TestSubagentMixModelMix:
-    """cmd_subagent_mix's second table: one case per method term from the
-    plan's requested/observed/declared/run/dangling definitions."""
+    """cmd_subagent_mix's second table: one test per column
+    (Runs/Dangling/Declared/Requested/Observed) in cmd_subagent_mix's own
+    docstring."""
 
     def test_declared_pin_violation_reports_opus_fraction_of_runs(self, fake_projects, tmp_path, capsys):
         """3 staff-sdet dispatches, declared pin sonnet: 2 observed opus (a
@@ -1436,8 +1456,211 @@ class TestSubagentMixSince:
         assert "No data found." in out
 
 
+class TestRootScopedDisplayLabel:
+    """Direct unit coverage of redaction._root_scoped_display_label --
+    cmd_subagents/cmd_subagent_mix exercise it only through their own
+    redacted/disclosed output, so this class pins the disclosed path and its
+    never-writes-into-redact_map invariant on their own."""
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_disclosed_label_is_account_prefixed_raw_value_and_leaves_map_empty(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
+        assert label == "account-1/feat-x"
+        assert redact_map == {}
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_non_disclosed_label_delegates_to_assign_root_scoped_redact_label(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
+        assert label == _mod.redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
+        assert redact_map == {(1, "feat-x"): label}
+
+    def test_disclosed_call_interleaved_between_redacted_calls_does_not_shift_counter(self):
+        """The direct proof of the "never writes into redact_map" invariant
+        -- no integration test pins this unconditionally, since a real
+        multi-root corpus can't isolate the counter position from the data
+        it's built from."""
+        redact_map: dict[tuple[int, str], str] = {}
+        first = _mod.redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
+        _mod.redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
+        second = _mod.redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
+        assert first == "account-1/branch-1"
+        assert second == "account-1/branch-2"
+
+    def test_disclosed_and_redacted_labels_share_the_account_prefix_format(self):
+        """Format-drift pin: a future change to either function's namespace
+        string must fail here, substituting for extracting the format
+        string into a third shared helper."""
+        redact_map: dict[tuple[int, str], str] = {}
+        disclosed = _mod.redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
+        redacted = _mod.redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
+        assert disclosed.split("/", 1)[0] == redacted.split("/", 1)[0] == "account-3"
+
+    def test_disclosed_label_strips_control_characters(self):
+        """A gitBranch value is transcript-sourced, not git-validated -- an
+        OSC-injection payload (the same fixture shape used for
+        _format_cost_ledger_row's own control-character test) must not reach
+        the disclosed label raw."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(
+            "branch", 1, "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m", redact_map, disclose=True
+        )
+        assert label == "account-1/]0;PWNED[2J[H[31mFAKE-ROW[0m"
+        assert not re.search(r"[\x00-\x1f\x7f]", label)
+
+    def test_disclosed_branch_value_containing_slash_stays_unambiguous(self):
+        """Git branch names legitimately contain "/" (e.g. feature/foo) --
+        the disclosed format itself uses "/" as the account-<K>/<value>
+        separator, so this pins that a "/"-bearing value composes without
+        truncation or reinterpretation."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
+        assert label == "account-1/feature/foo"
+        assert label.split("/", 1) == ["account-1", "feature/foo"]
+
+
+class TestRepoTrackedAgentTypeNames:
+    """_repo_tracked_agent_type_names -- the --this-repo subagent_type
+    disclosure allowlist accessor."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """lru_cache(maxsize=1) is process-global; cleared before and after
+        every test in this class so a monkeypatched _REPO_AGENT_DEFINITIONS_DIR
+        from one test can never leak a stale cached result into the next,
+        including the real-directory regression test below."""
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def _init_agents_repo(self, tmp_path: Path, *, tracked: list[str], untracked: list[str] = ()) -> Path:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        for name in tracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        if tracked:
+            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
+        for name in untracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        return agents_dir
+
+    def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+
+    def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "my-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_untracked_md_file_in_same_directory_is_not_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "tracked-agent" in names
+        assert "scratch-agent" not in names
+
+    def test_differently_cased_query_against_tracked_stem_is_excluded(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["code-writer"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "code-writer" in names
+        assert "Code-Writer" not in names
+
+    def test_directory_outside_any_git_repo_yields_built_ins_alone(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "not-a-repo"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    @pytest.mark.parametrize("agents_dir_kind", ["tracked", "untracked", "not_a_repo"])
+    def test_built_ins_present_in_every_case(self, tmp_path, monkeypatch, agents_dir_kind):
+        if agents_dir_kind == "not_a_repo":
+            agents_dir = tmp_path / "not-a-repo"
+            agents_dir.mkdir()
+        elif agents_dir_kind == "tracked":
+            agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"])
+        else:
+            agents_dir = self._init_agents_repo(tmp_path, tracked=[], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names().issuperset(_mod._BUILT_IN_AGENT_TYPES)
+
+    def test_git_binary_missing_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        """Matches TestRepoScopedProjectSlugsGuard's own FileNotFoundError
+        precedent for _repo_scoped_project_slugs, diverging in outcome: this
+        accessor deliberately fails closed to the built-ins frozenset rather
+        than sys.exit, since failing closed here means more redaction, and
+        an operator's report should not die because git is unavailable."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_git_call_timeout_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise subprocess.TimeoutExpired(cmd, 10)
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_nested_tracked_agent_file_is_not_allowlisted(self, tmp_path, monkeypatch):
+        """_repo_tracked_agent_type_names matches top-level entries only
+        (no "/" in the path), matching _declared_pin's own flat
+        agents_dir / f"{agent_type}.md" resolution -- a nested tracked file
+        over-redacts, the safe direction."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["top-level-agent"])
+        nested_dir = agents_dir / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "nested-agent.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "nested/nested-agent.md"], cwd=agents_dir, check=True)
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "top-level-agent" in names
+        assert "nested-agent" not in names
+
+    def test_non_ascii_tracked_filename_is_allowlisted(self, tmp_path, monkeypatch):
+        """Pins the docstring's -z rationale: without -z, git quotes and
+        escapes unusual path names, corrupting the stem."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["café-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "café-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_real_agents_directory_allowlists_code_writer(self):
+        """The ticket's own motivating scenario, against the real,
+        unmonkeypatched agents/ directory -- deriving the name dynamically
+        (next(dir.glob('*.md')).stem) would make both this test's intent
+        and its failure message unreadable, so the name is hardcoded; the
+        unit tests above already carry the "real derivation works" fact."""
+        assert "code-writer" in _mod._repo_tracked_agent_type_names()
+
+
 class TestSubagentMixMultiRoot:
     """Repeatable --config-dir on subagent-mix, and its disclosure controls."""
+
+    @pytest.fixture
+    def _isolated_staff_sdet_allowlist(self, tmp_path, monkeypatch):
+        """Points _REPO_AGENT_DEFINITIONS_DIR at a throwaway git-tracked
+        agents/ directory tracking staff-sdet.md, decoupling the two
+        --this-repo subagent_type disclosure tests below from this repo's
+        own real agents/ tree -- the same isolation TestRepoTrackedAgentTypeNames
+        applies to its own unit tests, via monkeypatch + cache_clear()."""
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
 
     def test_two_roots_yield_strictly_more_spawns_than_either_alone(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -1622,6 +1845,147 @@ class TestSubagentMixMultiRoot:
         # root's row.
         assert account_1["Spawns"] == "2"
         assert account_2["Spawns"] == "1"
+
+    def test_this_repo_with_explicit_config_dir_discloses_branch_and_allowlisted_agent_type(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """--this-repo plus subagent-mix's own repeatable --config-dir (not
+        only the declared-roots file) discloses a raw branch name and an
+        allowlisted subagent_type in both tables -- pins that the two flags
+        are not mutually exclusive. Both roots write identical branch and
+        subagent_type values, so the two disclosed labels are the same
+        regardless of which physical root resolves to account-1 vs. account-2."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)  # no SystemExit
+        out = capsys.readouterr().out
+        assert "account-1/feat" in out
+        assert "account-2/feat" in out
+        assert "account-1/staff-sdet" in out
+        assert "account-2/staff-sdet" in out
+
+    def test_this_repo_non_allowlisted_agent_type_counter_starts_at_one_despite_allowlisted_seen_first(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """A non-allowlisted subagent_type still renders as
+        account-<K>/agent-type-1, with its counter starting at 1 despite an
+        allowlisted type being seen first in the same session -- proves the
+        disclosed path never writes into subagent_type_redact_map, matching
+        TestRootScopedDisplayLabel's own unit-level pin at the integration
+        layer."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "staff-sdet"),  # allowlisted, dispatched first
+                _agent_use("a2", "acme-corp-internal-tool"),  # not allowlisted
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/staff-sdet", out)
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert "acme-corp-internal-tool" not in out
+
+    def test_this_repo_case_varied_spelling_of_allowlisted_type_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """Pin against a later .lower()-style "robustness" change disclosing
+        a private type that collides case-insensitively with a real
+        allowlisted name. Asserts both directions in the same run: the
+        mixed-case collision stays opaque, and the exact-case allowlisted
+        form still discloses -- without the positive control, an
+        accidentally-empty allowlist would pass this test for the wrong
+        reason."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "Staff-Sdet"),  # mixed-case collision, not allowlisted verbatim
+                _agent_use("a2", "staff-sdet"),  # exact-case allowlisted form -- positive control
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "Staff-Sdet" not in out
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert re.search(r"account-\d+/staff-sdet\b", out)
+
+    def test_this_repo_colliding_branch_names_across_accounts_stay_on_separate_rows(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Two accounts' identically-named "main" branch must not collapse
+        into one row under --this-repo disclosure either -- the table this
+        measurement actually reads."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/main" in out
+        assert "account-2/main" in out
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_per_session_still_refused_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)], per_session=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_subagent_mix(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--per-session" in err
+
+    def test_this_repo_single_root_prints_raw_branch_and_raw_non_allowlisted_type_with_no_account_prefix(
+        self, fake_projects, capsys
+    ):
+        """Single-root path (no --config-dir, no declared roots): root_idx
+        is always None, so both fields print raw with no account-<K>/
+        prefix regardless of --this-repo or the allowlist. The
+        non-allowlisted type is the load-bearing half: it proves the
+        allowlist gate is never consulted at single root, catching a future
+        reordering that checks `disclose` before `root_idx is not None`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "acme-corp-internal-tool")]),
+        ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "acme-corp-internal-tool" in out
+        assert "account-" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -11797,6 +12161,19 @@ class TestSubagents:
         main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
 
+    def test_single_root_branch_output_strips_control_characters(self, fake_projects, capsys):
+        """gitBranch is transcript-sourced, not git-validated -- an
+        OSC-injection payload must not reach the single-root (no
+        --config-dir) table row raw, the same invariant
+        _root_scoped_display_label's disclose path enforces under multi-root."""
+        payload = "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch=payload)])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED[2J[H[31mFAKE-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
 
 class TestSubagentsToolResultBytes:
     """cmd_subagents' tool-result byte-count dimension: main vs. sidechain,
@@ -14423,6 +14800,173 @@ class TestSubagentsDeclaredRootsMultiRoot:
         assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
         assert "account-1/branch-1" in captured.out
         assert "account-2/branch-1" in captured.out
+
+    def test_this_repo_via_declared_roots_discloses_branch_raw(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed"),
+            ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_subagent_mix_this_repo_via_declared_roots_discloses_branch_raw(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """cmd_subagent_mix's own --this-repo x declared-roots-file
+        coverage, mirroring test_this_repo_via_declared_roots_discloses_branch_raw
+        above for cmd_subagents -- closes the asymmetry where only
+        cmd_subagents' declared-roots path (as opposed to explicit
+        --config-dir, already covered by TestSubagentMixMultiRoot) had this
+        coverage."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed", content=[_agent_use(f"a{idx}", "staff-sdet")]),
+            ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_this_repo_discloses_attested_main_thread_branch_but_not_sidechain_only_branch(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """One session's main-thread record attests branch 'alpha'; its own
+        sidechain record carries a different branch 'beta' with no
+        main-thread attestation anywhere in scope -- alpha discloses raw
+        and beta prints as account-<K>/branch-<N>, in the same run. Both
+        halves asserted together so the contrast is what fails."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="alpha"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="beta", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/alpha\b", out)
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "beta" not in out
+
+    def test_this_repo_attestation_is_corpus_wide_not_since_window_scoped(
+        self, fake_projects, fake_config_dir_factory, capsys, monkeypatch
+    ):
+        """main_thread_branches attestation runs before the --since filter
+        and is never narrowed by it -- a branch attested by a main-thread
+        record outside the --since window still discloses raw for an
+        in-window sidechain record on that same branch. Pins this as
+        intentional: the attestation question is whether a real
+        main-thread session ever used this branch, not whether the
+        attesting record itself appears in the displayed table."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        old_ts = datetime.fromtimestamp(fixed_now - 10 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        recent_ts = datetime.fromtimestamp(fixed_now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest-window"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="gamma", ts=old_ts),  # main-thread, outside --since 1d
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="gamma", sidechain=True, ts=recent_ts),  # in-window
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)], since="1d")
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/gamma\b", out)
+
+    def test_this_repo_branch_attestation_collision_residual_folds_unattested_sidechain_into_disclosed_row(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Accepted residual: attestation is keyed on (root_idx, branch) --
+        a same-account, same-string check, not a same-repo check. A
+        sidechain record that happens to carry the SAME branch name as a
+        genuine main-thread record in the same account -- e.g. a subagent
+        dispatched to a different repo whose own gitBranch coincidentally
+        also reads "main" -- still folds into that disclosed row. Pinned
+        here as a deliberate, tested tradeoff, not a silent consequence."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-collision"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)  # only one branch total, and it's disclosed
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "1"  # the coincidental sidechain's own data reached the disclosed row
+
+    def test_this_repo_cross_account_attestation_independence(self, tmp_path, monkeypatch, capsys):
+        """main_thread_branches keyed on (root_idx, branch), not a flat
+        set[str] -- account A's own main-thread attestation of a generic
+        branch name must not leak disclosure to account B's own unattested
+        (sidechain-only) copy of the same branch name."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        proj_a = roots[0] / this_repo_slug
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        proj_b = roots[1] / this_repo_slug
+        proj_b.mkdir(parents=True)
+        session_id_b = "sess-b"
+        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
+            _asst("claude-opus-4-7", branch="other"),  # keeps proj_b's own top-level file non-empty
+        ])
+        _write_subagent_jsonl(proj_b, session_id_b, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)  # account A's attested row
+        assert re.search(r"account-\d+/branch-\d+", out)  # account B's unattested row stays opaque
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_single_root_prints_raw_branch_with_no_account_prefix(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch="feat")])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "account-" not in out
 
 
 class TestResolveScanRoots:
