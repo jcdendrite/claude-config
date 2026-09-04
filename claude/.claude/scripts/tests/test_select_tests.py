@@ -65,10 +65,13 @@ def _resolve_repo_path_expr(
 ) -> str | None:
     """Resolves one AST expression to a repo-relative prefix string, per the
     grammar table in .claude/plans/select-tests-cross-domain-read-completeness.md.
-    Any shape not explicitly handled below is unresolvable by design, including:
-    a bare string `Constant`; a `BoolOp`; a call that is neither `Path(__file__)`
-    nor `.resolve()`; a `ListComp`; a `List` of glob results. All fall through
-    to the final `return None`.
+    Any shape not explicitly handled below is unresolvable by design:
+    - a bare string `Constant`
+    - a `BoolOp`
+    - a call that is neither `Path(__file__)` nor `.resolve()`
+    - a `ListComp`
+    - a `List` of glob results
+    All fall through to the final `return None`.
     """
     if isinstance(node, ast.Call):
         if (
@@ -286,6 +289,33 @@ class TestModuleLevelRepoPathResolver:
     def test_div_binop_with_a_non_constant_right_operand_is_unresolvable(self):
         resolved = _resolve_module_level_repo_paths(
             "X = SCRIPTS_DIR / some_name\n", test_file_relpath=self._TEST_FILE,
+        )
+        assert "X" not in resolved
+
+    def test_tuple_unpack_target_assignment_is_unresolvable(self):
+        """A single ast.Assign with a Tuple target (not a Name), so it trips
+        the isinstance(target, ast.Name) guard -- see
+        test_chained_target_assignment_is_unresolvable for the sibling
+        len(node.targets) != 1 guard, which this shape does not reach."""
+        resolved = _resolve_module_level_repo_paths(
+            "X, Y = SKILLS_DIR, HOOKS_DIR\n", test_file_relpath=self._TEST_FILE,
+        )
+        assert "X" not in resolved
+        assert "Y" not in resolved
+
+    def test_chained_target_assignment_is_unresolvable(self):
+        """True chained assignment (X = Y = ...) parses as one ast.Assign
+        with two Name targets, tripping the len(node.targets) != 1 guard --
+        distinct from the tuple-unpack shape above."""
+        resolved = _resolve_module_level_repo_paths(
+            "X = Y = SKILLS_DIR\n", test_file_relpath=self._TEST_FILE,
+        )
+        assert "X" not in resolved
+        assert "Y" not in resolved
+
+    def test_annotated_assignment_is_unresolvable(self):
+        resolved = _resolve_module_level_repo_paths(
+            'X: str = SKILLS_DIR / "SKILL.md"\n', test_file_relpath=self._TEST_FILE,
         )
         assert "X" not in resolved
 
@@ -572,11 +602,11 @@ class TestSelectPytestTargets:
         """test_hook_alignment.py and test_lib.py glob plugins/*/hooks/*.sh
         generically, across every plugin, not only lovable-cloud, so a
         skill-management hooks change selects HOOKS_TESTS_DIR.
-        test_skills.py globs plugins/*/skills/*/SKILL.md just
-        as generically, so a skill-management skills change selects
-        SKILLS_TESTS_DIR too -- and, because skill-review/SKILL.md is also
-        SKILL_REVIEW_SKILL_MD (test_require_skill_review.py reads it by path
-        from HOOKS_TESTS_DIR), HOOKS_TESTS_DIR as well."""
+        test_skills.py globs plugins/*/skills/*/SKILL.md just as generically,
+        so a skill-management skills change selects SKILLS_TESTS_DIR too.
+        This exact SKILL.md is also SKILL_REVIEW_SKILL_MD, which
+        test_require_skill_review.py reads by path from HOOKS_TESTS_DIR, so
+        HOOKS_TESTS_DIR is selected as well."""
         result = _mod.select_pytest_targets(["plugins/skill-management/hooks/require-skill-review.sh"])
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
