@@ -535,18 +535,37 @@ printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 # Stage 1 and BEFORE Stage 2, deliberately: Stage 2 fast-exits wrapped forms
 # (bash -c, env-var prefix, relative path) and leaves them to
 # permissions.allow, so a check placed after it would inherit that hole.
-# Matching the op keyword anywhere in the command catches tilde, absolute,
-# relative, chained, and wrapped invocations.
+# Two independent detectors, unconditionally OR'd together — neither
+# subsumes the other:
+#   - Raw-text substring match against unstripped $COMMAND, matching the op
+#     keyword anywhere in the command text. This is what catches a
+#     wrapper-hole invocation (`bash -c "marker.sh write code-review"`,
+#     `eval "marker.sh write ..."`) — general to any `<shell> -c "..."` /
+#     `eval "..."` wrapper, not bash-specific, since
+#     _lib_fragment_command_word's runner list excludes
+#     bash/sh/zsh/dash/ksh entirely and so cannot see inside any of them.
+#   - Command-word match via _lib_command_invokes_tool_subcmd, which
+#     resolves the fragment's actual command word after quote-stripping.
+#     This is what catches a quote-split evasion of a top-level invocation
+#     (`"marker.sh" write code-review`) that the raw-text check's
+#     unstripped $COMMAND misses.
+# _lib_command_invokes_tool_subcmd's SUBCMD... sequence-matches
+# positionally from index 0, so a single call passing both ops together
+# (`marker.sh write activate`) would require the literal two-word sequence
+# "write activate" and never match a real single-op invocation — verified
+# empirically against the helper, not assumed from its docstring. Two
+# calls, one per op, are what its actual contract requires. Status 2
+# (could not determine, e.g. sed/tr missing) denies, matching this hook's
+# fail-closed posture rather than silently falling through as "no match."
 #
-# SCOPE LIMIT, stated rather than implied: this arm matches command TEXT, so it
-# only fires while `marker.sh` and the op keyword stay textually adjacent.
-# Shell-level indirection that breaks that adjacency — assigning the path to a
-# variable and invoking through it, or wrapping the call in a shell function —
-# is not matched here, the same carve-out Stage 2 already documents for wrapped
-# forms. Those forms are not pre-approved in permissions.allow either, so they
-# surface as a permission prompt rather than a silent allow. The path-based
-# Write/Edit arm above is what makes the overall property hold; do not read
-# this arm as a complete boundary on its own.
+# SCOPE LIMIT, stated rather than implied: both detectors match command TEXT,
+# so shell-level indirection that assigns the path to a variable and invokes
+# through it, or wraps the call in a shell function, is not matched here —
+# the same carve-out Stage 2 already documents for wrapped forms. Those
+# forms are not pre-approved in permissions.allow either, so they surface as
+# a permission prompt rather than a silent allow. The path-based Write/Edit
+# arm above is what makes the overall property hold; do not read this arm
+# as a complete boundary on its own.
 #
 # Accepted false-deny: a review-only agent grepping for the literal string
 # `marker.sh write` while reviewing this repo is denied. Matching the op
@@ -568,12 +587,33 @@ if ! AGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.agent_type // empty' 2>/
   exit 0
 fi
 
-if _lib_is_no_gate_release_agent "$AGENT_TYPE" \
-  && printf '%s' "$COMMAND" | grep -qE 'marker\.sh[[:space:]]+(write|activate)'; then
-  emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate.
+if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
+  MARKER_GATE_MATCHED=false
+  MARKER_GATE_INDETERMINATE=false
+
+  printf '%s' "$COMMAND" | grep -qE 'marker\.sh[[:space:]]+(write|activate)' \
+    && MARKER_GATE_MATCHED=true
+
+  for MARKER_GATE_OP in write activate; do
+    _lib_command_invokes_tool_subcmd "$COMMAND" marker.sh "$MARKER_GATE_OP"
+    MARKER_GATE_OP_STATUS=$?
+    if [ "$MARKER_GATE_OP_STATUS" -eq 0 ]; then
+      MARKER_GATE_MATCHED=true
+    elif [ "$MARKER_GATE_OP_STATUS" -ne 1 ]; then
+      MARKER_GATE_INDETERMINATE=true
+    fi
+  done
+
+  if $MARKER_GATE_MATCHED; then
+    emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
-  exit 0
+    exit 0
+  fi
+  if $MARKER_GATE_INDETERMINATE; then
+    emit_deny "Blocked by marker-script-shape gate: could not determine whether '${COMMAND:0:200}' invokes marker.sh write/activate (sed/tr may be missing, killed, or errored) — failing closed per this gate's documented fail-closed posture rather than letting an unscanned command bypass gate-release authority."
+    exit 0
+  fi
 fi
 
 # Reject path traversal sequences before the allowlist check. The VALID_PATTERN

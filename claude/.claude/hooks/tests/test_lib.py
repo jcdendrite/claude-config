@@ -1543,6 +1543,63 @@ def _command_invokes_git_subcmd(command: str, subcmd: str, env: dict | None = No
     return result.returncode
 
 
+# --- _lib_tool_argv_from_subcmd -------------------------------------------
+#
+# Direct coverage arrives now because a second consumer of the word walk
+# (deny-private-project-refs.sh's fragment_gh_gated_surface) means the
+# function's contract can no longer be inferred solely from
+# _lib_command_invokes_tool_subcmd's own black-box tests, the same rationale
+# as the _lib_extract_git_subcmd_args banner above.
+
+
+def _tool_argv_from_subcmd(fragment: str, tool: str) -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_tool_argv_from_subcmd "$1" "$2"', "bash", fragment, tool],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
+
+
+class TestToolArgvFromSubcmd:
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "gh pr --repo o/r create",
+            "gh --repo o/r pr create",
+            "gh pr --repo=o/r create",
+            "gh pr -Ro/r create",
+            "gh pr -R o/r create",
+        ],
+        ids=["repo-between", "repo-before", "repo-equals-glued", "repo-short-glued", "repo-short-between"],
+    )
+    def test_repo_flag_variants_yield_same_leading_stream(self, fragment: str) -> None:
+        """All five -R/--repo spellings and positions must be skipped
+        identically, leaving the same `pr`, `create` leading stream -- the
+        shared test that ties both consumers (_lib_command_invokes_tool_subcmd
+        and deny-private-project-refs.sh's own walker) to one flag grammar."""
+        assert _tool_argv_from_subcmd(fragment, "gh")[:2] == ["pr", "create"]
+
+    def test_non_value_taking_flag_is_dropped_not_skipped_as_value(self) -> None:
+        """A boolean flag like --web (no entry in gh's pinned value-taking
+        list) is dropped on its own -- the next word (`pr`) is NOT
+        mistakenly consumed as its value."""
+        assert _tool_argv_from_subcmd("gh --web pr create", "gh") == ["pr", "create"]
+
+    def test_no_subcommand_words_yields_empty(self) -> None:
+        assert _tool_argv_from_subcmd("gh --repo o/r", "gh") == []
+
+    def test_unrecognized_tool_has_no_pinned_flags(self) -> None:
+        """A TOOL other than gh falls to the empty flag set, so every "-*"
+        word is dropped as a bare flag rather than having its value
+        skipped -- `dir` is never treated as --chdir's value and is
+        emitted as a positional word, which can miss a real subcommand
+        match but never over-consumes a positional word as a flag's
+        value."""
+        assert _tool_argv_from_subcmd("terraform --chdir dir apply", "terraform") == ["dir", "apply"]
+
+
 def _command_invokes_tool_subcmd(command: str, tool: str, *subcmd: str, env: dict | None = None) -> int:
     result = subprocess.run(
         [
@@ -1837,27 +1894,37 @@ def _gh_help_inherited_value_taking_flags(help_text: str) -> set[str]:
     return value_taking_flags
 
 
-def test_gh_pinned_value_taking_flags_are_a_subset_of_gh_help_output() -> None:
+@pytest.mark.parametrize(
+    "gh_help_args",
+    [("pr", "merge"), ("issue", "create")],
+    ids=["pr-merge", "issue-create"],
+)
+def test_gh_pinned_value_taking_flags_are_a_subset_of_gh_help_output(gh_help_args: tuple[str, str]) -> None:
     """_lib_tool_argv_from_subcmd's pinned gh value_taking_flags list
-    (-R/--repo) must be a SUPERSET of this runner's actual `gh help pr
-    merge` INHERITED FLAGS value-taking set -- not merely contain -R/--repo.
-    A future gh release adding a new value-taking global flag not in the
-    pinned list would misread that flag's value as the subcommand word and
-    silently miss a real `gh pr merge` invocation; this fails loudly on
-    that drift instead."""
+    (-R/--repo) must be a SUPERSET of this runner's actual `gh help ...`
+    INHERITED FLAGS value-taking set for each gated gh subcommand tree --
+    not merely contain -R/--repo. `pr` and `issue` are independently
+    defined cobra command trees that merely share identical inherited
+    flags today, so checking only `pr merge` would leave `issue create`'s
+    own drift unguarded even though one pinned flag list now serves both
+    deny-private-project-refs.sh consumers. A future gh release adding a
+    new value-taking global flag not in the pinned list would misread
+    that flag's value as the subcommand word and silently miss a real
+    invocation; this fails loudly on that drift instead."""
     gh_path = shutil.which("gh")
     if not gh_path:
         pytest.skip("gh not found in PATH")
     result = subprocess.run(
-        [gh_path, "help", "pr", "merge"],
+        [gh_path, "help", *gh_help_args],
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
     real_value_taking_flags = _gh_help_inherited_value_taking_flags(result.stdout)
+    gh_help_command = " ".join(("gh", "help", *gh_help_args))
     assert real_value_taking_flags, (
-        "parsed no value-taking flags from `gh help pr merge`'s INHERITED "
+        f"parsed no value-taking flags from `{gh_help_command}`'s INHERITED "
         "FLAGS section -- gh's help output format may have changed "
         "(e.g. a different 'INHERITED FLAGS' heading), silently degrading "
         "this test's subset check below to a no-op; update "
@@ -1865,7 +1932,7 @@ def test_gh_pinned_value_taking_flags_are_a_subset_of_gh_help_output() -> None:
     )
     pinned_value_taking_flags = {"-R", "--repo"}
     assert real_value_taking_flags <= pinned_value_taking_flags, (
-        f"gh help pr merge's INHERITED FLAGS lists a value-taking flag not "
+        f"{gh_help_command}'s INHERITED FLAGS lists a value-taking flag not "
         f"in _lib_tool_argv_from_subcmd's pinned gh value_taking_flags list: "
         f"{real_value_taking_flags - pinned_value_taking_flags} -- update "
         "_lib.sh's _lib_tool_argv_from_subcmd value_taking_flags case for gh."

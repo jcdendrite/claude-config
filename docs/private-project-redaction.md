@@ -16,8 +16,11 @@ path's contents), plus the invoking Bash command's own text — the last of
 these only when the staged diff is non-empty. For `gh pr create`/`gh pr edit`
 and a mutating `gh api` call, the target is the command's own text plus any
 referenced-file contents: `--body-file`/`--template` (or `-F`/`-T`) for
-`gh pr`, `--input` or a `-f`/`-F key=@path` field value for `gh api`.
-Because the command's own
+`gh pr`, `--input` or a `-f`/`-F key=@path` field value for `gh api`. For
+`gh issue create`/`gh issue comment`/`gh issue edit`, the target is the
+command's own text plus any `--body-file` (or `-F`) referenced-file
+contents — the same extractor `gh pr` uses, since `gh issue` shares that
+flag shape but has no `--template`/`-T` flag. Because the command's own
 text is in scope, a `cd`-into-a-home-rooted-path prefix chained into the same
 Bash call as the gated command self-matches the home-rooted-path detector
 below even when the diff and message are clean — run the `cd` as its own
@@ -218,15 +221,6 @@ absolute terms but is still a measured budget overrun, not a clean pass — a
 future revision that needs more headroom should look at collapsing the
 remaining tracker-ID and blocklist `grep` spawns into the same fast-path
 treatment.
-
-## Known gaps
-
-`gh issue create` and `gh issue comment` publish content the same way
-`gh pr create` and `gh api` do, but the hook's dispatch logic has no branch
-recognizing `gh issue` at all — content posted that way is never scanned by
-any of the three scans above. Closing this is separate work: `gh issue`
-takes its body via `--body` inline text, not the `-f`/`-F` field-value-file
-flags the `gh api` scan already resolves.
 
 ## For fork contributors
 

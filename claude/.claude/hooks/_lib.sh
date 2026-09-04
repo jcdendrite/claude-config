@@ -821,8 +821,14 @@ _lib_command_invokes_git_subcmd() {
 # any of its value-taking global flags. Mirrors _lib_git_argv_from_subcmd's
 # state machine, but the value-taking-flag set is looked up per TOOL rather
 # than hardcoded, since each CLI defines its own global-flag surface.
-# Internal to _lib_command_invokes_tool_subcmd below, not a documented
-# call-site contract of its own — gh is its only caller today.
+#
+# Call-site contract: caller passes an already quote-stripped fragment, the
+# same discipline as _lib_fragment_command_word and its siblings. The
+# function forks nothing, so there is no exit status to check — a caller
+# fails closed only on the forks it depends on elsewhere (the quote-strip
+# and fragment-split upstream of this call). Two direct consumers today:
+# _lib_command_invokes_tool_subcmd below, and deny-private-project-refs.sh's
+# fragment_gh_gated_surface (its gh pr / gh issue redaction-gate keying).
 #
 # gh 2.98.0 (fetched 2026-09-02 via `gh help pr merge` and `gh help issue
 # create`, whose INHERITED FLAGS sections both list only -R/--repo as

@@ -161,7 +161,7 @@ flowchart LR
 | `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` when staged changes include a `SKILL.md` | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
-| `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR body |
+| `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR/issue body |
 | `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in), or a credential-shaped value is (always on) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
 | `deny-credential-bash-reads.sh` | `Bash` command referencing a credential-shaped path (SSH key, `.netrc`, cloud credential store, and similar) | No clear — no bypass valve; inspect/run the specific command outside Claude |
@@ -427,7 +427,7 @@ Moving or renaming this checkout (`mv ~/current-location/claude-config ~/somewhe
 
 This repo is public — any project codename, organization name, or tracker-ID that lands in a commit or PR description ships to the world. `claude-config` defends against that in three tiers:
 
-1. **Tracker-ID scan** (always on, no setup) — `deny-private-project-refs.sh` blocks `git commit`, `gh pr create`, `gh pr edit`, and mutating `gh api` calls whose content carries `[A-Z]{2,}-\d+` tracker tokens outside an OSS-prefix allowlist.
+1. **Tracker-ID scan** (always on, no setup) — `deny-private-project-refs.sh` blocks `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, and mutating `gh api` calls whose content carries `[A-Z]{2,}-\d+` tracker tokens outside an OSS-prefix allowlist.
 2. **Private-projects blocklist** (opt-in) — the same hook reads a user-local `<config-dir>/private-projects.md` and blocks any commit or PR whose content matches a listed project name (case-insensitive, whole-word). `install-dev.sh` requires this file to exist before setting up a contributor's `.venv`, so the opt-in isn't silently skippable at first setup.
 3. **Reviewer discipline** — what the hook can't catch: structural fingerprints (a verbatim RLS policy, a rare column-naming pattern) and private-corpus provenance (a fact known only through exposure to private engagement material, whether quoted, computed, or recalled) are a review responsibility, not a mechanical one.
 

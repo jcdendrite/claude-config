@@ -1,12 +1,12 @@
 #!/bin/bash
 # hook-class: gate
-# Gate: reject `git commit`, `gh pr create`, `gh pr edit`, and mutating
-# `gh api` calls if their content (staged diff, commit message, PR
-# title/body, body-source file contents, gh-api JSON body, or
-# referenced --input file) contains tracker-ID tokens that aren't on
-# the open-source allowlist. Enforces the tracker-ID piece of the
-# repo-root CLAUDE.md redaction rule ("Redact private-project-
-# identifying content").
+# Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue
+# create`, `gh issue comment`, `gh issue edit`, and mutating `gh api`
+# calls if their content (staged diff, commit message, PR/issue
+# title/body, body-source file contents, gh-api JSON body, or referenced
+# --input file) contains tracker-ID tokens that aren't on the
+# open-source allowlist. Enforces the tracker-ID piece of the repo-root
+# CLAUDE.md redaction rule ("Redact private-project-identifying content").
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition,
 # so it runs for every Bash tool call and filters internally. A narrowing
@@ -16,7 +16,8 @@
 # (split on `&&`/`;`/`|`/`$()`/backticks) past global git flags, env-var
 # prefixes, and gh subcommand flags written ahead of the subcommand, then
 # exits immediately — before any git or scan work — when no gated surface
-# (git commit / gh pr create|edit / mutating gh api) is present.
+# (git commit / gh pr create|edit / gh issue create|comment|edit /
+# mutating gh api) is present.
 #
 # Scope and limits:
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
@@ -38,13 +39,17 @@
 #   require review discipline.
 # - Scans the full Bash command string so `git commit -m "..."`,
 #   `gh pr create --body "..."`, `gh pr edit N --title "..."`,
-#   `gh api ... -f body="..."`, and heredoc variants all get checked
-#   without parsing the message out of shell quoting.
+#   `gh issue create --body "..."`, `gh issue comment N --body "..."`,
+#   `gh issue edit N --body "..."`, `gh api ... -f body="..."`, and
+#   heredoc variants all get checked without parsing the message out of
+#   shell quoting.
 # - For `gh pr create/edit --body-file|--template <path>` (and short
-#   forms `-F` / `-T`), reads the file and scans its contents. Fails
-#   closed (blocks) if the path is not readable, or if the path is a
-#   pseudo-file (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`) whose
-#   contents the hook cannot statically verify.
+#   forms `-F` / `-T`), and `gh issue create|comment|edit --body-file
+#   <path>` (short form `-F`; gh issue has no --template/-T flag), reads
+#   the file and scans its contents. Fails closed (blocks) if the path is
+#   not readable, or if the path is a pseudo-file (`-`, `/dev/stdin`,
+#   `/dev/fd/*`, `/proc/*/fd/*`) whose contents the hook cannot
+#   statically verify.
 # - For `git commit -F <path>` / `--file <path>`, reads the
 #   commit-message-source file and scans it under the same fail-closed
 #   posture as gh pr body-source files. `git commit -m "..." -F <path>`
@@ -101,17 +106,20 @@
 #   `-F`) populates `.git/COMMIT_EDITMSG` interactively after the
 #   PreToolUse hook has already fired. Nothing for the hook to scan
 #   at hook time.
-# - `gh issue create` and `gh issue comment` publish content the same
-#   way `gh pr create`/`gh api` do, but this hook's dispatch
-#   (IS_GIT_COMMIT / IS_GH_PR / IS_GH_API) has no branch recognizing
-#   `gh issue` at all, so content posted that way is never scanned.
-#   A different flag surface (`--body` inline text, not `-f`/`-F`
-#   field-value files) than the three surfaces above, so closing this
-#   is real, separate work, not a one-line fix.
 # - COMMAND_UNQUOTED's and SCAN_TARGET_UNQUOTED's sed/tr strip failures
 #   both fail closed: each exit status is checked and denies with an
 #   explicit message rather than falling through to this hook's normal
 #   "nothing gated"/pre-patch raw-only-scan allow path.
+# - Every body/message-source file read in this hook — the gh pr / gh
+#   issue --body-file/-F read, the git commit -F/--file read, the gh api
+#   --input read, and the gh api -f/-F/--field/--raw-field key=@<path>
+#   read — is timeout-capped via _lib_capped and fails closed on a
+#   nonzero exit, so a path pointing at a FIFO with no writer cannot hang
+#   the hook at any of the five sites. The readability check above only
+#   proves the path is readable, not that reading it terminates. This
+#   guarantee holds only when timeout(1) or gtimeout(1) is on PATH — see
+#   _lib_capped_for's own "neither binary present" fallback caveat in
+#   _lib.sh, which still applies here.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -206,49 +214,64 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
 fi
 
 # Word-walk a single shell fragment and report which gated `gh` surface it
-# invokes: `pr` for `gh pr create` / `gh pr edit`, `api` for `gh api`, and
-# empty for everything else (non-gh fragments and non-gated gh subcommands
-# such as `gh pr comment`). The `gh` word test (`gh` or `*/gh`) mirrors
-# _lib_fragment_invokes_git, so absolute paths and env-var prefixes are
-# seen through. Callers must pass an already quote-stripped fragment (see
-# COMMAND_UNQUOTED above) — this function's own word comparisons stay
-# quote-blind by design, matching _lib.sh's shared matchers.
+# invokes:
+#   - `pr`: `gh pr create` / `gh pr edit`.
+#   - `issue`: `gh issue create` / `gh issue comment` / `gh issue edit`.
+#   - `api`: `gh api`.
+#   - empty: everything else (non-gh fragments and non-gated gh
+#     subcommands such as `gh pr comment`).
 #
-# gh's root command has no value-taking global flags (only `--help` /
-# `--version`), but cobra still lets a subcommand's own flags be written
-# *before* the subcommand — `gh -X POST api ...` and `gh --repo o/r pr
-# create ...` both parse. So the walk cannot assume the first bare word
-# after `gh` is the subcommand. Instead it keys on the command path:
+# Positional words come from _lib_tool_argv_from_subcmd (_lib.sh), which
+# skips gh's value-taking global flags from one pinned list, so a flag
+# between a surface word and its subcommand cannot separate the pair —
+# contingent on that pinned list staying current, per
+# _lib_tool_argv_from_subcmd's own docstring caveat in _lib.sh. That
+# helper forks nothing, so this walker adds no exit status to check —
+# the hook's COMMAND_UNQUOTED and _lib_split_fragments calls above
+# already fail closed on the forks it does depend on. Dropping flag words
+# can make two words of argument prose adjacent, costing a redundant scan
+# — an accepted false positive. Callers must pass an already
+# quote-stripped fragment (see COMMAND_UNQUOTED above). This function's
+# own word comparisons stay quote-blind by design, matching _lib.sh's
+# shared matchers.
 #   - `pr` surface: a word `pr` immediately followed by `create` / `edit`.
 #     A two-word command path is always contiguous (cobra resolves it as a
 #     unit); hoisted flags land before `pr` or after `create`/`edit`, never
 #     between them.
+#   - `issue` surface: a word `issue` immediately followed by `create` /
+#     `comment` / `edit`, same contiguous-word-path reasoning as `pr`
+#     above.
 #   - `api` surface: any word `api` after `gh`. A bare `api` that is really
 #     a flag value rather than the subcommand is harmless — the caller's
 #     body-flag check still has to pass before IS_GH_API is set.
-# Globbing is disabled so wildcards in the command text do not expand.
 # Trailing non-[alnum/_/-] is stripped from each word (fragment splitting
 # can leave `create)` from a paren group).
 fragment_gh_gated_surface() {
   local fragment="$1"
-  local saved_opts=$-
-  set -f
-  local past_gh=false prev="" word stripped surface=""
-  for word in $fragment; do
-    if ! $past_gh; then
-      case "$word" in
-        gh|*/gh) past_gh=true ;;
-      esac
-      continue
-    fi
+  # Substring fast-path: a strict superset of _lib_tool_argv_from_subcmd's
+  # own gh/*/gh word test, so it cannot fail open, and it keeps the word-
+  # walk off every fragment with no `gh` substring at all.
+  case "$fragment" in
+    *gh*) ;;
+    *) printf ''; return ;;
+  esac
+  local prev="" word stripped surface=""
+  while IFS= read -r word; do
     stripped="${word%%[^a-zA-Z0-9_-]*}"
     case "$stripped" in
-      create|edit) if [ "$prev" = "pr" ]; then surface="pr"; break; fi ;;
+      create)
+        if [ "$prev" = "pr" ]; then surface="pr"; break; fi
+        if [ "$prev" = "issue" ]; then surface="issue"; break; fi
+        ;;
+      edit)
+        if [ "$prev" = "pr" ]; then surface="pr"; break; fi
+        if [ "$prev" = "issue" ]; then surface="issue"; break; fi
+        ;;
+      comment) if [ "$prev" = "issue" ]; then surface="issue"; break; fi ;;
       api) surface="api"; break ;;
     esac
     prev="$stripped"
-  done
-  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  done < <(_lib_tool_argv_from_subcmd "$fragment" gh)
   printf '%s' "$surface"
 }
 
@@ -261,6 +284,7 @@ fragment_gh_gated_surface() {
 # `&&`/`;`/`|`/`$()`/backtick chains cannot hide the command word.
 IS_GIT_COMMIT=0
 IS_GH_PR=0
+IS_GH_ISSUE=0
 IS_GH_API=0
 FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 FRAGMENTS_SPLIT_EXIT=$?
@@ -277,6 +301,9 @@ while IFS= read -r fragment; do
   case "$(fragment_gh_gated_surface "$fragment")" in
     pr)
       IS_GH_PR=1
+      ;;
+    issue)
+      IS_GH_ISSUE=1
       ;;
     api)
       # `gh api` defaults to GET but auto-promotes to POST whenever any
@@ -303,7 +330,7 @@ while IFS= read -r fragment; do
   esac
 done <<< "$FRAGMENTS"
 
-if [ "$IS_GIT_COMMIT" -eq 0 ] && [ "$IS_GH_PR" -eq 0 ] && [ "$IS_GH_API" -eq 0 ]; then
+if [ "$IS_GIT_COMMIT" -eq 0 ] && [ "$IS_GH_PR" -eq 0 ] && [ "$IS_GH_ISSUE" -eq 0 ] && [ "$IS_GH_API" -eq 0 ]; then
   exit 0
 fi
 
@@ -342,11 +369,13 @@ fi
 #                                 content" for the rationale.
 OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|PROJ|TICKET)-'
 
-# Extract paths passed to any gh-pr body-source flag. Covers:
+# Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
 #   --body-file <path>    --body-file=<path>
 #   -F <path>             -F=<path>
 #   --template <path>     --template=<path>
 #   -T <path>             -T=<path>
+# gh issue create/comment has no --template/-T flag, but shares the same
+# --body-file/-F shape as gh pr, so both surfaces reuse this extractor.
 # One path per output line. Uses xargs tokenization so flag-like text
 # inside a quoted argument value (e.g. a PR title containing "-F") is
 # part of a multi-word token and is never matched as a standalone flag.
@@ -506,7 +535,10 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
           emit_deny "git commit references a message-source file at '${commit_msg_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable message file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the git commit command, inline the content with -m, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
           exit 0
         fi
-        COMMIT_MSG_CONTENT=$(cat "$commit_msg_path" 2>/dev/null || true)
+        if ! COMMIT_MSG_CONTENT=$(_lib_capped cat "$commit_msg_path" 2>/dev/null); then
+          emit_deny "git commit -F references a message-source file at '${commit_msg_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the message with -m. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+          exit 0
+        fi
         SCAN_TARGET+=$'\n'"$COMMIT_MSG_CONTENT"
       done <<< "$COMMIT_MSG_SOURCES"
     fi
@@ -541,9 +573,45 @@ if [ "$IS_GH_PR" -eq 1 ]; then
         emit_deny "gh pr command references a body-source file at '${body_source_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh pr command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      BODY_CONTENT=$(cat "$body_source_path" 2>/dev/null || true)
+      if ! BODY_CONTENT=$(_lib_capped cat "$body_source_path" 2>/dev/null); then
+        emit_deny "gh pr command references a body-source file at '${body_source_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with --body. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        exit 0
+      fi
       SCAN_TARGET+=$'\n'"$BODY_CONTENT"
     done <<< "$BODY_SOURCES"
+  fi
+fi
+
+if [ "$IS_GH_ISSUE" -eq 1 ]; then
+  # The command string already contains any inline `--body "..."` or
+  # `--title "..."` value, so adding COMMAND once covers both. Kept
+  # explicit here so the coverage story is visible at a glance.
+  SCAN_TARGET+=$'\n'"$COMMAND"
+
+  # `--body-file` (short form `-F`) references an external file whose
+  # contents are NOT in the command string. Reuses extract_body_source_
+  # paths — gh issue has no --template/-T flag, but that pattern simply
+  # never matches an issue command, so sharing the extractor is safe.
+  # Read each referenced file and append its contents. Fail-closed if
+  # any referenced path is unreadable or is a pseudo-file.
+  ISSUE_BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
+  if [ -n "$ISSUE_BODY_SOURCES" ]; then
+    while IFS= read -r issue_body_source_path; do
+      [ -z "$issue_body_source_path" ] && continue
+      if is_pseudo_file_path "$issue_body_source_path"; then
+        emit_deny "gh issue command passes a body-source flag pointing at a pseudo-file path ('${issue_body_source_path}'). The redaction gate cannot statically verify what gh will read from there — '-' / '/dev/stdin' / '/dev/fd/*' resolve to the hook's own stdin or a process-specific fd, not gh's future stdin. Inline the content with --body or prepare a real on-disk file. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        exit 0
+      fi
+      if [ ! -r "$issue_body_source_path" ]; then
+        emit_deny "gh issue command references a body-source file at '${issue_body_source_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable body file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh issue command, inline the content with --body, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        exit 0
+      fi
+      if ! ISSUE_BODY_CONTENT=$(_lib_capped cat "$issue_body_source_path" 2>/dev/null); then
+        emit_deny "gh issue command references a body-source file at '${issue_body_source_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with --body. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        exit 0
+      fi
+      SCAN_TARGET+=$'\n'"$ISSUE_BODY_CONTENT"
+    done <<< "$ISSUE_BODY_SOURCES"
   fi
 fi
 
@@ -571,7 +639,10 @@ if [ "$IS_GH_API" -eq 1 ]; then
         emit_deny "gh api command references --input file at '${gh_api_input_path}', but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable input file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh api command, inline the content with -f / -F field flags, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      GH_API_INPUT_CONTENT=$(cat "$gh_api_input_path" 2>/dev/null || true)
+      if ! GH_API_INPUT_CONTENT=$(_lib_capped cat "$gh_api_input_path" 2>/dev/null); then
+        emit_deny "gh api --input references a file at '${gh_api_input_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the content with -f / -F field flags. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        exit 0
+      fi
       SCAN_TARGET+=$'\n'"$GH_API_INPUT_CONTENT"
     done <<< "$GH_API_INPUT_SOURCES"
   fi
@@ -594,7 +665,10 @@ if [ "$IS_GH_API" -eq 1 ]; then
         emit_deny "gh api command references a -f / -F field-value file at '${gh_api_field_at_path}' (key=@PATH form), but that path does not exist or is not readable from the hook. The redaction gate refuses to scan an unreadable field-value file (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Create the file before running the gh api command, inline the value, or — if the path contains whitespace or shell-expansion the hook did not parse — simplify the path. See repo CLAUDE.md section 'Redact private-project-identifying content'."
         exit 0
       fi
-      GH_API_FIELD_AT_CONTENT=$(cat "$gh_api_field_at_path" 2>/dev/null || true)
+      if ! GH_API_FIELD_AT_CONTENT=$(_lib_capped cat "$gh_api_field_at_path" 2>/dev/null); then
+        emit_deny "gh api -f / -F / --field / --raw-field references a field-value file (key=@PATH form) at '${gh_api_field_at_path}' that did not finish reading within the timeout — a FIFO or a slow-mounted path can stall this read indefinitely, and the readability check above does not catch that. The redaction gate refuses to scan unread content (fail-closed) because unscanned content is exactly the leak vector this hook guards against. Use a regular on-disk file, or inline the value. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+        exit 0
+      fi
       SCAN_TARGET+=$'\n'"$GH_API_FIELD_AT_CONTENT"
     done <<< "$GH_API_FIELD_AT_SOURCES"
   fi
@@ -627,7 +701,7 @@ HITS=$(printf '%s' "$SCAN_TARGET_BOTH" \
 if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
+  emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
   exit 0
 fi
 
@@ -694,7 +768,7 @@ if [ "$structural_fastpath_rc" -eq 0 ]; then
     detector_rc=0
     grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET_BOTH" || detector_rc=$?
     if [ "$detector_rc" -eq 0 ]; then
-      emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+      emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
     elif [ "$detector_rc" -ge 2 ]; then
       emit_deny "Blocked by redaction gate: the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
