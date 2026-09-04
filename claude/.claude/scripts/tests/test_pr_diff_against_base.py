@@ -279,12 +279,17 @@ def _lib_cumulative_diff_hash(repo_root: str, pr_diff_script: str, env: dict) ->
 
 
 class TestRecordFlag:
-    """--record's own behavior: it must never change the bare invocation's
-    stdout, must always print the diff before its own resolution can fail,
-    and must produce a subject whose hashed value agrees byte-for-byte with
-    _lib_cumulative_diff_hash's -- required because a second hashing recipe
-    that strips text differently would make marker.sh's stored value and
-    status's recomputed value permanently and silently disagree."""
+    """--record's own behavior. Three invariants, each with its own test
+    method below:
+
+    - Must never change the bare invocation's stdout.
+    - Must always print the diff before its own resolution can fail.
+    - Must produce a subject whose hashed value agrees byte-for-byte with
+      _lib_cumulative_diff_hash's -- required because a second hashing
+      recipe that strips text differently would make marker.sh's stored
+      value and status's recomputed value permanently and silently
+      disagree.
+    """
 
     SID = "test-session-record-flag"
 
@@ -326,9 +331,9 @@ class TestRecordFlag:
     def test_record_writes_zero_byte_subject_for_a_genuinely_empty_diff(self, tmp_path):
         """A repo already at parity with its merge-base (no feature branch,
         nothing to diff) must record a 0-byte subject -- a format pin on the
-        recorded artifact itself, independent of how marker.sh later judges
-        emptiness (it reads the file through the same command-substitution
-        lens as every other consumer, not this raw byte count). Still a
+        recorded artifact itself. This 0-byte pin is independent of how
+        marker.sh judges emptiness, which reads the file through its own
+        command-substitution lens, not this raw byte count. Still a
         ground-truth assertion, not a comparison against this script's own
         stdout, which would share any padding bug."""
         local, _bare = _make_repo_with_remote(tmp_path)

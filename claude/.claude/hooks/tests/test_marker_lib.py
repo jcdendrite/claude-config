@@ -159,8 +159,9 @@ class TestLibHashDiffText:
 
     def test_empty_text_is_not_a_failure(self):
         """sha256 of an empty string is itself a valid, non-empty digest --
-        TEXT emptiness is a business-rule concern for marker.sh's own [ -s ]
-        precondition on the subject file, not a failure this helper reports."""
+        TEXT emptiness is a business-rule concern for marker.sh's own [ -z ]
+        precondition on the read subject text, not a failure this helper
+        reports."""
         expected = hashlib.sha256(b"").hexdigest()
         result = _hash_diff_text("")
         assert result.returncode == 0, result.stderr
