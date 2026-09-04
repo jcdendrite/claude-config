@@ -328,28 +328,42 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
     """The allow-path sibling to `test_schedulewakeup_stays_denied_in_settings`.
 
     Guards against a future edit silently widening `permissions.deny` to
-    swallow tools this PR's own documentation depends on staying available.
-    `CronCreate`, `ListAgents`, and `TaskOutput` are each named in the
-    CHANGELOG's ScheduleWakeup entry and `docs/design-decisions.md` §48's
-    Blast-radius section as unaffected by the deny. `Agent` is not argued
-    there — it's guarded because it's the dispatch this PR's own Context
-    names as the trigger the misfire follows, not because either doc claims
-    its continued availability.
+    swallow tools this PR depends on staying available, each on its own
+    basis: `CronCreate` is named in `docs/design-decisions.md` §48's
+    Blast-radius section as unaffected by the deny. `ListAgents` and
+    `TaskOutput` are not argued there — they're guarded because the plan's
+    pre-implementation gate (Verification step 1 check 5) required them to
+    remain available, and §48's Revisit list separately names them as a
+    substitution-risk channel to watch, not as confirmed-unaffected. `Agent`
+    is guarded because it's the dispatch this PR's Context names as the
+    trigger the misfire follows.
+
+    `CronCreate`'s presence in this list tracks §48's current
+    Accepted-residual-risk stance (the substitution channel is unguarded,
+    not unformable) — a future PR that deliberately closes that gap via
+    this same bare-tool-name-deny mechanism removes it from this list on
+    purpose, not as an accidental widening this test should catch.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
     deny = settings.get("permissions", {}).get("deny", [])
-    documented = (
-        "the CHANGELOG and design-decisions.md §48 both claim this tool "
+    documented_unaffected = (
+        "design-decisions.md §48's Blast-radius section claims this tool "
         "stays unaffected by the ScheduleWakeup deny"
+    )
+    gate_required_available = (
+        "the plan's pre-implementation gate (Verification step 1 check 5) "
+        "requires this tool to remain available, and design-decisions.md "
+        "§48's Revisit list separately names it as a substitution-risk "
+        "channel to watch, not as confirmed-unaffected"
     )
     dispatch_trigger = (
         "it is the dispatch this PR's Context names as the trigger the "
         "ScheduleWakeup misfire follows"
     )
     rationale = {
-        "CronCreate": documented,
-        "ListAgents": documented,
-        "TaskOutput": documented,
+        "CronCreate": documented_unaffected,
+        "ListAgents": gate_required_available,
+        "TaskOutput": gate_required_available,
         "Agent": dispatch_trigger,
     }
     for tool_name, why in rationale.items():
