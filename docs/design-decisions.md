@@ -1148,3 +1148,13 @@ The two stale plan files are not fixed by this decision. That correction was han
 - `CLAUDE.md`'s Commands section — the `select-tests.py` rule and its two named exceptions.
 - `.claude/plans/prevent-runaway-subagent-cost.md` and `.claude/plans/review-pipeline-orchestrator-subagent.md` (each on its own branch) — the two stale Verification sections this entry traces the drift to.
 - `.claude/plans/select-tests-fallback-audit.md` (merged, GH-765) — the prior related audit that fixed five other propagation surfaces without flagging `handoff/SKILL.md`'s silence as one of them.
+
+## 54. `guard-settings-session-keys.sh`'s default-branch diff accepts up to 4 extra `_lib_capped` git calls on its staged path (2026-09-04)
+
+`guard-settings-session-keys.sh` diffs staged `claude/.claude/settings.json` against the repo's resolved default branch, so an unresolvable default branch must deny rather than silently comparing nothing. This is the one fail-closed exception to the hook's otherwise fail-open posture. Resolving that branch via the shared `_lib_resolve_default_branch` (`_lib.sh`) adds up to 4 more `_lib_capped` git calls on the settings.json-staged path:
+- one for the symbolic-ref probe
+- up to three more for the `main`/`master`/`develop` candidate loop
+
+Each call is capped at `_lib_capped`'s default 5s, so the theoretical worst case — every call independently timing out — is ~45s. That is well past the hooks' <100ms/fire budget.
+
+This is an accepted tradeoff scoped to the narrow settings.json-staged path, not a general latency regression. The hook's earlier staged-file check exits before reaching this diff on every commit that doesn't touch `claude/.claude/settings.json`, which is what keeps the cost scoped to that one path. `require-ready-for-review.sh`'s default-branch bypass check pays a comparable call-count shape. It resolves the default branch through its own separately-duplicated logic, not this shared helper.

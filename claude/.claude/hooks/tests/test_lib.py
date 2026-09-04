@@ -1324,6 +1324,26 @@ def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
     assert _resolve_default_branch(repo) == "master"
 
 
+def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
+    tmp_path: Path,
+) -> None:
+    """Both origin/main and origin/master exist (no origin/HEAD) -- proves
+    the full candidate order (main, then master, then develop), not just
+    the master-over-develop pair
+    test_resolve_default_branch_candidate_probe_prefers_earlier_candidate
+    covers."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True
+    )
+
+    assert _resolve_default_branch(repo) == "main"
+
+
 def test_resolve_default_branch_symbolic_ref_does_not_verify_target(
     tmp_path: Path,
 ) -> None:

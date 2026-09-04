@@ -25,16 +25,16 @@ GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 # ". These keys" that follows the list, not the first bare "." — a nested
 # guarded key's own dotted path (e.g. "env.CLAUDE_CODE_EFFORT_LEVEL")
 # contains a "." that a naive "stop at first period" pattern would truncate on.
-# The literal "main" here depends on settings_repo's default-branch
+# The default "main" branch_label depends on settings_repo's default-branch
 # resolution continuing to resolve to exactly "main" — the hook interpolates
-# ${DEFAULT_BRANCH:-the default branch} at this position, not a hardcoded string.
-_CHANGED_KEYS_SEGMENT = re.compile(r"differs from main on: (.*?)\. These keys")
-
-
-def names_changed_keys(reason: str | None) -> set[str]:
+# ${DEFAULT_BRANCH:-the default branch} at this position, not a hardcoded
+# string, so a test against a different resolved branch (or an unresolved
+# one) passes its own branch_label.
+def names_changed_keys(reason: str | None, branch_label: str = "main") -> set[str]:
     """Return the guarded key names the deny reason reports as changed."""
     assert reason is not None, "hook allowed the commit; expected a deny reason"
-    match = _CHANGED_KEYS_SEGMENT.search(reason)
+    segment = re.compile(rf"differs from {re.escape(branch_label)} on: (.*?)\. These keys")
+    match = segment.search(reason)
     assert match is not None, f"deny reason did not name the changed keys: {reason}"
     return set(match.group(1).split())
 
@@ -139,6 +139,51 @@ def settings_repo_unresolvable_default_branch(tmp_path):
     return repo, settings_file
 
 
+@pytest.fixture
+def settings_repo_file_absent_from_default_branch(tmp_path):
+    """Git repo whose resolved default branch (origin/main) never had
+    claude/.claude/settings.json committed at all -- the realistic shape
+    when the file is staged for the first time, never committed to any ref.
+    Distinct from settings_repo, where the default branch has the file but
+    is simply missing one key."""
+    repo = tmp_path / "settings-repo-file-absent"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("no settings.json yet\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "init without settings.json"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    settings_dir = repo / "claude" / ".claude"
+    settings_dir.mkdir(parents=True)
+    settings_file = settings_dir / "settings.json"
+    return repo, settings_file
+
+
+@pytest.fixture
+def settings_repo_dangling_default_branch_symref(tmp_path):
+    """origin/HEAD symbolically points at refs/remotes/origin/main, but
+    refs/remotes/origin/main was never created -- the dangling-target case
+    _lib_resolve_default_branch's symbolic-ref path does not verify (see
+    test_lib.py's test_resolve_default_branch_symbolic_ref_does_not_verify_target).
+    For a test proving the hook still denies through the git-show existence
+    check even though DEFAULT_BRANCH itself resolves non-empty."""
+    repo = tmp_path / "settings-repo-dangling-symref"
+    settings_file = _init_settings_repo_on_branch(
+        repo, "main", '{"model": "sonnet", "effortLevel": "normal"}\n'
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    return repo, settings_file
+
+
 class TestGuardSettingsSessionKeys:
     def test_model_change_denies_commit(self, settings_repo):
         repo, settings_file = settings_repo
@@ -175,14 +220,15 @@ class TestGuardSettingsSessionKeys:
             settings_file,
             '{"model": "sonnet", "effortLevel": "high", "unrelatedTestKey": "value"}\n',
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'stage against diverged local main'"),
-                cwd=repo,
-            )
-            == "deny"
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'stage against diverged local main'"),
+            cwd=repo,
         )
+        # unrelatedTestKey is not a guarded key, so it never appears here;
+        # effortLevel is the guarded key that actually differs from
+        # origin/main's committed "normal" -- model matches on both sides.
+        assert names_changed_keys(reason) == {"effortLevel"}
 
     def test_effort_level_change_denies_commit(self, settings_repo):
         repo, settings_file = settings_repo
@@ -318,6 +364,26 @@ class TestGuardSettingsSessionKeys:
             )
             == "deny"
         )
+
+    def test_guarded_key_denies_when_file_absent_from_default_branch_entirely(
+        self, settings_repo_file_absent_from_default_branch
+    ):
+        """A guarded key staged where settings.json doesn't exist on the
+        default branch at all must block.
+
+        Distinct from test_guarded_key_added_where_main_lacks_it_denies,
+        where the default branch has the file but lacks the key -- here the
+        `git show origin/main:...` existence check itself fails, and the
+        comparison falls back to the empty-baseline default.
+        """
+        repo, settings_file = settings_repo_file_absent_from_default_branch
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'add settings.json'"),
+            cwd=repo,
+        )
+        assert names_changed_keys(reason) == {"model", "effortLevel"}
 
     def test_guarded_key_set_to_false_against_absent_denies(self, settings_repo):
         """An explicit false must not read as equal to the key being absent.
@@ -570,6 +636,22 @@ class TestGuardSettingsSessionKeys:
             == "allow"
         ), "hook denied using the ambient repo's staged diff rather than the payload's"
 
+    def test_empty_string_payload_cwd_falls_back_to_ambient_cwd(self, settings_repo):
+        """An explicit `"cwd": ""` in the payload must fall back to ambient
+        $PWD identically to an absent cwd key, not read as an outside-repo
+        cwd -- the hook's `[ -z "$CWD" ] && CWD="$PWD"` fallback treats an
+        empty string the same as absent."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'", cwd=""),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_chained_add_commit_with_model_change_denies(self, settings_repo):
         """Chained `git add ... && git commit` is still gated."""
         repo, settings_file = settings_repo
@@ -634,6 +716,53 @@ class TestGuardSettingsSessionKeys:
         )
         assert reason is not None
         assert "differs from the default branch on:" in reason
+
+    def test_unchanged_guarded_value_still_denies_when_default_branch_unresolvable(
+        self, settings_repo_unresolvable_default_branch
+    ):
+        """Pins the documented false-positive tradeoff: with no default
+        branch resolvable, MAIN_CONTENT falls back to "", so a guarded key
+        registers as "changed" even when its value is byte-identical to
+        what was committed locally -- only an unrelated, non-guarded key
+        actually changed in this staged diff."""
+        repo, settings_file = settings_repo_unresolvable_default_branch
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "unrelatedTestKey": "value"}\n',
+        )
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'add unrelated key'"),
+            cwd=repo,
+        )
+        assert names_changed_keys(reason, branch_label="the default branch") == {
+            "model", "effortLevel",
+        }
+
+    def test_dangling_default_branch_symref_reaches_hook_and_denies(
+        self, settings_repo_dangling_default_branch_symref
+    ):
+        """_lib_resolve_default_branch's symbolic-ref path returns "main"
+        even though refs/remotes/origin/main was never created (see
+        test_lib.py's
+        test_resolve_default_branch_symbolic_ref_does_not_verify_target).
+        The subsequent `git show origin/main:...` existence check against
+        that dangling target fails, so MAIN_CONTENT falls back to the
+        empty-baseline comparison -- both guarded keys register as changed
+        even though only one actually differs, and the deny message names
+        the resolved branch ("main"), not the "the default branch" fallback
+        text, since DEFAULT_BRANCH itself is non-empty here."""
+        repo, settings_file = settings_repo_dangling_default_branch_symref
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'update settings'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "differs from main on:" in reason
+        assert names_changed_keys(reason) == {"model", "effortLevel"}
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
