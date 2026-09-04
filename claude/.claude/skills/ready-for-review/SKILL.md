@@ -16,6 +16,7 @@ argument-hint: "[optional PR context]"
 Run steps in order. Halt on failures unless the step is marked **warn
 only**. After fixes produced by step 3 or step 4, re-run
 step 2 — do not re-run either on its own output.
+A halt on step 2, 3, 4, or 7 re-runs the context-budget check from step 1 and restates it in the halt report, per the Completion section's restatement bullet below.
 
 ## 0. Activate gate session
 
@@ -39,6 +40,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 - If no PR exists, step 5 authors the body and step 6 opens the PR from it,
   after verification and review.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- **Context budget (warn only, never halts).** Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On `"status":"ok"` with `over_threshold` or `already_fired` true, warn the user with `estimate` and `threshold`, naming `nudge_disabled` inline when it is also true — the measurement still holds but no nudge will arrive on its own. See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields; this bullet substitutes its own warn-and-continue action for that section's write decision. In every other case — `"status":"ok"` but under threshold, or any other status, including `cannot-resolve`/`schema-drift` — continue silently; this gate's outcome never depends on the tool's own success. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## 2. Verification (halt on fail)
 
@@ -165,6 +167,7 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 - PR description: authored for a new PR, or updated / "already in sync."
 - CI: watch still running — it will report when checks resolve, or check `gh pr checks <n>` yourself. If it already resolved, report that result instead.
 - Branch: clean, pushed, PR #N ready for review.
+- Context budget: re-run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` and report the fresh `estimate`/`threshold` with a handoff recommendation when `over_threshold` or `already_fired` is true, naming `nudge_disabled` inline when it is also true — omit this line entirely when under threshold. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## CI watch (out-of-band)
 

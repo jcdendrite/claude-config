@@ -134,10 +134,7 @@ engineer if undocumented) — the review still counts, it just ships as
 findings rather than a commit. Stop here — the choice below is about
 where implementation runs, and there is none.
 
-Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` and act on its JSON (`docs/handoff-nudge.md` carries the contract):
-
-- `"status":"ok"` — hand off when `over_threshold` is `true`, or when `already_fired` is `true`. Report `estimate` and `threshold`. Say so when `nudge_disabled` is `true`: the measurement is still valid, but no nudge will arrive on its own. When `"model_recognized":false`, report `model` and `context_window` as well and treat the result as a soft number — the window fell back to the 1M default, so the threshold may not match the running model and those two fields are what let the engineer judge how far off it is.
-- `"status":"cannot-resolve"` or `"status":"schema-drift"` — say the estimate is unavailable, name the `reason`, and fall back to judgment: session length, how much of the task remains, whether the plan boundary is a natural seam.
+Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`, following `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for how to read its result: hand off when it says the session is past its threshold. When the check can't resolve a measurement (`"status":"cannot-resolve"` or `"status":"schema-drift"`), say the estimate is unavailable, name the `reason`, and fall back to judgment using this step's own criterion — the plan boundary is itself a natural seam — rather than that section's own generic fallback.
 
 These are a floor, not the only signal: hand off regardless when the engineer asked, when the session is ending anyway, or when a `handoff` §2 reason applies on its own terms. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or plan file.
 

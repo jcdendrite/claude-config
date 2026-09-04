@@ -3528,6 +3528,184 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
     )
 
 
+_HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
+
+
+def _heading_section_text(skill_md_path: Path, heading: str) -> str:
+    """Whitespace-collapsed text of the markdown section under `heading`.
+
+    Mirrors _normalized_anchor_text's whitespace-collapse comparison but
+    bounds the region by markdown heading (`_section_between`) rather than an
+    HTML-comment anchor pair — handoff/SKILL.md's warrant-check section
+    carries no such anchor today.
+    """
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, heading, skill_md_path)
+    return " ".join("".join(lines[start_idx:end_idx]).split())
+
+
+# Each entry is one condition→action-bound bullet from handoff/SKILL.md's
+# canonical "Before writing: is a handoff warranted?" section. Matched by
+# substring against the whole normalized section rather than by six
+# `assert token in body` checks, because a token-presence check would still
+# pass on a gutted section that lists the field names as a bare enumeration
+# while dropping the binding between a status/field value and what it means.
+_PINNED_HANDOFF_WARRANT_CHECK_CLAUSES: dict[str, str] = {
+    "status_ok": (
+        '`"status":"ok"` — the session is past its threshold when `over_threshold` '
+        "is `true` or `already_fired` is `true`; report `estimate` and `threshold` "
+        "either way."
+    ),
+    "nudge_disabled": (
+        "`nudge_disabled` is `true` — say so; the measurement still holds but no "
+        "nudge will arrive on its own."
+    ),
+    "model_recognized_false": (
+        '`"model_recognized":false` — also report `model` and `context_window`, '
+        "and treat the result as a soft number: the window fell back to the 1M "
+        "default, so the threshold may not match the running model and those two "
+        "fields are what let the engineer judge how far off it is."
+    ),
+    "cannot_resolve_or_schema_drift": (
+        '`"status":"cannot-resolve"` or `"status":"schema-drift"` — name the '
+        "`reason` and fall back to judgment: session length, how much of the "
+        "task remains, whether this is a natural seam."
+    ),
+}
+
+
+class TestHandoffWarrantCheckCanonicalSection:
+    """Pin handoff/SKILL.md's "Before writing: is a handoff warranted?"
+    section as the single canonical statement of the `--check` reporting
+    contract that `plan-it` Step 7 and `ready-for-review` step 1 cite rather
+    than restate, per CLAUDE.md's single-source-of-truth rule.
+    """
+
+    @pytest.mark.parametrize("branch", sorted(_PINNED_HANDOFF_WARRANT_CHECK_CLAUSES))
+    def test_pinned_branch_clause_matches_live_text(self, branch: str) -> None:
+        """Exact clause match per branch, mirroring
+        test_pinned_scope_clause_matches_live_text. On failure, re-read the
+        guarantee and update the constant only if the new wording preserves it.
+        """
+        section_text = _heading_section_text(
+            _skill_file("handoff"), _HANDOFF_WARRANT_CHECK_HEADING
+        )
+        pinned_text = " ".join(_PINNED_HANDOFF_WARRANT_CHECK_CLAUSES[branch].split())
+        assert pinned_text in section_text, (
+            f"handoff/SKILL.md: {branch!r} branch no longer matches its pinned "
+            f"clause.\n  pinned:  {pinned_text!r}\n  section: {section_text!r}"
+        )
+
+    def test_plan_it_cites_the_canonical_section(self) -> None:
+        assert (
+            '`handoff/SKILL.md` § "Before writing: is a handoff warranted?"'
+            in _skill_file("plan-it").read_text()
+        )
+
+    def test_ready_for_review_cites_the_canonical_section(self) -> None:
+        assert (
+            '`handoff/SKILL.md` § "Before writing: is a handoff warranted?"'
+            in _skill_file("ready-for-review").read_text()
+        )
+
+
+_READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
+
+# The condition→action clause from ready-for-review/SKILL.md's step-1
+# context-budget bullet, mirroring _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES:
+# pinning the bold label alone would still pass if a future edit added a
+# real halt condition nearby while leaving the label untouched.
+_PINNED_CONTEXT_BUDGET_CLAUSE = (
+    "**Context budget (warn only, never halts).** Run "
+    "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
+    '`"status":"ok"` with `over_threshold` or `already_fired` true, warn '
+    "the user with `estimate` and `threshold`, naming `nudge_disabled` "
+    "inline when it is also true — the measurement still holds but no "
+    'nudge will arrive on its own. See `handoff/SKILL.md` § "Before '
+    'writing: is a handoff warranted?" for the remaining fields; this '
+    "bullet substitutes its own warn-and-continue action for that "
+    "section's write decision. In every other case — "
+    '`"status":"ok"` but under threshold, or any other status, including '
+    "`cannot-resolve`/`schema-drift` — continue silently; this gate's "
+    "outcome never depends on the tool's own success."
+)
+
+
+class TestReadyForReviewContextBudgetNeverHalts:
+    """Pin that ready-for-review's step-1 context-budget bullet warns and
+    continues rather than halting. Step 1's own header reads "(halt on
+    fail)", which invites a future edit to silently flip this bullet into a
+    gate on `over_threshold`; that stays warn-only by design.
+    """
+
+    def test_step1_context_budget_bullet_states_warn_only_never_halts(self) -> None:
+        section_text = _heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CONTEXT_BUDGET_CLAUSE.split())
+        assert pinned_text in section_text, (
+            "ready-for-review/SKILL.md: step-1 context-budget bullet no "
+            f"longer matches its pinned clause.\n  pinned:  {pinned_text!r}\n"
+            f"  section: {section_text!r}"
+        )
+
+
+_READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
+
+# The Overview's cross-reference binding the halt-step list to the
+# Completion section's restatement bullet, from ready-for-review/SKILL.md.
+_PINNED_HALT_RESTATEMENT_CLAUSE = (
+    "A halt on step 2, 3, 4, or 7 re-runs the context-budget check from "
+    "step 1 and restates it in the halt report, per the Completion "
+    "section's restatement bullet below."
+)
+
+
+class TestReadyForReviewHaltRestatesContextBudget:
+    """Pin ready-for-review's Overview sentence binding a halt on step 2,
+    3, 4, or 7 to re-running and restating the step-1 context-budget check,
+    so narrowing the halt-step list or dropping the restatement
+    cross-reference fails this test instead of drifting silently.
+    """
+
+    def test_overview_names_halt_steps_and_restatement_cross_reference(self) -> None:
+        section_text = _heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        pinned_text = " ".join(_PINNED_HALT_RESTATEMENT_CLAUSE.split())
+        assert pinned_text in section_text, (
+            "ready-for-review/SKILL.md: Overview's halt-restatement "
+            f"sentence no longer matches.\n  pinned:  {pinned_text!r}\n"
+            f"  section: {section_text!r}"
+        )
+
+
+def test_session_id_redaction_present_at_every_check_output_site() -> None:
+    """Every site that reports `--check`'s output forbids quoting the raw
+    `session_id` inline: plan-it Step 7, handoff's warrant check, and both of
+    ready-for-review's two sites (step 1, and the halt/Completion
+    restatement). Each carries its own copy rather than deferring to the
+    citation, because a safety rule that only fires if the reader follows a
+    pointer is a safety rule that does not fire.
+    """
+    assert (
+        "Do not quote the raw `session_id` into prose that may reach a commit, "
+        "PR body, or handoff file."
+        in _skill_file("handoff").read_text()
+    )
+    assert (
+        "Do not quote the raw `session_id` into prose that may reach a commit, "
+        "PR body, or plan file."
+        in _skill_file("plan-it").read_text()
+    )
+    assert (
+        _skill_file("ready-for-review").read_text().count(
+            "Do not quote the raw `session_id` into prose that may reach the PR body."
+        )
+        == 2
+    )
+
+
 def _step4_tripwire_names() -> set[str]:
     """Bolded tripwire names from plan-review/SKILL.md's Step 4 bullet list.
 

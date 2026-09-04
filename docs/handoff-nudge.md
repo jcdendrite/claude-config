@@ -90,7 +90,7 @@ Refusing is a first-class outcome — a confident number for the wrong session i
 | `cannot-resolve` | `jq-unavailable` | `jq` is missing, failed, or timed out, so no payload could be encoded |
 | `schema-drift` | — | A usage block was found but all four token fields were 0 or null |
 
-`plan-it` Step 7 and the `handoff` skill's warrant check both call this and report the result.
+`handoff/SKILL.md` § "Before writing: is a handoff warranted?" is the canonical statement of how a skill reads this output; every caller cites that section rather than restating the field list here.
 
 ## Log location
 
