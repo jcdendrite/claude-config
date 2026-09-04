@@ -390,6 +390,14 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # that glob wouldn't catch, since over-selection is the safe direction.
 # SKILL_FILES_READ_BY_HOOK_TESTS: see that frozenset's own comment above for
 # what it covers and why HANDOFF_SKILL_MD isn't a member.
+# CODE_REVIEW_SKILL_MD (second row): test_findings_path_suffix.py
+# (SCRIPTS_TESTS_DIR) also reads code-review/SKILL.md by path, for the
+# findings_path template text. Stays a standalone row rather than joining
+# SKILL_FILES_READ_BY_HOOK_TESTS -- that set's shared (HOOKS_TESTS_DIR,)
+# target doesn't cover this file's SCRIPTS_TESTS_DIR need. Its enforcing
+# equality test (test_skill_files_read_by_hook_tests_equals_known_reads_under_hooks_tests_dir)
+# is also scoped to HOOKS_TESTS_DIR readers only, so adding this row there
+# would break that test's invariant too.
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
@@ -431,6 +439,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_lovable_cloud_shell_script_change, (HOOKS_TESTS_DIR,)),
     (_is_scripts_dir_shell_script_change, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
