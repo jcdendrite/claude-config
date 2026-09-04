@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import fnmatch
 import itertools
+import re
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -100,6 +101,33 @@ def _literal_prefix_segments(glob: str) -> tuple[str, ...]:
 
     parts = PurePosixPath(glob).parts
     return tuple(itertools.takewhile(_is_literal_segment, parts))
+
+
+_BRACE_SEGMENT_RE = re.compile(r"^\{[^{}]+\}$")
+
+
+def _is_portable_brace_alternation(segment: str) -> bool:
+    """True if segment is a brace group whose every alternative is itself a bare literal.
+
+    `.claude/{skills,agents}/**` is semantically two globs, `.claude/skills/**`
+    and `.claude/agents/**`, each independently exempt under the two-segment
+    `.claude/`-anchored portability rule (see `rule_frontmatter_violations`).
+    `_literal_prefix_segments` halts its literal run at `{` (a documented
+    metacharacter, since brace expansion means the segment isn't literal in
+    general), so the combined form's prefix stops one segment short of the
+    expanded forms' — this recognizes that specific shape as still portable,
+    without weakening the metacharacter treatment `_literal_prefix_segments`
+    needs elsewhere (a project rule can't resolve a brace group's directory
+    existence without expanding it first).
+    """
+    match = _BRACE_SEGMENT_RE.match(segment)
+    if not match:
+        return False
+    alternatives = segment[1:-1].split(",")
+    return all(
+        alt and not any(ch in _GLOB_METACHARACTERS for ch in alt)
+        for alt in alternatives
+    )
 
 
 def _discover_rule_files() -> list[tuple[Path, bool]]:
@@ -201,7 +229,26 @@ def rule_frontmatter_violations(
             # path — unbounded depth would exempt e.g.
             # ".claude/skills/<repo-specific-name>/**".
             is_dotclaude_anchored = len(prefix) == 2 and prefix[0] == ".claude"
-            if prefix and not (is_bare_filename or is_dotclaude_anchored):
+            # A brace group right after ".claude/" (e.g. ".claude/{skills,agents}/**")
+            # is semantically several independently-exempt two-segment paths at
+            # once, but halts _literal_prefix_segments's walk one segment short
+            # (prefix == (".claude",)) since "{" is a metacharacter. Recognize
+            # that specific shape too, so the pre-expansion and post-expansion
+            # forms of the same portable glob set agree — this doesn't relax the
+            # 3rd-segment cutoff: parts[2] (if present) must still itself carry a
+            # metacharacter, or a literal segment beyond the brace would sneak
+            # through unchecked the same way an unbounded depth-3 literal would.
+            is_dotclaude_brace_anchored = (
+                len(prefix) == 1
+                and prefix[0] == ".claude"
+                and len(parsed.parts) >= 2
+                and _is_portable_brace_alternation(parsed.parts[1])
+                and (
+                    len(parsed.parts) == 2
+                    or any(ch in _GLOB_METACHARACTERS for ch in parsed.parts[2])
+                )
+            )
+            if prefix and not (is_bare_filename or is_dotclaude_anchored or is_dotclaude_brace_anchored):
                 violations.append(
                     f"{rule_file} `paths` entry {glob!r} carries a leading "
                     "literal path segment — stowed rule globs apply in "
@@ -424,6 +471,54 @@ class TestRuleFrontmatterViolations:
         f = self._write_rule(
             tmp_path,
             '---\npaths:\n  - ".claude/skills/repo-specific-skill/**"\n---\n\nbody\n',
+        )
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be fully portable" in violations[0]
+
+    def test_dotclaude_anchored_directory_glob_in_stowed_rule_passes(self, tmp_path):
+        # Pins the wildcard-remainder case of the two-segment ".claude/"-anchor
+        # exemption (as opposed to the no-remainder ".claude/CLAUDE.md" case
+        # already covered above): the exemption is stated in terms of the
+        # literal prefix's length, not the whole glob's literalness, so a
+        # wildcard remainder after the two literal segments must still pass.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - ".claude/skills/**"\n---\n\nbody\n'
+        )
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_dotclaude_anchored_brace_alternation_glob_in_stowed_rule_passes(self, tmp_path):
+        # ".claude/{skills,agents}/**" is semantically the union of
+        # ".claude/skills/**" and ".claude/agents/**", each independently
+        # exempt above — the combined brace form must agree with its own
+        # expansions rather than being rejected as a 1-segment-literal-prefix
+        # glob merely because "{" halts _literal_prefix_segments's walk.
+        f = self._write_rule(
+            tmp_path, '---\npaths:\n  - ".claude/{skills,agents}/**"\n---\n\nbody\n'
+        )
+        assert rule_frontmatter_violations(f, is_stowed=True) == []
+
+    def test_dotclaude_anchored_brace_alternation_with_literal_third_segment_in_stowed_rule_fails(
+        self, tmp_path
+    ):
+        # The brace-alternation exemption must not widen the 3rd-segment
+        # cutoff: a literal segment after the brace group is exactly as
+        # repo-specific as an unbounded-depth literal anywhere else.
+        f = self._write_rule(
+            tmp_path,
+            '---\npaths:\n  - ".claude/{skills,agents}/sub/**"\n---\n\nbody\n',
+        )
+        violations = rule_frontmatter_violations(f, is_stowed=True)
+        assert violations and "must be fully portable" in violations[0]
+
+    def test_dotclaude_anchored_brace_alternation_with_wildcard_alternative_in_stowed_rule_fails(
+        self, tmp_path
+    ):
+        # A brace alternative that itself carries a metacharacter isn't a
+        # bare literal name, so it doesn't reduce to a portable two-segment
+        # expansion the way "{skills,agents}" does.
+        f = self._write_rule(
+            tmp_path,
+            '---\npaths:\n  - ".claude/{skills,repo-specific-*}/**"\n---\n\nbody\n',
         )
         violations = rule_frontmatter_violations(f, is_stowed=True)
         assert violations and "must be fully portable" in violations[0]
