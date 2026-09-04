@@ -1,15 +1,10 @@
 ---
 paths:
   - "**/CLAUDE.md"
-  - "CLAUDE.md"
   - "**/AGENTS.md"
-  - "AGENTS.md"
   - "**/CLAUDE.local.md"
-  - "CLAUDE.local.md"
   - "**/.claude/CLAUDE.md"
-  - ".claude/CLAUDE.md"
   - "**/.claude/AGENTS.md"
-  - ".claude/AGENTS.md"
 ---
 
 ## CLAUDE.md and AGENTS.md conventions
