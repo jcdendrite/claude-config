@@ -80,7 +80,7 @@
   - Occupy the turn.
   - Hold while other dispatches finish.
 
-  A no-op agent returns at once, so it waits for nothing — waiting isn't an action a dispatch can perform — yet still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one.
+  A no-op agent returns at once, so it waits for nothing — waiting isn't an action a dispatch can perform. It still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one.
 - When spawning sub-agents with `isolation: "worktree"`, do NOT include an explicit `Working directory: /path/to/repo` line. The harness sets the agent's CWD to the isolated worktree automatically; naming the main repo path causes the agent to use `git -C <main-path>` operations that bypass isolation and mutate the main working tree directly.
 - Before delegating execution to a sub-agent from a session in plan mode, call `ExitPlanMode` in the parent first. A spawned sub-agent receives the plan-mode system-reminder and a typical agent honors it — declining to execute and returning a plan file even when the prompt says "execute, do not plan." This is the agent obeying an instruction, not a hard harness block, so the symptom is a polite refusal, not a tool error. Exit plan mode in the parent before delegating execution work.
 - **Do not enter harness plan mode on your own initiative.** This governs
