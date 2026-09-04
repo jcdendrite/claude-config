@@ -2334,3 +2334,40 @@ class TestMarkerScriptStatusReconciliationFlag:
         assert result.returncode == 0, result.stderr
         assert "plan-review: live" in result.stdout
         assert "reconciliation flag" not in result.stdout
+
+
+class TestMarkerScriptArgumentGrammarIsPositional:
+    """Regression guard for an invariant enforce-marker-script-shape.sh's
+    gate-release-authority arm depends on: marker.sh's argument grammar is
+    strictly positional (`marker.sh <subcommand> [<skill>]`), with only
+    -h/--help accepted in $1. _lib_tool_argv_from_subcmd's never-consume
+    default treats every `-*` word as a bare flag for any TOOL other than gh,
+    so a future value-taking flag ahead of the subcommand (e.g. `--config
+    <path>`) would let a command like `marker.sh --config x write
+    code-review` evade both of that hook's detectors -- the raw-substring
+    check because `marker.sh` and `write` are no longer adjacent, and the
+    command-word check because the flag's value lands where the subcommand
+    word should be. If marker.sh ever grows such a flag, this test starts
+    failing."""
+
+    @pytest.mark.parametrize(
+        "flag_args",
+        [
+            pytest.param(["--bogus"], id="bare_flag"),
+            pytest.param(["--config", "x"], id="flag_with_value"),
+        ],
+    )
+    def test_flag_shaped_first_arg_rejected_as_unknown_subcommand(
+        self, isolated_home, git_repo, flag_args
+    ):
+        result = _run(flag_args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"marker.sh {' '.join(flag_args)} must be rejected -- a "
+            f"flag-shaped $1 is not a recognized subcommand, got "
+            f"{result.returncode}. stderr: {result.stderr!r}"
+        )
+        assert f"unknown subcommand '{flag_args[0]}'" in result.stderr, (
+            f"marker.sh must reject {flag_args[0]!r} via the same "
+            f"unrecognized-subcommand path as any other bogus $1, not "
+            f"consume it as a global flag; stderr: {result.stderr!r}"
+        )

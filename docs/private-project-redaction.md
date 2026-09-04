@@ -211,14 +211,10 @@ measurement time, which the wide ranges below partly reflect):
 | 500 KB | 894ms | 837–1,017ms |
 
 This still exceeds this repo's stated hook performance budget (<100ms per
-fire), but is a real reduction from the six-separate-spawns baseline
-previously recorded here (835ms/908ms/1,802ms medians): collapsing the six
-structural detectors' unconditional per-fire spawns into one combined-pattern
-fast-path spawn (falling through to the original six only when it matches)
-cut the 5 KB and 50 KB medians by roughly 23%, and the 500 KB median by
-roughly 50% — the larger body size sees the bigger win because each spawn
-saved also means one fewer large here-string bash materializes to a temp
-file before exec. Subprocess-spawn overhead still dominates over
+fire). The six structural detectors run as one combined-pattern fast-path
+spawn, falling through to the original six only when it matches, so a
+here-string bash materializes to a temp file before exec at most once per
+fire instead of up to six times. Subprocess-spawn overhead still dominates over
 byte-scanning cost — the fast path itself, plus the pre-existing tracker-ID
 and blocklist scans' own subprocess calls, remain unchanged — which is why
 cost still does not scale cleanly with body size. At commit/PR-authoring
