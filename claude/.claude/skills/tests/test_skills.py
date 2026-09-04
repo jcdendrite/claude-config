@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
@@ -3865,3 +3866,218 @@ class TestStowedScriptPathContract:
             "name it literally (~/.claude/scripts/<name> or "
             "~/.claude/hooks/<name>) instead"
         )
+
+
+# --- findings_path wiring in plan-review/ROUTING.md ---
+# See .claude/plans/consult-dispatch-findings-file.md for the design; ledger
+# rows cited in the docstrings below are that plan's assumption ledger.
+#
+# Three tests: the recipe-sync tripwire between code-review/SKILL.md and
+# ROUTING.md, the reviewer-contract coverage backstop for row-14's
+# findings_path-grant condition, and mechanical execution of ROUTING.md's
+# own HOOK_TEST_FIXTURE recipe.
+
+_ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
+
+# Derivation expressions pinned verbatim, not just the placeholder template —
+# ROUTING.md's wiring paragraph must reuse code-review/SKILL.md:293's shell
+# expressions rather than re-deriving them, so a future edit to `date -u +%s`
+# or `cut -c1-15` in one file would drop the exact substring pinned here and
+# fail, rather than passing a looser template-only check. The background-spawn
+# rule is pinned as the negated phrase actually used ("not `run_in_background`"),
+# not the bare `run_in_background` token — a future edit permitting background
+# spawn would still contain the bare substring and pass while re-introducing
+# the same-turn read-back race the rule exists to prevent.
+_FINDINGS_PATH_RECIPE_TOKENS = (
+    "$(date +%s)",
+    "$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)",
+    "agent-reviews/<agent-name>-<epoch>-<slug>.md",
+    "git rev-parse --git-path info/exclude",
+    "not `run_in_background`",
+)
+
+
+def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() -> None:
+    """code-review/SKILL.md and plan-review/ROUTING.md must carry the same
+    findings_path derivation expressions, verbatim.
+
+    Modeled on test_invalid_skip_rationale_labels_match_across_review_skills
+    above — same two-dispatcher-sync shape, applied to the findings_path
+    recipe instead of the skip-rationale label set. Asserts presence per
+    token per file rather than block byte-equality: the surrounding prose
+    legitimately differs between a dispatcher-generic paragraph
+    (code-review/SKILL.md) and one scoped to reviewers carrying the
+    file-based-output contract (ROUTING.md), so
+    TestFileBasedOutputBlockConsistency's byte-identical-template approach
+    (test_agent_roster.py) does not transfer here.
+    """
+    code_review_text = _skill_body("code-review")
+    routing_text = _ROUTING_MD_PATH.read_text()
+
+    for token in _FINDINGS_PATH_RECIPE_TOKENS:
+        assert token in code_review_text, (
+            f"code-review/SKILL.md: findings_path recipe token {token!r} missing."
+        )
+        assert token in routing_text, (
+            f"plan-review/ROUTING.md: findings_path recipe token {token!r} "
+            "missing — ROUTING.md's findings_path wiring paragraph must reuse "
+            "code-review/SKILL.md's derivation verbatim."
+        )
+
+
+def _routing_reviewer_agent_names() -> set[str]:
+    """Agent names in plan-review/ROUTING.md's Reviewer roles table (the
+    `| Domain | Agent | Focus |` table), read from the backtick-quoted
+    second column of each row between the header and the table's end.
+    """
+    header = "| Domain | Agent | Focus |"
+    lines = _ROUTING_MD_PATH.read_text().splitlines()
+    header_idx = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+    assert header_idx is not None, (
+        f"{_ROUTING_MD_PATH}: {header!r} not found — the Reviewer roles table may have moved."
+    )
+    names: set[str] = set()
+    for line in lines[header_idx + 2 :]:  # skip the header row and its `|---|` separator
+        if not line.startswith("|"):
+            break
+        match = re.match(r"^\|[^|]*\|\s*`([a-z0-9-]+)`\s*\|", line)
+        if match:
+            names.add(match.group(1))
+    assert names, f"{_ROUTING_MD_PATH}: extracted no agent names from the Reviewer roles table."
+    return names
+
+
+def test_routing_reviewer_table_agents_carry_file_based_output_contract() -> None:
+    """Every agent named in plan-review/ROUTING.md's Reviewer roles table
+    must carry `Write` and a `### File-based output` section.
+
+    This is a same-repo sync-drift backstop, not coverage of a downstream
+    project-layer `plan-review-*` skill's own table extension:
+    `_routing_reviewer_agent_names()` only ever reads this repo's own
+    ROUTING.md, so what it actually catches is ROUTING.md's table naming
+    an agent that `hooks/tests/test_agent_roster.py`'s `CANARY_AGENTS`
+    list, or the agent's own frontmatter, has drifted out of sync with.
+    The `findings_path` grant is conditioned on this contract, but as
+    prose it is backstopped only by `agent-review` checklist item 15 — a
+    point-in-time authoring check, not a dispatch-time one. A reviewer
+    lacking the contract that is nonetheless passed a `findings_path`
+    re-arms the heredoc-abort-on-large-findings failure, which for a
+    security reviewer means silently lost findings. `tools:` is read via
+    parse_frontmatter rather than a `^tools:` regex, mirroring
+    test_agent_roster.py's `_declared_tools` — a regex silently reports the
+    tool absent on YAML list form (`tools:\n  - Write`), which would turn
+    this assertion into a false pass on exactly the frontmatter shape it
+    exists to catch.
+    """
+    for name in sorted(_routing_reviewer_agent_names()):
+        agent_path = _AGENTS_DIR / f"{name}.md"
+        fm = parse_frontmatter(agent_path)
+        declared_tools = fm.get("tools")
+        assert declared_tools, f"{name}.md: no 'tools:' field found in frontmatter."
+        tools = (
+            {t.strip() for t in declared_tools.split(",")}
+            if isinstance(declared_tools, str)
+            else {str(t).strip() for t in declared_tools}
+        )
+        assert "Write" in tools, (
+            f"{name}.md: 'Write' not declared in tools: {tools!r} — plan-review/ROUTING.md's "
+            "Reviewer roles table names this agent, so it must carry the file-based-output "
+            "contract before it can safely receive a findings_path."
+        )
+        assert "### File-based output" in _agent_body(name), (
+            f"{name}.md: '### File-based output' section missing — plan-review/ROUTING.md's "
+            "Reviewer roles table names this agent, so it must carry the file-based-output "
+            "contract before it can safely receive a findings_path."
+        )
+
+
+def test_findings_path_fixture_recipe_is_idempotent_and_matches_documented_path_shape(
+    tmp_path: Path,
+) -> None:
+    """Executes ROUTING.md's `findings-path-recipe` HOOK_TEST_FIXTURE in a
+    seeded git repo: the append to `info/exclude` must be genuinely
+    idempotent (running the recipe twice leaves exactly one `agent-reviews/`
+    line), and the derived path must resolve to the documented
+    `agent-reviews/<agent-name>-<epoch>-<slug>.md` shape.
+
+    Seeded with one commit (`git commit --allow-empty -m init`, mirroring
+    hooks/tests/conftest.py's `git_repo` fixture) before invoking the
+    recipe: on an unborn HEAD, `git rev-parse --abbrev-ref HEAD` fails with
+    exit 128 rather than resolving a branch name, so an unseeded repo would
+    exercise the derivation's failure path instead of its documented shape.
+    test_skills.py has no conftest.py of its own (ROUTING.md is mapped only
+    to SKILLS_TESTS_DIR by select-tests.py, keeping this test out of
+    hooks/tests/), so the seeding step is written inline rather than
+    inherited from a fixture.
+
+    After the idempotency check, checks out a branch name that is both
+    longer than 20 characters and contains a `/`, exercising two
+    boundaries the default-branch case above leaves untested. Against the
+    short, slash-free default branch, the `cut -c1-20` truncation
+    boundary is never approached, so a regression to `-c1-21` or a
+    dropped `cut` step would still pass. The default branch also never
+    contains a `/`, so a regression that breaks or drops the
+    `tr '/' '-'` step is likewise invisible.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True
+    )
+
+    recipe = extract_skill_command(_ROUTING_MD_PATH, "findings-path-recipe")
+    env = dict(os.environ, AGENT_NAME="staff-backend-engineer")
+
+    subprocess.run(["bash", "-c", recipe], cwd=repo, env=env, check=True)
+    second_run = subprocess.run(
+        ["bash", "-c", recipe], cwd=repo, env=env, check=True, capture_output=True, text=True
+    )
+
+    exclude_lines = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude_lines.count("agent-reviews/") == 1, (
+        f"info/exclude carries {exclude_lines.count('agent-reviews/')} 'agent-reviews/' "
+        f"lines after two runs of the recipe — the append is not idempotent: {exclude_lines!r}"
+    )
+
+    findings_path = second_run.stdout.strip()
+    assert re.fullmatch(
+        r"agent-reviews/staff-backend-engineer-\d+-[A-Za-z0-9-]{1,20}\.md", findings_path
+    ), (
+        f"recipe output {findings_path!r} does not match the documented "
+        "agent-reviews/<agent-name>-<epoch>-<slug>.md shape"
+    )
+
+    long_branch_name = "feature/a-very-long-branch-name-here"
+    expected_slug = long_branch_name.replace("/", "-")[:20]
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", long_branch_name], cwd=repo, check=True
+    )
+    third_run = subprocess.run(
+        ["bash", "-c", recipe], cwd=repo, env=env, check=True, capture_output=True, text=True
+    )
+
+    exclude_lines_after_checkout = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude_lines_after_checkout.count("agent-reviews/") == 1, (
+        f"info/exclude carries {exclude_lines_after_checkout.count('agent-reviews/')} "
+        "'agent-reviews/' lines after a third run on a different branch — the append "
+        f"is not idempotent across branches: {exclude_lines_after_checkout!r}"
+    )
+
+    long_branch_findings_path = third_run.stdout.strip()
+    match = re.fullmatch(
+        r"agent-reviews/staff-backend-engineer-(\d+)-([A-Za-z0-9-]+)\.md",
+        long_branch_findings_path,
+    )
+    assert match, (
+        f"recipe output {long_branch_findings_path!r} does not match the documented "
+        "agent-reviews/<agent-name>-<epoch>-<slug>.md shape"
+    )
+    slug = match.group(2)
+    assert slug == expected_slug, (
+        f"recipe derived slug {slug!r} from branch {long_branch_name!r}, expected the "
+        f"exact 20-character, slash-free truncation {expected_slug!r} — 'tr' and 'cut' "
+        "must both run, in that order, on the full branch name"
+    )
