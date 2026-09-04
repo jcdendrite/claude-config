@@ -14,6 +14,7 @@
     ]
   },
   "claudeMdExcludes": [
-    "**/claude/.claude/CLAUDE.md"
+    "**/claude/.claude/CLAUDE.md",
+    "**/.claude/worktrees/**/claude/.claude/rules/**"
   ]
 }
