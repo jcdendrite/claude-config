@@ -533,6 +533,34 @@ _lib_active_plan_hash() {
   printf '%s' "$digest"
 }
 
+# _lib_cumulative_diff_hash REPO_ROOT PR_DIFF_SCRIPT
+# Hashes PR_DIFF_SCRIPT's (pr-diff-against-base.sh's) stdout for REPO_ROOT --
+# the completion-marker value for the `cumulative-review` kind. marker.sh's
+# `write cumulative-review` and `status` arms both call this helper so they
+# use the identical capture-then-hash recipe (see docs/design-decisions.md
+# §42).
+#
+# Two-outcome contract, matching _lib_active_plan_hash:
+#   - exit 0, non-empty stdout: the sha256 hex digest of the diff.
+#   - exit 1, empty stdout: PR_DIFF_SCRIPT failed, produced no output, or was
+#     killed by the cap. Callers MUST fail closed -- the write arm aborts the
+#     write instead of recording an empty-diff marker, and the status arm
+#     degrades to reporting the marker absent rather than erroring the whole
+#     report.
+_lib_cumulative_diff_hash() {
+  local repo_root="$1" pr_diff_script="$2"
+  local diff_output
+  # 15s, not the shared 5s _lib_capped default: this is the only _lib_capped
+  # call site that's network-bound, since PR_DIFF_SCRIPT shells out to
+  # `gh pr view`.
+  diff_output=$(cd "$repo_root" && _lib_capped_for 15 "$pr_diff_script" 2>/dev/null) || return 1
+  [ -n "$diff_output" ] || return 1
+  local digest
+  digest=$(printf '%s' "$diff_output" | sha256sum | awk '{print $1}')
+  [ -n "$digest" ] || return 1
+  printf '%s' "$digest"
+}
+
 # _lib_is_repo_plan_file REPO_ROOT ABS_PATH
 # Both arguments must already be _lib_realpath_m-normalized by the caller --
 # the same precondition the agent-reviews/ check in require-plan-review.sh
@@ -1015,16 +1043,16 @@ _lib_fragment_has_token() {
 # SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
 # or the fragment-split) failed and the answer could not be determined.
 # Composes _lib_strip_shell_quotes, _lib_split_fragments,
-# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so GH-783 Phase
-# 2's eight gate hooks share one fragment-aware matcher instead of each
-# hand-copying a raw regex over unstripped $COMMAND (which a quote-split
-# defeats, e.g. `"git" commit`).
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so the eight gate
+# hooks share one fragment-aware matcher instead of each hand-copying a raw
+# regex over unstripped $COMMAND (which a quote-split defeats, e.g. `"git"
+# commit`).
 #
 # Call-site contract (load-bearing): never picks a fail posture itself —
 # every caller must check for status 2 and decide allow-or-deny for its own
 # gate, the same discipline _lib_split_fragments's own call-site contract
-# already requires. GH-783 Phase 2's six checked-fail-closed hooks deny on
-# status 2; its two correctly-fail-open hooks (guard-settings-session-keys.sh,
+# already requires. Six checked-fail-closed hooks deny on status 2; the two
+# correctly-fail-open hooks (guard-settings-session-keys.sh,
 # require-stow-reminder.sh) treat anything other than 0 as "no match" and
 # stay silent about the distinction, matching their own documented posture.
 _lib_command_invokes_git_subcmd() {
@@ -1107,6 +1135,37 @@ _lib_tool_argv_from_subcmd() {
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
 }
 
+# _lib_words_start_with WORD... -- PREFIX...
+# Boolean exit status: 0 if WORD's first ${#PREFIX[@]} words equal PREFIX
+# word-for-word, 1 on the first mismatch or if WORD has fewer words than
+# PREFIX. Bounds-checks WORD against PREFIX's length itself, so it is safe to
+# call under set -u regardless of what the caller has already checked.
+# Internal to _lib_command_invokes_tool_subcmd below, the sole caller. That
+# caller flattens both arrays across the call boundary via "$@" plus a "--"
+# sentinel. This is the same by-value idiom want_subcmd uses at its own call
+# boundary a few lines down.
+# Invariant this sentinel depends on: neither WORDS nor PREFIX may contain
+# the literal string "--". WORDS-side: _lib_tool_argv_from_subcmd strips
+# every "-*"-shaped word, including a bare "--", before it reaches
+# got_subcmd. PREFIX-side: want_subcmd is always a hardcoded literal.
+# No local -n/declare -n: this repo targets macOS system bash 3.2.
+_lib_words_start_with() {
+  local -a words=()
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    words+=("$1")
+    shift
+  done
+  shift
+  local -a prefix_words=("$@")
+  [ "${#words[@]}" -lt "${#prefix_words[@]}" ] && return 1
+  local i=0
+  while [ "$i" -lt "${#prefix_words[@]}" ]; do
+    [ "${words[$i]}" = "${prefix_words[$i]}" ] || return 1
+    i=$((i + 1))
+  done
+  return 0
+}
+
 # _lib_command_invokes_tool_subcmd COMMAND TOOL SUBCMD...
 # Tri-state via exit status, same 0/1/2 contract as
 # _lib_command_invokes_git_subcmd above: 0 if any fragment of COMMAND
@@ -1148,15 +1207,7 @@ _lib_command_invokes_tool_subcmd() {
       got_subcmd+=("$word")
     done < <(_lib_tool_argv_from_subcmd "$fragment" "$tool")
     [ "${#got_subcmd[@]}" -lt "${#want_subcmd[@]}" ] && continue
-    local matched=true i=0
-    while [ "$i" -lt "${#want_subcmd[@]}" ]; do
-      if [ "${got_subcmd[$i]}" != "${want_subcmd[$i]}" ]; then
-        matched=false
-        break
-      fi
-      i=$((i + 1))
-    done
-    $matched && return 0
+    _lib_words_start_with "${got_subcmd[@]}" -- "${want_subcmd[@]}" && return 0
   done <<< "$fragments"
   return 1
 }
@@ -1328,23 +1379,46 @@ _lib_worktree_enforcement_active() {
   return 1
 }
 
+# _lib_autonomous_shipping_sentinel_present CONFIG_DIR
+# Returns 0 (true) iff the autonomous-shipping-required sentinel exists at
+# either CONFIG_DIR or the literal ~/.claude/autonomous-shipping-required —
+# a union, not a swap, so a sentinel armed before CLAUDE_CONFIG_DIR adoption
+# still activates.
+# Sentinel presence only: this is NOT the full autonomous-shipping-active
+# verdict, which also requires the per-repo .claude/autonomous-shipping-optout
+# check — see _lib_autonomous_shipping_active below.
+# CONFIG_DIR is a required argument rather than resolved internally via
+# _lib_config_dir so that a caller which already has it resolved (e.g. the
+# fast path, once per Stop event) skips a redundant _lib_config_dir call.
+# Inherits, rather than introduces, the case where CONFIG_DIR is set but
+# $HOME is empty or unset: the legacy-location check then evaluates against
+# a root-anchored path. This is unguarded by design.
+_lib_autonomous_shipping_sentinel_present() {
+  [ "$#" -eq 1 ] || return 1
+  local config_dir="$1"
+  [ -n "$config_dir" ] || return 1
+  [ -f "$config_dir/autonomous-shipping-required" ] || [ -f "$HOME/.claude/autonomous-shipping-required" ]
+}
+
 # _lib_autonomous_shipping_active REPO_ROOT
 # Returns 0 (true) when this machine has opted into autonomous shipping
 # (commit/push/PR without asking) for the given repo.
 #
-# NOT a generalization of _lib_worktree_enforcement_active above: that
-# function's committed-sentinel arm is safe because worktree enforcement
-# only restricts a hostile repo, while autonomous shipping removes a human
-# checkpoint — so a repo's own committed content must never grant it. There
-# is no repo-level "required" file in this code path; committing one has no
-# effect. Two tiers only: (1) machine sentinel, required — the resolved
-# config dir's autonomous-shipping-required, unioned with the literal
-# ~/.claude/autonomous-shipping-required so a sentinel armed before
-# CLAUDE_CONFIG_DIR adoption still activates; (2) per-repo opt-out
-# (.claude/autonomous-shipping-optout), narrows the machine default off for
-# this repo only. Every error path (filesystem error, empty $HOME, empty
-# REPO_ROOT, wrong argument count) fails toward NOT shipping — the safe
-# direction for a granting mechanism.
+# This function is not a generalization of _lib_worktree_enforcement_active
+# above: it has no committed-sentinel arm. That function's committed-sentinel
+# arm is safe because worktree enforcement only restricts a hostile repo.
+# Autonomous shipping removes a human checkpoint instead, so a repo's own
+# committed content must never grant it. There is no repo-level "required"
+# file in this code path; committing one has no effect. Two tiers only: (1)
+# machine sentinel, required — _lib_autonomous_shipping_sentinel_present's
+# union of the resolved config dir and the legacy ~/.claude location; (2)
+# per-repo opt-out (.claude/autonomous-shipping-optout), narrows the machine
+# default off for this repo only. Every error path fails toward NOT shipping
+# — the safe direction for a granting mechanism:
+#   - filesystem error
+#   - empty $HOME
+#   - empty REPO_ROOT
+#   - wrong argument count
 _lib_autonomous_shipping_active() {
   [ "$#" -eq 1 ] || return 1
   local repo_root="$1"
@@ -1357,11 +1431,7 @@ _lib_autonomous_shipping_active() {
   # than adding one.
   local config_dir
   config_dir=$(_lib_config_dir) || return 1
-  # Union, not swap, for this specific scenario only (not a full structural
-  # mirror of _lib_worktree_enforcement_active's fallback — see the
-  # fail-toward-NOT-shipping divergence in the header comment above): a
-  # machine-wide sentinel armed before CLAUDE_CONFIG_DIR adoption still activates.
-  [ -f "$config_dir/autonomous-shipping-required" ] || [ -f "$HOME/.claude/autonomous-shipping-required" ] || return 1
+  _lib_autonomous_shipping_sentinel_present "$config_dir" || return 1
   [ -f "$repo_root/.claude/autonomous-shipping-optout" ] && return 1
   return 0
 }
@@ -2092,14 +2162,14 @@ _lib_config_lines() {
 # partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
 # computation for the pattern.
 _lib_strip_shell_quotes() {
-  local stripped stripped_exit result result_exit
+  local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
   stripped_exit=$?
   [ "$stripped_exit" -ne 0 ] && return 1
-  result=$(printf '%s' "$stripped" | tr -d "\"'")
-  result_exit=$?
-  [ "$result_exit" -ne 0 ] && return 1
-  printf '%s' "$result"
+  unquoted=$(printf '%s' "$stripped" | tr -d "\"'")
+  unquoted_exit=$?
+  [ "$unquoted_exit" -ne 0 ] && return 1
+  printf '%s' "$unquoted"
   return 0
 }
 

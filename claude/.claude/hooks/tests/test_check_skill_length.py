@@ -25,7 +25,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
-    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
+    (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show and diff --cached
     --name-only calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
@@ -148,8 +148,8 @@ class TestCheckSkillLength:
         )
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
-        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
-        reach the same deny verdict as the unquoted form."""
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         assert (
@@ -430,10 +430,17 @@ class TestCheckSkillLength:
             == "deny"
         )
 
-    def test_memory_files_skill_over_default_under_override_allows(
-        self, isolated_home, tmp_path
-    ):
-        """ai-instruction-and-memory-files/SKILL.md gets a 215-line cap; 210 lines (over 200, under 215) → allow."""
+    def test_memory_files_skill_falls_to_default_limit(self, isolated_home, tmp_path):
+        """ai-instruction-and-memory-files/SKILL.md gets no per-skill override.
+
+        Regression test: guards against a future `limit_for()` edit re-adding
+        any override above the 200-line default for this path. 195 (init)
+        sits under the default; 201 (restage) is the minimal over-default,
+        growing value, so it denies here. A re-added override anywhere above
+        200 would put 201 back under that override's own ceiling and allow
+        instead, so 195/201 pins the default with no gap between the two
+        behaviors.
+        """
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -446,32 +453,7 @@ class TestCheckSkillLength:
         (repo / memory_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / memory_path).write_text(make_skill_content(210))
-        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_memory_files_skill_over_override_denies(self, isolated_home, tmp_path):
-        """ai-instruction-and-memory-files/SKILL.md over the 215-line override and growing → deny."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
-            parents=True
-        )
-        (repo / memory_path).write_text(make_skill_content(210))
-        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / memory_path).write_text(make_skill_content(216))
+        (repo / memory_path).write_text(make_skill_content(201))
         subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
         assert (
             run_hook(

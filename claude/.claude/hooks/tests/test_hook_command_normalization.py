@@ -113,7 +113,11 @@ class TestSplitFragmentsCallSitesQuoteStripped:
         "$VAR"/"${VAR}" double-quoted-expansion call shape) must drop this
         count and fail loudly rather than pass silently under a >= floor.
         Update this count when a call site is added or removed."""
-        assert len(_split_fragments_call_sites()) == 12
+        sites = _split_fragments_call_sites()
+        assert len(sites) == 12, (
+            f"expected 12 call sites, found {len(sites)}: "
+            f"{[f'{path.name}:{variable}' for path, variable in sites]}"
+        )
 
     def test_every_call_site_reads_an_unquoted_variable_or_named_exception(self):
         violations = _split_fragments_violations(RAW_SPLIT_BY_DESIGN)

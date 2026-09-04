@@ -22,51 +22,25 @@ While active, `require-memory-skill.sh` bypasses for this session (<60 min fresh
 
 Before writing any file under `memory/`, check in order:
 
-1. **Grep CLAUDE.md and AGENTS.md** (project tree + `~/.claude/`) for keywords from the rule. If covered → edit the source, don't write to memory. Restating a covered rule is pure load. (See §3 advisory vs deterministic, §5 anti-duplication heuristic.)
+1. **Grep CLAUDE.md and AGENTS.md** (project tree + `~/.claude/`) for keywords from the rule. If covered → edit the source, don't write to memory. Restating a covered rule is pure load. (See §2 advisory vs deterministic, §3 anti-duplication heuristic.)
 2. **Does this rule apply automatically whenever a specific file type or path pattern is open, regardless of which skill or workflow is running?** If yes → a path-scoped rule (`.claude/rules/*.md`), not memory — it auto-loads via `paths` frontmatter matching with no explicit invocation and no every-session cost.
 3. **Does this rule fire only inside a specific named skill's workflow?** If yes → that skill's `SKILL.md`, not memory. Skill bodies load at the moment the rule applies; memory loads every session whether the session uses that workflow or not.
 4. **Confirm the content fits a genuine memory use, not a rule.** Personal preference is always memory (user type). Feedback, project, and reference content are memory only when they don't generalize to a rule any contributor should follow (→ edit CLAUDE.md/AGENTS.md instead, per item 1): a correction or judgment call specific to how this user works (feedback type), time-sensitive state that fails CLAUDE.md's evergreen/behavior-test bar (project type), or a pointer unsafe to publish in a public repo — e.g. a private dashboard URL (reference type).
 5. **Will this be wrong one commit from now?** Bug state, an env-var fix, a failing test, mid-debug context — write `/tmp/<task>-handoff.md` and tell the user the path. Memory outlives the fix; the brief does not.
 
-If step 1, 2, 3, or 5 produces a destination, write there and stop — see §4 and §5 for the full routing tables.
+If step 1, 2, 3, or 5 produces a destination, write there and stop — see §3 for the full routing table.
 
 # AI Instruction & Memory Files — Architecture
 
-The facts below come from primary sources (URLs in co-located REFERENCES.md).
-When CLAUDE.md / AGENTS.md questions arise, start here; open REFERENCES.md
-only to verify a specific URL or quote.
+The facts below come from primary sources (URLs in co-located REFERENCES.md);
+open REFERENCES.md only to verify a specific URL or quote.
 
-## 1. Claude Code loads CLAUDE.md only — NOT AGENTS.md
+How Claude Code loads CLAUDE.md/AGENTS.md — the `@AGENTS.md` import, `@path`
+resolution, precedence, and when a repo should add an AGENTS.md — lives in
+`~/.claude/rules/claude-md-conventions.md`. It auto-loads whenever one of
+those files is open. Read it directly when reviewing a diff with neither open.
 
-Per Anthropic's Claude Code memory docs, Claude Code reads CLAUDE.md, not AGENTS.md. When a repo already uses AGENTS.md for other coding agents, create a CLAUDE.md that imports it so both tools read the same instructions without duplicating them (independently corroborated: zero AGENTS.md entries in the Claude Code changelog, and Claude Code is absent from agents.md's supported-tools list).
-
-**The Anthropic-documented single-source-of-truth pattern is:**
-
-```
-@AGENTS.md
-
-# Claude-specific content below this line
-```
-
-Put `@AGENTS.md` as the first line of CLAUDE.md. Claude Code imports the
-referenced file's content; maintenance is single-source, no duplication.
-
-`@path` imports resolve relative to the file containing the import, not
-the current working directory. A `@docs/x.md` in `.claude/CLAUDE.md`
-looks for `.claude/docs/x.md`.
-
-### Claude Code CLAUDE.md precedence (within the family)
-
-Concatenated, not overridden:
-
-1. Managed policy (enterprise)
-2. Project `./CLAUDE.md` or `./.claude/CLAUDE.md`
-3. User `~/.claude/CLAUDE.md` (global)
-4. `CLAUDE.local.md`
-
-Claude Code walks from the current working directory up to `/`, concatenating every `CLAUDE.md` it finds along the way — ancestor instructions are additive, not overridden. In monorepos this means root-level CLAUDE.md, team-directory CLAUDE.md, and project-level CLAUDE.md all load together.
-
-## 2. Length targets
+## 1. Length targets
 
 Official threshold: **under 200 lines per CLAUDE.md file** — longer files
 consume more context and reduce adherence. The unit is **lines** — no
@@ -99,7 +73,13 @@ Any N is a finding; restore the dropped instruction. Y requires citing the speci
 lands and cost per-session context budget. Put them in commit messages,
 PR descriptions, or plan files — state the rule, not the precedent.
 
-## 3. When to duplicate vs. reference
+**Over the cap — trim in this order:**
+
+1. Delete content duplicating AGENTS.md; use the `@AGENTS.md` import instead.
+2. Collapse narrative case studies into one-sentence principles.
+3. Keep only Claude-Code-specific project context.
+
+## 2. When to duplicate vs. reference
 
 **Reference via `@AGENTS.md` import (Anthropic pattern):** default for
 Claude Code when both files exist. Zero maintenance, single source.
@@ -114,19 +94,7 @@ Claude Code when both files exist. Zero maintenance, single source.
 - The content is enforced structurally (a test, a hook) — prose duplication adds maintenance without raising adherence above the deterministic enforcement.
 - The rule is process discipline enforced by `/pre-merge`, commit-review hooks, or other mechanical gates.
 
-## 4. Quick decision flow when editing
-
-| Question | Answer |
-|---|---|
-| Am I adding a new guardrail? | Put it in AGENTS.md (canonical, cross-agent). Claude Code gets it via `@AGENTS.md` import; other AGENTS.md-aware agents (Codex, Cursor, Aider, Gemini CLI, Windsurf, Amp, Lovable) read it natively. |
-| The rule applies only when a specific skill is running (e.g., "write backticks literally when constructing a PR body via heredoc")? | Edit that skill's SKILL.md, not CLAUDE.md — CLAUDE.md costs every session's attention budget, while the skill file loads only when the rule actually applies. |
-| The rule applies only while a specific file type or path pattern is open, independent of which skill runs? | Add a path-scoped rule under `.claude/rules/*.md` — see Step 1 item 2 for why. |
-| The repo has CLAUDE.md but no AGENTS.md — should I add AGENTS.md? | Only if a non-Claude AGENTS.md-aware agent (Lovable, Cursor, Codex, Aider, etc.) is also using the repo. Otherwise CLAUDE.md alone is fine. |
-| CLAUDE.md is over 200 lines — what should I trim? | First: delete content that duplicates AGENTS.md (use `@AGENTS.md` import instead). Then: collapse narrative case studies into one-sentence principles. Leave only Claude-Code-specific project context. |
-| A rule appears in two files — is that OK? | Only if (a) it's critical AND (b) the two files reach different agents / different load paths AND (c) one could silently fail. Otherwise use the import pattern. |
-| Where should this rule live — CLAUDE.md or auto-memory? | Team rule → CLAUDE.md (or AGENTS.md). Personal preference / calibration → memory. If CLAUDE.md, AGENTS.md, or a hook already covers it → **neither**; delete the memory. See §5. |
-
-## 5. Claude Code auto-memory (Claude-written, per-user)
+## 3. Claude Code auto-memory (Claude-written, per-user)
 
 Auto-memory at `<config-dir>/projects/<project>/memory/` (`<config-dir>`
 means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) is adjacent to
@@ -162,7 +130,7 @@ Index discipline:
 | Rule that applies only while a specific file type or path pattern is open, independent of which skill runs | `.claude/rules/*.md` (path-scoped, auto-loads via `paths` frontmatter) |
 | Past incident "why" not captured in code, tests, or commit msgs  | Auto-memory (feedback or project type)           |
 | Pointer to external systems (Linear, Grafana, etc.)              | Auto-memory (reference type)                     |
-| Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§3 advisory vs deterministic)|
+| Restatement of a rule already in CLAUDE.md / AGENTS.md           | **Nowhere — delete it** (§2 advisory vs deterministic)|
 | Rule already enforced by a hook or structural test               | **Nowhere — the hook enforces it; prose is load**|
 
 ### Anti-duplication heuristic

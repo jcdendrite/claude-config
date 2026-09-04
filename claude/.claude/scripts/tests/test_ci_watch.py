@@ -361,6 +361,9 @@ def test_json_failure_with_token_unset_appends_hint_to_existing_error(fake_gh):
     # Hedged, not asserted: this fixture's stderr isn't 403-shaped, so a flat
     # unhedged claim here would be misleading.
     assert "if this is a 403" in error_line
+    # Pins the doc pointer in the hint so a future edit that drops or
+    # renames it without updating the hint text is caught.
+    assert "docs/scripts.md" in error_line
 
 
 def test_json_failure_with_token_set_has_no_hint(fake_gh):

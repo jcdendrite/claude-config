@@ -471,7 +471,7 @@ class TestRequireCodeReview:
         )
 
     # ------------------------------------------------------------------ #
-    # GH-783 Phase 2: quote-split and fail-closed status-2 regression      #
+    # Quote-split and fail-closed status-2 regression                     #
     # ------------------------------------------------------------------ #
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, git_repo):

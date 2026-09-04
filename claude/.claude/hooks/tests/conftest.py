@@ -114,11 +114,15 @@ def _write_conditional_sleep_shim(
     real_binary: str,
     match_condition: str,
     fake_output: str | None = None,
+    sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
 ) -> None:
-    """Write a fake `binary_name` under bin_dir that sleeps
-    TIMEOUT_SHIM_SLEEP_SECONDS past the 5s _lib_capped cap when
-    `match_condition` matches, and execs `real_binary` otherwise. Shared
-    conditional-sleep logic behind git_timeout_shim and gh_timeout_shim.
+    """Write a fake `binary_name` under bin_dir that sleeps sleep_seconds
+    past the cap under test when `match_condition` matches, and execs
+    `real_binary` otherwise. Shared conditional-sleep logic behind
+    git_timeout_shim and gh_timeout_shim. sleep_seconds defaults to
+    TIMEOUT_SHIM_SLEEP_SECONDS (calibrated for the shared 5s _lib_capped
+    cap); a caller testing a wider cap (e.g. _lib_cumulative_diff_hash's 15s)
+    must pass a larger value or the shim returns before that cap fires.
 
     When `fake_output` is set, it replaces the exec-real-binary fallback
     after the sleep completes, so a broken cap is observably distinct from
@@ -130,7 +134,7 @@ def _write_conditional_sleep_shim(
     fake_binary.write_text(
         f"#!/bin/bash\n"
         f"if {match_condition}; then\n"
-        f"  sleep {TIMEOUT_SHIM_SLEEP_SECONDS}\n"
+        f"  sleep {sleep_seconds}\n"
         f"{post_sleep}"
         f"fi\n"
         f'exec {real_binary} "$@"\n'
@@ -161,6 +165,9 @@ def git_timeout_shim(tmp_path):
     `install`'s optional `fake_output` passes through to
     _write_conditional_sleep_shim, for a call site whose real, uncapped
     result would otherwise coincidentally match the timed-out result.
+
+    `install`'s optional `sleep_seconds` also passes through, for a call
+    site testing a cap wider than the default TIMEOUT_SHIM_SLEEP_SECONDS.
     """
     real_git = shutil.which("git")
     if not real_git:
@@ -168,8 +175,14 @@ def git_timeout_shim(tmp_path):
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
-    def install(match_condition: str, fake_output: str | None = None) -> dict[str, str]:
-        _write_conditional_sleep_shim(tmp_path, "git", real_git, match_condition, fake_output)
+    def install(
+        match_condition: str,
+        fake_output: str | None = None,
+        sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
+    ) -> dict[str, str]:
+        _write_conditional_sleep_shim(
+            tmp_path, "git", real_git, match_condition, fake_output, sleep_seconds
+        )
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     return install
@@ -185,6 +198,9 @@ def gh_timeout_shim(tmp_path):
     `install`'s optional `fake_output` passes through to
     _write_conditional_sleep_shim, for a call site whose real, uncapped
     result would otherwise coincidentally match the timed-out result.
+
+    `install`'s optional `sleep_seconds` also passes through, for a call
+    site testing a cap wider than the default TIMEOUT_SHIM_SLEEP_SECONDS.
     """
     real_gh = shutil.which("gh")
     if not real_gh:
@@ -192,27 +208,39 @@ def gh_timeout_shim(tmp_path):
     if not shutil.which("timeout") and not shutil.which("gtimeout"):
         pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
 
-    def install(match_condition: str, fake_output: str | None = None) -> dict[str, str]:
-        _write_conditional_sleep_shim(tmp_path, "gh", real_gh, match_condition, fake_output)
+    def install(
+        match_condition: str,
+        fake_output: str | None = None,
+        sleep_seconds: int = TIMEOUT_SHIM_SLEEP_SECONDS,
+    ) -> dict[str, str]:
+        _write_conditional_sleep_shim(
+            tmp_path, "gh", real_gh, match_condition, fake_output, sleep_seconds
+        )
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     return install
 
 
 @contextmanager
-def assert_cap_engaged():
-    """Time the wrapped block and assert it took longer than
-    CAP_ENGAGED_FLOOR_SECONDS — evidence the 5s _lib_capped timeout fired
-    rather than, say, the shim never being invoked at all. Deliberately no
-    upper bound: under `-n auto` parallel load, a passing run can take
-    arbitrarily longer than the shim's own sleep duration without the cap
-    having failed to engage."""
+def assert_cap_engaged(floor: float = CAP_ENGAGED_FLOOR_SECONDS):
+    """Time the wrapped block and assert it took longer than `floor` --
+    evidence some _lib_capped/_lib_capped_for timeout fired rather than,
+    say, the shim never being invoked at all. Deliberately no upper bound:
+    under `-n auto` parallel load, a passing run can take arbitrarily
+    longer than the shim's own sleep duration without the cap having
+    failed to engage.
+
+    `floor` defaults to CAP_ENGAGED_FLOOR_SECONDS (calibrated for the
+    shared 5s _lib_capped cap); a caller testing a wider cap (e.g.
+    _lib_cumulative_diff_hash's 15s) must pass a higher floor, or a
+    regression to the shared 5s cap would still clear the default floor
+    and pass undetected."""
     start = time.monotonic()
     yield
     elapsed = time.monotonic() - start
-    assert elapsed > CAP_ENGAGED_FLOOR_SECONDS, (
-        f"expected the 5s _lib_capped timeout to fire (shim sleeps "
-        f"{TIMEOUT_SHIM_SLEEP_SECONDS}s if it does not), took only {elapsed:.1f}s"
+    assert elapsed > floor, (
+        f"expected a capped timeout to fire (the installed shim sleeps past "
+        f"it if the cap does not), took only {elapsed:.1f}s"
     )
 
 

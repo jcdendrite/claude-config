@@ -456,7 +456,7 @@ class TestGuardSettingsSessionKeys:
         """Stub PATH with only the binaries this hook's code path invokes
         (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
         `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
-        (GH-783 Phase 2), `grep` for the staged-file match, `git` for the
+        (GH-783), `grep` for the staged-file match, `git` for the
         _lib_capped-wrapped diff/show calls), omitting both timeout(1) and
         gtimeout(1). Mirrors test_require_worktree_for_git_writes.py's
         test_python3_absent_denies shape; skips (does not silently

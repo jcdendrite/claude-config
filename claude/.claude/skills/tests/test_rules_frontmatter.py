@@ -19,6 +19,7 @@ Run with: pytest claude/.claude/
 """
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,29 @@ from validate_skill_structure import parse_frontmatter
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _PROJECT_RULES_DIR = _REPO_ROOT / ".claude" / "rules"
 _STOWED_RULES_DIR = _REPO_ROOT / "claude" / ".claude" / "rules"
+_CLAUDE_MD_CONVENTIONS_RULE = _STOWED_RULES_DIR / "claude-md-conventions.md"
+# One representative path per instruction-file location shape this rule's
+# `paths` list targets: bare root, one directory down, root `.claude/`, and
+# a nested `.claude/` — plus CLAUDE.local.md, which has no `.claude/` form.
+# Every basename (CLAUDE.md, AGENTS.md, CLAUDE.local.md) gets both a root
+# and a `.claude/`-prefixed candidate so every one of the ten `paths`
+# patterns is exercised by at least one candidate below — fnmatch has no
+# `**` path-segment awareness, so a `.claude/`-prefixed bare pattern like
+# `.claude/AGENTS.md` always co-matches with its `**/AGENTS.md` sibling and
+# can never be the sole match for any candidate; "exercised" here means
+# "appears in some candidate's match list," not "is that candidate's only
+# match."
+_CLAUDE_MD_CANDIDATE_PATHS = [
+    "CLAUDE.md",
+    "sub/CLAUDE.md",
+    ".claude/CLAUDE.md",
+    "sub/.claude/CLAUDE.md",
+    "AGENTS.md",
+    "sub/.claude/AGENTS.md",
+    ".claude/AGENTS.md",
+    "CLAUDE.local.md",
+    "sub/CLAUDE.local.md",
+]
 
 
 def _discover_rule_files() -> list[Path]:
@@ -98,6 +122,36 @@ def test_rule_has_parseable_paths_frontmatter(rule_file: Path):
     """Every discovered rule file has a non-empty `paths` list of strings."""
     violations = rule_frontmatter_violations(rule_file)
     assert not violations, "; ".join(violations)
+
+
+@pytest.mark.skipif(
+    not _CLAUDE_MD_CONVENTIONS_RULE.is_file(),
+    reason="claude-md-conventions.md not present",
+)
+@pytest.mark.parametrize("candidate_path", _CLAUDE_MD_CANDIDATE_PATHS)
+def test_claude_md_conventions_globs_match_representative_paths(candidate_path: str):
+    """Self-consistency check: claude-md-conventions.md's ten `paths` globs,
+    taken together, must fire on every representative instruction-file
+    location it targets.
+
+    This uses `fnmatch` against a literal repo-root-relative string, which is
+    NOT the same matcher Claude Code's harness runs — whether a leading
+    `**/` matches zero path segments is undocumented (see
+    `docs/rules-references.md`'s glob-decision note), so a pass here is not
+    proof the real matcher fires. It only catches the typo/self-inconsistency
+    class this module's own docstring names (e.g. `"cluade/.claude/rules/**"`):
+    a candidate path matched by none of the ten globs signals a broken or
+    dropped pattern, which is exactly the failure this rule's defensive
+    bare-basename-plus-`**/`-led pairing is meant to prevent.
+    """
+    frontmatter = parse_frontmatter(_CLAUDE_MD_CONVENTIONS_RULE)
+    paths = frontmatter["paths"]
+    assert len(paths) == 10
+    matched = [pattern for pattern in paths if fnmatch.fnmatch(candidate_path, pattern)]
+    assert matched, (
+        f"{candidate_path!r} matched none of {paths!r} — "
+        "typo or dropped pattern in claude-md-conventions.md's paths list"
+    )
 
 
 class TestRuleFrontmatterViolations:

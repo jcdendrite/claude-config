@@ -390,11 +390,16 @@ def test_config_dir_kill_switch_disables(isolated_home, dirty_repo, tmp_path):
     assert result is None
 
 
-def test_legacy_home_claude_sentinel_inert_once_config_dir_set(armed_home, dirty_repo, tmp_path):
-    """The machine sentinel is a swap, not a union: armed_home's legacy
-    $HOME/.claude/autonomous-shipping-required does not fire once
-    CLAUDE_CONFIG_DIR points at a directory holding no copy of it —
-    matches _lib_autonomous_shipping_active's existing swap semantics."""
+def test_legacy_home_claude_sentinel_fires_via_fast_path_union(
+    armed_home, dirty_repo, tmp_path
+):
+    """GH-793: the fast-path sentinel check (step 3) must union the
+    resolved config dir with the legacy $HOME/.claude location, the same
+    way the full _lib_autonomous_shipping_active check at step 9 already
+    does. armed_home provides the sentinel only at the legacy
+    $HOME/.claude/autonomous-shipping-required location, while
+    CLAUDE_CONFIG_DIR points at a directory holding no copy of it, and the
+    fast path still fires."""
     empty_config_dir = tmp_path / "empty-profile"
     empty_config_dir.mkdir()
     result = _fire(
@@ -405,7 +410,7 @@ def test_legacy_home_claude_sentinel_inert_once_config_dir_set(armed_home, dirty
         home=armed_home,
         extra_env={"CLAUDE_CONFIG_DIR": str(empty_config_dir)},
     )
-    assert result is None
+    assert result is not None
 
 
 # ------------------------------------------------------------------ #
