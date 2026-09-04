@@ -2184,3 +2184,183 @@ _lib_is_no_gate_release_agent() {
   done
   return 1
 }
+
+# Reviewer-persona agents dispatched by /code-review's fan-out, for
+# require-architect-consult.sh and log-reviewer-round.sh: every entry in
+# _LIB_REVIEW_ONLY_AGENTS except the two harness built-ins Explore and Plan,
+# which that array's own header names as such. Derived rather than
+# re-enumerated, so a persona added to _LIB_REVIEW_ONLY_AGENTS is covered
+# here automatically.
+_LIB_REVIEWER_PERSONA_AGENTS=()
+for _lib_reviewer_persona_candidate in "${_LIB_REVIEW_ONLY_AGENTS[@]}"; do
+  case "$_lib_reviewer_persona_candidate" in
+    Explore | Plan) continue ;;
+  esac
+  _LIB_REVIEWER_PERSONA_AGENTS+=("$_lib_reviewer_persona_candidate")
+done
+unset _lib_reviewer_persona_candidate
+_lib_reviewer_persona_agents() {
+  printf '%s\n' "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"
+}
+
+# _lib_is_reviewer_persona AGENT_TYPE
+# Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
+# _LIB_REVIEWER_PERSONA_AGENTS. Empty input (subagent_type absent from the
+# PreToolUse/PostToolUse payload) never matches.
+_lib_is_reviewer_persona() {
+  local agent_type="$1"
+  [ -n "$agent_type" ] || return 1
+  local candidate
+  for candidate in "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"; do
+    [ "$agent_type" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Round-state cap shared by require-architect-consult.sh (the read side,
+# which denies once a genuinely new state arrives at the cap) and
+# log-reviewer-round.sh (the write side, which never appends past it) --
+# one constant rather than two literal "2"s that would have to be kept in
+# sync by hand. The case study's own recommendation is to fire at *entry to
+# round 3*, not round 1 -- "firing after round 1 would catch roughly half
+# of all PRs to address a 14% tail"
+# (docs/case-studies/opus-frontload-review-rounds.md:260-263) -- so the cap
+# is 2 recorded rounds, with the 3rd distinct state tripping the gate.
+_LIB_REVIEWER_ROUND_STATE_CAP=2
+
+# _lib_reviewer_round_state_key REPO_ROOT
+# Prints "<repo-hash>.<branch-hash>" for require-architect-consult.sh's and
+# log-reviewer-round.sh's shared per-branch state and latch paths. Returns 1
+# with no stdout when REPO_ROOT is empty or HEAD is detached (no branch name
+# to key on) -- callers must fail open on either, per this gate's
+# allow-on-state-failure posture (see require-architect-consult.sh's header).
+#
+# Determinism contract (read side [require-architect-consult.sh] and write
+# side [log-reviewer-round.sh] must agree byte-for-byte, or the gate wedges):
+# branch name comes from `git symbolic-ref -q --short HEAD`, hashed with the
+# same sha256sum-of-bytes recipe _marker_lib_repo_hash already uses for the
+# repo half of the key, so both halves are produced identically regardless
+# of caller.
+_lib_reviewer_round_state_key() {
+  local repo_root="$1"
+  [ -n "$repo_root" ] || return 1
+  local branch
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null)
+  [ -n "$branch" ] || return 1
+  local repo_hash branch_hash
+  repo_hash=$(_marker_lib_repo_hash "$repo_root")
+  branch_hash=$(printf '%s' "$branch" | sha256sum | awk '{print $1}')
+  [ -n "$repo_hash" ] && [ -n "$branch_hash" ] || return 1
+  printf '%s.%s' "$repo_hash" "$branch_hash"
+}
+
+# _lib_reviewer_round_state_value REPO_ROOT
+# Prints "<head-sha> <staged-diff-sha256>" -- the one-line-per-round-state
+# unit each entry in <config-dir>/.reviewer-round-state.d/<key> holds (see
+# .claude/plans/round3-review-consult-trigger.md for the full design
+# rationale). Returns 1 with no stdout when REPO_ROOT is empty or HEAD is
+# unresolvable (no commits yet) -- callers must fail open, same posture as
+# _lib_reviewer_round_state_key above.
+#
+# Determinism contract (read side and write side must agree byte-for-byte):
+# both halves are captured into variables and tested for emptiness rather
+# than trusted as a pipeline's exit status, matching _lib_active_plan_hash's
+# own documented reason -- this keeps the contract independent of the
+# caller's shell options (a caller sourcing this under `set -u` with no
+# `pipefail` would otherwise see a failed `git diff` silently yield an
+# empty-but-"successful" sha256sum of nothing).
+_lib_reviewer_round_state_value() {
+  local repo_root="$1"
+  [ -n "$repo_root" ] || return 1
+  local head_sha diff_hash
+  # `--verify` is load-bearing, not stylistic: bare `rev-parse HEAD` on an
+  # unborn branch (no commits yet) echoes the literal string "HEAD" back to
+  # STDOUT while exiting non-zero, so a caller checking only for a non-empty
+  # captured value -- as this function otherwise would -- reads that as a
+  # genuine (bogus) sha instead of the "no HEAD yet" failure it actually is.
+  # `--verify` suppresses that echo-back-on-failure behavior, printing
+  # nothing on failure (_lib_active_plan_files uses the identical flag pair
+  # for the same reason, `git rev-parse --verify -q HEAD`).
+  head_sha=$(_lib_capped git -C "$repo_root" rev-parse --verify -q HEAD 2>/dev/null)
+  [ -n "$head_sha" ] || return 1
+  diff_hash=$(_lib_capped git -C "$repo_root" diff --cached 2>/dev/null | sha256sum | awk '{print $1}')
+  [ -n "$diff_hash" ] || return 1
+  printf '%s %s' "$head_sha" "$diff_hash"
+}
+
+# _lib_round_consult_gate_disabled
+# Returns 0 (true) iff <config-dir>/.round-consult-gate-disabled is present
+# -- the presence-only kill switch for require-architect-consult.sh, same
+# shape as _lib_permission_prompt_tracking_active above. Zero-arity: this
+# sentinel is machine-global with nothing repo- or session-scoped to look
+# up. Fails toward NOT disabled (i.e. the gate stays armed) on an
+# unresolvable config dir, matching every other opt-in-sentinel check in
+# this file's fail direction.
+_lib_round_consult_gate_disabled() {
+  local config_dir
+  config_dir=$(_lib_config_dir) || return 1
+  [ -f "$config_dir/.round-consult-gate-disabled" ] || return 1
+  return 0
+}
+
+# Shared bounded-retry count for _lib_append_line_locked below, used by both
+# review-ledger.sh and log-reviewer-round.sh. Small and fixed: this runs
+# synchronously inside a hook or CLI script, so the worst-case added latency
+# is bounded retries * the sleep below.
+_LIB_APPEND_LOCK_RETRIES=5
+
+# _lib_append_line_locked FILE LOCK_FILE LINE
+# Sets a bare `trap ... EXIT` to release its lock, which per this repo's
+# shell-script-conventions rule silently clobbers any other EXIT trap
+# already registered in the calling process -- a future caller sharing this
+# primitive must ensure no other EXIT trap is active in the same process.
+# Shared by review-ledger.sh and log-reviewer-round.sh, which each need the
+# identical check-then-append critical section against a different state
+# file. Acquires a same-directory noclobber lock
+# (bash `set -o noclobber`, the idiom _lib_worktree_collision_guard already
+# establishes in this repo) around the check-then-append: no-ops if LINE
+# already exists verbatim in FILE, else appends it. The lock file's content
+# is the holder's PID. A lock whose PID is dead is evicted and retried
+# immediately, rather than waiting out every retry against a crashed
+# holder. This is the same PID-liveness eviction _lib_active_bypass_marker_live
+# uses for its own markers. It matters more here than at review-ledger.sh's
+# own call site, since a PostToolUse hook is more exposed to being killed
+# mid-lock by the harness's own hook timeout than a skill-invoked CLI
+# script. Falls through to an unlocked append after
+# _LIB_APPEND_LOCK_RETRIES failed acquisitions rather than blocking -- a
+# duplicate line from a lost race is a low-consequence outcome (an inflated
+# round count), not data loss. The lock is released via the EXIT trap noted
+# above, so it clears whether the append succeeds or fails.
+_lib_append_line_locked() {
+  local file="$1" line="$3"
+  # Deliberately not `local`: the EXIT trap below evaluates this lazily at
+  # script-exit time, after this function has already returned, and any
+  # `local` binding of the same name would be out of scope by then.
+  _LIB_APPEND_LOCK_PATH="$2"
+  local attempt=0 stored_pid
+  while [ "$attempt" -lt "$_LIB_APPEND_LOCK_RETRIES" ]; do
+    if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
+      trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
+      break
+    fi
+    stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
+      # Dead holder: evict now and retry acquisition on the very next
+      # iteration, with no sleep -- this is what makes eviction prompt
+      # rather than waiting out the remaining retries.
+      rm -f "$_LIB_APPEND_LOCK_PATH" 2>/dev/null
+      attempt=$((attempt + 1))
+      continue
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.05
+  done
+  if [ -f "$file" ] && grep -qFx -e "$line" -- "$file" 2>/dev/null; then
+    # A dedup no-op must still count as activity on this file's own mtime,
+    # or a long-running branch's later no-op append leaves a stale mtime
+    # for a directory-wide 30-day sweep to delete out from under it.
+    touch -- "$file" 2>/dev/null
+    return 0
+  fi
+  printf '%s\n' "$line" >> "$file"
+}

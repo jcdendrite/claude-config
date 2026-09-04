@@ -581,13 +581,31 @@ def read_input(file_path: str, session_id: str | None = None) -> dict:
     return payload
 
 
-def agent_input(session_id: str | None = None) -> dict:
-    payload: dict = {
-        "tool_name": "Agent",
-        "tool_input": {"description": "test", "prompt": "test"},
-    }
+def agent_input(
+    session_id: str | None = None,
+    subagent_type: str | None = None,
+    prompt: str | None = None,
+    tool_name: str = "Agent",
+    cwd: str | None = None,
+) -> dict:
+    """Build an Agent (or Task) dispatch payload.
+
+    `tool_name` defaults to "Agent" (the harness's confirmed subagent-dispatch
+    tool name), overridable to "Task" for hooks registered on the Agent|Task
+    matcher union (require-architect-consult.sh, log-reviewer-round.sh).
+    `subagent_type` is omitted from tool_input when None, matching a
+    dispatch with no reviewer-persona target. `prompt` defaults to the
+    literal string "test" when None, preserving every pre-existing caller's
+    payload shape.
+    """
+    tool_input: dict = {"description": "test", "prompt": prompt if prompt is not None else "test"}
+    if subagent_type is not None:
+        tool_input["subagent_type"] = subagent_type
+    payload: dict = {"tool_name": tool_name, "tool_input": tool_input}
     if session_id is not None:
         payload["session_id"] = session_id
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
@@ -878,6 +896,65 @@ def write_plan_review_routing_read_marker(home: Path, session_id: str) -> Path:
 
 def plan_review_pending_read_marker_path(home: Path, session_id: str) -> Path:
     return home / ".claude" / ".plan-review-pending-read.d" / session_id
+
+
+def reviewer_round_state_key(repo: Path) -> str:
+    """Shell out to the real _lib_reviewer_round_state_key against `repo`,
+    so a test's seeded state file lands at the exact path
+    require-architect-consult.sh/log-reviewer-round.sh will look under.
+
+    Uses git_toplevel(repo), not str(repo): the hooks resolve REPO_ROOT via
+    `git -C "$CWD" rev-parse --show-toplevel` before hashing it, which
+    normalizes a symlinked tmp prefix (e.g. macOS /tmp -> /private/tmp) that
+    the raw tmp_path string would not — passing the unnormalized path here
+    would key a test's seeded file under a different repo-hash than the
+    hook computes at runtime.
+
+    Returns "" (not raising) when the repo has no branch to key on (e.g.
+    detached HEAD), mirroring the function's own fail-open contract.
+    """
+    result = subprocess.run(
+        ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_key "$1"',
+         "_", git_toplevel(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def reviewer_round_state_value(repo: Path) -> str:
+    """Shell out to the real _lib_reviewer_round_state_value against `repo`
+    — see reviewer_round_state_key's docstring for the git_toplevel
+    normalization rationale, which applies identically here. Returns ""
+    (not raising) when HEAD is unresolvable (no commits yet)."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_value "$1"',
+         "_", git_toplevel(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def reviewer_round_state_path(config_dir: Path, repo: Path) -> Path:
+    return config_dir / ".reviewer-round-state.d" / reviewer_round_state_key(repo)
+
+
+def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
+    return config_dir / ".architect-consult-latch.d" / reviewer_round_state_key(repo)
+
+
+def write_reviewer_round_state(config_dir: Path, repo: Path, values: list[str]) -> Path:
+    """Seed the round-state file directly with `values` (each already a
+    "<head-sha> <staged-diff-sha256>" line), bypassing log-reviewer-round.sh
+    entirely — for tests that need a precondition (e.g. "at cap") set up
+    without exercising the recorder itself."""
+    state_file = reviewer_round_state_path(config_dir, repo)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text("".join(f"{v}\n" for v in values))
+    return state_file
 
 
 def _symlink_if_absent(link: Path, target: Path) -> Path:
