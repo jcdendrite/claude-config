@@ -110,14 +110,12 @@ mechanisms below anchor to it.
    `[engineer-verified]`
 8. The new pattern is monotone against the old one across a 22-case
    corpus — it never denies anything the old one allowed, and the nine
-   pinned shapes keep their verdicts (5 deny, 4 allow). The five flips are
-   all old-DENY to new-ALLOW: a cross-file anchor link in real link
-   syntax, a deep path inside a link, a link preceded earlier in the line
-   by a `)`, a same-line link after an unrelated close-paren, and a
-   channel-shaped mention spliced after a fabricated closing bracket and a
-   filler destination run (`](x#<slug>)`).
+   pinned shapes keep their verdicts (5 deny, 4 allow). The seven flips
+   are all old-DENY to new-ALLOW, matching cases 1, 2, 3, 8, 9, 11, and 12
+   in the pinned-case list below.
    `[engineer-verified: corpus executed against both patterns this
-   session]`
+   session]` `[verified: grep -Eq re-executed against all 12 pinned
+   payloads this session, confirming these 7 flips]`
 9. The new constant's own source line is self-non-matching under the
    **old** regex, so `_lib.sh` itself commits cleanly.
    `[engineer-verified: executed]` `[verified: the same property holds for

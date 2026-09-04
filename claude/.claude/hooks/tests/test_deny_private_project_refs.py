@@ -2688,9 +2688,7 @@ class TestDenyPrivateProjectRefs:
     def test_structural_slack_cross_file_anchor_link_allowed(self, claude_config_repo):
         """A markdown cross-file anchor link, `[text](other-file.md#slug)`,
         is allowed: the open-paren is immediately preceded by `]`, so the
-        destination text up to the `#` never opens a channel-mention match.
-        This is the shape the fix restores — a functional cross-file anchor
-        link can't be reworded without breaking navigation."""
+        destination text up to the `#` never opens a channel-mention match."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2854,14 +2852,10 @@ class TestDenyPrivateProjectRefs:
         `](` with a filler run and no real link text before it, e.g.
         `](x#slug)`, is not caught. The exemption fires on the bracket
         shape alone: it never verifies that a genuine `[text` opened the
-        link. The zero-filler form, `](#slug)`, is allowed by the same
-        exemption too. Its real-`[text` variant is independently pinned by
-        test_structural_slack_markdown_inline_link_anchor_allowed; this
-        fabricated-bracket, zero-filler compound is not itself pinned by
-        any test. Pinned the same way
+        link. Pinned the same way
         test_structural_slack_github_issue_reference_not_flagged_allowed
         pins the all-digit exclusion, so a later edit can't silently
-        change this fragment's verdict."""
+        change this fragment's verdict without a test noticing."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2875,8 +2869,10 @@ class TestDenyPrivateProjectRefs:
         """A cross-file anchor link whose destination doesn't correspond to
         any actual file is still allowed — the exemption is purely
         syntactic and never checks that the destination resolves to a real
-        path. Pinned the same way the splice gap above is, so this accepted
-        trust gap has its own regression signal."""
+        path. Pinned the same way
+        test_structural_slack_github_issue_reference_not_flagged_allowed
+        pins the all-digit exclusion, so a later edit can't silently close
+        this trust gap without a test noticing."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2884,6 +2880,23 @@ class TestDenyPrivateProjectRefs:
                     "git commit -m 'See [Docs](does-not-exist.md#permission-prompt-tracking)"
                     " for the breakdown'"
                 ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_brace_wrapped_mention_allowed(self, claude_config_repo):
+        """A channel-shaped fragment wrapped as `{#slug}` (e.g. a
+        kramdown/Jekyll header-ID anchor) is not caught: the destination
+        run's required terminal character excludes `{`. Pinned the same way
+        test_structural_slack_github_issue_reference_not_flagged_allowed
+        pins the all-digit exclusion, so a later edit to the
+        terminal-character class can't silently close or widen this gap
+        without a test noticing."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'See {#permission-prompt-tracking} weird formatting'"),
                 cwd=claude_config_repo,
             )
             == "allow"
