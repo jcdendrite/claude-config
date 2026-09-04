@@ -2665,10 +2665,9 @@ class TestReviewTrace:
         assert consult_events[0]["model"] == "opus"
 
     def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
-        """The blindness property pinned at the layer it is defined (ledger
-        row 6): the event dict itself carries only the classification result
-        plus the metadata every event kind carries, never a prompt-derived
-        field."""
+        """The blindness property pinned at the layer it is defined: the
+        event dict itself carries only the classification result plus the
+        metadata every event kind carries, never a prompt-derived field."""
         records = [
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect",

@@ -729,8 +729,8 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
 
     The check can never legitimately emit [SILENT-SKIP] -- a reviewer that
     reverted to treating zero rows as an unmet obligation would silently
-    reintroduce the false-claim risk this forecloses (ledger row 2). And the
-    Input contract's two stale clauses must stay corrected (ledger row 14):
+    reintroduce the false-claim risk this forecloses. And the Input
+    contract's two stale clauses must stay corrected:
     a future edit that reintroduced either -- "every Agent/Task dispatch" or
     "present only for code-review's obligation" -- would make the agent
     believe absence of a row proves absence of a dispatch, which the new
@@ -751,7 +751,7 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
 
     def test_declares_own_heading_independent_of_code_review_scope(self):
         """The new check must fire on timeline-presence alone, not only
-        when a completed code-review pass is in scope (ledger row 20)."""
+        when a completed code-review pass is in scope."""
         body = self._body()
         assert "## The architect-consult check" in body
         assert "independent of whether any `code-review` pass is in scope" in self._section(body)
@@ -772,19 +772,18 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
 
     def test_initiation_not_completion_wording(self):
         """The check must state a consult dispatch was initiated, never that
-        it completed (ledger row 18)."""
+        it completed."""
         assert "*initiated*, never that it completed" in self._section(self._body())
 
     def test_input_contract_no_longer_claims_every_agent_task_dispatch(self):
         """The stale 'every Agent/Task dispatch' claim must be gone --
-        _is_reviewer_subagent_type gates reviewer-spawn rows (ledger row
-        14a)."""
+        _is_reviewer_subagent_type gates reviewer-spawn rows."""
         assert "every `Agent`/`Task` dispatch on this branch's main thread" not in self._body()
 
     def test_input_contract_no_longer_claims_timeline_is_code_review_only(self):
         """The stale 'present only when checking code-review's
         spawn-dispatch obligation' claim must be gone -- the timeline now
-        also serves the architect-consult check (ledger row 14b)."""
+        also serves the architect-consult check."""
         assert "present only when checking" not in self._body()
 
     def test_input_contract_names_architect_consult_rows(self):
@@ -796,12 +795,12 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
 
     def test_description_names_architect_consult_check(self):
         """The frontmatter description must name the third check for a
-        human skimming the roster (ledger row 22)."""
+        human skimming the roster."""
         assert "plan-architect consult dispatch" in self._body()
 
     def test_output_format_has_architect_consult_record_section(self):
         """The consult-observed record needs its own labeled Output-format
-        slot, excluded from both <N> and <M> (ledger row 19)."""
+        slot, excluded from both <N> and <M>."""
         body = self._body()
         assert "## Architect consults observed" in body
         assert "Never counted in `<N>` or `<M>`" in body
