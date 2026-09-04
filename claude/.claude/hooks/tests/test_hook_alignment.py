@@ -339,7 +339,9 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
       separately names them as a substitution-risk channel to watch, not
       as confirmed-unaffected.
     - `Agent` is guarded because the plan's Context section names it as
-      the dispatch the misfire follows.
+      the dispatch the misfire follows, and it's also one of the three
+      tools the plan's pre-implementation gate (Verification step 1
+      check 5) required to remain available.
 
     `CronCreate`'s presence in this list tracks §48's current
     Accepted-residual-risk stance (the substitution channel is unguarded,
