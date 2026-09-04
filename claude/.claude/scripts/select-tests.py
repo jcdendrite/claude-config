@@ -169,6 +169,8 @@ ROOT_CLAUDE_MD = "CLAUDE.md"
 # and RULES_DIR (claude/.claude/rules/) for frontmatter validation —
 # distinct from RULES_DIR's own exception below, since the two directories
 # are separate trees with the same test dependency.
+# test_claude_md_excludes.py (HOOKS_TESTS_DIR) rglobs both directories as
+# well.
 ROOT_RULES_DIR = ".claude/rules"
 
 # test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
@@ -402,10 +404,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
-# RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs
+# RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
+# test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
 # GITHUB_ACTIONS_WORKFLOWS_RULE_MD: test_ci_path_filter.py (HOOKS_TESTS_DIR)
-# reads this exact file by path.
+# reads this exact file. Subsumed by the RULES_DIR row above. Kept anyway
+# because its declaration is narrower and independent of that row.
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
@@ -434,7 +438,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
-    (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
@@ -443,7 +447,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
-    (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR,)),
+    (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
     (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),
