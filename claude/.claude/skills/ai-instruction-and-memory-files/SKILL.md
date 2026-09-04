@@ -1,11 +1,12 @@
 ---
 name: ai-instruction-and-memory-files
 description: >
-  Audit of CLAUDE.md, AGENTS.md, and Claude Code auto-memory files.
-  TRIGGER when: authoring/reviewing a CLAUDE.md, AGENTS.md, or
-  ~/.claude/projects/*/memory/ change, or deciding which surface a rule
-  belongs in. DO NOT TRIGGER when: editing .lovable/*.md, .agents/skills/*.md,
-  .cursorrules, .github/copilot-instructions.md, README.md, or writing code.
+  Audit of CLAUDE.md, AGENTS.md, .claude/rules/*.md, and Claude Code
+  auto-memory files. TRIGGER when: authoring/reviewing a CLAUDE.md,
+  AGENTS.md, .claude/rules/*.md, or ~/.claude/projects/*/memory/ change,
+  or deciding which surface a rule belongs in. DO NOT TRIGGER when:
+  editing .lovable/*.md, .agents/skills/*.md, .cursorrules,
+  .github/copilot-instructions.md, README.md, or writing code.
 user-invocable: false
 ---
 
@@ -154,6 +155,25 @@ repo, is safe to publish. Scope a saved decision to the decision, not
 to the ambient condition that made it easy — "the X path accepts Y
 tradeoff" survives, "the user's environment has property Z" goes
 stale silently and biases later design.
+
+## 4. Path-scoped rule files (`.claude/rules/*.md`)
+
+Carries over — plus, for a rule file, *which globs it needs*:
+- The behavior test and compression-diff audit (§1).
+- Duplicate-vs-reference (§2).
+- Anti-duplication (§3).
+- Step 1 item 2 placement.
+
+Does NOT carry over — a rule file is neither an instruction file nor
+per-user memory:
+- §1's 200-line CLAUDE.md cap.
+- §3's auto-memory mechanics.
+
+Two checks apply only to rule files:
+1. **Glob-set/body-applicability match** — every `paths:` glob must have the whole body applicable to what it matches, or the body must qualify bullets by name.
+2. **Stowed-rule portability** — a stowed rule's globs carry no literal prefix beyond a bare filename or a two-segment `.claude/`-anchored path; its referent is every consumer's repo.
+
+Rule-file review stays inline here rather than becoming its own skill (like `skill-review`); move it out once the review-time-check list above grows to three or four items — see `docs/design-decisions.md` §46.
 
 ## Final step — Deactivate gate session
 
