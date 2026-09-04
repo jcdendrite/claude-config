@@ -1,9 +1,18 @@
 ---
 name: error-mode-analysis
 description: Produce a signal-bucketed error-mode report from a delivered body of multi-session AI-assisted work — bucket every failure by which pipeline layer caught it, correlate transcript signals with PR review comments, and split output into a private, project-identifying report and a de-identified public lessons doc. Builds on transcript-narrative and transcript-analysis. Supports a multi-window trend pass to distinguish recurring patterns from one-off noise.
+context: fork
+background: false
+argument-hint: "[optional output directory]"
 ---
 
 Analyzes a *delivered body of work* (many sessions and PRs, potentially spanning multiple projects and calendar time), not a single transcript. The organizing question is: where is the review pipeline self-correcting, and where is it blind? Answering that requires two data sources (transcript signals AND PR review comments — they are not the same signal) and a bucketing scheme that groups by detection layer rather than by investigative phase.
+
+## Step 0 — Confirm Bash is available
+
+This skill runs as a forked context and depends on `Bash` for every step below, including the `gh api graphql` call in Step 3. If `Bash` is unavailable, stop and report that this skill requires Claude Code v2.1.218 or later — an earlier version honors `context: fork` without honoring `background: false`, producing a background fork whose narrowed tool set may omit `Bash`.
+
+This skill never invokes `marker.sh` and never invokes a review skill, directly or by dispatching a subagent to do either on its behalf.
 
 ## Step 1 — Scope the delivery
 
@@ -23,7 +32,7 @@ Always scope `--projects`/`--this-repo` — an unscoped run pools every project 
 
 Invoke `transcript-narrative` and `transcript-analysis` by name — do not restate their procedures here:
 
-- `transcript-narrative` produces the annotated per-phase timeline and a first pass of ranked lessons.
+- `transcript-narrative` runs as its own fork and returns a file path plus a first pass of ranked lessons — the annotated per-phase timeline itself is file-only now, not returned inline. Record the returned path; Step 5 reads it before assembling Artifact A.
 - `transcript-analysis` produces the quantitative appendix (`fail-seq`, `review-trace`, `duration`, `subagents`, `pr-link`).
 
 `review-trace` locates every skill invocation, hook denial, and reviewer-agent spawn per session — exactly the Pipeline working and Post-commit bot evidence Step 4 needs.
@@ -77,9 +86,11 @@ The bucket determines the control: cross-session → new enforcement mechanism o
 
 ## Step 5 — Split into two artifacts + pre-transport boundary checklist
 
-**Artifact A** — the private report. Full detail: error modes with evidence, session context, quantitative metrics, PR-comment correlation. May contain project-identifying content. Stays on the private machine; never transported to a public repo or personal tooling.
+Read the file at the path `transcript-narrative` returned in Step 2 before assembling Artifact A — its annotated timeline arrives as a path now, not inline.
 
-**Artifact B** — the de-identified lessons doc (Step 6 skeleton). Scrubbed of project-identifying content. May cross into a public repo.
+**Artifact A** — the private report. Full detail: error modes with evidence, session context, quantitative metrics, PR-comment correlation. May contain project-identifying content. Write it to `<output-dir>/artifact-a-private-report.md` — the output directory given as this skill's argument, or a `mktemp -d` directory when none is given; state plainly to the caller that the default location is temporary. Before writing, confirm the target does not resolve inside a git-tracked tree unless that tree's `.gitignore` covers it, and manually scan the assembled content for customer PII and credentials before persisting it — Artifact A has no later scrub-before-promotion gate the way Artifact B does in Step 6, so this scan is the only thing standing between it and disk. Stays on the private machine regardless of where it is written; never transported to a public repo or personal tooling.
+
+**Artifact B** — the de-identified lessons doc, built from the Step 6 skeleton and written to `<output-dir>/artifact-b-lessons.md`. Scrubbed of project-identifying content. May cross into a public repo once Step 6's checklist has been walked.
 
 Scrub Artifact B against these categories before it leaves the private machine:
 - Tracker IDs — replace with `PROJ-<n>` / `TICKET-<n>` placeholders.
@@ -94,7 +105,7 @@ Two things this scrub relies on that are easy to get backwards:
 
 ## Step 6 — Artifact B skeleton
 
-Derive Artifact B by scrubbing a working copy of Artifact A into the skeleton below, preserving verbatim quotes, per-session evidence, and each bucket's priority reasoning. Keep that working copy outside any git repo (or under a path `.gitignore` covers) until it has been scrubbed and diffed line by line per the checklist above, then delete it — the copy is not Artifact B until that gate passes. Every error mode identified in Step 4 must appear in Artifact B; do not silently drop a finding for brevity.
+Derive Artifact B by scrubbing a working copy of Artifact A into the skeleton below, preserving verbatim quotes, per-session evidence, and each bucket's priority reasoning. Keep that working copy outside any git repo (or under a path `.gitignore` covers) until it has been scrubbed and diffed line by line per the checklist above — it is not Artifact B until that gate passes. Once it passes, write it to the Artifact B path named in Step 5. Every error mode identified in Step 4 must appear in Artifact B; do not silently drop a finding for brevity.
 
 ```markdown
 # [De-identified] Delivery error-mode lessons
@@ -122,11 +133,13 @@ Title: …
 Body: …
 ```
 
+Return the paths to Artifact A and Artifact B, plus the Step 4 bucket table, rather than either report inline.
+
 ## Step 7 — Multi-window trend pass
 
 A single run buckets one flat window. That's enough to tell you a failure mode exists; it isn't enough to tell you whether it's recurring, growing, or a one-off — and that distinction changes the priority column in Step 4 (a human-unique finding seen once across six weeks is a different fix priority than the same finding recurring every PR).
 
-Split the Step 1 date range into successive sub-windows (weekly, or biweekly for a longer range) and re-run Steps 2–4 per sub-window using `--since`/`--until` on `review-trace` (and `--branches`/`--projects` held constant across sub-windows so the only thing varying is time):
+Split the Step 1 date range into successive sub-windows (weekly, or biweekly for a longer range) and re-run Steps 2–4 per sub-window using `--since`/`--until` on `review-trace` (and `--branches`/`--projects` held constant across sub-windows so the only thing varying is time). Each sub-window's own Step 2 re-invocation of `transcript-narrative` returns its own file path — record each sub-window's path (e.g. by sub-window label) rather than overwriting a single variable, since Step 5 needs the full set once every sub-window has run:
 
 ```bash
 python3 ~/.claude/scripts/transcript-analysis.py review-trace --projects '<glob>' --since <window-start> --until <window-end>
