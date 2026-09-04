@@ -841,15 +841,11 @@ _lib_command_invokes_git_subcmd() {
 #   - a bare "--" (which also ends the emitted stream, not just itself)
 # Every other TOOL keeps the never-consume default, which can miss a real
 # subcommand match but cannot over-consume a positional word, so it cannot
-# produce a false match. The residual gap is a gh flag with no value
-# placeholder, registered at a gated traversal scope (root, `pr`, `issue`),
-# that this grammar would over-consume. `-h`/`--help` (and `--version` at
-# root) are already present-day instances of that gap class. They're
-# excluded from concern because they're execution-terminating: gh prints
-# help or version output and exits before any create/comment/edit network
-# call happens, so there is no real body ever sent for the redaction gate to
-# miss. test_lib.py's traversal-scope-no-value-placeholder guard is what
-# fails if gh ever adds a non-terminating flag of this shape.
+# produce a false match. The one residual is a future gh flag with no value
+# placeholder at a gated scope (root/`pr`/`issue`). Present-day instances --
+# `-h`/`--help` (registered broadly) and `--version` (root only) -- are
+# harmless since they exit before any network call; test_lib.py's
+# traversal-scope guard fails if a non-terminating one is ever added.
 _lib_tool_argv_from_subcmd() {
   local fragment="$1" tool="$2"
   local saved_opts=$-

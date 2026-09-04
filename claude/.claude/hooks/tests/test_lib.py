@@ -1691,8 +1691,8 @@ class TestToolArgvFromSubcmd:
     def test_unrecognized_tool_has_no_pinned_flags(self) -> None:
         """A TOOL other than gh falls to the never-consume default, so
         every "-*" word is dropped as a bare flag rather than having its
-        value skipped -- `dir` is never treated as --chdir's value and is
-        emitted as a positional word, which can miss a real subcommand
+        value skipped. `dir` is never treated as --chdir's value and is
+        emitted as a positional word. This can miss a real subcommand
         match but never over-consumes a positional word as a flag's
         value. This is the executable proof that the gh-only cobra grammar
         (gated on `tool = gh`) leaves every other TOOL's never-consume
@@ -1706,7 +1706,7 @@ class TestToolArgvFromSubcmd:
         boundary, not merely an assertion that happens not to contradict
         it: an -R/--repo-shaped flag against a non-gh tool drops the flag
         word itself (the never-consume default), but does NOT skip its
-        would-be value (`fake`) as gh's grammar would -- `fake` lands as a
+        would-be value (`fake`) as gh's grammar would. `fake` lands as a
         stray positional ahead of `write`, which would make a caller
         checking for a leading `write` subcommand miss a real invocation.
         This is the exact miss shape enforce-marker-script-shape.sh's
