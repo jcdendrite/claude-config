@@ -1499,6 +1499,69 @@ class TestCorpusBudgetFunction:
         assert violations[0].count("chars") >= 5  # each offender line ends "N chars"
 
 
+class TestValidateContextForkRequiresExplicitBackground:
+    """Unit tests for validate()'s third check — uses tmp_path fixtures."""
+
+    def _make_skill(self, tmp_path, name: str, frontmatter_lines: list[str]) -> Path:
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
+        lines = ["---", *frontmatter_lines, "---", ""]
+        skill_file.write_text("\n".join(lines))
+        return skill_file
+
+    def _background_violations(self, violations: list[str]) -> list[str]:
+        return [v for v in violations if "background" in v]
+
+    def test_bare_context_fork_with_no_background_key_fails(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork"])
+        assert self._background_violations(validate(f))
+
+    def test_background_null_fails(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", "background:"])
+        assert self._background_violations(validate(f))
+
+    def test_background_non_boolean_string_fails(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", 'background: "flase"'])
+        assert self._background_violations(validate(f))
+
+    def test_background_true_literal_passes(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", "background: true"])
+        assert not self._background_violations(validate(f))
+
+    def test_background_false_literal_passes(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", "background: false"])
+        assert not self._background_violations(validate(f))
+
+    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path):
+        """PyYAML's safe_load coerces yes/on/True (any case) to real
+        booleans, so Check 3's isinstance(background, bool) check accepts
+        them today — pinning this so a future change to the accepted-input
+        semantics doesn't silently narrow (or the message doesn't silently
+        drift from behavior) without a test noticing."""
+        for spelling in ("yes", "on", "True", "TRUE"):
+            f = self._make_skill(tmp_path, f"a_{spelling}", ["context: fork", f"background: {spelling}"])
+            assert not self._background_violations(validate(f)), (
+                f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
+            )
+
+    def test_context_not_fork_skips_the_check_regardless_of_background(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: something-else"])
+        assert not self._background_violations(validate(f))
+
+    def test_no_context_key_skips_the_check(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["description: 'x'"])
+        assert validate(f) == []
+
+    def test_near_miss_cased_context_value_is_not_flagged(self, tmp_path):
+        """Whether the harness's own frontmatter parser is case-sensitive on
+        `context:` is unestablished, so this check is deliberately exact-match
+        only — pinning today's behavior rather than guessing the harness's
+        tolerance."""
+        f = self._make_skill(tmp_path, "a", ["context: Fork"])
+        assert not self._background_violations(validate(f))
+
+
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
 
 # The three DISPOSITION_RULE anchor regions in the corpus. Asserted as an
@@ -2160,6 +2223,129 @@ def _all_skill_md_files() -> list[Path]:
         assert matched, f"{base}/{pattern} matched no SKILL.md — this glob root is wrong"
         found.extend(matched)
     return sorted(found)
+
+
+# Skills carrying context: fork. The selection criterion is working set (how
+# much bulk content a skill's body pulls into the parent conversation), not
+# body size — see docs/skills.md's Skill architecture notes section. Extending
+# this set requires re-running that criterion against the candidate skill, not
+# just adding its name here.
+_FORKED_SKILLS = frozenset({"transcript-narrative", "error-mode-analysis"})
+
+
+class TestForkedSkillRoster:
+    """`context: fork` is reserved for a skill whose body instructs reading
+    bulk working-set content — raw transcripts, full PR-comment payloads —
+    directly into the parent conversation, with no residual parent work after
+    the artifact is written. A skill that already keeps its working set out
+    of the parent by dispatching subagents (code-review, plan-review) gains
+    only its body from forking and loses capability — the exact mistake this
+    roster test exists to catch before it lands.
+    """
+
+    def test_context_fork_roster_matches_working_set_criterion(self):
+        forked = {
+            path.parent.name
+            for path in _all_skill_md_files()
+            if parse_frontmatter(path).get("context") == "fork"
+        }
+        assert forked == _FORKED_SKILLS, (
+            "context: fork roster changed. Forking is a win only for a skill "
+            "whose body directs bulk working-set content into the parent "
+            "conversation with no residual parent work after the artifact is "
+            "written — not for a skill that is merely long. A skill that "
+            "already dispatches subagents to keep its working set out of the "
+            "parent (code-review, plan-review) gains only its body from "
+            "forking and loses capability. Read docs/skills.md's Skill "
+            "architecture notes section and re-run its criterion against the "
+            f"candidate skill before adding or removing a name here. Found: "
+            f"{sorted(forked)}, expected: {sorted(_FORKED_SKILLS)}"
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_forked_skill_declares_background_false_literal(self, skill_name):
+        frontmatter = parse_frontmatter(_skill_file(skill_name))
+        assert frontmatter.get("background") is False, (
+            f"{skill_name}: context: fork must pair with a literal "
+            f"background: false — omitting it defaults background to true, "
+            f"a background fork with a narrowed tool set and no /rewind "
+            f"checkpoint coverage."
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_forked_skill_carries_no_agent_key(self, skill_name):
+        frontmatter = parse_frontmatter(_skill_file(skill_name))
+        assert "agent" not in frontmatter, (
+            f"{skill_name}: must carry no agent: key, keeping it on the "
+            f"default general-purpose agent type — pinning a review-only "
+            f"agent type here would categorically forbid marker writes for "
+            f"any future forked skill."
+        )
+
+
+_NEGATIVE_GATE_RELEASE_INSTRUCTION = (
+    "This skill never invokes `marker.sh` and never invokes a review skill, "
+    "directly or by dispatching a subagent to do either on its behalf."
+)
+
+# Review-only skill names a forked skill's body must never invoke, matching
+# the personas _LIB_NO_GATE_RELEASE_AGENTS protects against releasing a gate.
+_REVIEW_SKILL_NAMES = (
+    "code-review",
+    "plan-review",
+    "skill-review",
+    "ready-for-review",
+    "agent-review",
+    "claude-hook-review",
+)
+
+
+class TestForkedSkillsDeclareNoGateReleaseAuthority:
+    """A forked skill runs unsupervised, in the parent's process identity,
+    with the full tool set. Both forked skills ingest content the session
+    owner did not write — raw transcripts, GitHub PR comments — so both must
+    state plainly that they never touch a review gate.
+    """
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_states_it_never_releases_a_gate(self, skill_name):
+        body = _skill_body(skill_name)
+        assert _NEGATIVE_GATE_RELEASE_INSTRUCTION in body, (
+            f"{skill_name}: forked skill body must state plainly that it "
+            f"never invokes marker.sh and never invokes a review skill."
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_does_not_actually_invoke_marker_or_a_review_skill(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "marker.sh write" not in body
+        assert "marker.sh activate" not in body
+        for review_skill in _REVIEW_SKILL_NAMES:
+            assert f'skill="{review_skill}"' not in body
+            assert f"Invoke the `{review_skill}`" not in body
+            assert f"run the `{review_skill}`" not in body
+
+
+class TestForkedSkillsCarryReturnAndGuardInstructions:
+    """A partial revert of either mechanism must fail loudly here rather than
+    silently reintroduce the parent-context cost forking exists to avoid.
+    """
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_defaults_its_output_location_to_mktemp(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "mktemp -d" in body, (
+            f"{skill_name}: must default its output location to a mktemp -d "
+            f"directory when no output path/directory argument is given."
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_states_the_bash_availability_guard(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "v2.1.218" in body, (
+            f"{skill_name}: must stop and name the Claude Code v2.1.218 "
+            f"background: false floor when Bash is unavailable."
+        )
 
 
 def test_skill_bodies_carry_no_citation_urls() -> None:
