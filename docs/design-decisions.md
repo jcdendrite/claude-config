@@ -848,7 +848,7 @@ belongs in the machine's own provisioning, outside this repo.
 **Open discrepancy, not resolved here.** The settings reference lists
 `enabledPlugins` and `agentPushNotifEnabled` with scope "Any file", defined
 there as effective in all four settings locations including Local.
-`.claude/rules/settings-json-conventions.md` states the opposite for
+`claude/.claude/rules/settings-json-conventions.md` states the opposite for
 `enabledPlugins`. Both cannot be right, and nothing in this repo tests the
 question.
 
