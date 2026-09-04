@@ -369,6 +369,16 @@
         ]
       },
       {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-architect-consult.sh",
+            "statusMessage": "Checking architect-consult gate..."
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
@@ -409,6 +419,15 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/redact-credential-values.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/log-reviewer-round.sh"
           }
         ]
       },
