@@ -76,9 +76,14 @@ anything from a null result about the glob match itself.
 
 **The question.** The trials above establish that a `**/`-led glob matches
 a zero-segment file in general. None tested `claude-md-conventions.md`
-itself — the rule whose five globs (`**/CLAUDE.md`, `**/AGENTS.md`,
-`**/CLAUDE.local.md`, `**/.claude/CLAUDE.md`, `**/.claude/AGENTS.md`) this
-whole investigation exists to support.
+itself — the rule whose five globs this whole investigation exists to
+support:
+
+- `**/CLAUDE.md`
+- `**/AGENTS.md`
+- `**/CLAUDE.local.md`
+- `**/.claude/CLAUDE.md`
+- `**/.claude/AGENTS.md`
 
 **A false negative, and its cause.** An uninstrumented interactive
 session read `claude-md-conventions.md`'s own content directly, then read
@@ -100,9 +105,9 @@ rule's own content has been pulled into context via `Read`, the harness
 may not re-inject that rule later in the same session, regardless of
 whether a subsequent file read would otherwise match its `paths:` glob.
 The session's positive control and its four negative trials shared
-exactly this read, so the correlation was perfect by construction: the
-two rules that fired had never been read directly; the one that didn't
-had been.
+exactly this read, so the correlation was perfect by construction. The
+two rules that fired had never been read directly. The one that didn't
+fire had been.
 
 **Limit.** No trial here isolates this mechanism directly — a session
 that reads a rule's content, then reads a second file that should
