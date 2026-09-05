@@ -22,9 +22,11 @@ Three independent measurement threads, of different reproducibility:
 ```
 wc -c CLAUDE.md; wc -l CLAUDE.md
 wc -c claude/.claude/CLAUDE.md; wc -l claude/.claude/CLAUDE.md
-find claude/.claude/skills -name "SKILL.md" -print0 | xargs -0 wc -c
+find claude-skills/skills -name "SKILL.md" -print0 | xargs -0 wc -c
 find docs -type f -name "*.md" -print0 | xargs -0 wc -c
 ```
+
+(`claude/.claude/skills` moved to `claude-skills/skills` in a later commit than the `80df8ce` baseline this measurement was taken against — GH-849's stow-package split. The skill-body byte count above was measured before that move and will not reproduce exactly against the current tree.)
 
 **2. The revisit-trigger evaluation — freshly re-derived today.**
 
