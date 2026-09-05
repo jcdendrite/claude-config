@@ -304,6 +304,80 @@ def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     )
 
 
+def test_schedulewakeup_stays_denied_in_settings() -> None:
+    """The declared config-value backing the ScheduleWakeup deny.
+
+    This proves the *declared* config state — `"ScheduleWakeup"` is present
+    in `permissions.deny` — not that the harness actually removes the tool
+    from context at runtime. That live-session verification lives outside
+    pytest (see `.claude/plans/prevent-non-loop-schedulewakeup-calls.md`'s
+    pre-implementation gate); this test only pins the declaration so a
+    future edit can't drop it silently. A membership check on the exact
+    bare string also catches a later weakening into the parenthesized
+    `"ScheduleWakeup(*)"` form, which leaves the tool visible in context.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert "ScheduleWakeup" in settings.get("permissions", {}).get("deny", []), (
+        f"'ScheduleWakeup' missing from permissions.deny in "
+        f"{_SETTINGS_PATH.name} — out-of-/loop wakeup scheduling is no "
+        f"longer prevented"
+    )
+
+
+def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
+    """The allow-path sibling to `test_schedulewakeup_stays_denied_in_settings`.
+
+    Guards against a future edit silently widening `permissions.deny` to
+    swallow tools `.claude/plans/prevent-non-loop-schedulewakeup-calls.md`'s
+    Context section requires to stay available, each on its own basis:
+
+    - `CronCreate` is named in `docs/design-decisions.md` §49's
+      Blast-radius section as unaffected by the deny.
+    - `ListAgents` and `TaskOutput` are not argued there — they're guarded
+      because the plan's pre-implementation gate (Verification step 1
+      check 5) required them to remain available, and §49's Revisit list
+      separately names them as a substitution-risk channel to watch, not
+      as confirmed-unaffected.
+    - `Agent` is guarded because the plan's Context section names it as
+      the dispatch the misfire follows, and it's also one of the three
+      tools the plan's pre-implementation gate (Verification step 1
+      check 5) required to remain available.
+
+    `CronCreate`'s presence in this list tracks §49's current
+    Accepted-residual-risk stance (the substitution channel is unguarded,
+    not unformable) — a future PR that deliberately closes that gap via
+    this same bare-tool-name-deny mechanism removes it from this list on
+    purpose, not as an accidental widening this test should catch.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    deny = settings.get("permissions", {}).get("deny", [])
+    documented_unaffected = (
+        "design-decisions.md §49's Blast-radius section claims this tool "
+        "stays unaffected by the ScheduleWakeup deny"
+    )
+    gate_required_available = (
+        "the plan's pre-implementation gate (Verification step 1 check 5) "
+        "requires this tool to remain available, and design-decisions.md "
+        "§49's Revisit list separately names it as a substitution-risk "
+        "channel to watch, not as confirmed-unaffected"
+    )
+    dispatch_trigger = (
+        "the plan's Context section names it as the dispatch the "
+        "ScheduleWakeup misfire follows"
+    )
+    rationale = {
+        "CronCreate": documented_unaffected,
+        "ListAgents": gate_required_available,
+        "TaskOutput": gate_required_available,
+        "Agent": dispatch_trigger,
+    }
+    for tool_name, why in rationale.items():
+        assert tool_name not in deny, (
+            f"'{tool_name}' present in permissions.deny in "
+            f"{_SETTINGS_PATH.name} — {why}"
+        )
+
+
 # Gates whose headers declare intentional unconditional (no-`if`) PreToolUse
 # dispatch: each self-filters on its own tool_input rather than relying on
 # a settings.json `if`-condition glob for coverage. Unlike _EXPLICIT_GATES
