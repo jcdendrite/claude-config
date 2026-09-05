@@ -17,14 +17,17 @@ many parallel claude-config sessions, the engineer found a session that had
 inherited a prior session's handoff instruction to run the full suite by
 hand, rather than checking that instruction against CLAUDE.md's own
 `select-tests.py` rule. A transcript-corpus audit of the personal account's
-684 claude-config transcripts (2026-08-04 to 2026-09-04, the only account
-root with claude-config project directories) confirmed this is a recurring
-pattern, not a one-off: of 29 sessions whose Bash history matched a
+684 claude-config transcripts (2026-08-04 to 2026-09-04) confirmed this is
+a recurring pattern, not a one-off. That account is the only one with
+claude-config project directories, so the audit stayed scoped to
+claude-config's own history rather than mixed with private-project data,
+and the counts below are safe to publish.
+Of 29 sessions whose Bash history matched a
 full-suite-shaped pytest invocation after the rule shipped
-(2026-08-25T07:49:24Z), 15 genuinely ran the bare full-suite command (the
-other 14 were decoys, `--collect-only` checks, or subdirectory-scoped
-runs), and 11 of those 15 (73%) inherited the command from a handoff whose
-own text cited "the handoff" as authority. All 11 trace to two long-lived,
+(2026-08-25T07:49:24Z), 15 genuinely ran the bare full-suite command; the
+other 14 were decoys, `--collect-only` checks, or subdirectory-scoped runs.
+11 of those 15 (73%) inherited the command from a handoff whose own text
+cited "the handoff" as authority. All 11 trace to two long-lived,
 still-active branches — `prevent-runaway-subagent-cost` and
 `review-pipeline-orchestrator-subagent` — each with a plan file whose
 Verification section named the raw full-suite command. Both plan files
