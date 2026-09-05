@@ -9,10 +9,8 @@ paths:
 ## Python environment conventions
 
 PEP 668, the CPython `venv` reference, and the PyPA Python Packaging User
-Guide ground the interpreter-targeting and detection guidance below. Full
-citations and verbatim quotes live in `docs/rules-references.md` **in the
-claude-config repo** — that path doesn't exist in the repo this rule fired
-in. Applies when installing or restoring Python dependencies.
+Guide ground the interpreter-targeting and detection guidance below. 
+Applies when installing or restoring Python dependencies.
 
 - **Never install into the machine's system interpreter; name the project
   environment's interpreter explicitly in every command.** Activation
