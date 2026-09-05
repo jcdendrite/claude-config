@@ -3115,6 +3115,97 @@ def test_lib_sanitize_for_terminal_does_not_strip_c1_bytes() -> None:
     assert result.stdout == b"a\x9bb"
 
 
+def _run_staged_diff_state(repo_root: str, *pathspecs: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_staged_diff_state "$@"', "bash", repo_root, *pathspecs],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ),
+        check=False,
+    )
+
+
+class TestLibStagedDiffState:
+    """_lib_staged_diff_state's three outcomes -- "content", "empty", and
+    "unknown" -- classify the staged diff BEFORE a caller hashes it, so a
+    genuinely empty diff is never mistaken for sha256sum's fixed-width
+    empty-input digest. Always exits 0; the outcome is the printed word."""
+
+    def _init_repo(self, repo: Path) -> None:
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "f.txt").write_text("first\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+    def test_content_when_something_is_staged(self, tmp_path: Path) -> None:
+        repo = tmp_path / "content-repo"
+        self._init_repo(repo)
+        (repo / "f.txt").write_text("first\nsecond\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "content"
+
+    def test_empty_when_nothing_is_staged(self, tmp_path: Path) -> None:
+        repo = tmp_path / "empty-repo"
+        self._init_repo(repo)
+        result = _run_staged_diff_state(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "empty"
+
+    def test_unknown_for_a_non_repo_root(self, tmp_path: Path) -> None:
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        result = _run_staged_diff_state(str(not_a_repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unknown"
+
+    def test_unknown_for_an_empty_repo_root(self) -> None:
+        result = _run_staged_diff_state("")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unknown"
+
+    def _init_repo_with_two_files(self, repo: Path) -> None:
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "a.txt").write_text("a\n")
+        (repo / "b.txt").write_text("b\n")
+        subprocess.run(["git", "add", "a.txt", "b.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+    def test_content_when_one_of_two_pathspecs_matches_a_staged_file(self, tmp_path: Path) -> None:
+        repo = tmp_path / "scoped-content-repo"
+        self._init_repo_with_two_files(repo)
+        (repo / "b.txt").write_text("b\nmodified\n")
+        subprocess.run(["git", "add", "b.txt"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo), "a.txt", "b.txt")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "content"
+
+    def test_empty_when_the_one_supplied_pathspec_does_not_match_a_staged_file(self, tmp_path: Path) -> None:
+        repo = tmp_path / "scoped-empty-repo"
+        self._init_repo_with_two_files(repo)
+        (repo / "b.txt").write_text("b\nmodified\n")
+        subprocess.run(["git", "add", "b.txt"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo), "a.txt")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "empty"
+
+    def test_empty_when_no_supplied_pathspec_of_several_matches_a_staged_file(self, tmp_path: Path) -> None:
+        repo = tmp_path / "scoped-empty-multi-repo"
+        self._init_repo_with_two_files(repo)
+        (repo / "b.txt").write_text("b\nmodified\n")
+        subprocess.run(["git", "add", "b.txt"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo), "a.txt", "c.txt")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "empty"
+
+
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
 # sentinel-presence check only, not the full autonomous-shipping-active
 # verdict.

@@ -279,9 +279,29 @@ case "$SUBCOMMAND" in
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         _guard_staged_vs_unstaged "$REPO_ROOT" code-review
+        # Classify the staged diff BEFORE hashing -- sha256sum's fixed-width
+        # empty-input digest would otherwise make a genuinely empty diff
+        # indistinguishable from a failed/capped one after the fact.
+        STAGED_DIFF_STATE=$(_lib_staged_diff_state "$REPO_ROOT")
+        case "$STAGED_DIFF_STATE" in
+          unknown)
+            printf 'marker.sh: could not determine whether the staged diff is empty (git diff --cached --quiet failed or timed out). Abort without writing a marker.\n' >&2
+            exit 2
+            ;;
+          empty)
+            printf 'marker.sh: staged diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
+            exit 0
+            ;;
+          content) ;;
+        esac
         # Compute before redirecting: `>` truncates the marker before the
         # pipeline runs, so a failed hash would destroy a valid marker and
         # silently force a re-review. Same shape in every arm below.
+        # Deliberately uncapped: marker.sh has no `pipefail` (see
+        # _lib_active_plan_hash's comment in _lib.sh), so a capped-and-killed
+        # `git diff` would let sha256sum hash truncated bytes into a
+        # well-formed but wrong digest -- worse than the uncapped hang it
+        # replaces.
         MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/code-review-markers"
@@ -292,11 +312,28 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md'
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (both stowed
         # and plugin locations) plus plan-review/ROUTING.md, matching what
         # require-skill-review.sh checks at commit time.
-        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
+        SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
+        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review "${SKILL_REVIEW_PATHSPECS[@]}"
+        # Classify BEFORE hashing -- same reason as the code-review arm above.
+        STAGED_DIFF_STATE=$(_lib_staged_diff_state "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")
+        case "$STAGED_DIFF_STATE" in
+          unknown)
+            printf 'marker.sh: could not determine whether the staged SKILL.md diff is empty (git diff --cached --quiet failed or timed out). Abort without writing a marker.\n' >&2
+            exit 2
+            ;;
+          empty)
+            printf 'marker.sh: staged SKILL.md diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
+            exit 0
+            ;;
+          content) ;;
+        esac
+        # Deliberately uncapped -- same reason as the code-review arm above:
+        # a capped-then-killed git diff here would hash a truncated stream
+        # into a well-formed but wrong marker.
+        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- "${SKILL_REVIEW_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
@@ -562,18 +599,26 @@ case "$SUBCOMMAND" in
     printf 'Completion markers (this repo):\n'
 
     # code-review: hash of the whole-repo staged diff -- same recipe as the
-    # `write code-review` arm above. Capped so a stalled git diff can't hang
-    # the whole status report; a killed process yields an empty value, which
-    # _status_report_completion_marker already treats as absent/historical.
-    CODE_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
+    # `write code-review` arm above. Gated by _lib_staged_diff_state; only the
+    # "content" state computes a hash. "empty" and "unknown" leave the value
+    # blank, which _status_report_completion_marker already treats as
+    # absent/historical. Worst-case wall time for a "content" line is now two
+    # 5s-capped git calls in sequence (the probe, then the hash), not one.
+    CODE_REVIEW_VALUE=""
+    if [ "$(_lib_staged_diff_state "$REPO_ROOT")" = content ]; then
+      CODE_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
+    fi
     if _status_report_completion_marker code-review "$CONFIG_DIR/code-review-markers" "$REPO_HASH_PREFIX" "$CODE_REVIEW_VALUE"; then
       _status_reconciliation_flag code-review "$REPO_ROOT"
     fi
 
     # skill-review: same recipe as the `write skill-review` arm above,
-    # scoped to the SKILL.md/ROUTING.md pathspecs.
+    # scoped to the SKILL.md/ROUTING.md pathspecs and gated the same way.
     SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
-    SKILL_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached -- "${SKILL_REVIEW_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
+    SKILL_REVIEW_VALUE=""
+    if [ "$(_lib_staged_diff_state "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")" = content ]; then
+      SKILL_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached -- "${SKILL_REVIEW_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
+    fi
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"
     fi
@@ -602,11 +647,12 @@ case "$SUBCOMMAND" in
     # above, via the shared _lib_cumulative_diff_hash. Makes a network round
     # trip (gh pr view) unlike every other line in this report, which are
     # all local/offline. A hash that can't be computed (gh/network failure,
-    # no resolvable merge-base, or the 15s cap firing) is treated as empty
-    # here rather than aborting -- `status` is a report, not a write. No
-    # reconciliation flag: that check is documented (_status_reconciliation_flag
-    # above) as applying only to pathspec-hash markers, and the cumulative
-    # diff is not staged/unstaged tree state.
+    # a legitimately empty diff -- often because the branch already has a
+    # merged PR, no resolvable merge-base, or the 15s cap firing) is treated
+    # as empty here rather than aborting -- `status` is a report, not a
+    # write. No reconciliation flag: that check is documented
+    # (_status_reconciliation_flag above) as applying only to pathspec-hash
+    # markers, and the cumulative diff is not staged/unstaged tree state.
     CUMULATIVE_DIFF_HASH_FAILED=0
     CUMULATIVE_REVIEW_VALUE=$(_lib_cumulative_diff_hash "$REPO_ROOT" "$PR_DIFF_SCRIPT") || { CUMULATIVE_REVIEW_VALUE=""; CUMULATIVE_DIFF_HASH_FAILED=1; }
     _status_report_completion_marker cumulative-review "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX" "$CUMULATIVE_REVIEW_VALUE"
@@ -616,7 +662,7 @@ case "$SUBCOMMAND" in
     # line above, so a reader can tell "could not verify" apart from
     # "confirmed stale".
     if [ "$CUMULATIVE_DIFF_HASH_FAILED" -eq 1 ] && _status_glob_has_match "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX"; then
-      printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, produced no output, or timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
+      printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, the diff is empty -- often because this branch already has a merged PR -- or resolution timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
     fi
 
     printf '\nActive-bypass markers (this session):\n'

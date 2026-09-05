@@ -930,7 +930,8 @@ def reviewer_round_state_value(repo: Path) -> str:
     """Shell out to the real _lib_reviewer_round_state_value against `repo`
     — see reviewer_round_state_key's docstring for the git_toplevel
     normalization rationale, which applies identically here. Returns ""
-    (not raising) when HEAD is unresolvable (no commits yet)."""
+    (not raising) when HEAD is unresolvable (no commits yet), or when the
+    staged diff is unanswerable (_lib_staged_diff_state reports "unknown")."""
     result = subprocess.run(
         ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_value "$1"',
          "_", git_toplevel(repo)],

@@ -72,6 +72,11 @@ Compute the **cumulative** PR-vs-default-branch diff — not staged changes, not
 ~/.claude/scripts/pr-diff-against-base.sh --record
 ```
 
+**Empty or unresolved diff — halt before anything below** (the rest of this step, including the `marker.sh status` read below, assumes a non-empty diff):
+
+- Non-zero exit: the command already named the reason on stderr; resolve that first, because this step has no diff to review.
+- Exit 0 with no output: the branch's cumulative diff against its base is empty — usually because this branch's PR is already merged. Halt `/ready-for-review` and report both facts.
+
 <!-- CACHE_RULE:ready-for-review-cumulative-diff-cache start -->
 Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: if its `cumulative-review` line reads `live`, this diff content already passed a full unnarrowed cumulative review — skip the invocation below, report the cache hit in the Completion summary, and continue to step 4. Content type is never a skip reason on its own — on `historical` or `absent`, markdown, skill, and config diffs get the same pass as everything else.
 <!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
