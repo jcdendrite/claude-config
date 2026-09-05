@@ -726,6 +726,143 @@ class TestRequireReadyForReview:
             cwd=repo_on_feature_branch,
         )
 
+    def test_non_gated_command_advances_active_marker_mtime(
+        self, isolated_home, repo_on_feature_branch
+    ):
+        """The active-marker check runs before the command-shape filter, so
+        a non-gated command still refreshes a live marker's mtime."""
+        sid = "session-non-gated"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("pytest -q", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a non-gated command must still refresh a live marker's mtime"
+        )
+
+    def test_live_marker_allows_despite_fragment_split_sed_failure(
+        self, isolated_home, repo_on_feature_branch, tmp_path
+    ):
+        """The active-marker check runs before the fragment-split fail-closed
+        deny, so a session holding a live marker allows through a sed shim
+        that fails only on _lib_split_fragments's invocation shape. Shares
+        its PATH-shim technique with test_fragments_split_sed_failure_denied;
+        differs only in holding a live marker."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        sid = "session-live-despite-sed-failure"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "allow"
+        )
+
+    def test_live_marker_still_denied_by_total_sed_absence(
+        self, isolated_home, tmp_path
+    ):
+        """The relocated active-marker check runs after _lib_strip_shell_quotes,
+        so a live marker does not rescue a total sed absence: that deny still
+        fires, and the marker is left untouched."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+
+        sid = "session-live-total-sed-absence"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+        assert marker.exists(), "the pre-SESSION_ID deny must not evict the marker"
+
+    def test_dead_pid_active_marker_evicts_on_non_gated_command(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """The relocation widens eviction the same way it widens refresh: a
+        non-gated command now also evicts an orphaned dead-PID marker, even
+        though the command itself allows (it never reaches a gated shape)."""
+        sid = "session-dead-pid-non-gated"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text("99999999")  # PID outside Linux/macOS max range → always dead
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("pytest -q", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+        assert not marker.exists(), "hook must evict the orphan marker on dead PID"
+
+    def test_marker_refresh_is_not_scoped_to_calling_directory(
+        self, isolated_home, tmp_path
+    ):
+        """The active marker carries no repo hash, so a Bash call issued from
+        a directory unrelated to the marker's own session still refreshes
+        it."""
+        sid = "session-cross-cwd"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300
+        os.utime(marker, (old_time, old_time))
+
+        other_dir = tmp_path / "unrelated-tree"
+        other_dir.mkdir()
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("pytest -q", session_id=sid),
+                cwd=other_dir,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "marker refresh must not depend on which tree the Bash call runs in"
+        )
+
     # -- Completion-marker check ------------------------------------------
 
     def test_no_marker_denies(
@@ -1552,7 +1689,7 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
-    def test_fragments_split_sed_failure_denied(self, tmp_path):
+    def test_fragments_split_sed_failure_denied(self, isolated_home, tmp_path):
         """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
         from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
         sed binary, so a total sed-absent test (like the one above) can't
@@ -1560,7 +1697,10 @@ class TestRequireReadyForReview:
         fails on any invocation that isn't _lib_strip_shell_quotes's own
         `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
         while the later _lib_split_fragments call (a bare `sed -E
-        's/.../g'`, no `-e` token) fails on its own."""
+        's/.../g'`, no `-e` token) fails on its own. isolated_home: the
+        active-marker check runs above this deny, so this test reaches that
+        check on its way to denying -- without a sandboxed $HOME it would run
+        that check against the real ambient $HOME."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
 
