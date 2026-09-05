@@ -2786,7 +2786,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     doc_path = repo_root / "docs" / "handoff-nudge.md"
     expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
     citations = [
