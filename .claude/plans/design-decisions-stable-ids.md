@@ -1,0 +1,212 @@
+# Split `docs/design-decisions.md` into one file per decision
+
+## Context
+
+**Goal:** stop `docs/design-decisions.md` from serializing the merge queue, by giving every decision its own file so two branches never touch the same path.
+
+Every branch that records a decision appends a `## <N>. <Title> (<YYYY-MM-DD>)` section to the end of one shared file, claiming "the next free number." Concurrent branches therefore collide twice over: on the number, and on the EOF merge hunk. The number collision is visible and expensive:
+
+- PR #856 renumbered its entry §44→§48→§49→§51 across three rebases, and committed a stray `<<<<<<< HEAD` marker in the process.
+- The final renumber in PR #853 touched 21 citation sites across six files.
+- The authors of PR #778 coordinated across two live sessions to reserve §36 by hand.
+
+The EOF collision is the one that actually binds: even a trivial keep-both conflict forces a rebase, so PRs cannot be merged one after another.
+
+Now, because the backlog has made this structural rather than occasional. Five of fourteen open PRs currently carry a colliding entry, and three of them — #874, #873, #859 — claim §51 simultaneously off the same merge-base. At roughly eleven decisions a month the queue refills faster than it can be drained, so the problem does not resolve by waiting.
+
+The intended outcome is that a decision-recording PR merges in any order relative to its peers, with no rebase and no renumber, and that every one of the ~97 external and 81 intra-file `§N` citations still resolves afterwards — including the ones inside preserved records this repo's own scope rules forbid editing.
+
+## Approach
+
+Split `docs/design-decisions.md` into one file per decision under `docs/design-decisions/<slug>.md`, migrating every section present in the file when Phase A runs — 51 fixed at plan-authoring time, plus however many the pre-migration drain (row21) lands (row22) — in a single mechanical commit, and leave the old path as a permanent stub. Identity becomes the slug; the section numbers survive only as a frozen italic provenance line inside each migrated file, so the roughly 97 external `§N` citations sitting in preserved records stay resolvable without being edited.
+
+**Root problem.** Every decision-recording branch appends to one shared file, so concurrent branches collide on both the section number and the EOF hunk — which forces a rebase per PR and serializes the merge queue.
+
+**Givens** — conditions this design treats as fixed because they lie beyond its reach.
+
+- **row1 — Concurrent decision-recording branches are the steady state, not a spike.** Reason: PR concurrency is a property of how this repo is worked, owned by the engineer's scheduling; no doc layout reduces it. `[verified: 5 of 14 open PRs currently add a `docs/design-decisions.md` section; #874, #873, and #859 all claim §51 off the same merge-base; #863 claims the already-taken §48; the merge-base for #714 is 11 sections stale]`
+- **row2 — Roughly 97 external `§N` citations live in files this repo's CLAUDE.md marks read-only** (`CHANGELOG.md` entries, merged `.claude/plans/*.md`, `.claude/agent-reviews/*`). Reason: Axis 3 is standing repo policy that predates this plan; dissolving the dependence would require reclassifying preserved records, a decision outside this plan. `[verified: root CLAUDE.md §Scope discipline Axis 3; coupling inventory of 97 external and 81 intra-file citations]`
+- **row3 — GitHub renders `<a id="x"></a>` as `id="user-content-x"`, so a link targeting fragment `x` resolves only through an undocumented client-side shim, not the id GitHub actually assigned.** Reason: GitHub owns the markdown sanitizer; there is an open community request for official support and no repo-side control over it. `[verified: POST to GitHub's `/markdown` API with `mode=gfm`]`
+- **row4 — `test_skills.py::_all_doc_paths` covers `docs/**/*.md` and excludes only `docs/reports/**` and `docs/case-studies/**`.** Reason: the exclusion is keyed on directory names for preserved-record trees; a new `docs/design-decisions/` directory is covered by default, and changing that would need its own decision about whether decisions are preserved records. `[verified: claude/.claude/skills/tests/test_skills.py:3734-3747]`
+
+**Assumptions.**
+
+- **row5** `[engineer-verified]` The binding constraint is conflict *count*, not conflict *cost*: "So with option 1, the EOF file conflict is simpler but is still there. What this means is I can't merge PRs one after the other — each has to rebase. That's not tenable."
+- **row6** `[engineer-verified]` One file per decision. Locked; this plan does not re-open it.
+- **row7** `[engineer-verified]` Migrate all 51 — not seal-the-archive, not a hot-subset split.
+- **row8** `[engineer-verified]` Slug-only identifiers; no numeric handle retained for conversational shorthand.
+- **row9** `[engineer-verified]` Bare `<slug>.md` filenames; no date or number prefix.
+- **row10** `[verified: docs/design-decisions.md:685]` Supersession edits the superseded section, not only the new one — §41 carries `**Superseded by §49 (2026-09-04):**`, added three months after §41 was written. A sealed archive would therefore still receive writes.
+- **row11** `[verified: docs/case-studies.md index against the docs/case-studies/ listing]` A hand-maintained per-entry index in this repo is already 15% stale: the directory holds 13 files, the index lists 11, and `cold-cache-attribution` and `pr-cost-context-bucket` appear nowhere in it.
+- **row12** `[verified: docs/case-studies.md:3 plus the 13-file docs/case-studies/ listing]` The directory-of-bare-slug-files shape already exists in this repo and self-describes as "Sibling to `design-decisions.md`, which carries the shorter-form decision records." It is the shape to copy — minus the index.
+- **row13** `[verified: docs/design-decisions.md:186 against :19-37]` `test_doc_counts.py`'s first `DocCountFact` spans two sections: two occurrences sit in §3, and the third (`r"All (\w+) reviewer agents write structured"`) is at line 186 inside `## 12. Reviewer file-based output via findings_path`. The repoint is three `rel_path` values across two new files, not one.
+- **row14** `[verified: claude/.claude/hooks/tests/test_doc_counts.py:345-349]` Exactly one machine-parsed dependency on a section *number* exists repo-wide: `pattern=r"## 3\. Specialist reviewer roster \((\d+) personas\)"`. Every other `§N` is prose that would degrade silently rather than break loudly.
+- **row15** `[verified: claude/.claude/scripts/select-tests.py:458,459,464,468]` A diff touching `docs/`, `README.md`, `.claude/rules/`, and a new test source selects `HOOKS_TESTS_DIR` and `SKILLS_TESTS_DIR` plus `SELECT_TESTS_TEST_PATH`.
+- **row16** `[verified: test_skills.py:3798-3806 and `re.search` semantics]` The per-account state-path contract cannot newly fail from the split: a `re.search` that finds no match in the combined file finds no match in any section of it, and the migration adds no text. Splitting can only turn one passing file into 51 passing files — this holds for both `test_skills.py` tests parametrized over `_all_doc_paths()`, `test_doc_has_no_state_path` and `test_doc_has_no_templated_stowed_path`, under the identical reasoning.
+- **row17** `[verified: repo-wide search reported by the dispatching session — no skill, agent, CLAUDE.md line, or `.claude/rules/*.md` states the heading grammar]` The authoring convention is currently inferable only from the file's own existing headings.
+- **row18** `[verified: Nygard, "Documenting Architecture Decisions", cognitect.com 2011; MADR at adr.github.io/madr/; AWS Prescriptive Guidance ADR process]` Every first-tier ADR source prescribes one file per decision — Nygard: "We will keep ADRs in the project repository under `doc/arch/adr-NNN.md`"; MADR: "The filenames are following the pattern `NNNN-title-with-dashes.md`". All three keep sequential numbers and none addresses parallel branches, so the sources support the split and supply no support for the identifier scheme.
+- **row19** `[unverified]` Whether any of the 5 open decision-carrying PRs carries coupling beyond its appended section (for instance a `§N` citation added to another file in the same PR). Under drain-first (row21) these PRs merge before Phase A runs and are migrated by Phase A like any other section (row22); no PR author performs a separate conversion step. This row's coupling concern stays open regardless of sequencing: Phase A's mechanical transformations only rewrite citations inside `docs/design-decisions.md` itself, so a `§N` citation any of these PRs added to a different file is not caught by this plan and is not enumerated here.
+- **row20** `[verified: Slug map section below]` The specific slug for each of the 51 sections that existed at plan-authoring time is fixed by this plan, not derived at migration time — see the Slug map section below, which Phase A's `code-writer` dispatch uses verbatim for §1-51. The test pins shape and a legacy-number set derived from the file at dispatch time (row22), not a literal `{1..51}` — row22 covers why the drain-first reversal (row21) requires deriving that set rather than hardcoding it.
+- **row21** `[engineer-verified]` The 5 currently open PRs (#874, #873, #859, #863, #714) are drained — merged serially — before this migration executes: "I'm going to merge all those open PRs serially before this migration is executed." This is a one-time exception to row5, not a reversal of it: row5 rules out per-PR rebase-and-renumber as *tenable ongoing policy*, and this plan's purpose is to stop paying that tax on every future decision; row21 accepts paying it once more, for the 5 PRs already queued, as the price of never paying it again afterward.
+- **row22** `[verified: row1, row21]` Draining the 5 open PRs (row21) before Phase A runs means the monolith holds more than 51 sections — roughly 56, assuming no other decision merges during the drain window — by the time Phase A executes. The Slug map's 51 rows stay fixed for §1-51 (row20); sections numbered beyond that at dispatch time get slugs assigned by Phase A's `code-writer` dispatch, following the same kebab-case-from-title convention the Slug map demonstrates, not pinned in advance. Verification assertion 2 accordingly checks the legacy-number set against the actual pre-migration section count read at dispatch time, not a hardcoded `{1..51}` literal. This is consistent with row7's "migrate all, not a hot-subset split" — the section count changes under drain-first, the migrate-everything principle doesn't.
+
+**Mechanisms.**
+
+- One file per decision under `docs/design-decisions/<slug>.md` — two branches create two different paths, which git merges with no conflict hunk, removing the append surface rather than shrinking it. `anchors: root, row5`
+- Migrate all 51 rather than sealing the archive — a sealed archive still receives supersession writes, so the seal is a rule the repo's own convention breaks in practice. `anchors: row10, row7`
+- Bare `<slug>.md` with no prefix — copies the established `docs/case-studies/` shape rather than inventing a second convention two directories apart; ordering is not a browse surface for lookup-oriented records. `anchors: row12, row9`
+- Per-file italic legacy-`§N` line under the H1 — makes `git grep '§45' docs/design-decisions/` resolve a citation whose source Axis 3 forbids editing. `anchors: row2`
+- The legacy number recorded in exactly one place (the file), never also as a stub table — it is a frozen fact about a closed sequence, so a single copy cannot drift, while two copies would be the duplication defect CLAUDE.md §Engineering Judgment names. `anchors: row2`
+- No committed index — an index is another shared append surface and would reinstate the serialization the split just removed; this repo's existing hand-maintained index is already stale, so this is a realized failure, not a predicted one. `anchors: row5, row11`
+- Permanent stub at `docs/design-decisions.md` — six links point at the bare path with no fragment and the preserved-record citations name it, so the landing page can never be deleted; it carries the resolution sentence, not a register. `anchors: row2`
+- No `<a id>` anchors anywhere — the split makes addressing path-based, retiring the dependency on GitHub's undocumented `user-content-` fragment shim. `anchors: row3`
+- Pytest in `claude/.claude/hooks/tests/`, and no hook — the split eliminated the merge-time-only predicate, so every remaining invariant is checkable at HEAD, and a `PreToolUse` gate layered on a passing test is the compounding-defensive-layers shape. `anchors: root, row14`
+- Path-scoped `.claude/rules/` file rather than a `CLAUDE.md` line — the trigger is opening a decision file, which is exactly what path-scoped rules match on, so the rule costs no always-loaded budget. `anchors: row17`
+- Migration commit restricted to motion plus three enumerated mechanical transformations, with no prose edits — a multi-file split carrying reworded titles or corrected dates is not diff-reviewable, and an unreviewable diff gets rubber-stamped. `anchors: row7`
+- No per-section `git mv` — git infers renames from content similarity at diff time and each new file is roughly 2% of the original, far below any threshold, so `git mv` records nothing; `git log -S'<phrase>' -- docs/design-decisions.md` recovers origin commits permanently at the cost of one documented sentence. `anchors: row7`
+- Drain the 5 open PRs before migrating — the engineer's explicit choice, reconciled with row5's standing constraint in row21. `anchors: row1, row5, row21`
+
+**Over-powered-primitive check.** The split is the heavier primitive. Five lighter ones were considered and rejected:
+
+- **Slug anchors inside the single file** — fixes the identifier but not the merge; both branches still append at EOF, so conflict count is unchanged and the queue still serializes. `anchors: row5`
+- **`.gitattributes merge=union`** — git's own documentation warns "Do not use this if you do not understand the implications"; it takes lines from both versions without markers, which would silently reproduce the duplicate `## 12.` heading that sat on main for 12 days, and it defeats conflict detection on in-place section amendments, this file's dominant edit mode. `anchors: row5`
+- **A reservation file or lint hook claiming the next free number** — the reservation must reach main before it reserves anything, so each decision needs a two-PR dance, and the reservation file carries its own EOF contention; this is the manual cross-session coordination from PR #778 formalized, and that instance is the evidence it does not scale. `anchors: row1`
+- **PR number as the identifier** — collision-free, but late-binding: the section is written before the PR exists, so neither the heading nor any intra-file citation to it can be written at authoring time. `anchors: row5`
+- **Accept the renumber tax** — the tax scales with PR concurrency, which is rising:
+  - 21 citation sites touched in the final renumber for PR #853.
+  - A stray `<<<<<<< HEAD` marker committed into a fix in PR #856.
+  - Six stale `§47` sites left behind by PR #867.
+  - Four recorded recurrences total.
+
+  `anchors: row1`
+
+## Slug map
+
+The definitive `§N` → slug → title table for the migration. Phase A's `code-writer` dispatch uses these 51 slugs verbatim for the sections that existed at plan-authoring time (row20); any sections numbered beyond 51 present in the file when Phase A actually runs — expected from the row21 drain — receive slugs assigned at dispatch time using the same convention, per row22.
+
+| §N | slug | title |
+|---|---|---|
+| 1 | `hook-enforced-gates` | Hook-enforced gates over advisory instructions |
+| 2 | `content-addressed-review-markers` | Content-addressed review markers |
+| 3 | `specialist-reviewer-roster` | Specialist reviewer roster (8 personas) |
+| 4 | `no-shared-skill-partials` | No shared skill partials |
+| 5 | `stow-over-plugin-marketplace` | Stow distribution over plugin marketplace |
+| 6 | `three-tier-redaction-system` | Three-tier redaction system |
+| 7 | `worktree-required-sentinel` | Worktree-required as a per-project sentinel |
+| 8 | `project-layer-composition` | Project-layer composition via prose-pointer + glob |
+| 9 | `reviewer-persona-roster-operations` | Reviewer persona roster operations |
+| 10 | `check-runner-charter-scoping` | check-runner agent: charter scoping over command-pattern hardening |
+| 11 | `code-writer-self-review` | `code-writer` agent and in-agent self-review |
+| 12 | `reviewer-findings-path-output` | Reviewer file-based output via `findings_path` |
+| 13 | `single-source-of-truth-rule` | Single source of truth elevated to a canonical CLAUDE.md rule |
+| 14 | `effort-estimated-by-review-surface` | Effort estimated by review surface, not implementation time |
+| 15 | `convention-skills-explicit-pointer` | Convention skills wired by explicit pointer, not description-based auto-trigger |
+| 16 | `finding-disposition-by-review-surface` | Finding disposition calibrated by review surface, not coding time |
+| 17 | `loop-simplify-name-only` | `loop` and `simplify` flipped from `off` to `name-only` |
+| 18 | `debug-investigation-read-only-probe` | Debug-investigation delegation: read-only probe over debug-and-fix agent |
+| 19 | `continuity-file-permission-hardening` | Continuity-file permission hardening: one choke point over a per-directory recipe |
+| 20 | `hashline-edit-format-declined` | Hashline edit format declined |
+| 21 | `cost-lever-register-consolidated` | Cost-lever register consolidated across six prior plans |
+| 22 | `cost-association-in-docs` | Main-thread/subagent cost association published in docs, not the delegation skill |
+| 23 | `sentinel-promotion-criterion` | Sentinel promotion criterion: machine -> machine-promptable |
+| 24 | `effort-tier-routing-clamp` | Effort-tier routing: two-way clamp accepted, `xhigh` reserved for uniformly-hard work |
+| 25 | `skill-fidelity-reviewer-widened-scope` | Widening `skill-fidelity-reviewer`'s scope over a new spawn-dispatch hook |
+| 26 | `duplicated-evidence-at-plan-review` | Duplicated-evidence detection sited at plan review, not code review |
+| 27 | `fixture-setup-caching-declined` | Fixture-setup caching declined after measuring the real ratio |
+| 28 | `disable-artifact-workflows-over-deny` | Startup context bloat: `disableArtifact`/`disableWorkflows` over `permissions.deny` |
+| 29 | `worktree-lock-session-id` | Worktree-lock self-recognition keyed on session_id, not PID |
+| 30 | `plan-it-step5-pinned-opus-dispatch` | `/plan-it` Step 5 dispatches a pinned-Opus `plan-architect` agent instead of anchoring the whole session |
+| 31 | `artifact-workflow-disabled-by-default` | Artifact/Workflow disabled by default, with a per-session opt-back-in |
+| 32 | `worktree-lock-fast-path` | Worktree-lock fast path: reads stop reacquiring the lock |
+| 33 | `citation-genre-mismatch` | `skill-fidelity-reviewer`'s low cited-path edit rate is a citation-genre mismatch, not a reviewer-value signal |
+| 34 | `reviewer-responsibility-bounded-to-diff` | Reviewer responsibility bounded to the diff under review, uniformly, with default-branch and cumulative-pass guards |
+| 35 | `skill-evals-local-only` | Skill evals run locally only; a CI eval harness stays declined |
+| 36 | `auto-clear-dead-pid-worktree-lock` | Auto-clearing a dead-PID worktree lock via a release-free claim file |
+| 37 | `plan-architect-consult-mode` | `plan-architect` widened to a second, ad hoc consult mode instead of a new agent |
+| 38 | `prose-rules-promoted-to-global-claude-md` | Universal prose rules promoted from the personal output-preferences layer into the global CLAUDE.md |
+| 39 | `claudemdexcludes-nested-discovery-duplicate` | `claudeMdExcludes` suppresses the nested-discovery duplicate of `claude/.claude/CLAUDE.md` |
+| 40 | `attribution-in-skill-prose-and-hook` | Attribution stays in skill prose and a hook gate rather than the native `attribution` settings key |
+| 41 | `schedulewakeup-misapplied-documented` | `ScheduleWakeup` misapplied outside `/loop`: documented, not guarded |
+| 42 | `code-review-fix-route-plan-architect` | `/code-review`'s Fix-route step routes a mechanism-inventing fix through `plan-architect`, dispatched rather than hooked |
+| 43 | `ui-notification-defaults-in-stow-source` | UI and notification preference keys ship as shared defaults in the stow-source settings file |
+| 44 | `ready-for-review-cumulative-diff-cache` | `ready-for-review`'s cumulative-diff review cache: a fifth content-addressed marker kind |
+| 45 | `round3-plan-architect-consult-gate` | Round-3-triggered `plan-architect MODE=consult` gate, with a condition-shaped CLAUDE.md carve-out |
+| 46 | `rule-file-review-stays-a-section` | Rule-file review stays a section inside `ai-instruction-and-memory-files/SKILL.md` rather than its own skill |
+| 47 | `claudemdexcludes-stow-source-rule-files` | A second `claudeMdExcludes` entry suppresses the nested-discovery duplicate of each stow-source rule file in a linked worktree |
+| 48 | `review-trace-fifth-event-kind` | `review-trace` gets a fifth event kind so a prescribed `plan-architect` consult stops being invisible to `skill-fidelity-reviewer` |
+| 49 | `schedulewakeup-denied-by-bare-tool-name` | `ScheduleWakeup` denied by bare tool name in `permissions.deny`, reversing §41 |
+| 50 | `cumulative-review-marker-not-recomputed` | `write cumulative-review` stops recomputing its own artifact: the marker's value is the recorded review subject, not a write-time diff |
+| 51 | `no-op-dispatch-guard` | The no-op-dispatch guard is a CLAUDE.md rule, not a hook |
+
+## Critical files
+
+**Phase A — the mechanical split.** One `code-writer` dispatch, run first. Phase A and Phase B are two dispatch steps of one atomic, squash-mergeable change — Phase A's commit must never be merged, cherry-picked, or approved standalone: landing it alone breaks `test_doc_counts.py`'s first `DocCountFact` (its three occurrences match content the stub rewrite deletes) and leaves two README fragment anchors 404ing.
+
+- **Create `docs/design-decisions/<slug>.md` × N, where N is the section count in `docs/design-decisions.md` at dispatch time** (51 fixed at plan-authoring time; row22 covers the additional sections the row21 drain is expected to land before Phase A runs). Each file is its section's body verbatim, subject to exactly three mechanical transformations and no prose edits. Use the Slug map above verbatim for §1-51. For any higher-numbered section, derive its slug mechanically: lowercase the title, drop any parenthetical qualifier and everything after a colon or em dash, strip remaining punctuation other than spaces and hyphens, replace spaces with hyphens, and cap at 6 words by truncating from the end if still over. If the result collides with any existing slug among the N files, disambiguate by appending the section's own legacy number (`<slug>-52`):
+  1. `## N. Title (YYYY-MM-DD)` becomes `# Title` followed by a blank line and an italic provenance line — `*2026-09-03. Formerly `docs/design-decisions.md` §51.*` — with the date clause omitted for the 15 sections that carry no date (§1–§12, §15, §18, §19).
+  2. Every `###` subheading inside the section (for example `### Sources`) is promoted to `##`.
+  3. Intra-file `§N` cross-references become relative links, `[…](<slug>.md)`, via the Slug map above. All 81 must be converted in this commit; leaving them would ship a corpus citing the numbering scheme the same commit abolishes, and each would be dead on arrival.
+- **Rewrite `docs/design-decisions.md` as a permanent stub.** Four things and nothing that grows: what the directory holds, the resolution sentence for legacy citations (`git grep '§45' docs/design-decisions/`), the pre-split history sentence (`git log -S'<distinctive phrase>' -- docs/design-decisions.md`), and a link to the directory plus the reciprocal `docs/case-studies.md` sibling pointer. No index. No numbered mapping table.
+- **Reuse:** `docs/case-studies.md` and `docs/case-studies/` are the shape to copy — bare slug filenames, no numbers, no date prefixes, a sibling-pointer preamble — minus the index, per row11.
+
+**Phase B — tooling, rule, test, and citation repoints.** A second `code-writer` dispatch, **sequenced after Phase A**, because the `test_doc_counts.py` repoint and the link-resolution test both take Phase A's actual slug filenames as input. The two phases must not be parallelized: they share this one feature worktree (`CLAUDE.md`'s Agent Briefing bars `isolation: worktree` for PR-bound work), and overlapping edits in one tree clobber silently rather than conflict.
+
+- **`claude/.claude/hooks/tests/test_doc_counts.py`** — repoint three `Occurrence.rel_path` values in the first `DocCountFact`: the two at lines 345-353 to §3's new file, and the one at lines 355-359 (`r"All (\w+) reviewer agents write structured"`) to §12's new file per row13. Change the heading pattern from `r"## 3\. Specialist reviewer roster \((\d+) personas\)"` to `r"# Specialist reviewer roster \((\d+) personas\)"`. **Reuse:** extend the existing `DocCountFact`/`Occurrence` registry; do not add a parallel mechanism.
+- **`claude/.claude/hooks/tests/test_design_decision_files.py`** — new, carrying the four assertions in Verification. **Reuse:** `test_case_study_anchors.py` is a registry of hand-enumerated `(doc_path, script_path, anchor_text, kind)` tuples, each parametrized and substring-counted against two specific files — that per-pair anchor-registry shape fits this file's assertion 1 (glob-then-parametrize over the migrated files) but not assertions 2-4, which are whole-directory aggregate properties with no natural per-tuple row and should each be written as a single whole-corpus assertion instead. What carries over from `test_case_study_anchors.py`: the import boilerplate (`from helpers import CLAUDE_DIR`, `REPO_ROOT = CLAUDE_DIR.parent.parent` with its comment explaining the chain) and the `NamedTuple`-for-fixtures convention — not the per-pair anchor-registry pattern itself. Its docstring's "Why hooks/tests/" rationale (co-location with `test_doc_counts.py`, which guards a related class of doc-vs-disk drift) applies here verbatim and should be restated in the new module's own docstring.
+- **`.claude/rules/design-decisions.md`** — new. Frontmatter `paths:` listing `docs/design-decisions/**` and `docs/design-decisions.md`; body states the filename grammar, the H1-plus-provenance-line format, slug immutability after merge, and the supersession convention that `docs/design-decisions.md:685` already demonstrates but nothing documents (row17). **Reuse:** `.claude/rules/review-pipeline-dispatch.md` is the file shape — YAML `paths:` list, then a single `## ` heading, then prose. Note this is a **root** `.claude/rules/` file, so `claude/.claude/rules/rule-authoring-conventions.md`'s "every `paths:` glob must be `**/`-led with no leading literal path segment" does **not** apply: that constraint governs stowed rules whose referent is every consumer's repo, and this rule's referent is this repo alone.
+- **`README.md`** — the operative rule for every living doc this migration touches: rewrite a fragment anchor only where the split would break it (a 404), and leave prose `§N` citations to resolve through the stub's `git grep '§N' docs/design-decisions/` sentence rather than editing them — the same resolution path Axis 3 already relies on for preserved records, extended here to living-doc prose that isn't an anchor. Under that rule: update line 61's description to name the directory; rewrite the numbered fragment anchors at lines 235 (anchor text `3-specialist-reviewer-roster-8-personas`) and 237 (anchor text `9-reviewer-persona-roster-operations`) to the new file paths; update the two non-`§` prose forms at lines 70 ("decision 2") and 76 ("decision 8").
+- **`docs/case-studies/effort-estimation-review-surface.md:3`** — rewrite the fragment anchor `14-effort-estimated-by-review-surface-not-implementation-time-2026-05-29` to the new file path. This is a living doc, not a preserved record, so Axis 2 licenses the edit.
+- **`claude/.claude/skills/tests/test_skills.py`** — no change. `_all_doc_paths()` globs `docs/**/*.md` and excludes only `reports` and `case-studies`, so the new files are covered automatically regardless of count (row4). Do not add a `design-decisions` exclusion; that exclusion serves preserved-record trees, and decisions are living documents.
+- **`claude/.claude/CLAUDE.md`** — untouched, deliberately. See Out of scope.
+
+**Phase C — pre-migration drain check.** Not a dispatch from this branch. The engineer chose to drain the currently open decision-carrying PRs (#874, #873, #859, #863, #714) by merging them serially before Phase A executes (row21). Immediately before Phase A runs, confirm via `gh pr list` that no open PR still appends a `## N. Title` section to `docs/design-decisions.md` (also listed under Verification's Manual checks) — row1's steady-state concurrency argument means a new one can appear at any point before Phase A runs, including during the drain itself, not only after it finishes. If the check finds none, Phase C is complete with no further action. If it finds a straggler, that PR's rebase produces a **both-modified content conflict** on `docs/design-decisions.md`, not a modify/delete conflict — the stub rewrites the file at the same path rather than deleting it, so a `diff3` conflict block places the entire base-plus-appended file on one side against the entire stub on the other. The recipe: (a) resolve the conflict by taking the post-migration stub wholesale for `docs/design-decisions.md`, not by dropping a hunk; (b) create `docs/design-decisions/<your-slug>.md` carrying the PR's appended section, with a plain `# Title` H1 followed by a `*(YYYY-MM-DD)*` line and **no** `Formerly §N` clause — the straggler's claimed number was never assigned a merged section, and copying Phase A's provenance format would fabricate a false citation; (c) `.claude/rules/design-decisions.md` is the single source of truth for filename grammar and format — do not restate its rules here. Change nothing else. Each conversion is owned by its own branch; this plan's obligation is the recipe, not edits to other branches.
+
+## Verification
+
+Scoped command: `.venv/bin/python3 claude/.claude/scripts/select-tests.py`
+
+**What it actually exercises for this diff.** The diff touches `docs/**` (`select-tests.py:458` → `HOOKS_TESTS_DIR`, `SKILLS_TESTS_DIR`), `README.md` (`:459` → the same two), `.claude/rules/**` (`:464` → the same two), and adds a test source (`:468` → `SELECT_TESTS_TEST_PATH`). The scoped run is therefore both the hooks and skills test directories plus `select-tests`' own test, which is where every affected assertion lives. No full-suite run is warranted: `select-tests.py` already widens to both directories that hold the affected tests, so widening by hand would be the rule-table bypass the repo's CLAUDE.md names as a bug report, not a licence.
+
+**What each new assertion proves.**
+
+1. Filename matches `^[a-z0-9-]+\.md$` and the file has exactly one H1 — the slug grammar holds, and no file smuggles a second decision in under an H2.
+2. The recorded legacy `§N` values across the directory form exactly `{1..N}` with no gaps, duplicates, or fabricated numbers, where N is the highest section number present in `docs/design-decisions.md` immediately before Phase A runs (51 plus however many the row21 drain lands — expected 56, but derived rather than hardcoded so the check doesn't silently pass if the drain lands a different count). This proves numbering completeness only: it does not detect content truncated inside a correctly-numbered file, a body attached to the wrong H1, or a mis-applied transformation. Transformation 2 (`###`→`##` promotion) has no coverage from any of these four assertions; the one-time migration-commit check below closes that gap by construction.
+3. No `^## \d+\.` heading anywhere in the directory — the numbering cannot be revived by an author copying an old section as a template.
+4. Every relative link between files in the directory resolves to an existing file, and for each converted intra-directory link, the target file's own provenance line's legacy number equals the `§N` the link was converted from — checked against each file's own on-disk provenance line at test-run time, not the plan's static Slug map, since row22's dispatch-time slugs for sections beyond §51 have no row in that table. The second half is what makes the bulk conversion of 81 links checkable rather than merely resolvable — a resolution-only check passes whether a link points at the right file or a transposed one, since both files exist. This is not the mechanical enforcer for the slug-immutability rule: it detects one symptom of one violation mode (a rename not accompanied by updating referrers), not immutability itself, and a rename with every referrer updated stays green. It has no single-file counterpart: `§45` degraded silently, whereas `[…](x.md)` now fails CI.
+
+**One-time migration-commit check (not a permanent test).** For each of the N files Phase A actually produces (51 plus however many the row21 drain lands — row22), reverse the three transformations — reconstruct the `## N. Title (date)` heading from the H1 plus provenance line, demote `##` subheadings back to `###`, convert relative links back to `§N` — and diff the reconstruction against the corresponding section of `git show <pre-migration-sha>:docs/design-decisions.md`, where `<pre-migration-sha>` is taken after the drain has landed. All three transformations are fully enumerated and closed-form, so the reverse transform and the diff are deterministic and give full N-file coverage, unlike a hand-picked sample. This is the only check in Verification with an independent ground truth against pre-migration git content — scoping it to a stale file count would let exactly the sections the drain adds slip past it undetected, the same way a stale-checkout dispatch would. Pure motion is load-bearing for reviewability of the largest commit in this plan, and a 3-file manual sample covers only about 6% of it. Run this once against the migration commit, not on every CI run.
+
+**Pre-existing assertions that must still pass.**
+
+- `test_doc_counts.py`'s first `DocCountFact` after the three-`rel_path` repoint — proves the reviewer-count ground truth still reaches both §3's and §12's new files, and that the count itself is unchanged.
+- `test_skills.py::test_doc_has_no_state_path` and `test_skills.py::test_doc_has_no_templated_stowed_path`, both now parametrized over N additional paths. Neither can newly fail (row16); a failure here would mean the migration added text, which contradicts the pure-motion constraint and is itself the useful signal.
+
+**Manual checks no test covers.**
+
+- Push the branch, then open the rendered files on GitHub and click all three rewritten anchors — `README.md`'s two and `docs/case-studies/effort-estimation-review-surface.md:3`. A relative-link test proves the target file exists; it does not prove GitHub resolves the link from the file that cites it.
+- Hand the stub to a reader cold: given only the string `docs/design-decisions.md §45` as it appears in a CHANGELOG entry, and nothing else, can they reach the right file using only what the stub says? If the resolution sentence needs verbal explanation, it is not legible and needs rewording before merge.
+- Confirm the six bare `design-decisions.md` links carrying no fragment still land somewhere useful. They now hit a pointer page rather than the content they were written against.
+- Phase C's pre-migration `gh pr list` check (see Critical files) — not run automatically; confirm it happened before Phase A dispatches.
+
+## Rollback
+
+`git revert` of the migration commit is clean only before any Phase C straggler conversion merges — a revert restores the monolith exactly as it was, and no other branch yet depends on the split.
+
+The serial drain itself (row21) carries its own revert risk, independent of Phase C: because the 5 PRs merge one after another into the pre-Phase-A monolith, each later PR's rebase and section number depend on the ones already merged ahead of it. Reverting an early PR in that chain after later ones have landed on top of it is an ordinary multi-PR-chain revert — outside this plan's scope since it happens entirely before Phase A runs — but it is a real cost of choosing to drain serially, and this plan does not mitigate it.
+
+After a straggler's conversion merges, a plain revert of the migration commit no longer suffices: revert only undoes what the original commit touched, so it restores the pre-split monolith without that converted PR's decision, and it deletes that PR's slug file along with the stub and the rule file it depends on, since all three revert away too — leaving the converted PR's decision orphaned, with no monolith section, no stub, and no rule file. The required manual step for a post-boundary revert: fold every already-converted slug file back into the monolith under a freshly assigned number *before* reverting the migration commit, not after.
+
+Draining first (row21) does not shorten this window to zero, and "Phase C is ordinarily a no-op" is not free of exposure: any PR that appends a new section and is still open when Phase A executes needs Phase C's contingency recipe once it rebases post-migration, whether it opened during the drain or after. Row1's verified steady-state-concurrency premise means this exposure runs for the whole span between now and Phase A's actual dispatch, not merely the gap between drain-finishing and Phase A starting. The safe, plain-revert window is bounded by whichever open PR converts first under Phase C's recipe, if any — a real possibility across that whole span, not an edge case.
+
+## Out of scope
+
+- **`docs/case-studies.md`'s index/directory drift** — 13 files, 11 listed, with `cold-cache-attribution` and `pr-cost-context-bucket` missing. Real, and it warrants a directory-versus-index test of its own, but it is a different artifact and bundling it would put an unrelated failure into this PR's review surface.
+- **Shortening the essay-length section titles.** The split frees titles from addressing duty, which makes this newly cheap — as follow-up PRs against individual files, never inside this migration's motion commit.
+- **The three date-ordering anomalies** (§34 before §33, §36 before §35, §51 before §50) and the 15 undated sections. Correcting dates is a content edit; it belongs in per-file follow-ups where each change is individually reviewable.
+- **Rewriting `§N` citations in `claude/.claude/CLAUDE.md`.** It is a living file, so Axis 2 would license the edit, but it is always-loaded and stowed into every consumer's `~/.claude/`, slug paths are longer than `§N`, and the stub's resolution sentence already makes the existing citations work. Recorded here as a decision, not an oversight, so a reviewer does not add it.
+- **Rewriting `§N` citations in `CHANGELOG.md`, merged `.claude/plans/*.md`, and `.claude/agent-reviews/*`.** Preserved records under Axis 3; the per-file legacy provenance line is precisely what makes them resolve without being touched.
+- **Adding a `design-decisions` exclusion to `test_skills.py::_all_doc_paths`.** The `reports` and `case-studies` exclusions serve preserved-record trees. Decisions are living documents and should stay covered by the state-path contract.
+- **A `PreToolUse` hook on decision-file writes.** §1 prefers a hook where a mechanical predicate exists at the tool-call boundary; after the split every invariant is checkable at HEAD by the new test, and a gate layered on a passing test is the compounding-defensive-layers wrong-foundation shape.
+- **Treating the 5 currently open decision-carrying PRs as a Phase C conversion.** Drain-first (row21) means these 5 merge before Phase A runs, via the repo's ordinary append-and-renumber process — the same process every decision-recording PR has always used, unrelated to this plan. Phase A then migrates their landed sections along with the original 51, using row22's dispatch-time slug assignment. Phase C's conversion recipe applies only to a genuinely new PR that is still open when Phase A executes, not to any of these 5 named PRs.
+- **Any change to `docs/cost-levers-considered.md`.** It identifies entries by prose table rows with source-plan provenance and has no identifier-collision problem to solve.
+- **Rewriting `§N` prose citations in other living docs.** `docs/auto-mode.md`, `docs/skills.md`, `docs/scripts.md`, `docs/worktree-bash-guard.md`, `docs/hooks.md`, `docs/private-project-redaction.md`, `docs/case-studies/check-runner.md`, and `docs/case-studies/worktree-enforcement.md` all carry `§N` prose citations that this migration leaves untouched, per the anchors-only rule stated under README.md in Critical files — they resolve through the stub's `git grep` sentence, the same as the preserved-record citations. `docs/cost-levers-considered.md` is separately out of scope above, for its own reason.
