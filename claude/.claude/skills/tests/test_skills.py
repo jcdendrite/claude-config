@@ -2769,6 +2769,41 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     )
 
 
+def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
+    """docs/handoff-nudge.md's cross-reference to handoff/SKILL.md's
+    warrant-check section resolves to a real heading there.
+
+    `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus
+    (SKILL.md plus its REFERENCES.md/ROUTING.md siblings only), so
+    test_skill_citations_resolve_to_real_headings never sees this citation —
+    targeted narrowly here instead of widening that corpus.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    doc_path = repo_root / "docs" / "handoff-nudge.md"
+    expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
+    citations = [
+        citation
+        for citation in _extract_citations(doc_path.read_text())
+        if citation.target == "handoff/SKILL.md"
+        and _normalize_heading(citation.heading) == expected_heading
+    ]
+    assert citations, (
+        "docs/handoff-nudge.md no longer cites handoff/SKILL.md's "
+        "warrant-check section"
+    )
+
+    resolved = _resolve_citation_target(
+        citations[0].target, citing_file=doc_path, repo_root=repo_root
+    )
+    assert resolved is not None, (
+        "docs/handoff-nudge.md's citation target 'handoff/SKILL.md' failed to resolve"
+    )
+    assert expected_heading in _heading_texts(resolved.read_text()), (
+        f"docs/handoff-nudge.md's citation resolved to {resolved} but it has "
+        f"no heading matching {expected_heading!r}"
+    )
+
+
 @pytest.mark.parametrize(
     ("raw_heading", "normalized"),
     [
@@ -3604,12 +3639,26 @@ _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES: dict[str, str] = {
     "model_recognized_false": (
         '`"model_recognized":false` — also report `model` and `context_window`, '
         "and treat the result as a soft number. The window fell back to the 1M "
-        "default, so the threshold may not match the running model; those two "
+        "default, so the threshold may not match the running model. Those two "
         "fields let the engineer judge how far off it is."
     ),
     "cannot_resolve_or_schema_drift": (
         '`"status":"cannot-resolve"` or `"status":"schema-drift"` — name the '
         "`reason` and fall back to judgment."
+    ),
+    # The fallback-to-judgment sentence is followed on the same line by more
+    # prose, so this entry pins through the paragraph's own end (a real
+    # structural boundary) instead of stopping mid-sentence.
+    "fallback_to_judgment_and_closing": (
+        "When `--check` can't resolve a measurement, weigh session length, "
+        "how much of the task remains, and whether this is a natural seam. "
+        "A §2 reason that applies on its own terms, an explicit engineer "
+        "request, or a session ending anyway each warrant a handoff without "
+        "a cost argument at all. Do not quote the raw `session_id` into "
+        "prose that may reach a commit, PR body, or handoff file. If none "
+        "of the above warrant writing, run `~/.claude/scripts/marker.sh "
+        "deactivate handoff` before stopping — the marker activated above "
+        "has no further purpose once the write itself doesn't happen."
     ),
 }
 
@@ -3666,6 +3715,41 @@ class TestHandoffWarrantCheckCanonicalSection:
             and _normalize_heading(citation.heading) == expected_heading
             for citation in citations
         ), "ready-for-review/SKILL.md no longer cites handoff/SKILL.md's warrant-check section"
+
+
+_PLAN_IT_STEP7_HEADING = (
+    "## Step 7 — Commit or unwind the plan, then choose where implementation runs"
+)
+
+# plan-it Step 7's own fallback clause for when `--check` can't resolve a
+# measurement. It mirrors _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES's
+# "cannot_resolve_or_schema_drift" branch, but substitutes plan-boundary
+# framing for the handoff-specific wording.
+_PINNED_PLAN_IT_FALLBACK_CLAUSE = (
+    'When the check can\'t resolve a measurement (`"status":"cannot-resolve"` '
+    'or `"status":"schema-drift"`), say the estimate is unavailable, name the '
+    "`reason`, and fall back to judgment: the plan boundary is itself a "
+    "natural seam, weighed against how much of the plan remains."
+)
+
+
+class TestPlanItStep7FallbackToJudgment:
+    """Pin plan-it Step 7's cannot-resolve/schema-drift fallback clause, so a
+    future edit that drops the plan-boundary framing or the reason-naming
+    requirement fails this test instead of drifting silently.
+    """
+
+    def test_step7_fallback_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP7_HEADING)
+        pinned_text = " ".join(_PINNED_PLAN_IT_FALLBACK_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=(
+                "plan-it/SKILL.md: Step 7's cannot-resolve/schema-drift "
+                "fallback clause no longer matches its pinned clause."
+            ),
+        )
 
 
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
@@ -3744,12 +3828,9 @@ _READY_FOR_REVIEW_COMPLETION_HEADING = "## Completion"
 
 
 def test_session_id_redaction_present_at_every_check_output_site() -> None:
-    """Every site that reports `--check`'s output forbids quoting the raw
-    `session_id` inline: plan-it Step 7, handoff's warrant check, and both of
-    ready-for-review's two sites (step 1, and the halt/Completion
-    restatement). Each carries its own copy rather than deferring to the
-    citation, because a safety rule that only fires if the reader follows a
-    pointer is a safety rule that does not fire.
+    """Each `--check`-output site carries its own copy of the redaction
+    sentence — a safety rule that only fires if the reader follows a
+    citation doesn't fire.
 
     Bound each ready-for-review assertion to its own heading section
     (step 1, Completion) rather than a whole-file count — a whole-file count
