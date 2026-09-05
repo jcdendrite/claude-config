@@ -119,7 +119,7 @@
 
 ## Safety
 
-- Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`.venv/bin/pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install. A Python restore names the project environment's own interpreter, never the machine's system one — `~/.claude/rules/python-environment-conventions.md` carries the detection order and the fallback.
+- Installing new software autonomously is strictly prohibited — a general go-ahead ("try X", "see if Y works") does not authorize it; restoring already-declared dependencies (`.venv/bin/pip install -r requirements.txt`, bare `npm install`) is unaffected. Point the user to the `!` shell escape for a genuine new install.
 - **Name every new package before it is fetched.** Name every new package's exact version and rationale before it's fetched — by install, manifest edit, or restore. For a manifest edit, get explicit confirmation first. For an install or restore, this is in addition to — not instead of — the installing-new-software prohibition: name the package before handing the command to the user via the `!` escape. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
 - Never commit secrets, credentials, API keys, or large binary assets to repositories.
 - The `userEmail` context identifies the user to you. Never use it as contact copy in anything published.
