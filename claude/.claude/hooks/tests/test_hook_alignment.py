@@ -331,11 +331,11 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
     swallow tools `.claude/plans/prevent-non-loop-schedulewakeup-calls.md`'s
     Context section requires to stay available, each on its own basis:
 
-    - `CronCreate` is named in `docs/design-decisions.md` §48's
+    - `CronCreate` is named in `docs/design-decisions.md` §49's
       Blast-radius section as unaffected by the deny.
     - `ListAgents` and `TaskOutput` are not argued there — they're guarded
       because the plan's pre-implementation gate (Verification step 1
-      check 5) required them to remain available, and §48's Revisit list
+      check 5) required them to remain available, and §49's Revisit list
       separately names them as a substitution-risk channel to watch, not
       as confirmed-unaffected.
     - `Agent` is guarded because the plan's Context section names it as
@@ -343,7 +343,7 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
       tools the plan's pre-implementation gate (Verification step 1
       check 5) required to remain available.
 
-    `CronCreate`'s presence in this list tracks §48's current
+    `CronCreate`'s presence in this list tracks §49's current
     Accepted-residual-risk stance (the substitution channel is unguarded,
     not unformable) — a future PR that deliberately closes that gap via
     this same bare-tool-name-deny mechanism removes it from this list on
@@ -352,13 +352,13 @@ def test_schedulewakeup_adjacent_tools_stay_allowed_in_settings() -> None:
     settings = json.loads(_SETTINGS_PATH.read_text())
     deny = settings.get("permissions", {}).get("deny", [])
     documented_unaffected = (
-        "design-decisions.md §48's Blast-radius section claims this tool "
+        "design-decisions.md §49's Blast-radius section claims this tool "
         "stays unaffected by the ScheduleWakeup deny"
     )
     gate_required_available = (
         "the plan's pre-implementation gate (Verification step 1 check 5) "
         "requires this tool to remain available, and design-decisions.md "
-        "§48's Revisit list separately names it as a substitution-risk "
+        "§49's Revisit list separately names it as a substitution-risk "
         "channel to watch, not as confirmed-unaffected"
     )
     dispatch_trigger = (
