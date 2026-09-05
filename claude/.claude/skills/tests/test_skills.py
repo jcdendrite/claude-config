@@ -898,8 +898,8 @@ class TestPrDescriptionCostSectionWiring:
     so pinning their exact source shape a second time here would be
     redundant with that behavioral suite -- same reasoning this class
     already applies to install.sh's own _report_account_sentinel. This class
-    only proves the delimiters and the script-call wiring are present in the
-    skill body's source text.
+    only proves the delimiters, the script-call wiring, and the raw-markdown
+    embedding rule are present in the skill body's source text.
     """
 
     def _body(self):
@@ -918,6 +918,11 @@ class TestPrDescriptionCostSectionWiring:
     def test_declares_cost_heading_literal(self):
         body = self._body()
         assert "## Cost (list-price estimate)" in body
+
+    def test_declares_raw_markdown_not_code_fence(self):
+        body = self._body()
+        assert "raw markdown" in body
+        assert "code fence" in body
 
 
 class TestPrDescriptionProseTighteningPassWiring:
