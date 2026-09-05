@@ -1,12 +1,13 @@
 """Tests for find-consumed-continuity-file.sh.
 
-The index file this script reads is the one resume-context.sh's
+The index directory this script reads is the one resume-context.sh's
 record_consumed_destination appends to (see test_resume_context.py for the
-writer side and the writer/reader end-to-end contract test). These tests
-build the index directly, at the same
-<tmpdir-root>/resume-context-index-$EUID/consumed.tsv path
-_lib_resume_context_index_file formats, so the reader is exercised in
-isolation from the writer.
+writer side and the writer/reader end-to-end contract test): one file per
+UTC day, named consumed.<YYYY-MM-DD>.tsv, at the
+<tmpdir-root>/resume-context-index-$EUID/ directory
+_lib_resume_context_index_dir formats. These tests build day-files
+directly, bypassing resume-context.sh entirely, so the reader is exercised
+in isolation from the writer.
 """
 from __future__ import annotations
 
@@ -17,20 +18,24 @@ from pathlib import Path
 _SCRIPT = Path(__file__).parent.parent / "find-consumed-continuity-file.sh"
 
 
-def _index_path(tmpdir_root: Path) -> Path:
-    return tmpdir_root / f"resume-context-index-{os.geteuid()}" / "consumed.tsv"
+def _index_dir(tmpdir_root: Path) -> Path:
+    return tmpdir_root / f"resume-context-index-{os.geteuid()}"
 
 
-def _write_index(tmpdir_root: Path, rows: list[tuple[str, str, str]]) -> Path:
-    """Write rows directly to the index path, creating its 0700 parent
-    directory -- bypassing resume-context.sh entirely, since these tests
-    target the reader's own parsing/filtering contract."""
-    index = _index_path(tmpdir_root)
-    index.parent.mkdir(parents=True, exist_ok=True)
-    index.parent.chmod(0o700)
-    index.write_text("".join(f"{stamp}\t{dest}\t{src}\n" for stamp, dest, src in rows))
-    index.chmod(0o600)
-    return index
+def _day_file(tmpdir_root: Path, day: str = "2026-01-01") -> Path:
+    return _index_dir(tmpdir_root) / f"consumed.{day}.tsv"
+
+
+def _write_index(tmpdir_root: Path, rows: list[tuple[str, str, str]], day: str = "2026-01-01") -> Path:
+    """Write rows directly to a single day-file, creating the index
+    directory's 0700 mode first -- bypassing resume-context.sh entirely,
+    since these tests target the reader's own parsing/filtering contract."""
+    day_file = _day_file(tmpdir_root, day)
+    day_file.parent.mkdir(parents=True, exist_ok=True)
+    day_file.parent.chmod(0o700)
+    day_file.write_text("".join(f"{stamp}\t{dest}\t{src}\n" for stamp, dest, src in rows))
+    day_file.chmod(0o600)
+    return day_file
 
 
 def _run(args: list[str], tmpdir_root: Path) -> subprocess.CompletedProcess:
@@ -46,25 +51,33 @@ def _run(args: list[str], tmpdir_root: Path) -> subprocess.CompletedProcess:
 
 
 def test_no_index_reports_distinct_diagnosis(tmp_path: Path) -> None:
+    """An index directory with no consumed.*.tsv day-files at all -- the
+    day-file replacement for the old flat file's absence. Asserts stderr's
+    exact content, not a substring, so a regression in the per-file
+    `[ -f "$f" ] && [ ! -L "$f" ] || continue` guard -- the guard that
+    actually stops an unexpanded glob pattern from being read as a literal
+    path -- surfaces as a diagnosis mismatch instead of passing silently."""
     result = _run([], tmp_path)
     assert result.returncode == 1
     assert result.stdout == ""
-    assert "no index found" in result.stderr
+    assert result.stderr == "find-consumed-continuity-file.sh: no index found (nothing has been consumed yet)\n"
 
 
-def test_index_file_planted_as_symlink_is_treated_as_no_index(tmp_path: Path) -> None:
-    """The index *file* itself as a symlink -- distinct from the
-    index-directory-as-symlink case _lib_resume_context_index_file guards
-    against -- mirrors record_consumed_destination's own `[ -L "$index" ]`
-    guard on the writer side. Refusing to read through it, rather than
-    dereferencing and reading whatever it points to, is the fail-closed
-    shape this script uses throughout."""
-    index = _index_path(tmp_path)
-    index.parent.mkdir(parents=True)
-    index.parent.chmod(0o700)
+def test_day_file_planted_as_symlink_is_skipped_without_aborting(tmp_path: Path) -> None:
+    """A day-file itself as a symlink -- distinct from the
+    index-directory-as-symlink case _lib_resume_context_index_dir guards
+    against -- mirrors record_consumed_destination's own
+    `[ -L "$day_file" ]` guard on the writer side. Refusing to read through
+    it, rather than dereferencing and reading whatever it points to, is the
+    fail-closed shape this script uses throughout. With no other day-file
+    present, the lone symlinked one being skipped is indistinguishable from
+    no index at all."""
+    day_file = _day_file(tmp_path)
+    day_file.parent.mkdir(parents=True)
+    day_file.parent.chmod(0o700)
     real_target = tmp_path / "attacker-controlled.tsv"
     real_target.write_text("2026-01-01T00:00:00Z\t/tmp/fake-dest\t/tmp/fake-src\n")
-    index.symlink_to(real_target)
+    day_file.symlink_to(real_target)
 
     result = _run([], tmp_path)
 
@@ -136,7 +149,7 @@ def test_matches_source_field_only_not_timestamp(tmp_path: Path) -> None:
 # The destination's ownership check ([ -O "$dest" ], alongside the symlink
 # check exercised below) has no dedicated test: the different-owner case
 # can't be reproduced in single-uid CI, the same limitation
-# TestLibResumeContextIndexFile's docstring in test_lib.py documents for
+# TestLibResumeContextIndexDir's docstring in test_lib.py documents for
 # the writer's structurally identical [ -O "$dir" ] guard. It's closed by
 # the same POSIX argument there: ownership can't be forged without
 # privilege an attacker doesn't have.
@@ -211,21 +224,73 @@ def test_skips_a_short_field_truncated_row_among_well_formed_rows(tmp_path: Path
     first_dest.write_text("first\n")
     second_dest = tmp_path / "resume-context.second"
     second_dest.write_text("second\n")
-    index = _index_path(tmp_path)
-    index.parent.mkdir(parents=True)
-    index.parent.chmod(0o700)
-    index.write_text(
+    day_file = _day_file(tmp_path)
+    day_file.parent.mkdir(parents=True)
+    day_file.parent.chmod(0o700)
+    day_file.write_text(
         f"2026-01-01T00:00:00Z\t{first_dest}\t{tmp_path / 'first-handoff.md'}\n"
         "2026-01-02T00:00:00Z\n"  # truncated mid-write: only the stamp field survived
         f"2026-01-03T00:00:00Z\t{second_dest}\t{tmp_path / 'second-handoff.md'}\n"
     )
-    index.chmod(0o600)
+    day_file.chmod(0o600)
 
     result = _run([], tmp_path)
 
     assert result.returncode == 0
     lines = result.stdout.rstrip("\n").splitlines()
     assert [line.split("\t")[1] for line in lines] == [str(first_dest), str(second_dest)]
+
+
+def test_cross_day_rows_read_oldest_file_first_with_hint_naming_the_newest(tmp_path: Path) -> None:
+    """Two day-files from different dates must both be read, oldest file's
+    rows first (glob order is chronological since day-file names are
+    fixed-width ASCII dates), and the reload hint must name the newest live
+    destination across both files, not just the last one within a single
+    file."""
+    older_dest = tmp_path / "resume-context.older"
+    older_dest.write_text("older\n")
+    newer_dest = tmp_path / "resume-context.newer"
+    newer_dest.write_text("newer\n")
+    _write_index(
+        tmp_path,
+        [("2026-01-01T00:00:00Z", str(older_dest), str(tmp_path / "older-handoff.md"))],
+        day="2026-01-01",
+    )
+    _write_index(
+        tmp_path,
+        [("2026-01-02T00:00:00Z", str(newer_dest), str(tmp_path / "newer-handoff.md"))],
+        day="2026-01-02",
+    )
+
+    result = _run([], tmp_path)
+
+    assert result.returncode == 0
+    lines = result.stdout.rstrip("\n").splitlines()
+    assert [line.split("\t")[1] for line in lines] == [str(older_dest), str(newer_dest)]
+    assert f"reload with: claude --append-system-prompt-file {newer_dest}" in result.stderr
+
+
+def test_day_file_replaced_by_symlink_is_skipped_but_remaining_sibling_still_reads(tmp_path: Path) -> None:
+    """One of two day-files is a symlink (e.g. planted, or left behind by a
+    concurrent process) -- it must be skipped without aborting the reader,
+    and the other, legitimate day-file's rows must still print."""
+    live_dest = tmp_path / "resume-context.live"
+    live_dest.write_text("still here\n")
+    _write_index(
+        tmp_path,
+        [("2026-01-02T00:00:00Z", str(live_dest), str(tmp_path / "live-handoff.md"))],
+        day="2026-01-02",
+    )
+    symlinked_day_file = _day_file(tmp_path, day="2026-01-01")
+    real_target = tmp_path / "attacker-controlled.tsv"
+    real_target.write_text("2026-01-01T00:00:00Z\t/tmp/fake-dest\t/tmp/fake-src\n")
+    symlinked_day_file.symlink_to(real_target)
+
+    result = _run([], tmp_path)
+
+    assert result.returncode == 0
+    lines = result.stdout.rstrip("\n").splitlines()
+    assert [line.split("\t")[1] for line in lines] == [str(live_dest)]
 
 
 def test_o_operator_guards_both_the_writer_directory_and_the_reader_destination() -> None:

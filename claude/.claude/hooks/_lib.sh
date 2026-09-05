@@ -2527,25 +2527,36 @@ _lib_append_line_locked() {
 # _lib_resume_context_tmpdir_root
 # The one home for resume-context.sh's temp-dir-root formula
 # (${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}), shared by the move itself and
-# by _lib_resume_context_index_file below -- a second independent copy of
+# by _lib_resume_context_index_dir below -- a second independent copy of
 # this formula would silently split the index from the destinations it
 # indexes on any future rename.
 _lib_resume_context_tmpdir_root() {
   printf '%s\n' "${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
 }
 
-# _lib_resume_context_index_file
-# Prints the path to the per-uid consumed-continuity-file index
-# (<tmpdir-root>/resume-context-index-$EUID/consumed.tsv), creating and
-# permission-guarding its parent directory first.
-# Returns 1, printing nothing, if the parent dir is a symlink or not owned
+# _lib_resume_context_index_dir
+# Prints the path to the per-uid consumed-continuity-file index directory
+# (<tmpdir-root>/resume-context-index-$EUID), creating and
+# permission-guarding it first. Rows live in day-files named
+# consumed.<UTC YYYY-MM-DD>.tsv inside it:
+#   - the writer composes today's name
+#   - the reader globs consumed.*.tsv in name order (chronological, since
+#     the names are fixed-width ASCII digits)
+#   - retention deletes whole files by mtime
+# That naming contract is stated once, here, and enforced across the
+# writer/reader boundary by their shared end-to-end test rather than by a
+# third helper.
+# Returns 1, printing nothing, if the directory is a symlink or not owned
 # by $EUID. /tmp's predictable per-uid path makes it plantable by another
 # local user, so ownership -- not the chmod below -- is the actual control.
-# mkdir(2)'s atomicity plus the -O check closes the race: a successful call
-# always yields a directory owned by the calling EUID, and a failed call is
-# caught by `[ -O ]` evaluating false since forging EUID ownership needs
-# privilege an attacker doesn't have.
-_lib_resume_context_index_file() {
+# mkdir(2)'s atomicity plus the -O check closes the race. A successful call
+# always yields a directory owned by the calling EUID. A failed call is
+# caught by `[ -O ]` evaluating false, since forging EUID ownership needs
+# privilege an attacker doesn't have. The different-owner pre-creation case
+# this closes can't be reproduced in single-uid CI -- see
+# TestLibResumeContextIndexDir's docstring in test_lib.py for the full
+# POSIX argument, recorded there rather than as an executable test.
+_lib_resume_context_index_dir() {
   local dir
   dir="$(_lib_resume_context_tmpdir_root)/resume-context-index-$EUID"
   # EEXIST here is the expected steady state from the second call onward;
@@ -2560,26 +2571,7 @@ _lib_resume_context_index_file() {
   # even with world-write on the parent. RESUME_CONTEXT_TMPDIR is
   # documented test-only, so production always targets real /tmp.
   chmod 700 -- "$dir" 2>/dev/null
-  printf '%s\n' "$dir/consumed.tsv"
-}
-
-# _lib_resume_context_retention_cutoff
-# Prints the UTC ISO8601 timestamp (%Y-%m-%dT%H:%M:%SZ) 30 days before now,
-# the same stamp format record_consumed_destination writes, for pruning
-# consumed.tsv rows older than that cutoff by lexical comparison. Returns
-# 1, printing nothing, if the cutoff can't be computed -- callers treat
-# that as "skip pruning this round," never as a reason to block the append.
-# Computed via epoch arithmetic rather than `date -d`/`date -v` relative
-# syntax, since those are GNU- and BSD-specific respectively with no shared
-# form and this repo targets macOS system bash 3.2 (line ~901). Only the
-# epoch-to-ISO8601 conversion needs the GNU/BSD fork below; `date -u +%s`
-# and the subtraction are portable as-is.
-_lib_resume_context_retention_cutoff() {
-  local now_epoch cutoff_epoch
-  now_epoch=$(date -u +%s) || return 1
-  cutoff_epoch=$(( now_epoch - 30*24*60*60 ))
-  date -u -d "@$cutoff_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
-    date -u -r "$cutoff_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null
+  printf '%s\n' "$dir"
 }
 
 # _lib_print_recovery_hint DEST

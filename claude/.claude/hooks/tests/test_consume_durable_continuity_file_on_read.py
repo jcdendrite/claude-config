@@ -150,7 +150,8 @@ class TestConsumeDurableContinuityFileOnRead:
         assert result.returncode == 0
         moved = [p for p in tmpdir_root.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
-        index = tmpdir_root / f"resume-context-index-{os.geteuid()}" / "consumed.tsv"
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        index = tmpdir_root / f"resume-context-index-{os.geteuid()}" / f"consumed.{today}.tsv"
         rows = index.read_text().splitlines()
         assert len(rows) == 1
         assert rows[0].split("\t")[1] == str(moved[0])

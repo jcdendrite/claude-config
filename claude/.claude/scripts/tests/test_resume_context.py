@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
-from datetime import UTC, datetime, timedelta
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 _SCRIPT = Path(__file__).parent.parent / "resume-context.sh"
@@ -551,21 +552,28 @@ class TestLegacyConfigDirFallback:
         assert "legacy location" not in result.stderr
 
 
-def _index_path(tmpdir_root: Path) -> Path:
-    return tmpdir_root / f"resume-context-index-{os.geteuid()}" / "consumed.tsv"
+def _index_dir(tmpdir_root: Path) -> Path:
+    return tmpdir_root / f"resume-context-index-{os.geteuid()}"
 
 
-def _stamp(days_ago: float) -> str:
-    """A stamp in record_consumed_destination's own format, `days_ago` days
-    before now -- used to build retention-sweep fixtures without hardcoding
-    a calendar date that ages past the 30-day cutoff as the suite's clock
-    moves forward."""
-    return (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _day_file(tmpdir_root: Path, when: datetime | None = None) -> Path:
+    """Path to the day-file for `when` (default: today, UTC)."""
+    day = (when or datetime.now(UTC)).strftime("%Y-%m-%d")
+    return _index_dir(tmpdir_root) / f"consumed.{day}.tsv"
+
+
+def _backdate(path: Path, days_old: float) -> None:
+    """Set path's mtime `days_old` days in the past, for exercising the
+    30-day whole-file retention sweep without waiting for real time to
+    pass."""
+    stamp = time.time() - (days_old * 86400)
+    os.utime(path, (stamp, stamp))
 
 
 class TestConsumedIndex:
     """Coverage for record_consumed_destination, the best-effort append run
     after a successful move and before the destination's mode-fixing chmod.
+    Every row lands in today's UTC day-file, consumed.<YYYY-MM-DD>.tsv.
     """
 
     def test_consume_only_appends_one_row_naming_dest_and_source(self, tmp_path: Path) -> None:
@@ -578,7 +586,7 @@ class TestConsumedIndex:
         )
         assert result.returncode == 0, result.stderr
         dest = result.stdout.strip()
-        rows = _index_path(tmp_path).read_text().splitlines()
+        rows = _day_file(tmp_path).read_text().splitlines()
         assert len(rows) == 1
         _stamp, row_dest, row_src = rows[0].split("\t")
         assert row_dest == dest
@@ -596,7 +604,7 @@ class TestConsumedIndex:
         assert recorder.exists()
         moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
-        rows = _index_path(tmp_path).read_text().splitlines()
+        rows = _day_file(tmp_path).read_text().splitlines()
         assert len(rows) == 1
         assert rows[0].split("\t")[1] == str(moved[0])
 
@@ -609,20 +617,17 @@ class TestConsumedIndex:
             {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
         )
         assert result.returncode == 0, result.stderr
-        index = _index_path(tmp_path)
-        assert stat.S_IMODE(index.stat().st_mode) == 0o600
-        assert stat.S_IMODE(index.parent.stat().st_mode) == 0o700
+        day_file = _day_file(tmp_path)
+        assert stat.S_IMODE(day_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(day_file.parent.stat().st_mode) == 0o700
 
-    def test_preexisting_loose_index_file_is_tightened_on_next_append(self, tmp_path: Path) -> None:
+    def test_preexisting_loose_day_file_is_tightened_on_next_append(self, tmp_path: Path) -> None:
         stub, _ = _install_recorder(tmp_path)
-        index = _index_path(tmp_path)
-        index.parent.mkdir(parents=True)
-        index.parent.chmod(0o700)
-        # Stamp must stay recent (not a hardcoded past date), or the
-        # retention prune below would drop it and defeat this test's own
-        # intent -- proving a loose-permission row survives a repair pass.
-        index.write_text(f"{_stamp(1)}\t/tmp/stale-dest\t/tmp/stale-src\n")
-        index.chmod(0o644)
+        day_file = _day_file(tmp_path)
+        day_file.parent.mkdir(parents=True)
+        day_file.parent.chmod(0o700)
+        day_file.write_text("2026-01-01T00:00:00Z\t/tmp/stale-dest\t/tmp/stale-src\n")
+        day_file.chmod(0o644)
         src = tmp_path / "foo-task.md"
         src.write_text("hello brief\n")
 
@@ -632,14 +637,14 @@ class TestConsumedIndex:
         )
 
         assert result.returncode == 0, result.stderr
-        assert stat.S_IMODE(index.stat().st_mode) == 0o600
-        assert len(index.read_text().splitlines()) == 2
+        assert stat.S_IMODE(day_file.stat().st_mode) == 0o600
+        assert len(day_file.read_text().splitlines()) == 2
 
     def test_symlinked_index_directory_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
         stub, _ = _install_recorder(tmp_path)
         real_dir = tmp_path / "elsewhere"
         real_dir.mkdir()
-        _index_path(tmp_path).parent.symlink_to(real_dir)
+        _index_dir(tmp_path).symlink_to(real_dir)
         src = tmp_path / "foo-task.md"
         src.write_text("hello brief\n")
 
@@ -651,20 +656,20 @@ class TestConsumedIndex:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
         assert not src.exists()
-        assert not (real_dir / "consumed.tsv").exists()
+        assert not any(real_dir.glob("consumed.*.tsv"))
 
-    def test_symlinked_index_file_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
+    def test_symlinked_day_file_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
         """Distinct from the directory-symlink case above: here the parent
-        directory is legitimate and the index *file* itself is the
-        symlink -- record_consumed_destination's own `[ -L "$index" ]`
-        guard, not _lib_resume_context_index_file's directory guard."""
+        directory is legitimate and today's day-file itself is the
+        symlink -- record_consumed_destination's own `[ -L "$day_file" ]`
+        guard, not _lib_resume_context_index_dir's directory guard."""
         stub, _ = _install_recorder(tmp_path)
-        index = _index_path(tmp_path)
-        index.parent.mkdir(parents=True)
-        index.parent.chmod(0o700)
+        day_file = _day_file(tmp_path)
+        day_file.parent.mkdir(parents=True)
+        day_file.parent.chmod(0o700)
         real_target = tmp_path / "elsewhere.tsv"
         real_target.write_text("not a real index\n")
-        index.symlink_to(real_target)
+        day_file.symlink_to(real_target)
         src = tmp_path / "foo-task.md"
         src.write_text("hello brief\n")
 
@@ -679,7 +684,7 @@ class TestConsumedIndex:
         assert real_target.read_text() == "not a real index\n"
 
     def test_src_containing_newline_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
-        """resume-context.sh:129 -- an embedded newline in $src would forge
+        """resume-context.sh:130 -- an embedded newline in $src would forge
         an extra TSV row if written through; the guard must skip the append
         entirely rather than escaping or truncating it."""
         stub, _ = _install_recorder(tmp_path)
@@ -694,7 +699,7 @@ class TestConsumedIndex:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
         assert not src.exists()
-        assert not _index_path(tmp_path).exists()
+        assert not _day_file(tmp_path).exists()
 
     def test_row_exceeding_length_cap_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
         """resume-context.sh's 2048-byte row cap (staff-backend-engineer
@@ -722,7 +727,7 @@ class TestConsumedIndex:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
         assert not src.exists()
-        assert not _index_path(tmp_path).exists()
+        assert not _day_file(tmp_path).exists()
 
     def test_normal_length_row_still_appends(self, tmp_path: Path) -> None:
         """Regression guard against an off-by-one in the length-cap check
@@ -737,16 +742,71 @@ class TestConsumedIndex:
         )
 
         assert result.returncode == 0, result.stderr
-        rows = _index_path(tmp_path).read_text().splitlines()
+        rows = _day_file(tmp_path).read_text().splitlines()
         assert len(rows) == 1
 
-    def test_row_older_than_30_days_is_pruned_on_next_append(self, tmp_path: Path) -> None:
+    def test_multibyte_src_under_byte_cap_still_appends_one_row(self, tmp_path: Path) -> None:
+        """A modest multi-byte source name must not be mistaken for an
+        over-cap row -- regression guard alongside the byte-vs-character
+        cap test below, which uses a much longer multi-byte path."""
         stub, _ = _install_recorder(tmp_path)
-        index = _index_path(tmp_path)
-        index.parent.mkdir(parents=True)
-        index.parent.chmod(0o700)
-        index.write_text(f"{_stamp(31)}\t/tmp/old-dest\t/tmp/old-src\n")
-        index.chmod(0o600)
+        src = tmp_path / "héllo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        rows = _day_file(tmp_path).read_text().splitlines()
+        assert len(rows) == 1
+        assert rows[0].split("\t")[2] == str(src)
+
+    def test_row_under_character_cap_but_over_byte_cap_skips_append(self, tmp_path: Path) -> None:
+        """Byte-vs-character cap defect (staff-platform-engineer finding):
+        `${#row}` counts characters under a multi-byte locale, so a
+        non-ASCII $src can pass a 2048-character cap while the bytes
+        actually written exceed it. Nine nested directory components of 78
+        three-byte-each CJK characters (234 bytes/component, comfortably
+        under the 255-byte NAME_MAX) push the row past 2048 bytes while its
+        character count (roughly 700) stays far under 2048 -- the exact
+        shape that would slip past a character-counting cap but must be
+        caught by the byte-counting one."""
+        stub, _ = _install_recorder(tmp_path)
+        deep = tmp_path
+        for _ in range(9):
+            deep = deep / ("中" * 78)
+        deep.mkdir(parents=True)
+        src = deep / "task.md"
+        src.write_text("hello brief\n")
+        assert len(str(src)) < 2048, "fixture must stay under the character cap to isolate the byte-cap defect"
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
+        assert not src.exists()
+        assert not _day_file(tmp_path).exists()
+
+    def test_stale_day_file_is_deleted_and_fresh_sibling_survives(self, tmp_path: Path) -> None:
+        """30-day whole-file retention sweep, run after every append.
+        Mirrors the existing sweep coverage at
+        test_nudge_worktree_anchor.py's TestStateDirSweep and
+        test_advance_past_commit_stall.py."""
+        stub, _ = _install_recorder(tmp_path)
+        index_dir = _index_dir(tmp_path)
+        index_dir.mkdir(parents=True)
+        index_dir.chmod(0o700)
+        stale = index_dir / "consumed.2020-01-01.tsv"
+        stale.write_text("2020-01-01T00:00:00Z\t/tmp/old-dest\t/tmp/old-src\n")
+        _backdate(stale, days_old=31)
+        fresh_sibling = index_dir / "consumed.2020-02-01.tsv"
+        fresh_sibling.write_text("2020-02-01T00:00:00Z\t/tmp/recent-dest\t/tmp/recent-src\n")
+        _backdate(fresh_sibling, days_old=29)
         src = tmp_path / "foo-task.md"
         src.write_text("hello brief\n")
 
@@ -756,34 +816,15 @@ class TestConsumedIndex:
         )
 
         assert result.returncode == 0, result.stderr
-        rows = index.read_text().splitlines()
-        assert len(rows) == 1
-        assert "old-src" not in rows[0]
-
-    def test_row_within_30_days_survives_next_append(self, tmp_path: Path) -> None:
-        stub, _ = _install_recorder(tmp_path)
-        index = _index_path(tmp_path)
-        index.parent.mkdir(parents=True)
-        index.parent.chmod(0o700)
-        index.write_text(f"{_stamp(29)}\t/tmp/recent-dest\t/tmp/recent-src\n")
-        index.chmod(0o600)
-        src = tmp_path / "foo-task.md"
-        src.write_text("hello brief\n")
-
-        result = _run(
-            ["--consume-only", str(src)],
-            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
-        )
-
-        assert result.returncode == 0, result.stderr
-        rows = index.read_text().splitlines()
-        assert len(rows) == 2
-        assert any("recent-src" in row for row in rows)
+        assert not stale.exists(), "a day-file older than 30 days must be swept on the next append"
+        assert fresh_sibling.exists(), "a day-file within 30 days must survive the sweep"
+        assert _day_file(tmp_path).exists(), "today's day-file must never be swept"
 
     def test_ten_sequential_consumes_produce_ten_well_formed_rows(self, tmp_path: Path) -> None:
         """Proves absence of corruption without concurrency -- not the
         no-lock design's actual claim, which the concurrent-writer test
-        below covers."""
+        below covers. All ten land in one day-file, since they all run on
+        the same UTC day."""
         stub, _ = _install_recorder(tmp_path)
         for i in range(10):
             src = tmp_path / f"foo{i}-task.md"
@@ -794,7 +835,7 @@ class TestConsumedIndex:
             )
             assert result.returncode == 0, result.stderr
 
-        rows = _index_path(tmp_path).read_text().splitlines()
+        rows = _day_file(tmp_path).read_text().splitlines()
         assert len(rows) == 10
         for row in rows:
             assert len(row.split("\t")) == 3, f"malformed row: {row!r}"
@@ -808,11 +849,67 @@ class TestConsumedIndex:
         Relies on Popen-launch scheduling jitter for genuine overlap rather
         than an explicit synchronization barrier -- a future flake
         investigation should not mistake incidental non-overlap for a
-        passing invariant."""
+        passing invariant. One fixture source contains a non-ASCII path
+        component (staff-platform-engineer finding: all-ASCII fixtures are
+        why the character-vs-byte cap defect went unexercised previously)."""
         stub, _ = _install_recorder(tmp_path)
         sources = []
         for i in range(8):
             src = tmp_path / f"concurrent{i}-task.md"
+            src.write_text(f"hello {i}\n")
+            sources.append(src)
+        non_ascii_src = tmp_path / "héllo-wörld-task.md"
+        non_ascii_src.write_text("hello non-ascii\n")
+        sources.append(non_ascii_src)
+
+        env = dict(os.environ)
+        env.update({"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)})
+        procs = [
+            subprocess.Popen(
+                [str(_SCRIPT), "--consume-only", str(src)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            for src in sources
+        ]
+        outputs = [proc.communicate() for proc in procs]
+        for proc, (_stdout, stderr) in zip(procs, outputs, strict=True):
+            assert proc.returncode == 0, stderr
+
+        rows = _day_file(tmp_path).read_text().splitlines()
+        assert len(rows) == len(sources)
+        for row in rows:
+            fields = row.split("\t")
+            assert len(fields) == 3, f"malformed (truncated or merged) row: {row!r}"
+            assert fields[1], f"row missing a destination field: {row!r}"
+            assert fields[2], f"row missing a source field: {row!r}"
+
+    def test_concurrent_appends_survive_a_racing_sweep_of_a_stale_sibling(self, tmp_path: Path) -> None:
+        """(staff-backend-engineer + staff-platform-engineer, BLOCKER
+        regression) Pre-seeds a day-file named for a past date, backdated
+        31+ days, then launches N=8 concurrent --consume-only subprocesses.
+        Each one's own retention sweep can race the others' appends to
+        today's file, but the sweep only ever unlinks the *stale* file
+        (already day-boundary-separated from today's), never the live one
+        an append targets -- unlike the flat single-file design this
+        replaces, which lost 9/11/6/6/8 of 12 rows across five runs of this
+        exact scenario shape when a staleness-gated rewrite raced a
+        concurrent plain append. A count-only assertion can't tell N good
+        rows from N-1 good rows plus one corrupted line, so every row is
+        parsed and checked individually."""
+        stub, _ = _install_recorder(tmp_path)
+        index_dir = _index_dir(tmp_path)
+        index_dir.mkdir(parents=True)
+        index_dir.chmod(0o700)
+        stale = index_dir / "consumed.2020-01-01.tsv"
+        stale.write_text("2020-01-01T00:00:00Z\t/tmp/old-dest\t/tmp/old-src\n")
+        _backdate(stale, days_old=31)
+
+        sources = []
+        for i in range(8):
+            src = tmp_path / f"racing{i}-task.md"
             src.write_text(f"hello {i}\n")
             sources.append(src)
 
@@ -832,13 +929,17 @@ class TestConsumedIndex:
         for proc, (_stdout, stderr) in zip(procs, outputs, strict=True):
             assert proc.returncode == 0, stderr
 
-        rows = _index_path(tmp_path).read_text().splitlines()
-        assert len(rows) == len(sources)
+        assert not stale.exists(), "the stale sibling must be swept by one of the racing appends"
+        rows = _day_file(tmp_path).read_text().splitlines()
+        assert len(rows) == len(sources), f"expected exactly {len(sources)} rows, got {len(rows)}"
+        seen_dests = set()
         for row in rows:
             fields = row.split("\t")
             assert len(fields) == 3, f"malformed (truncated or merged) row: {row!r}"
             assert fields[1], f"row missing a destination field: {row!r}"
             assert fields[2], f"row missing a source field: {row!r}"
+            assert fields[1] not in seen_dests, f"duplicate destination across rows: {row!r}"
+            seen_dests.add(fields[1])
 
     def test_reader_finds_the_writer_row_end_to_end(self, tmp_path: Path) -> None:
         """Contract test at the writer/reader boundary (staff-sdet finding):

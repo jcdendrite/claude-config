@@ -19,7 +19,6 @@ import stat
 import subprocess
 import textwrap
 import time
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -2817,9 +2816,9 @@ class TestLibResumeContextTmpdirRoot:
         assert result.stdout.strip() == "/tmp"
 
 
-def _run_resume_context_index_file(env: dict) -> subprocess.CompletedProcess:
+def _run_resume_context_index_dir(env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_index_file"],
+        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_index_dir"],
         capture_output=True,
         text=True,
         env=env,
@@ -2827,26 +2826,21 @@ def _run_resume_context_index_file(env: dict) -> subprocess.CompletedProcess:
     )
 
 
-class TestLibResumeContextIndexFile:
-    """Different-owner pre-creation (not exercised as a test): the case
-    where the predictable resume-context-index-<uid> path is squatted by a
-    genuinely different OS user can't be reproduced in single-uid CI. It is
-    closed by POSIX semantics rather than an executable test -- mkdir(2) is
-    atomic, so a successful call always yields a directory owned by the
-    calling EUID with no attacker-controlled window, and a failed call
-    (attacker got there first) is caught by `[ -O "$dir" ]` evaluating
-    false, since an attacker cannot forge EUID ownership without privilege
-    they don't have. Recorded here so a future edit weakening the guard
-    (e.g. swapping `[ -O ]` for `[ -w ]`) breaks this documented intent
-    rather than silently reopening the gap."""
+class TestLibResumeContextIndexDir:
+    """Different-owner pre-creation can't be reproduced in single-uid CI:
+    mkdir(2)'s atomicity plus the `[ -O ]` check closes the race regardless
+    (see `_lib_resume_context_index_dir`), so it's recorded here rather than
+    exercised. A future edit weakening the guard (e.g. `[ -O ]` -> `[ -w ]`)
+    should break this documented intent instead of silently reopening the
+    gap."""
 
-    def test_creates_0700_directory_and_prints_consumed_tsv_path(self, tmp_path: Path) -> None:
-        result = _run_resume_context_index_file(
+    def test_creates_0700_directory_and_prints_it(self, tmp_path: Path) -> None:
+        result = _run_resume_context_index_dir(
             {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
         )
         assert result.returncode == 0, result.stderr
         expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
-        assert result.stdout.strip() == str(expected_dir / "consumed.tsv")
+        assert result.stdout.strip() == str(expected_dir)
         assert stat.S_IMODE(expected_dir.stat().st_mode) == 0o700
 
     def test_returns_1_and_prints_nothing_when_directory_is_a_symlink(self, tmp_path: Path) -> None:
@@ -2854,7 +2848,7 @@ class TestLibResumeContextIndexFile:
         real_dir.mkdir()
         symlinked = tmp_path / f"resume-context-index-{os.geteuid()}"
         symlinked.symlink_to(real_dir)
-        result = _run_resume_context_index_file(
+        result = _run_resume_context_index_dir(
             {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
         )
         assert result.returncode != 0
@@ -2862,31 +2856,17 @@ class TestLibResumeContextIndexFile:
 
     def test_repairs_a_preexisting_0755_directory_to_0700(self, tmp_path: Path) -> None:
         """Mirrors the file-level 0644->0600 repair pass a pre-existing
-        looser-mode index file gets from record_consumed_destination -- the
+        looser-mode day-file gets from record_consumed_destination -- the
         directory's own `chmod 700` is unconditional, not gated on the mode
         already being wrong, so it needs the same symmetric coverage."""
         preexisting_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
         preexisting_dir.mkdir()
         preexisting_dir.chmod(0o755)
-        result = _run_resume_context_index_file(
+        result = _run_resume_context_index_dir(
             {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
         )
         assert result.returncode == 0, result.stderr
         assert stat.S_IMODE(preexisting_dir.stat().st_mode) == 0o700
-
-
-def test_lib_resume_context_retention_cutoff_is_30_days_before_now() -> None:
-    result = subprocess.run(
-        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_retention_cutoff"],
-        capture_output=True,
-        text=True,
-        env={"PATH": os.environ["PATH"]},
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    actual = datetime.strptime(result.stdout.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-    expected = datetime.now(UTC) - timedelta(days=30)
-    assert abs((actual - expected).total_seconds()) < 5
 
 
 def test_lib_print_recovery_hint_prints_reload_command_to_stderr_only() -> None:

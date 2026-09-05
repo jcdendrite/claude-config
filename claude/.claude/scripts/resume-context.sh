@@ -61,10 +61,13 @@
 #   stderr on use — same sensitivity class as the not-found hint above.
 # - A third, durable-enough channel: every successful move also appends a
 #   <timestamp, destination, source> row to a per-uid index under the same
-#   temp-dir root (_lib_resume_context_index_file), so a *different* session
-#   can resolve the destination later — see find-consumed-continuity-file.sh's
-#   own header for why and how. Best-effort only, per
-#   record_consumed_destination's own doc comment below.
+#   temp-dir root (_lib_resume_context_index_dir), sharded one file per UTC
+#   day, so a *different* session can resolve the destination later — see
+#   find-consumed-continuity-file.sh's own header for why and how.
+#   Best-effort only, per record_consumed_destination's own doc comment
+#   below. Whole day-files older than 30 days are swept by mtime after each
+#   append, the same retention idiom this repo's other self-managed state
+#   directories use.
 #
 # Known limitations:
 # - Shell *aliases* for `claude` are not visible here (aliases aren't
@@ -116,54 +119,45 @@ print_recovery_hint() {
 }
 
 # record_consumed_destination SRC DEST
-# Best-effort append of a <timestamp, destination, source> row to the
-# per-uid index, run after a successful move and before the mode-fixing
-# chmod below so the index still names the destination even if that chmod
-# later fails. Any guard failure below skips the write entirely and never
-# falls back to a looser path -- the move is the contract, not the index.
-# Also best-effort-prunes rows older than 30 days before appending (see
-# _lib_resume_context_retention_cutoff) -- a failed prune step leaves the
-# index untouched and falls through to the append unaffected.
+# Best-effort append of a <timestamp, destination, source> row to today's
+# UTC day-file in the per-uid index, run after a successful move and before
+# the mode-fixing chmod below so the index still names the destination even
+# if that chmod later fails. Any guard failure below skips the write
+# entirely and never falls back to a looser path -- the move is the
+# contract, not the index.
 record_consumed_destination() {                 # invoked as `... || true`
-  local src="$1" dest="$2" index stamp row cutoff pruned
+  local src="$1" dest="$2" dir stamp row row_bytes day_file
   case "$src" in *$'\n'*) return 0 ;; esac      # a newline would forge a row
   # $dest gets no equivalent guard: it is always a mktemp-produced path
   # under $TMPDIR_ROOT, never attacker-reachable input, unlike $src above.
-  index=$(_lib_resume_context_index_file) || return 0
-  [ -L "$index" ] && return 0
-  [ -e "$index" ] && chmod 600 -- "$index" 2>/dev/null
+  dir=$(_lib_resume_context_index_dir) || return 0
   stamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 0
+  # One file per UTC day, so retention below is a whole-file mtime sweep
+  # rather than a rewrite of a file other processes are appending to.
+  # ${stamp%%T*} is the date half of the stamp already computed above, so
+  # this costs no second `date` fork.
+  day_file="$dir/consumed.${stamp%%T*}.tsv"
+  [ -L "$day_file" ] && return 0
+  [ -e "$day_file" ] && chmod 600 -- "$day_file" 2>/dev/null
   row="$stamp"$'\t'"$dest"$'\t'"$src"
-  # bash's `printf` builtin chunks output into multiple write(2) calls past
-  # roughly 4096 bytes (verified via strace), and only a single write(2)
-  # call is atomic under O_APPEND -- 2048 leaves headroom below that
-  # threshold for cross-platform/shell-version variance. $stamp and $dest
-  # are bounded and script-controlled; $src has no length cap. The +1
-  # accounts for the trailing newline the actual write also carries.
-  [ "$(( ${#row} + 1 ))" -gt 2048 ] && return 0
-  # No `--` before $index in either awk call below: mawk (Debian/Ubuntu's
-  # default `awk`) doesn't recognize it as an end-of-options marker and
-  # tries to open it as a filename. $index is always an absolute,
-  # script-controlled mktemp-area path, never attacker-influenced, so
-  # omitting `--` is safe here.
-  # The read-only staleness check below gates the destructive rewrite that
-  # follows. An unconditional mktemp+mv swap on every append would replace
-  # the whole index each time, capable of clobbering a concurrent writer's
-  # plain `>>` even when nothing in the index is actually stale. Gating on
-  # real staleness confines that residual race to the narrow case of an
-  # index holding both a 30-day-stale row and a concurrent fresh writer at
-  # the same instant.
-  if [ -e "$index" ] && cutoff=$(_lib_resume_context_retention_cutoff 2>/dev/null) &&
-    awk -F'\t' -v cutoff="$cutoff" '$1 < cutoff { stale = 1 } END { exit !stale }' "$index" 2>/dev/null; then
-    pruned=$(mktemp "${index}.prune.XXXXXX" 2>/dev/null) && {
-      awk -F'\t' -v cutoff="$cutoff" '$1 >= cutoff' "$index" > "$pruned" 2>/dev/null &&
-        mv -- "$pruned" "$index" 2>/dev/null &&
-        chmod 600 -- "$index" 2>/dev/null
-    }
-    [ -n "${pruned:-}" ] && [ -e "$pruned" ] && rm -f -- "$pruned" 2>/dev/null
-  fi
-  ( umask 077; printf '%s\n' "$row" >> "$index" ) 2>/dev/null
-  chmod 600 -- "$index" 2>/dev/null
+  # Byte count, not ${#row}: bash counts characters under a multi-byte
+  # locale, so a non-ASCII $src can pass a character cap while the bytes
+  # actually written exceed it. `wc -c` counts exactly what the printf
+  # below writes, trailing newline included.
+  # Only a single write(2) call is atomic under O_APPEND, and bash's printf
+  # chunks output into multiple write(2) calls past roughly 4096 bytes
+  # (empirically confirmed). 2048 leaves headroom below that ceiling for
+  # cross-platform/shell-version variance.
+  row_bytes=$(printf '%s\n' "$row" | wc -c | tr -d '[:space:]') || return 0
+  [ "$row_bytes" -gt 2048 ] && return 0
+  ( umask 077; printf '%s\n' "$row" >> "$day_file" ) 2>/dev/null
+  chmod 600 -- "$day_file" 2>/dev/null
+  # 30-day retention, the same sweep every other self-sweeping state
+  # directory in this repo uses. Unlinking a whole file is not a
+  # read-modify-write, so concurrent sweeps cannot lose a row. Runs after
+  # the append so a `find` failure never costs the row, and tolerates a
+  # racing sweep that already unlinked the same file.
+  find "$dir" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
   return 0
 }
 
