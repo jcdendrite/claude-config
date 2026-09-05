@@ -67,7 +67,7 @@ Content, three lines, in this exact order: `<owner>/<repo>#<number>`, the review
 
 ## Step 9 — Deliver
 
-Run this entire step, including `deactivate review-pr`, from inside the step-3 worktree — do not remove it first. Present the full findings in chat, tiered, with an explicit recommendation: any blocking finding → `--request-changes`; findings with no blockers → `--comment`; needs-discussion → `--comment`. **Never emit `--approve` autonomously** — an approval counts toward branch-protection required-approval state under the operator's identity, a materially different act from commenting, and stays the human's own click.
+Run this entire step, including `deactivate review-pr`, from inside the step-3 worktree — do not remove it first. Present the full findings in chat, tiered, with an explicit recommendation: any blocking finding → `request-changes`; findings with no blockers → `comment`; needs-discussion → `comment`. **Never attempt to construct an `--approve` invocation** — and none is needed: `review-pr-post.sh` below takes only `comment`/`request-changes` as its verdict argument, so `--approve` is not a reachable code path. An approval counts toward branch-protection required-approval state under the operator's identity, a materially different act from commenting, and stays the human's own click.
 
 **Proportionality.** For a first-time or external-contributor author on a small PR, a nit-heavy multi-tier review landing verbatim under a maintainer's name is a foreseeable bad outcome — for that author class, move non-blocking and nit findings into their own lower-priority section at the end of the posted body rather than interleaving them with blocking findings; nothing found is dropped from what gets posted. The approval below is over the exact artifact about to post: when this reordering applies, show the reordered body in full and get approval on it specifically — approving one ordering never authorizes posting a differently-organized document.
 
@@ -82,7 +82,11 @@ Post one review, body passed as a file (never inline), with the same attribution
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 ```
-gh pr review <number> --request-changes|--comment -F <body-file-path>
+~/.claude/scripts/review-pr-post.sh request-changes
+```
+or
+```
+~/.claude/scripts/review-pr-post.sh comment
 ```
 Then, on every exit path — posted, declined, or aborted:
 ```

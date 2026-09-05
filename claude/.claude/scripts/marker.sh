@@ -247,6 +247,25 @@ _review_pr_findings_body_fixed_path() {
   printf '%s/.review-pr-active.d/%s.body' "$CONFIG_DIR" "$1"
 }
 
+# _write_marker_no_follow DEST_PATH
+# Writes stdin to DEST_PATH through a single os.open(O_NOFOLLOW) -- refuses a
+# symlink at the final path component atomically with the write, so a
+# pre-planted symlink at one of these predictable
+# <markers-dir>/<repo-hash>.<session-id> destinations is never followed and
+# truncated the way a plain `>` redirect would follow it. Shared by every
+# `write <skill>` arm below.
+_write_marker_no_follow() {
+  _lib_capped python3 -c '
+import os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
+except OSError:
+    sys.exit(1)
+with os.fdopen(fd, "wb") as f:
+    f.write(sys.stdin.buffer.read())
+' "$1"
+}
+
 SUBCOMMAND="$1"
 ARG2="${2:-}"
 
@@ -292,8 +311,8 @@ case "$SUBCOMMAND" in
         MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/code-review-markers"
-        printf '%s\n' "$MARKER_VALUE" \
-          > "$CONFIG_DIR/code-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$MARKER_VALUE" | _write_marker_no_follow "$CONFIG_DIR/code-review-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       skill-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -306,8 +325,8 @@ case "$SUBCOMMAND" in
         MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/skill-review-markers"
-        printf '%s\n' "$MARKER_VALUE" \
-          > "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$MARKER_VALUE" | _write_marker_no_follow "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       plan-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -346,8 +365,8 @@ case "$SUBCOMMAND" in
           fi
         fi
         mkdir -p "$CONFIG_DIR/plan-review-markers"
-        printf '%s\n' "$PLAN_HASH" \
-          > "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$PLAN_HASH" | _write_marker_no_follow "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -356,8 +375,8 @@ case "$SUBCOMMAND" in
         MARKER_VALUE=$(git -C "$REPO_ROOT" rev-parse HEAD)
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not resolve HEAD. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/ready-for-review-markers"
-        printf '%s\n' "$MARKER_VALUE" \
-          > "$CONFIG_DIR/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$MARKER_VALUE" | _write_marker_no_follow "$CONFIG_DIR/ready-for-review-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       cumulative-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -375,8 +394,8 @@ case "$SUBCOMMAND" in
           exit 2
         fi
         mkdir -p "$CONFIG_DIR/cumulative-review-markers"
-        printf '%s\n' "$MARKER_VALUE" \
-          > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$MARKER_VALUE" | _write_marker_no_follow "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       review-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -430,8 +449,8 @@ print(digest.hexdigest())
 ' "$FINDINGS_BODY_PATH" 2>/dev/null)
         [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/review-pr-markers"
-        printf '%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" \
-          > "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" | _write_marker_no_follow "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       *)
         printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review, review-pr\n" "$SKILL" >&2

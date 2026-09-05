@@ -55,6 +55,13 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`findings-path-suffix.sh`** — prepares this review round's reviewer-findings destination and prints its `<epoch>-<slug>` suffix. Invoked once per round by `/code-review`, `/plan-review`, and `/ready-for-review`, each of which reuses the printed suffix across every reviewer spawned in that round. See [`docs/design-decisions.md`](design-decisions.md) §12 for the `findings_path` mechanism this feeds.
 
+- **`review-pr-post.sh`** — the only code path `/review-pr` Step 9 may use to post a `gh pr review`; takes exactly one argument, `comment` or `request-changes` (a two-element `case`), so `--approve` is not a reachable invocation. Before calling `gh`, and independent of the `require-respond-pr.sh` gate that redirects here (see [`docs/hooks.md`](hooks.md)), it re-verifies:
+  - This session's own `/review-pr` completion marker exists.
+  - The worktree's current HEAD still equals the marker's recorded `headRefOid`.
+  - The findings-body file at the fixed path `<config-dir>/.review-pr-active.d/<session_id>.body` still hashes to the marker's recorded value.
+
+  Any mismatch aborts with no `gh` call. Strips `GH_HOST`/`GH_ENTERPRISE_TOKEN` from `gh`'s environment on the call itself, so an ambient `GH_HOST` can't redirect the post to a different host. After a successful post, deletes the completion marker it consumed — a retry fails closed instead of double-posting.
+
 - **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 
   - Prints `LAUNCH_SHA: <oid>` once at start.

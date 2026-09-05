@@ -17,7 +17,6 @@ from helpers import (
     edit_input,
     extract_skill_command,
     head_sha,
-    review_pr_completion_marker_path,
     run_hook,
     run_hook_reason,
     run_skill_command,
@@ -1075,16 +1074,13 @@ class TestRespondPrStructuralInvariants:
         )
 
 
-# -- review-pr's active-bypass marker (reads) and completion-marker gate ----
-# (writes) ----------------------------------------------------------------
+# -- review-pr's active-bypass marker (reads) and unconditional write deny -
+# ----------------------------------------------------------------------------
 #
 # Uses the shared `git_repo`/`isolated_home` fixtures from conftest.py
-# rather than `current_repo_foo_bar` above: the completion-marker checks run
-# before the cross-repo bypass section, so they need a resolvable HEAD
-# (git_repo has a real commit; current_repo_foo_bar does not) but no
-# particular origin -- except TestReviewPrCompletionMarkerGate, whose write
-# authorization now binds to the marker's stored owner/repo too, and so
-# needs `git_repo_foo_bar_origin` below instead.
+# rather than `current_repo_foo_bar` above: these tests need a resolvable
+# HEAD (git_repo has a real commit; current_repo_foo_bar does not) but no
+# particular origin.
 
 REVIEW_PR_PR_NUMBER = 42
 REVIEW_PR_PR_IDENTITY = f"foo/bar#{REVIEW_PR_PR_NUMBER}"
@@ -1110,25 +1106,13 @@ def _review_command(pr_number, body_file, flag="--comment"):
 @pytest.fixture
 def git_repo_foo_bar_origin(git_repo):
     """`git_repo` with an `origin` remote resolving to foo/bar -- matching
-    REVIEW_PR_PR_IDENTITY's stored owner/repo, so the write-authorization
-    gate's implicit-repo resolution (no explicit -R/--repo flag on the
-    gated command) resolves to the same repo the completion marker names."""
+    REVIEW_PR_PR_IDENTITY's stored owner/repo, so a completion marker built
+    from that identity describes a plausible review of this repo. Not
+    load-bearing for the unconditional-deny tests below, which deny
+    regardless of any repo match, but keeps the fixture data internally
+    consistent."""
     subprocess.run(
         ["git", "remote", "add", "origin", "https://github.com/foo/bar.git"],
-        cwd=git_repo,
-        check=True,
-    )
-    return git_repo
-
-
-@pytest.fixture
-def git_repo_foo_bar_ssh_origin(git_repo):
-    """Same as `git_repo_foo_bar_origin`, but the SSH remote form
-    (`git@github.com:foo/bar.git`) rather than HTTPS -- the implicit-repo
-    resolution's `git config --get remote.origin.url` -> sed parsing is new
-    in this PR and untested against this very common remote spelling."""
-    subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:foo/bar.git"],
         cwd=git_repo,
         check=True,
     )
@@ -1200,11 +1184,9 @@ class TestGhPrEditBodyMutatingFormsDenied:
     def test_denied_even_with_a_live_review_pr_active_marker(
         self, isolated_home, git_repo
     ):
-        """A live review-pr marker only releases a matched READ, or a WRITE
-        that passes the completion-marker check -- `gh pr edit` matches
-        neither: it carries no `review`/`pulls/N/` shape for the PR-number
-        extraction to find, so REVIEW_PR_WRITE_AUTHORIZED can never reach 1
-        for it."""
+        """A live review-pr marker only releases a matched READ -- every
+        matched WRITE is denied unconditionally regardless of marker state,
+        and `gh pr edit`'s body-mutating form is a matched write."""
         sid = "test-session-review-pr-edit"
         _write_review_pr_active_marker(isolated_home, sid)
         assert (
@@ -1232,424 +1214,53 @@ class TestGhPrEditBodyMutatingFormsDenied:
         )
 
 
-class TestReviewPrCompletionMarkerGate:
-    """A completion marker gates posting on the review having happened, not
-    on posting being authorized. One assertion per bound field, mirroring
-    test_other_sessions_marker_does_not_leak_bypass's pattern of holding
-    every other field constant and correct while breaking the one under
-    test.
-
-    Uses `git_repo_foo_bar_origin` (not the bare `git_repo` used elsewhere
-    in this section) because write authorization also binds the gated
-    command's target repo to the marker's stored owner/repo -- these tests'
-    gated commands carry no explicit -R/--repo flag, so that binding
-    resolves implicitly from this fixture's origin remote, which must
-    therefore already equal REVIEW_PR_PR_IDENTITY's "foo/bar" prefix."""
+class TestReviewPrWriteDeniedUnconditionally:
+    """Every `gh pr review`/`reviews` write during an active /review-pr
+    session is denied unconditionally -- posting must go through
+    ~/.claude/scripts/review-pr-post.sh instead, which independently
+    re-verifies the completion marker before ever calling gh. Neither a
+    non-approving verdict flag nor a completion marker whose HEAD, PR
+    identity, and body hash all match the gated command changes that: this
+    hook grants no write bypass of its own, for any verdict."""
 
     SID = "test-session-review-pr-write"
 
-    def test_active_marker_alone_denies_the_post(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --comment -F body.md",
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --request-changes -F body.md",
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --approve -F body.md",
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews -f event=COMMENT -f body=@body.md",
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews -f event=APPROVE -f body=@body.md",
+            (
+                "gh api graphql -f query='mutation { submitPullRequestReview(input: "
+                '{reviewId: "PRR_abc", event: COMMENT}) { clientMutationId } }\''
+            ),
+        ],
+    )
+    def test_write_denied_with_no_marker_at_all(
+        self, isolated_home, git_repo_foo_bar_origin, command
     ):
-        """No completion marker exists yet -- an active marker alone only
-        proves a /review-pr session is running, never that the review
-        happened."""
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "flag", ["--comment", "--request-changes", "--approve", "-c", "-r", "-a"]
+    )
+    def test_write_denied_with_a_live_active_marker_and_no_completion_marker(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
+    ):
         sid = self.SID
         _write_review_pr_active_marker(isolated_home, sid)
         body_file, _ = _write_findings_body(tmp_path)
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_matching_completion_marker_allows_the_post(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_marker_stops_allowing_once_head_moves(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """Content-addressed, not a presence flag: a new commit after the
-        marker was written must re-arm the gate."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        (git_repo_foo_bar_origin / "file.txt").write_text("first\nsecond\nthird\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=git_repo_foo_bar_origin, check=True)
-        subprocess.run(
-            ["git", "commit", "-q", "-m", "moved"], cwd=git_repo_foo_bar_origin, check=True
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_completion_marker_for_wrong_pr_number_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        wrong_pr_number = REVIEW_PR_PR_NUMBER + 1
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(_review_command(wrong_pr_number, body_file), session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_completion_marker_for_right_pr_number_wrong_repo_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """Right PR number, right HEAD, right body hash -- but the gated
-        command's -R/--repo explicitly targets a different owner/repo than
-        the marker's stored identity. Before this check existed, the hook
-        only compared the completion marker's trailing PR number, never its
-        owner/repo prefix, so this exact shape would have posted to an
-        entirely different repo's PR #42 under the operator's identity."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"gh pr review {REVIEW_PR_PR_NUMBER} --comment "
-            f"-R other-owner/other-repo -F {body_file}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_completion_marker_body_hash_mismatch_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The single most load-bearing claim this gate makes: the file
-        about to be posted must actually be the file that was reviewed."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        reviewed_body_file, reviewed_body_hash = _write_findings_body(
-            tmp_path, content="# reviewed findings\n", name="reviewed.md"
-        )
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            reviewed_body_hash,
-            sid,
-        )
-        different_body_file, _ = _write_findings_body(
-            tmp_path, content="# a different body\n", name="different.md"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(
-                    _review_command(REVIEW_PR_PR_NUMBER, different_body_file), session_id=sid
-                ),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_completion_marker_written_by_session_a_not_honored_by_session_b(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """Cross-session replay: the one property distinguishing this marker
-        from ready-for-review's cross-session-glob shape. Session B has its
-        own live active marker (so the active-marker requirement alone isn't
-        what denies it) but no completion marker of its own."""
-        session_a = "session-a"
-        session_b = "session-b"
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            session_a,
-        )
-        _write_review_pr_active_marker(isolated_home, session_b)
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(
-                    _review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=session_b
-                ),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_approve_flag_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """--approve is never released here, independent of every other
-        check above passing -- /review-pr's own design never emits
-        --approve autonomously; that verdict stays the human's separate
-        action in the GitHub UI, not something this gate authorizes."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag="--approve")
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_api_event_approve_field_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The `--approve` backstop above covers only the `gh pr review`
-        CLI flag; `gh api .../reviews -f event=APPROVE` is the same
-        forbidden act (an approval, posted under the operator's identity)
-        through the REST form -- it must be denied too, not just the
-        CLI spelling of it."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
-            f"-f event=APPROVE -f body=@{body_file}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_short_approve_flag_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """`-a` is gh pr review's documented short form of --approve
-        (`gh pr review --help`) -- the prior denylist only matched the long
-        spelling, so this exact command bypassed it."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag="-a")
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_approve_equals_true_flag_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """`--approve=true` is the `=`-joined spelling gh also accepts for a
-        boolean flag -- the prior denylist required whitespace on both sides
-        of `--approve`, so this exact command bypassed it."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag="--approve=true")
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_graphql_submit_review_approve_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """submitPullRequestReview is the GraphQL twin of `gh pr review` --
-        its event: APPROVE value is a query-string literal, not a -f/-F
-        flag, so neither the CLI nor REST denylist matches it. A `pulls/N/`
-        substring anywhere in the query text (a plausible in-context
-        reference, not an obfuscation trick) satisfies the PR-number
-        extraction the same way a real REST call's URL would."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        _, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            "gh api graphql -f query='mutation { submitPullRequestReview(input: "
-            '{reviewId: "PRR_abc", event: APPROVE}) { clientMutationId } }'
-            f" # ref pulls/{REVIEW_PR_PR_NUMBER}/ for context'"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_graphql_submit_review_comment_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The GraphQL denylist covers the whole submitPullRequestReview
-        mutation, not only its APPROVE spelling: SKILL.md Step 9 never
-        emits a GraphQL review post of any event value, so a comment-event
-        GraphQL submission is denied here too, same as an approve-event
-        one."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        _, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            "gh api graphql -f query='mutation { submitPullRequestReview(input: "
-            '{reviewId: "PRR_abc", event: COMMENT}) { clientMutationId } }'
-            f" # ref pulls/{REVIEW_PR_PR_NUMBER}/ for context'"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    @pytest.mark.parametrize("flag", ["-c", "--comment", "-r", "--request-changes"])
-    def test_short_and_long_verdict_flags_allow(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
-    ):
-        """Bounds the allowlist from the other side: every documented
-        non-approving verdict flag, short and long, must still pass once
-        every other check is satisfied."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
         command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flag)
         assert (
             run_hook(
@@ -1658,47 +1269,17 @@ class TestReviewPrCompletionMarkerGate:
                 cwd=git_repo_foo_bar_origin,
                 home=isolated_home,
             )
-            == "allow"
+            == "deny"
         )
 
-    @pytest.mark.parametrize("flag", ["--comment=true", "-c=true", "--request-changes=true", "-r=true"])
-    def test_equals_joined_verdict_flags_allow(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
-    ):
-        """gh's pflag-based boolean flags accept an `=`-joined explicit value
-        the same way `--approve=true` does -- confirmed against the real gh
-        binary, this spelling reaches gh's own git-repo check rather than
-        erroring as an unrecognized flag, so the allowlist must not
-        wrongly deny it."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flag)
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_review_with_no_verdict_flag_denied(
+    def test_write_denied_even_with_a_fully_matching_completion_marker(
         self, isolated_home, git_repo_foo_bar_origin, tmp_path
     ):
-        """The allowlist's fail-closed side: a `gh pr review` write naming
-        neither a comment nor a request-changes flag is denied rather than
-        defaulting to allow -- gh itself would reject this the same way, but
-        the gate must not rely on that."""
+        """The write-authorization cross-check this hook used to run is
+        gone: a completion marker whose stored HEAD, PR identity, and body
+        hash all match the gated command exactly no longer releases a write
+        here -- that verification now happens inside review-pr-post.sh,
+        never in this hook."""
         sid = self.SID
         _write_review_pr_active_marker(isolated_home, sid)
         body_file, body_hash = _write_findings_body(tmp_path)
@@ -1710,7 +1291,7 @@ class TestReviewPrCompletionMarkerGate:
             body_hash,
             sid,
         )
-        command = f"gh pr review {REVIEW_PR_PR_NUMBER} -F {body_file}"
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file)
         assert (
             run_hook(
                 RESPOND_PR_HOOK,
@@ -1721,575 +1302,39 @@ class TestReviewPrCompletionMarkerGate:
             == "deny"
         )
 
-    @pytest.mark.parametrize("flags", ["--approve --comment", "-a -c"])
-    def test_approve_combined_with_a_verdict_flag_denied(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flags
-    ):
-        """The allowlist alone only checks for a non-approving flag's
-        presence, not an approving flag's absence -- `--approve --comment`
-        carries both and must still deny, or the allowlist's own stated
-        invariant ('never authorized... independent of every check above')
-        does not hold for this input shape."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flags)
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    @pytest.mark.parametrize("flags", ["-ac", "-ca", "-cr"])
-    def test_clustered_short_flags_denied(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flags
-    ):
-        """gh's pflag parser accepts clustered short boolean flags (`gh pr
-        review 1 -ac -F body` reaches gh's own verdict-conflict rejection,
-        confirming gh itself parses the cluster) -- neither
-        PATTERN_REVIEW_PR_VERDICT_FLAG nor PATTERN_REVIEW_PR_APPROVE_FLAG_CLI
-        match a letter embedded inside a cluster token, since both require a
-        boundary immediately after the single letter. That leaves the
-        allowlist's absence-of-a-verdict-flag branch to deny this shape,
-        which this test pins against a future boundary-regex edit that
-        starts matching inside a cluster."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flags)
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_field_flag_body_file_form_matching_hash_allows(
+    def test_deny_message_redirects_to_review_pr_post_script(
         self, isolated_home, git_repo_foo_bar_origin, tmp_path
     ):
-        """gh api's `-f body=@<path>` field-file syntax is a genuine
-        file-sourced body -- not the inline-text accepted gap -- so a
-        matching hash authorizes the post exactly as -F/--body-file does."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
-            f"-f body=@{body_file} -f event=COMMENT"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_field_flag_body_file_form_mismatched_hash_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The `-f body=@<path>` sibling of
-        test_completion_marker_body_hash_mismatch_denies: before this fix,
-        the extraction only recognized -F/--body-file, so this exact
-        mismatch would have silently skipped the hash check and posted."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        reviewed_body_file, reviewed_body_hash = _write_findings_body(
-            tmp_path, content="# reviewed findings\n", name="reviewed.md"
-        )
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            reviewed_body_hash,
-            sid,
-        )
-        different_body_file, _ = _write_findings_body(
-            tmp_path, content="# a different body\n", name="different.md"
-        )
-        command = (
-            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
-            f"-f body=@{different_body_file} -f event=COMMENT"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_capital_f_flag_body_file_form_matching_hash_allows(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The `-F` sibling of test_field_flag_body_file_form_matching_hash_allows:
-        `-F body=@<path>` (gh api's --field form) is a different shape from
-        `-F <path>` (gh pr review's --body-file form) despite sharing the -F
-        spelling -- before this fix, the extraction captured the literal text
-        "body=@<path>" as the filename, so the hash check always failed and
-        this exact command always denied regardless of a matching body."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
-            f"-F body=@{body_file} -F event=COMMENT"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_capital_f_flag_body_file_form_mismatched_hash_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The `-F` sibling of test_field_flag_body_file_form_mismatched_hash_denies."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        reviewed_body_file, reviewed_body_hash = _write_findings_body(
-            tmp_path, content="# reviewed findings\n", name="reviewed.md"
-        )
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            reviewed_body_hash,
-            sid,
-        )
-        different_body_file, _ = _write_findings_body(
-            tmp_path, content="# a different body\n", name="different.md"
-        )
-        command = (
-            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
-            f"-F body=@{different_body_file} -F event=COMMENT"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_ambiguous_pr_number_extraction_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """Two distinct PR-number-shaped substrings in one flattened
-        command -- e.g. two chained gh calls each naming a different PR
-        number -- must deny even though one of them matches an otherwise-
-        valid completion marker. GATED_COMMAND_PR_NUMBER stays empty on
-        ambiguity rather than guessing which of the two the marker binds
-        to."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        other_body_file, _ = _write_findings_body(
-            tmp_path, content="# other\n", name="other.md"
-        )
-        command = (
-            f"{_review_command(REVIEW_PR_PR_NUMBER, body_file)}\n"
-            f"{_review_command(REVIEW_PR_PR_NUMBER + 1, other_body_file)}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_input_sourced_rest_body_denied_even_when_otherwise_fully_authorized(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """`gh api .../reviews --input file.json` cannot be content-inspected
-        by this hook -- the body-file extraction only recognizes -F/
-        --body-file and -f/--field/--raw-field body=@, so an --input-sourced
-        body (which could itself carry event:APPROVE and arbitrary content)
-        must never be write-authorized, regardless of a valid marker."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        payload = tmp_path / "payload.json"
-        payload.write_text('{"event":"APPROVE","body":"anything"}')
-        command = f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews --input {payload}"
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_capital_f_flag_api_event_approve_denied(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """`-F event=APPROVE` (capital -F, a real independent `gh api` flag
-        distinct from `-f`) must be denied the same as the lowercase
-        spelling -- the REST approve-denylist previously matched only
-        `-f`/`--field`/`--raw-field`."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews "
-            f"-F event=APPROVE -F body=@{body_file}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_gh_repo_env_var_prefix_denies_the_post(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """`GH_REPO=` ahead of the gated call changes gh's actual target repo
-        (gh precedence: --repo > GH_REPO > git remote) while this hook's
-        implicit-resolution fallback would otherwise still read the
-        worktree's origin remote -- must deny rather than trust the
-        cwd-based guess once GH_REPO is present."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = f"GH_REPO=attacker/evil-repo {_review_command(REVIEW_PR_PR_NUMBER, body_file)}"
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_cd_prefixed_command_denies_the_post(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """A `cd` earlier in the flattened command can move gh's actual
-        working directory away from the repo this hook resolves its
-        implicit fallback against -- must deny rather than trust the
-        cwd-based guess once a `cd` is present."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = f"cd /tmp && {_review_command(REVIEW_PR_PR_NUMBER, body_file)}"
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_cd_prefixed_command_with_explicit_repo_flag_still_allows(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """A `cd` earlier in the command must not distrust an explicit
-        `-R`/`--repo` flag on the gated call -- the GH_REPO=/cd distrust
-        check only applies when COMMAND_REPO (the explicit-flag case) is
-        already empty, so a `cd` prefix combined with an explicit flag must
-        still resolve via that flag and allow."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"cd /tmp && gh pr review {REVIEW_PR_PR_NUMBER} --comment "
-            f"-R foo/bar -F {body_file}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_gh_host_prefix_with_explicit_repo_flag_still_allows(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """Pins the named accepted gap at require-respond-pr.sh:66-71: the
-        completion marker stores only owner/repo, never a host, so a
-        `GH_HOST=`-prefixed command combined with an explicit host-less `-R`
-        that string-matches the marker's stored repo currently allows even
-        though gh itself would resolve that owner/repo against the named
-        host, not github.com."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"GH_HOST=internal-ghe.example.com gh pr review {REVIEW_PR_PR_NUMBER} "
-            f"--comment -R foo/bar -F {body_file}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_malformed_completion_marker_denies(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """A completion marker with fewer than 3 non-empty lines (hand-crafted
-        here, unlike every other test in this class which writes one via
-        write_review_pr_completion_marker) must deny --
-        _lib_review_pr_completion_marker_fields's read side, not only
-        marker.sh's write side, must fail closed on malformed content."""
         sid = self.SID
         _write_review_pr_active_marker(isolated_home, sid)
         body_file, _ = _write_findings_body(tmp_path)
-        marker_path = review_pr_completion_marker_path(
-            isolated_home, git_repo_foo_bar_origin, sid
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file)
+        reason = run_hook_reason(
+            RESPOND_PR_HOOK,
+            bash_input(command, session_id=sid),
+            cwd=git_repo_foo_bar_origin,
+            home=isolated_home,
         )
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text(f"{REVIEW_PR_PR_IDENTITY}\n{head_sha(git_repo_foo_bar_origin)}\n")
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
+        assert "review-pr-post.sh" in reason
 
-    def test_last_of_multiple_dash_r_flags_wins_resolution(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "~/.claude/scripts/review-pr-post.sh comment",
+            "~/.claude/scripts/review-pr-post.sh request-changes",
+            "~/.claude/scripts/review-pr-post.sh comment && echo posted",
+        ],
+    )
+    def test_wrapper_script_invocation_is_allowed_through(
+        self, isolated_home, git_repo_foo_bar_origin, command
     ):
-        """Pins today's greedy-`.*` extraction behavior (last -R value wins,
-        matching gh's own last-flag-wins semantics) so a future edit to the
-        extraction regex can't silently flip this to first-flag-wins with no
-        test noticing: the LAST of two -R values must be the one compared
-        against the marker's stored repo."""
+        """The redirect design depends on this hook never matching the
+        wrapper script's own invocation -- the `gh pr review` call it makes
+        happens inside the wrapper, invisible to this hook. Neither the
+        filename nor the chained form trips PATTERN_PR_WRITE_CMD, which
+        requires the literal `gh` `pr` `comment|review` token sequence."""
         sid = self.SID
         _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = (
-            f"gh pr review {REVIEW_PR_PR_NUMBER} --comment "
-            f"-R wrong-owner/wrong-repo -R foo/bar -F {body_file}"
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_ssh_remote_origin_resolves_and_allows(
-        self, isolated_home, git_repo_foo_bar_ssh_origin, tmp_path
-    ):
-        """The new implicit-origin resolution (`git config --get
-        remote.origin.url` -> sed, no explicit -R/--repo flag on the gated
-        command) must also parse the SSH remote form
-        (git@github.com:foo/bar.git), not only HTTPS -- a very common
-        developer configuration untested elsewhere in this class."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_ssh_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_ssh_origin),
-            body_hash,
-            sid,
-        )
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(_review_command(REVIEW_PR_PR_NUMBER, body_file), session_id=sid),
-                cwd=git_repo_foo_bar_ssh_origin,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-    def test_whitespace_in_body_path_denies_rather_than_mishashing(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """The body-file path extraction assumes no whitespace
-        ([^[:space:]]+). A quoted path containing a space is not the
-        extraction shape it expects, so REVIEW_PR_BODY_FILE_PATH resolves to
-        a truncated (wrong) path -- the hash comparison then fails and denies,
-        never silently mis-hashing and allowing."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        spaced_dir = tmp_path / "has space"
-        spaced_dir.mkdir()
-        body_file, body_hash = _write_findings_body(spaced_dir)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = f'gh pr review {REVIEW_PR_PR_NUMBER} --comment -F "{body_file}"'
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input(command, session_id=sid),
-                cwd=git_repo_foo_bar_origin,
-                home=isolated_home,
-            )
-            == "deny"
-        )
-
-    def test_authorized_review_post_chained_with_trailing_command_allows(
-        self, isolated_home, git_repo_foo_bar_origin, tmp_path
-    ):
-        """Pins the named accepted gap at require-respond-pr.sh:62-65: this
-        gate decides per whole command, so a fully marker-authorized review
-        post chained via `&&` with an unrelated trailing command allows the
-        whole string atomically -- there is no per-segment command
-        splitting."""
-        sid = self.SID
-        _write_review_pr_active_marker(isolated_home, sid)
-        body_file, body_hash = _write_findings_body(tmp_path)
-        write_review_pr_completion_marker(
-            isolated_home,
-            git_repo_foo_bar_origin,
-            REVIEW_PR_PR_IDENTITY,
-            head_sha(git_repo_foo_bar_origin),
-            body_hash,
-            sid,
-        )
-        command = f"{_review_command(REVIEW_PR_PR_NUMBER, body_file)} && echo posted"
         assert (
             run_hook(
                 RESPOND_PR_HOOK,
