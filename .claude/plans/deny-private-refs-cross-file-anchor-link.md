@@ -40,12 +40,12 @@ construction.
 Replacement pattern:
 
 ```
-(^|[)[:space:]]|(^|[^]])\()([^()[:space:]]*[^(){[:space:]])?#[a-z0-9_-]*[a-z_-][a-z0-9_-]*
+(^|[)#[:space:]]|(^|[^]])\()([^()#[:space:]]*[^(){#[:space:]])?#[a-z0-9_-]*[a-z_-][a-z0-9_-]*
 ```
 
 The two-alternative structure collapses into one alternation of position
 prefixes followed by an optional link-destination run. The
-`[^(){[:space:]]` terminal on that run is what preserves the bash
+`[^(){#[:space:]]` terminal on that run is what preserves the bash
 parameter-expansion-length exclusion (`${#items[@]}`), which the old first
 alternative got from `[^({]`.
 
@@ -108,7 +108,7 @@ mechanisms below anchor to it.
    `[engineer-verified]`
 7. The other five structural detectors' behavior is untouched.
    `[engineer-verified]`
-8. The new pattern is monotone against the old one across a 22-case
+8. The new pattern is monotone against the old one across a 24-case
    corpus — it never denies anything the old one allowed, and the nine
    pinned shapes keep their verdicts (5 deny, 4 allow). The seven flips
    are all old-DENY to new-ALLOW, matching cases 1, 2, 3, 8, 9, 11, and 12
@@ -130,6 +130,28 @@ mechanisms below anchor to it.
     beyond a structural regex detector's reach and would reject legitimate
     links to files that do not yet exist (a plan referencing a doc it also
     creates, for instance). `[engineer-verified]`
+11. A third gap was found during the `deny-private-refs-cross-file-anchor-link`
+    branch's `/ready-for-review` cumulative code review, not during initial
+    planning: a genuine markdown link's destination can hide a second,
+    independent `#<slug>`-shaped token past its first, legitimate anchor (e.g.
+    `other-file.md#<anchor-one>#<anchor-two>`). The **old** pattern denied
+    this shape; this diff's pattern, as first written, newly allowed it.
+    The destination run's content classes now exclude `#`, and `#` is
+    added as an additional valid reset point, so a second `#<slug>` token
+    elsewhere in the same destination is independently caught again —
+    except when that second token is itself brace-wrapped
+    (`other-file.md#<anchor-one>{#<anchor-two>}`), which shares the
+    pre-existing, separately-documented brace-wrap residual regardless of
+    position, not a new hole this row opens. This row also tightens
+    strictly less than it may
+    first appear. It closes what's independently reachable via a *second*
+    `#` token. But row 10 already leaves the *first* token's destination
+    completely untrusted — `[Docs](notes.md#<secret-slug>)` is already an
+    accepted `allow`. So the brace composition above adds no attacker
+    capability beyond what row 10 already discloses and accepts.
+    `[verified: grep -Eq against the full pinned-test corpus plus new
+    attack cases, confirming the fix preserves every existing verdict and
+    denies the newly-added attack shapes]`
 
 **Mechanisms:**
 
@@ -274,6 +296,14 @@ see M6 for why this does not split.
       actual file — allow. Pins the accepted link-destination-trust gap
       the same way case 11 pins the splice gap: the exemption is syntactic
       only and never checks that the destination resolves to a real path.
+- Four more cases pin additional shapes: a brace-wrap case (`{#<slug>}` stays
+  allowed), and, closing row 11's third gap, a second slug hidden past a
+  legitimate anchor in the same link destination (deny), a CommonMark angle-
+  bracket destination (deny, already denied pre- and post-fix; this pins the
+  previously-untested assertion), and a brace-wrapped second slug in the same
+  link destination (allow) pinning row 11's own brace-wrap exception directly
+  adjacent to the case it qualifies. The pinned corpus is sixteen added cases
+  plus the nine existing ones — twenty-five total.
 - *Reuse:* the `run_hook` / `bash_input` / `claude_config_repo` shape used
   by all nine existing cases — no new fixtures. The
   `test_structural_detector_in_staged_diff_denied` parametrize list
@@ -336,13 +366,13 @@ fabricated-bracket splice shape (`](x#<slug>)`, Row 5). That splice
 shape is the sole sanctioned non-link drop-out. It appears twice in the
 test module: an illustrative docstring literal and the test's own input
 literal. Any other line appearing only in the second output is a
-regression, not a finding to explain away. The differential run above
-predates this acceptance criterion's splice-shape callout, so it does
-not independently verify that callout.
+regression, not a finding to explain away. This differential does not
+independently verify the splice-shape callout above — that callout is
+asserted separately, not derived from this run's output.
 
 This differential is a one-time check, not a persisted assertion: it runs
-during this change and never again. The twelve added pinned cases plus the
-nine existing ones are therefore the *sole* durable regression guard on
+during this change and never again. The sixteen added pinned cases plus
+the nine existing ones are therefore the *sole* durable regression guard on
 this constant, which is why the added set covers shapes beyond the fix's
 own scope. Do not treat the differential as standing coverage.
 

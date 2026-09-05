@@ -2071,31 +2071,44 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 # A `#`-prefixed lowercase-hyphenated Slack-channel shape.
 # - Excludes all-digit runs so a plain GitHub issue reference (e.g. issue
 #   #421) doesn't false-positive.
-# - The `#` must be reachable from line start, whitespace, a close-paren, or
-#   an open-paren not immediately preceded by `]`, across an optional
-#   destination run that contains no paren and no whitespace.
+# - The `#` must be reachable from line start, whitespace, a close-paren,
+#   another `#`, or an open-paren not immediately preceded by `]`, across an
+#   optional destination run that contains no paren, no `#`, and no
+#   whitespace.
 # - That reachability predicate is what excludes the `#` inside a markdown
 #   inline link's destination (`[text](other-file.md#<anchor-name>)`): the
 #   link's own `(` is immediately preceded by `]`, which disqualifies it as
 #   a valid start for the destination run.
+# - `#` is excluded from the destination run and is itself a valid reset
+#   point. A second `#<slug>` elsewhere in the destination is therefore
+#   still caught.
+# - That independent catch doesn't hold when the second `#` is immediately
+#   preceded by `{`. That case is the same brace-wrap residual documented
+#   below, regardless of position.
 # - The destination run's required terminal character also excludes `{`,
 #   which is what still excludes bash parameter-expansion-length syntax
 #   (`${#array[@]}`, `${#string}`) from matching.
-# - Residual gap: the exemption fires on any `](`, whether or not a
-#   well-formed `[text preceded it and regardless of what the destination
-#   run contains, so a splice like `](x#<slug>)` right after a bare `]`
-#   also evades this detector.
+# - Residual gap: the exemption doesn't require a well-formed `[text]`
+#   before the `]`, and it doesn't restrict what the destination run
+#   contains. A splice like `](x#<slug>)` right after a bare `]` therefore
+#   evades this detector too.
 # - Residual gap: a channel reference wrapped as `{#<slug>}` (e.g. a
 #   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
-#   evades this detector.
+#   evades this detector. This evasion is positional, not limited to a
+#   standalone bare mention. It applies wherever a `#` is immediately
+#   preceded by `{`: inside a link destination, after a link's closing
+#   paren, or anywhere else on the line.
 # - A CommonMark angle-bracket link destination (`[t](<a b.md#<slug>>)`)
 #   stays denied. The space that form permits breaks the destination run,
 #   so the scan reaches the `#` past that break as an unparenthesized
 #   mention.
 # - The link exemption is purely syntactic: it exempts the `#` inside any
 #   well-formed `[text](destination#<slug>)` without verifying that
-#   `destination` resolves to a real file.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[)[:space:]]|(^|[^]])\()([^()[:space:]]*[^(){[:space:]])?#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+#   `destination` resolves to a real file. This is a separate gap from the
+#   smuggled-second-slug one above. That gap is about a second `#` token;
+#   this one is about the first `#` token's destination never being
+#   resolved.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[)#[:space:]]|(^|[^]])\()([^()#[:space:]]*[^(){#[:space:]])?#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a

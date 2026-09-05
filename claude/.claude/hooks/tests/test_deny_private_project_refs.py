@@ -2560,6 +2560,14 @@ class TestDenyPrivateProjectRefs:
         )
 
     # Slack-channel shape
+    #
+    # These tests pin at the full-hook (`run_hook`) layer deliberately,
+    # because the guarantee this detector provides is the end-to-end deny
+    # verdict rather than a regex-constant match -- a cheaper unit-level
+    # regex pin wouldn't catch a detector left out of `STRUCTURAL_DETECTORS`,
+    # a scan-target regression, or a fast-path/per-detector pattern
+    # drifting out of sync (`deny-private-project-refs.sh` has an explicit
+    # deny branch for exactly that last case).
 
     def test_structural_slack_channel_no_reference_allowed(self, claude_config_repo):
         assert (
@@ -2610,11 +2618,8 @@ class TestDenyPrivateProjectRefs:
 
     def test_structural_slack_markdown_inline_link_anchor_allowed(self, claude_config_repo):
         """A markdown inline-link anchor target, `[text](#slug)`, is
-        excluded: this exact shape is common in README/skill TOC entries
-        and cross-reference links, and a functional anchor link can't be
-        reworded without breaking navigation. The open-paren here is
-        immediately preceded by `]`, which disqualifies it as a valid start
-        for a channel-mention match."""
+        excluded: the open-paren is immediately preceded by `]`, which
+        disqualifies it as a valid start for a channel-mention match."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2755,10 +2760,10 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_structural_slack_link_destination_with_space_denied(self, claude_config_repo):
-        """A link destination containing a raw space breaks the
-        destination-run exemption at that space, so the text after the
-        space is scanned as if it opened fresh — a real channel-shaped
-        fragment there is still caught."""
+        """Not valid CommonMark — a raw space inside an unbracketed
+        destination — but it probes the regex mechanics directly. The
+        space breaks the destination-run exemption, so the scan restarts
+        after it and still catches a real channel-shaped fragment."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2900,6 +2905,94 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "allow"
+        )
+
+    def test_structural_slack_second_slug_in_same_link_destination_denied(self, claude_config_repo):
+        """A second, independent `#slug`-shaped token in the same link
+        destination is caught even though the destination's first `#slug`
+        is a legitimate anchor. `#` is excluded from the destination run
+        and also counts as its own valid reset point, which is what
+        catches the second token. That catch doesn't hold when the
+        second `#` is brace-wrapped — see
+        test_structural_slack_brace_wrapped_second_slug_in_link_destination_allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking"
+                    "#eng-super-secret-channel) for the breakdown'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_brace_wrapped_second_slug_in_link_destination_allowed(
+        self, claude_config_repo
+    ):
+        """Same brace-wrap mechanism as test_structural_slack_brace_wrapped_mention_allowed.
+        Pinned here because it sits directly adjacent to the denied case
+        above with the same shape apart from the brace, so a reader
+        doesn't over-generalize that case's reach."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking"
+                    "{#eng-super-secret-channel}) for the breakdown'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_commonmark_angle_bracket_destination_denied(self, claude_config_repo):
+        """A CommonMark angle-bracket link destination stays denied: the
+        space it permits breaks the destination run before the `#`."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [Docs](<a file.md#permission-prompt-tracking>) for the breakdown'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_adjacent_double_hash_zero_length_destination_denied(
+        self, claude_config_repo
+    ):
+        """Pins the zero-length branch of the optional destination-run
+        group: a future edit changing that group's `?` quantifier to `+`
+        would silently stop catching this shape with no test failure."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [Docs](other-file.md##eng-super-secret-channel)"
+                    " for the breakdown'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_second_slug_after_same_page_anchor_denied(self, claude_config_repo):
+        """Pins the same second-slug mechanism as
+        test_structural_slack_second_slug_in_same_link_destination_denied,
+        but for the no-path/same-page anchor form, distinct from that
+        test's cross-file-destination sibling."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [text](#permission-prompt-tracking"
+                    "#eng-super-secret-channel) for the breakdown'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
         )
 
     @pytest.mark.parametrize(
