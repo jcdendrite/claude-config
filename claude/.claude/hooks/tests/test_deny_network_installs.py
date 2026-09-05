@@ -653,23 +653,23 @@ class TestDenyNetworkInstalls:
     # Named absent-control — no detection at all, not a heuristic quirk   #
     # ------------------------------------------------------------------ #
 
-    def test_poetry_add_named_package_allowed_is_a_named_residual(self, isolated_home):
+    def test_poetry_add_named_package_allowed_is_a_named_absent_control(self, isolated_home):
         """`poetry add` fetches a named package from PyPI, the same fetch
         shape test_uv_add_denied pins as denied for `uv add`.
         deny-network-installs.sh has no poetry-specific detection at all,
         so this falls through to allow. Accepted gap, out of scope for this
-        diff: filed as GH-872, see docs/design-decisions.md §52 for why."""
+        diff: filed as GH-872, see docs/design-decisions.md §53 for why."""
         assert (
             run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input("poetry add lodash-fake-pkg"), home=isolated_home)
             == "allow"
         )
 
-    def test_pipenv_install_named_package_allowed_is_a_named_residual(self, isolated_home):
+    def test_pipenv_install_named_package_allowed_is_a_named_absent_control(self, isolated_home):
         """`pipenv install <pkg>` fetches a named package from PyPI. It is
         indistinguishable from a bare `pipenv install` Pipfile restore to
         deny-network-installs.sh, which has no pipenv-specific detection at
         all, so both allow. Accepted gap, out of scope for this diff: filed
-        as GH-872, see docs/design-decisions.md §52 for why."""
+        as GH-872, see docs/design-decisions.md §53 for why."""
         assert (
             run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input("pipenv install lodash-fake-pkg"), home=isolated_home)
             == "allow"
