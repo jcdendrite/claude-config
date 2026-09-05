@@ -316,6 +316,8 @@ Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales
 
 Landed at 177 lines / 30,969 bytes — still over the new byte limit, by design: the ratchet is relief-on-shrink (denies a commit only when the staged file is both over the limit and larger than its predecessor), so an already-over file can keep shrinking commit by commit without being blocked outright.
 
+Six unrelated upstream commits merged to `main` while `claude-md-audience-restructure.md`'s work was in review, growing the file further before this branch's own merge. As of `0ac48138` it measures 183 lines / 31,908 bytes — still under the 200-line cap but 24.6% over the 25,600-byte ratchet. Tracked in [GH-885](https://github.com/jcdendrite/claude-config/issues/885) rather than trimmed here; trimming is out of scope for the ratchet-mechanism pass.
+
 | Lever | Verdict | Measured reason |
 |---|---|---|
 | Byte-size ratchet added to `check-claude-md-length.sh` (25,600 bytes, extrapolated from Anthropic's `MEMORY.md` "25KB" load-window figure — `docs/instruction-file-sizing-evidence.md` §1), applying to every stow consumer's CLAUDE.md/AGENTS.md alongside the existing 200-line cap | Adopted | Closes the exact gap the regrowth exposed: the file was already over the new byte figure (30,969 > 25,600) while still under the 200-line cap, so line count alone was not catching cumulative growth. Implemented as an opt-in third parameter on the shared `_lib_staged_length_gate` helper rather than a widen of its two-arg contract, so `check-skill-length.sh`'s call site and behavior are unchanged. |
