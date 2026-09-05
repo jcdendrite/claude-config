@@ -2334,3 +2334,57 @@ class TestMarkerScriptStatusReconciliationFlag:
         assert result.returncode == 0, result.stderr
         assert "plan-review: live" in result.stdout
         assert "reconciliation flag" not in result.stdout
+
+
+class TestMarkerScriptArgumentGrammarIsPositional:
+    """Regression guard for an invariant enforce-marker-script-shape.sh's
+    gate-release-authority arm depends on: marker.sh's argument grammar is
+    strictly positional (`marker.sh <subcommand> [<skill>]`). Only
+    -h/--help is accepted in $1 as an exception to that grammar. A future
+    value-taking flag ahead of the subcommand would let a command like
+    `marker.sh --config x write code-review` evade both of that hook's
+    detectors. It evades the raw-substring check because `marker.sh` and
+    `write` are no longer text-adjacent. It evades the command-word check
+    because the flag's value would occupy the subcommand-word slot."""
+
+    @pytest.mark.parametrize(
+        "flag_args",
+        [
+            pytest.param(["--bogus"], id="bare_flag"),
+            pytest.param(["--config", "x"], id="flag_with_value"),
+        ],
+    )
+    def test_flag_shaped_first_arg_rejected_as_unknown_subcommand(
+        self, isolated_home, git_repo, flag_args
+    ):
+        result = _run(flag_args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"marker.sh {' '.join(flag_args)} must be rejected -- a "
+            f"flag-shaped $1 is not a recognized subcommand, got "
+            f"{result.returncode}. stderr: {result.stderr!r}"
+        )
+        assert f"unknown subcommand '{flag_args[0]}'" in result.stderr, (
+            f"marker.sh must reject {flag_args[0]!r} via the same "
+            f"unrecognized-subcommand path as any other bogus $1, not "
+            f"consume it as a global flag; stderr: {result.stderr!r}"
+        )
+
+    def test_four_word_flag_and_subcommand_shape_hits_usage_not_dispatch(
+        self, isolated_home, git_repo
+    ):
+        """This is the attack shape named in the class docstring:
+        `marker.sh --config x write code-review`. Because it has 4 args, it
+        hits marker.sh's `$# -gt 2` arg-count cap and usage() -- not the
+        unknown-subcommand path the 1-2-word cases above hit."""
+        flag_args = ["--config", "x", "write", "code-review"]
+        result = _run(flag_args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, (
+            f"marker.sh {' '.join(flag_args)} must be rejected -- 4 args "
+            f"exceeds marker.sh's 2-arg cap, got {result.returncode}. "
+            f"stderr: {result.stderr!r}"
+        )
+        assert "Usage:" in result.stderr, (
+            f"marker.sh {' '.join(flag_args)} must hit the usage() path "
+            f"via the arg-count cap, not any subcommand-dispatch path; "
+            f"stderr: {result.stderr!r}"
+        )
