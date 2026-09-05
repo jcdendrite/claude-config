@@ -18,18 +18,19 @@ from helpers import (
 
 GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 
-# The deny reason is prose, and the key list is the only structured thing in
-# it, so pull that segment out and compare as a set — asserting on the raw
-# sentence would fail on a reworded message or a reordered GUARDED_KEYS_JSON
-# without the hook's behavior having changed. Matches up to the literal
-# ". These keys" that follows the list, not the first bare "." — a nested
-# guarded key's own dotted path (e.g. "env.CLAUDE_CODE_EFFORT_LEVEL")
-# contains a "." that a naive "stop at first period" pattern would truncate on.
-# The default "main" branch_label depends on settings_repo's default-branch
-# resolution continuing to resolve to exactly "main" — the hook interpolates
-# ${DEFAULT_BRANCH:-the default branch} at this position, not a hardcoded
-# string, so a test against a different resolved branch (or an unresolved
-# one) passes its own branch_label.
+# The deny reason is prose; the key list is the only structured part, so
+# pull that segment out and compare as a set. Asserting on the raw sentence
+# would fail on a reworded message or a reordered GUARDED_KEYS_JSON without
+# the hook's behavior having changed.
+# Matches up to the literal ". These keys" that follows the list, not the
+# first bare ".": a nested guarded key's own dotted path (e.g.
+# "env.CLAUDE_CODE_EFFORT_LEVEL") contains a "." that a naive
+# stop-at-first-period pattern would truncate on.
+# The default "main" branch_label assumes settings_repo's default-branch
+# resolution still resolves to exactly "main". The hook interpolates
+# ${DEFAULT_BRANCH:-the default branch} at this position rather than a
+# hardcoded string, so a test against a different resolved branch (or an
+# unresolved one) must pass its own branch_label.
 def names_changed_keys(reason: str | None, branch_label: str = "main") -> set[str]:
     """Return the guarded key names the deny reason reports as changed."""
     assert reason is not None, "hook allowed the commit; expected a deny reason"
@@ -700,13 +701,13 @@ class TestGuardSettingsSessionKeys:
     def test_unresolvable_default_branch_reaches_hook_and_denies_with_fallback_text(
         self, settings_repo_unresolvable_default_branch
     ):
-        """No origin remote at all — _lib_resolve_default_branch's empty
-        output means MAIN_CONTENT falls back to "", so the guarded-key
-        comparison runs against an empty baseline. Proves the fail-safe
-        fallback holds through the actual script, not just
-        _lib_resolve_default_branch in isolation (test_lib.py), and that
-        the deny message carries the literal "the default branch" fallback
-        text from ${DEFAULT_BRANCH:-the default branch}."""
+        """No origin remote at all, so _lib_resolve_default_branch returns
+        empty and MAIN_CONTENT falls back to "", running the guarded-key
+        comparison against an empty baseline.
+        Proves the fail-safe fallback holds through the actual script, not
+        just _lib_resolve_default_branch in isolation (test_lib.py).
+        Asserts the deny message carries the literal "the default branch"
+        fallback text from ${DEFAULT_BRANCH:-the default branch}."""
         repo, settings_file = settings_repo_unresolvable_default_branch
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         reason = run_hook_reason(
@@ -740,6 +741,24 @@ class TestGuardSettingsSessionKeys:
             "model", "effortLevel",
         }
 
+    def test_unrelated_settings_change_allows_when_default_branch_unresolvable(
+        self, settings_repo_unresolvable_default_branch
+    ):
+        """Companion to the fail-closed case above. With no default branch
+        resolvable, the empty-baseline comparison reads as unchanged, so a
+        settings.json holding only a non-guarded key still allows -- the
+        fallback denies on content, not unconditionally."""
+        repo, settings_file = settings_repo_unresolvable_default_branch
+        stage_settings(repo, settings_file, '{"unrelatedTestKey": "value"}\n')
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add unrelated key'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
     def test_dangling_default_branch_symref_reaches_hook_and_denies(
         self, settings_repo_dangling_default_branch_symref
     ):
@@ -749,10 +768,12 @@ class TestGuardSettingsSessionKeys:
         test_resolve_default_branch_symbolic_ref_does_not_verify_target).
         The subsequent `git show origin/main:...` existence check against
         that dangling target fails, so MAIN_CONTENT falls back to the
-        empty-baseline comparison -- both guarded keys register as changed
-        even though only one actually differs, and the deny message names
-        the resolved branch ("main"), not the "the default branch" fallback
-        text, since DEFAULT_BRANCH itself is non-empty here."""
+        empty-baseline comparison.
+        Both guarded keys register as changed even though only one
+        actually differs.
+        Asserts the deny message names the resolved branch ("main"), not
+        the "the default branch" fallback text, since DEFAULT_BRANCH
+        itself is non-empty here."""
         repo, settings_file = settings_repo_dangling_default_branch_symref
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         reason = run_hook_reason(
@@ -847,6 +868,40 @@ class TestGuardSettingsSessionKeys:
             )
             == "allow"
         )
+
+    def test_embedded_cd_to_a_different_repo_bypasses_the_gate(self, settings_repo, tmp_path):
+        """Known, accepted gap, not a regression: the hook resolves its repo
+        from the payload's static `.cwd` snapshot, not the gated command's
+        own `cd`/`-C`/`--git-dir`, so an embedded `cd <dir> &&` that diverts
+        the commit elsewhere goes undetected (same gap as
+        require-plan-review.sh/require-code-review.sh).
+
+        `session_repo` has no settings.json staged and is what the payload
+        `.cwd` names. In a real Bash-tool payload, `.cwd` reflects the
+        session's tracked directory, not the command's own `cd` target. The
+        command's `cd` actually targets `settings_repo`, which has the
+        guarded-key diff staged."""
+        other_repo, settings_file = settings_repo
+        stage_settings(other_repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        session_repo = tmp_path / "session-repo"
+        session_repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=session_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=session_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=session_repo, check=True)
+        (session_repo / "README.md").write_text("unrelated project\n")
+        subprocess.run(["git", "add", "."], cwd=session_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=session_repo, check=True)
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input(
+                    f"cd {other_repo} && git commit -m 'update settings'",
+                    cwd=str(session_repo),
+                ),
+                cwd=session_repo,
+            )
+            == "allow"
+        ), "hook evaluated payload .cwd only; an embedded cd diverted the real commit undetected"
 
     def test_nested_effort_level_added_where_env_absent_denies(self, settings_repo):
         """The realistic shape: a fresh `env` block written by `/effort`,

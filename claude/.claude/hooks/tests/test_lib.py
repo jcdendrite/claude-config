@@ -1306,6 +1306,40 @@ def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
     assert _resolve_default_branch(repo) == ""
 
 
+def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
+    tmp_path: Path,
+) -> None:
+    """origin/trunk exists, but no origin/HEAD symbolic ref and none of the
+    probed candidates (main, master, develop) do -- the candidate loop must
+    report unresolvable rather than matching trunk by some other means."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "trunk")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
+    )
+
+    assert _resolve_default_branch(repo) == ""
+
+
+def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
+    tmp_path: Path,
+) -> None:
+    """A default branch name containing "/" (e.g. release/v2) must come back
+    unmangled -- the sed strip removes only the "refs/remotes/origin/"
+    prefix, not every slash in the string."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "release/v2")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/release/v2", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/v2"],
+        cwd=repo, check=True,
+    )
+
+    assert _resolve_default_branch(repo) == "release/v2"
+
+
 def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
     tmp_path: Path,
 ) -> None:

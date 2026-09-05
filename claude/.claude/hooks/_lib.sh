@@ -559,12 +559,9 @@ _lib_cumulative_diff_hash() {
 #   - Empty stdout: neither the symbolic ref nor any candidate resolved.
 #     Callers decide their own fallback -- this helper does not pick a fail
 #     posture (same call-site contract as _lib_command_invokes_git_subcmd).
-# Asymmetry: the symbolic-ref path never verifies refs/remotes/origin/<name>
-# exists, unlike the candidate loop's `rev-parse --verify`.
-# A dangling origin/HEAD (symref present, target never fetched) therefore
-# returns a non-empty name that still fails to resolve as a git revision.
-# Callers must independently confirm origin/<name> resolves before treating
-# the returned name as one (see guard-settings-session-keys.sh).
+# Asymmetry: the symbolic-ref path doesn't verify origin/<name> exists, so a
+# dangling origin/HEAD can return a name that still fails to resolve.
+# Callers must verify it themselves (see guard-settings-session-keys.sh).
 _lib_resolve_default_branch() {
   local repo_root="$1"
   local default_branch candidate
