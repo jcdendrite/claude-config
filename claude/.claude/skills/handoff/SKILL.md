@@ -29,12 +29,12 @@ Run the command below before writing — the directory is not guaranteed to exis
 
 A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` rather than inferring:
 
-- `"status":"ok"` — write the handoff when `over_threshold` is `true` or `already_fired` is `true`, and report `estimate` and `threshold`.
+- `"status":"ok"` — the session is past its threshold when `over_threshold` is `true` or `already_fired` is `true`; report `estimate` and `threshold` either way.
 - `nudge_disabled` is `true` — say so; the measurement still holds but no nudge will arrive on its own.
-- `"model_recognized":false` — also report `model` and `context_window`: the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is.
-- `"status":"cannot-resolve"` or `"status":"schema-drift"` — name the `reason` and fall back to judgment: session length, how much of the task remains, whether this is a natural seam.
+- `"model_recognized":false` — the window fell back to the 1M default, so also report `model`/`context_window` and treat the result as a soft number; those two fields are what let the engineer judge how far off it is.
+- `"status":"cannot-resolve"` or `"status":"schema-drift"` — name the `reason` and fall back to judgment.
 
-`docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file. If none of the above warrant writing, run `~/.claude/scripts/marker.sh deactivate handoff` before stopping — the marker activated above has no further purpose once the write itself doesn't happen.
+`docs/handoff-nudge.md` § "Querying the current estimate (`--check`)" carries the full JSON field list. Write the handoff when the measurement above says the session is past its threshold. When `--check` can't resolve a measurement, weigh session length, how much of the task remains, and whether this is a natural seam. Any of these warrant a handoff without a cost argument at all: a §2 reason that applies on its own terms; an explicit engineer request; or the session ending anyway. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file. If none of the above warrant writing, run `~/.claude/scripts/marker.sh deactivate handoff` before stopping — the marker activated above has no further purpose once the write itself doesn't happen.
 
 ## Before writing: collect in-flight background dispatches
 

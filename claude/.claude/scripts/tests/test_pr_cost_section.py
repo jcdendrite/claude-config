@@ -39,6 +39,20 @@ def _fake_transcript_analysis_source() -> str:
     """)
 
 
+def _fake_transcript_analysis_source_with_stderr_diagnostics() -> str:
+    """Source for a transcript-analysis.py stand-in that writes to both
+    streams and exits 0 -- models the real tool's NOTICE/WARNING diagnostics
+    on stderr alongside a clean cost report on stdout, for pinning that the
+    wrapper's redirect discards the former without touching the latter."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        print("NOTICE: STDERR-MARKER non-contiguous requestId run merged", file=sys.stderr)
+        print("ARGS: " + " ".join(sys.argv[1:]))
+        print("total: $12.34")
+    """)
+
+
 def _failing_transcript_analysis_source() -> str:
     """Source for a transcript-analysis.py stand-in that fails with no
     stdout -- models a downstream-tool failure distinct from the
@@ -132,6 +146,30 @@ def partial_output_failing_script_fixture(tmp_path) -> Path:
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_failing_transcript_analysis_source_with_partial_stdout())
+    fake.chmod(0o755)
+
+    return script_copy
+
+
+@pytest.fixture()
+def stderr_diagnostics_script_fixture(tmp_path) -> Path:
+    """Same layout as script_fixture, but transcript-analysis.py writes to
+    both streams and exits 0 -- for pinning that the redirect discards
+    stderr diagnostics without touching stdout."""
+    fixture_root = tmp_path / "fixture_root"
+    scripts_dir = fixture_root / "scripts"
+    hooks_dir = fixture_root / "hooks"
+    scripts_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+
+    script_copy = scripts_dir / "pr-cost-section.sh"
+    shutil.copy(_SCRIPT, script_copy)
+    script_copy.chmod(0o755)
+
+    shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+
+    fake = scripts_dir / "transcript-analysis.py"
+    fake.write_text(_fake_transcript_analysis_source_with_stderr_diagnostics())
     fake.chmod(0o755)
 
     return script_copy
@@ -235,6 +273,8 @@ class TestDownstreamCostCallFails:
         assert result.returncode == 3
         assert result.stdout == ""
         assert "pr-cost-section.sh: transcript-analysis.py cost call failed" in result.stderr
+        assert "transcript-analysis.py cost --this-repo --branches main --summary" in result.stderr
+        assert "transcript-analysis.py: boom" not in result.stderr
 
 
 class TestDownstreamCostCallFailsAfterPartialOutput:
@@ -252,6 +292,28 @@ class TestDownstreamCostCallFailsAfterPartialOutput:
 
         assert result.returncode == 3
         assert result.stdout == ""
+        assert "transcript-analysis.py cost --this-repo --branches main --summary" in result.stderr
+        assert "transcript-analysis.py: boom" not in result.stderr
+
+
+class TestStderrDiagnosticsDiscardedOnSuccess:
+    """The child's stderr -- request-ID-bearing NOTICE lines and the
+    format-drift WARNINGs the PRICING INTEGRITY banner compensates for --
+    is discarded on a successful run, not merged into this script's own
+    stderr where a Bash-tool caller would read it alongside stdout."""
+
+    def test_stdout_is_exact_cost_body_and_stderr_omits_child_diagnostics(
+        self, tmp_path, stderr_diagnostics_script_fixture,
+    ):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        config_dir = tmp_path / "claude_config"
+        _write_sentinel(config_dir, "dollars\n")
+
+        result = _run_script(stderr_diagnostics_script_fixture, repo, config_dir)
+
+        assert result.returncode == 0
+        assert result.stdout == "ARGS: cost --this-repo --branches main --summary\ntotal: $12.34\n"
+        assert "STDERR-MARKER" not in result.stderr
 
 
 class TestSentinelBlankLineThenDollars:

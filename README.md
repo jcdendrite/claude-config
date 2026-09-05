@@ -351,7 +351,7 @@ See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire pred
 
 ### PR cost disclosure
 
-`pr-description` can embed a `## Cost` section — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary` — directly into a PR body. Off by default; gated by a mode read from a sentinel scoped to the Claude account, not to the repo.
+`pr-description` can embed the PR body's cost block — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary`. Off by default; gated by a mode read from a sentinel scoped to the Claude account, not to the repo.
 
 ```bash
 echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"

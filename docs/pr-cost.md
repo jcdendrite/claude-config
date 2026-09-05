@@ -73,7 +73,7 @@ With no `--record`, `pr-cost` prints every row currently in the ledger file, fol
 
 ### Comparing rows across rate stamps
 
-Two rows with different `rate_stamp` values were priced under different vendor rate tables. **Never compare their `usd` columns directly** — a change in `usd` between them can be a real cost difference, a pricing change, or both, and the columns alone can't distinguish which. A cross-rate-stamp comparison must re-derive dollars from the retained per-class token counts under **one** rate table instead.
+Two rows with different `rate_stamp` values were priced under different vendor rate tables. **Never compare their `usd` columns directly** — a change in `usd` between them can be a real cost difference, a pricing change, or both, and the columns alone can't distinguish which. A cross-rate-stamp comparison must re-derive dollars from the retained per-class token counts under **one** rate table instead. A row whose `unpriced_tokens` includes Fable-attributable tokens can't be re-derived this way: those tokens landed in the scalar `unpriced_tokens` field, never split into the per-class columns the re-derivation reads from.
 
 ## Refusals
 
