@@ -887,14 +887,14 @@ class TestPrDescriptionExternalStateCheck:
 
 
 class TestPrDescriptionCostSectionWiring:
-    """Wiring tripwire, not a behavioral test: the `## Cost` section's actual
-    runtime behavior -- sentinel absent or mode not "dollars" -> block
-    deleted if present; mode "dollars" -> sync regenerates; detached HEAD ->
-    section omitted -- is validated behaviorally by
-    claude/.claude/scripts/tests/test_pr_cost_section.py (real subprocess
-    execution against pr-cost-section.sh), not here. The account-scoped
-    mode-grammar gate and the config-dir resolution this skill body used to
-    inline directly now live in that script instead (docs/worktree-bash-guard.md),
+    """Wiring tripwire, not a behavioral test: the `## Cost (list-price
+    estimate)` section's actual runtime behavior -- sentinel absent or mode
+    not "dollars" -> block deleted if present; mode "dollars" -> sync
+    regenerates; detached HEAD -> section omitted -- is validated
+    behaviorally by claude/.claude/scripts/tests/test_pr_cost_section.py
+    (real subprocess execution against pr-cost-section.sh), not here. The
+    account-scoped mode-grammar gate and the config-dir resolution live in
+    that script rather than in this skill body (docs/worktree-bash-guard.md),
     so pinning their exact source shape a second time here would be
     redundant with that behavioral suite -- same reasoning this class
     already applies to install.sh's own _report_account_sentinel. This class
