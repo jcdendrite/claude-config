@@ -53,6 +53,8 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 17 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
 
+- **`findings-path-suffix.sh`** — prepares this review round's reviewer-findings destination and prints its `<epoch>-<slug>` suffix. Invoked once per round by `/code-review`, `/plan-review`, and `/ready-for-review`, each of which reuses the printed suffix across every reviewer spawned in that round. See [`docs/design-decisions.md`](design-decisions.md) §12 for the `findings_path` mechanism this feeds.
+
 - **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 
   - Prints `LAUNCH_SHA: <oid>` once at start.
