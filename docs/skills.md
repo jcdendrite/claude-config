@@ -79,7 +79,7 @@ Two bundled skills are name-only instead of fully disabled — they are availabl
 
 | Bundled skill | Why name-only (kept invokable) |
 |---|---|
-| `/loop` | Recurring-interval task automation. Occasionally useful on demand; not part of this repo's review-pipeline workflow, so the description stays out of budget. |
+| `/loop` | Recurring-interval task automation. Occasionally useful on demand; not part of this repo's review-pipeline workflow, so the description stays out of budget. Fixed-interval invocation (`/loop <interval> <prompt>`) works normally. The self-paced no-interval mode is degraded because `ScheduleWakeup` is denied in `permissions.deny` (`docs/design-decisions.md` §49). |
 | `/simplify` | Code simplification. Occasionally useful on demand; `/code-review` covers routine simplification via specialist routing, so the description stays out of budget. |
 
 | Bundled skill | Why disabled |
