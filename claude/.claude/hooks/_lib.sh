@@ -1132,12 +1132,21 @@ _lib_command_invokes_tool_subcmd() {
   return 1
 }
 
-# _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE
+# _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE [BYTE_LIMIT]
 # Shared body behind check-skill-length.sh and check-claude-md-length.sh:
 # deny a git commit when a staged file matching PATTERN (a grep -E pattern
 # over `git diff --cached --name-only` output) is over its per-file limit
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
+#
+# BYTE_LIMIT is optional and opt-in: when non-empty, the same
+# over-limit-and-growing check also runs on byte count, using the same
+# `git show ":$f"` / `git show "HEAD:$f"` reads already fetched for the
+# line count. check-skill-length.sh's call site omits it (2-arg form):
+# unchanged behavior. check-claude-md-length.sh passes it. Both dimensions
+# accumulate into the same $messages/$fail pair below, so a file violating
+# both resolves into the one combined emit_deny call at the bottom rather
+# than a second, independently-emitted deny.
 #
 # Callback-by-convention, the same shape _lib_parse_tool_input_or_deny
 # already establishes: CALLER MUST define `emit_deny` (as every gate hook
@@ -1167,11 +1176,12 @@ _lib_command_invokes_tool_subcmd() {
 #
 # The rev-parse and diff calls' cap-engagement characterization tests live
 # only in test_check_skill_length.py, valid for both callers because these
-# capped calls are caller-invariant; the two show calls have no dedicated
+# capped calls are caller-invariant. The two show calls (one per revision,
+# shared by the line-count and byte-count checks) have no dedicated
 # cap-engagement test anywhere, a pre-existing gap this extraction doesn't
 # close.
 _lib_staged_length_gate() {
-  local pattern="$1" over_limit_message="$2"
+  local pattern="$1" over_limit_message="$2" byte_limit="${3:-}"
   _lib_command_invokes_git_subcmd "$COMMAND" commit
   local git_commit_match_status=$?
   if [ "$git_commit_match_status" -eq 1 ]; then
@@ -1193,20 +1203,39 @@ _lib_staged_length_gate() {
     return 0
   fi
 
-  local fail=0 messages="" f new old limit
+  local fail=0 messages="" f new old limit new_content old_content
   while IFS= read -r f; do
-    new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
-    old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
+    # A trailing 'x' sentinel survives command substitution's trailing-newline
+    # stripping. Stripping it back off via "${var%x}" recovers the exact byte
+    # stream, so line and byte counts derived from $new_content/$old_content
+    # below match what a direct, unbuffered git show would give.
+    new_content=$(_lib_capped git show ":$f" 2>/dev/null; printf x)
+    new_content="${new_content%x}"
+    old_content=$(_lib_capped git show "HEAD:$f" 2>/dev/null; printf x)
+    old_content="${old_content%x}"
+    new=$(printf '%s' "$new_content" | awk 'END{print NR}')
+    old=$(printf '%s' "$old_content" | awk 'END{print NR}')
     limit=$(limit_for "$f")
     if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
       messages="${messages}  $f: $new lines (was $old, limit $limit)\n"
       fail=1
     fi
+    if [ -n "$byte_limit" ]; then
+      local new_bytes old_bytes
+      new_bytes=$(printf '%s' "$new_content" | wc -c | tr -d '[:space:]')
+      old_bytes=$(printf '%s' "$old_content" | wc -c | tr -d '[:space:]')
+      [ -n "$new_bytes" ] || new_bytes=0
+      [ -n "$old_bytes" ] || old_bytes=0
+      if [ "$new_bytes" -gt "$byte_limit" ] && [ "$new_bytes" -gt "$old_bytes" ]; then
+        messages="${messages}  $f: $new_bytes bytes (was $old_bytes, limit $byte_limit)\n"
+        fail=1
+      fi
+    fi
   done < <(_lib_capped git diff --cached --name-only 2>/dev/null | grep -E "$pattern")
 
   if [ "$fail" -eq 1 ]; then
     local reason
-    reason=$(printf '%s Reduce to the limit or fewer lines before committing:\n%b' "$over_limit_message" "$messages")
+    reason=$(printf '%s Reduce to the limit before committing:\n%b' "$over_limit_message" "$messages")
     emit_deny "$reason"
   fi
   return 0

@@ -46,11 +46,21 @@ those files is open. Read it directly when reviewing a diff with neither open.
 Official threshold: **under 200 lines per CLAUDE.md file** — longer files
 consume more context and reduce adherence. The unit is **lines** — no
 Anthropic source attaches a word-count threshold. Within that cap, line
-count undercounts density (long-paragraph lines bury rules), and
-attention decays in the middle ("lost in the middle"). Apply the
+count undercounts density (long-paragraph lines bury rules); see
+`docs/instruction-file-sizing-evidence.md` §3-4 for what the placement
+literature actually supports and does not support before citing "lost in
+the middle" for rule placement. Apply the
 **behavior test** below per line; place critical rules near start or end. CLAUDE.md is **advisory** while
 hooks are **deterministic**; they guarantee the action happens — prefer a
 hook or structural test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
+
+Byte size is a distinct dimension from line count — a single long-wrapped
+line costs more context than its line count implies. `check-claude-md-length.sh`
+also enforces a byte-size ratchet alongside the 200-line cap; see
+`docs/instruction-file-sizing-evidence.md` §1 for the vendor-sourced figure
+it's grounded in. No source surveyed supports a rule-count threshold for an
+instruction file; gating on rule count was considered and declined for
+that reason — see `docs/instruction-file-sizing-evidence.md` §5.
 
 ### The behavior test
 
