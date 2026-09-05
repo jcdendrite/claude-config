@@ -12,7 +12,12 @@ set -euo pipefail
 # readlink -f on $0 resolves through the stowed symlink first, since this
 # script is normally invoked as ~/.claude/scripts/stow-packages.sh rather
 # than a direct checkout path the way install.sh always is.
-resolved="$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
+# BSD readlink -f can exit non-zero for a dangling symlink while still
+# printing a partial path to stdout, so check the assignment's exit status
+# rather than testing whether the capture is non-empty.
+if ! resolved="$(readlink -f -- "$0" 2>/dev/null)"; then
+  resolved="$0"
+fi
 REPO_DIR="$(cd -- "$(dirname -- "$resolved")/../../.." && pwd -P)"
 
 # package directory, stow target (relative to $HOME) — one row per package.

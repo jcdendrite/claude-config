@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from helpers import SCRIPTS_DIR
 
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
@@ -37,11 +38,15 @@ def _extract_skills_migration_block() -> str:
     return block
 
 
-def _run_skills_migration(test_home: Path, repo_dir: Path) -> subprocess.CompletedProcess:
+def _run_skills_migration(
+    test_home: Path, repo_dir: Path, trailing_script: str = ""
+) -> subprocess.CompletedProcess:
     """Run the extracted block with $HOME and $REPO_DIR pointed at isolated
     fixtures. No $CLAUDE_SESSION_MAY_BE_ACTIVE stub needed -- unlike the
     plans/handoffs/briefs migration and the un-adopt loop, this block never
-    gates on it."""
+    gates on it. `trailing_script`, appended after the extracted block, lets
+    a caller observe a block-local variable (e.g. skills_migration_blocks_adopt)
+    that isn't otherwise visible outside the subprocess."""
     env = dict(os.environ)
     env["HOME"] = str(test_home)
     env["REPO_DIR"] = str(repo_dir)
@@ -49,6 +54,7 @@ def _run_skills_migration(test_home: Path, repo_dir: Path) -> subprocess.Complet
         f'. "{SCRIPTS_DIR / "_stow_migration_lib.sh"}"\n'
         "set -e\n"
         + _extract_skills_migration_block()
+        + trailing_script
     )
     return subprocess.run(
         [_BASH, "-c", script],
@@ -164,3 +170,141 @@ class TestInstallShSkillsMigration:
             "an unrelated symlink must survive untouched"
         )
         assert "pointing somewhere other than" in result.stderr
+
+    def test_regular_file_is_reported_accurately_not_as_absent(self, tmp_path: Path) -> None:
+        """A plain regular file (neither symlink nor directory) at
+        ~/.claude/skills -- a stray download, or a botched hand-edit --
+        must be named for what it actually is, not folded into the
+        "does not exist yet" message meant for a genuinely empty path."""
+        home = tmp_path / "home"
+        skills_path = home / ".claude" / "skills"
+        skills_path.parent.mkdir(parents=True)
+        skills_path.write_text("not a directory or a symlink\n")
+        repo = tmp_path / "repo"
+
+        result = _run_skills_migration(home, repo)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert skills_path.is_file() and not skills_path.is_symlink()
+        assert "neither a symlink nor a directory" in result.stderr
+        assert "does not exist yet" not in result.stderr
+
+    def test_rm_failure_is_reported_and_does_not_abort(self, tmp_path: Path) -> None:
+        """A stale symlink into the old path that cannot be removed (e.g. an
+        unwritable parent directory) must report the failure -- including
+        that the claude-skills package won't be stowed until it's resolved
+        -- and the block must still exit 0 rather than aborting the rest of
+        install.sh."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root bypasses directory permission checks")
+        home = tmp_path / "home"
+        claude_dir = home / ".claude"
+        claude_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        old_target = repo / "claude" / ".claude" / "skills"
+        (claude_dir / "skills").symlink_to(old_target)
+        claude_dir.chmod(0o555)
+        try:
+            result = _run_skills_migration(home, repo)
+        finally:
+            claude_dir.chmod(0o755)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "could not remove the stale ~/.claude/skills symlink" in result.stderr
+        assert "claude-skills package will not be stowed until this is resolved" in result.stderr
+
+    def test_rm_failure_sets_skills_migration_blocks_adopt(self, tmp_path: Path) -> None:
+        """A stale old-path symlink that cannot be removed leaves
+        ~/.claude/skills dangling into the old location -- the stow-adopt-
+        ignore block's manifest loop must still refuse to stow claude-skills
+        over it, the same as every other not-cleanly-resolved state at that
+        target. Observed by printing the block-local flag directly: chmod'ing
+        ~/.claude unwritable to force the rm failure would also break the
+        unrelated 'claude' package's own stow call if this were driven
+        through the real stow-adopt-ignore block, since both write into the
+        same directory."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root bypasses directory permission checks")
+        home = tmp_path / "home"
+        claude_dir = home / ".claude"
+        claude_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        old_target = repo / "claude" / ".claude" / "skills"
+        (claude_dir / "skills").symlink_to(old_target)
+        claude_dir.chmod(0o555)
+        try:
+            result = _run_skills_migration(
+                home, repo, trailing_script='printf "FLAG=%s\\n" "$skills_migration_blocks_adopt"\n'
+            )
+        finally:
+            claude_dir.chmod(0o755)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "FLAG=1" in result.stdout, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+    def test_orphaned_content_at_old_path_is_reported(self, tmp_path: Path) -> None:
+        """Real content left behind at the old claude/.claude/skills
+        location -- e.g. a personal skill folder a user hand-placed there,
+        or content this move's own `git mv` didn't sweep for an untracked
+        sibling -- is no longer read by anything once this repo's skills
+        package has moved to claude-skills/skills. The block must warn and
+        name the path, not silently drop it."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        old_target = repo / "claude" / ".claude" / "skills"
+        old_target.mkdir(parents=True)
+        (old_target / "leftover.md").write_text("# orphaned personal skill\n")
+        (home / ".claude" / "skills").symlink_to(old_target)
+
+        result = _run_skills_migration(home, repo)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not (home / ".claude" / "skills").is_symlink(), (
+            "the stale symlink itself must still be removed"
+        )
+        assert str(old_target) in result.stderr
+        assert "still holds real content" in result.stderr
+        assert (old_target / "leftover.md").exists(), (
+            "orphaned content must only be warned about, never auto-deleted"
+        )
+
+    def test_orphaned_content_warning_fires_even_when_a_different_branch_matches(
+        self, tmp_path: Path
+    ) -> None:
+        """The orphaned-content check runs unconditionally after the full
+        if/elif/else chain, not only inside the branch that found and
+        removed a stale old-path symlink -- here the real-directory branch
+        fires instead, and the warning must still print."""
+        home = tmp_path / "home"
+        skills_dir = home / ".claude" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "example.md").write_text("# not a symlink\n")
+        repo = tmp_path / "repo"
+        old_target = repo / "claude" / ".claude" / "skills"
+        old_target.mkdir(parents=True)
+        (old_target / "leftover.md").write_text("# orphaned personal skill\n")
+
+        result = _run_skills_migration(home, repo)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "real directory" in result.stderr
+        assert str(old_target) in result.stderr
+        assert "still holds real content" in result.stderr
+
+    def test_empty_leftover_directory_at_old_path_is_not_reported(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty leftover directory at the old claude/.claude/skills
+        location holds no content worth warning about -- the check must
+        test for non-empty content, not bare existence."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        old_target = repo / "claude" / ".claude" / "skills"
+        old_target.mkdir(parents=True)
+
+        result = _run_skills_migration(home, repo)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "still holds real content" not in result.stderr
