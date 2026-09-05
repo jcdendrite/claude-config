@@ -3,9 +3,9 @@
 **Status: abandoned.** The systemic fix drafted below (Approach, Critical
 files) was rejected by `/plan-review` for a foundation-level defect — see
 `docs/design-decisions.md` §50 for the decision and rationale. No code from
-Critical files was implemented. This file is kept, uncommitted content
-finalized to reflect that outcome, as the durable evidence record §50
-cites rather than restates. Critical files below is superseded by the
+Critical files was implemented. This file is kept as the durable evidence
+record that `docs/design-decisions.md` §50 cites rather than restates.
+Critical files below is superseded by the
 "Critical files (final)" note at the end of that section.
 
 ## Context
@@ -39,7 +39,7 @@ any branch, and correct the two branches already carrying a stale command.
 
 ## Approach
 
-Close the drift at the one point where a stale command is *copied forward* rather than where it is *run*: `handoff` §3. Two changes ship together — a `handoff/SKILL.md` §3 clause that requires the verification command be re-derived from the project's current documentation (and the stale plan flagged in §6 when the two disagree), and a new soft check in `check-handoff.py` that fires when §3 names a plan path but cites no command source outside that plan. The two stale plan files are **not** in this diff: neither exists on this branch's tree, so no edit here can reach them; they ship as a fully-specified per-branch follow-up in Out of scope.
+Close the drift at the one point where a stale command is *copied forward* rather than where it is *run*: `handoff` §3. Two changes ship together. A `handoff/SKILL.md` §3 clause requires the verification command be re-derived from the project's current documentation, flagging the plan stale in §6 when the two disagree. A new soft check in `check-handoff.py` fires when §3 names a plan path but cites no command source outside that plan. The two stale plan files are **not** in this diff: neither exists on this branch's tree, so no edit here can reach them; they ship as a fully-specified per-branch follow-up in Out of scope.
 
 The key design fact is one the engineer's own mechanism rationale already conceded: **no mechanical check can tell a stale full-suite command from CLAUDE.md's two legitimate full-suite exceptions**, because those exceptions are stated as conditions on intent ("genuinely calls for a whole-repo claim"), not as a machine-readable predicate. So the check must not try to judge the command. It judges *provenance* instead — whether the author cited a source for the command that is something other than the plan file being implemented. That is mechanizable, project-agnostic, and it is exactly the step the 11 drifted sessions skipped.
 
@@ -50,7 +50,7 @@ Deliberately rejected: keying the check on a list of test-runner tokens (`pytest
 **Givens** (fixed, beyond this design's reach):
 - **G1** — Plan files are committed to their own implementation branch and are invisible from another branch's tree. `plan-it` Step 7 and `branch-management` own that convention.
 - **G2** — Handoff files are consumed on resume and do not persist; any durable record must land in the plan file or in §6, never in the handoff. `resume-context` owns that lifecycle.
-- **G3** — CLAUDE.md's two full-suite exceptions are prose conditions about intent, not a predicate; no check at any interception point can discriminate them. Dissolving this needs a decision about CLAUDE.md's own grammar, outside this plan. `[engineer-verified]` — stated in the Step 4 mechanism rationale.
+- **G3** — CLAUDE.md's two full-suite exceptions are prose conditions about intent, not a predicate; no check at any interception point can discriminate them. Dissolving this needs a decision about CLAUDE.md's own grammar, outside this plan. `[engineer-verified]` — confirmed directly with the engineer.
 - **G4** — `check-handoff.py` installs to every stow consumer, so any check it adds must hold for every stack. The stow package's own scope.
 - **G5** — The two stale plan files sit on separate still-active branches whose worktrees may be lock-held by live sessions. Another session owns them.
 
@@ -67,7 +67,7 @@ Deliberately rejected: keying the check on a list of test-runner tokens (`pytest
 4. `select-tests.py` maps every path this plan touches, with no unmatched-path widening. `[verified: select-tests.py DOMAIN_RULES lines 295-296, CROSS_DOMAIN_EXCEPTIONS lines 371 and 386; `.claude/plans/` maps to `()` at line 300]`
 5. Extending SKILL.md's existing `code-writer` checklist bullet does not disturb the residual-items drift guard — that guard pins five keywords, none matching this bullet. `[verified: test_check_handoff.py `RESIDUAL_ITEM_KEYWORDS`]`
 6. `check_section3_anchor_shapes` strips code spans, so a backticked plan path or command is invisible to it; the new check must scan the **raw** §3 body. `[verified: check-handoff.py line 192]`
-7. The engineer's "Both" fixes the required *outcome*, not a same-diff requirement. `[engineer-verified]` — mechanism resolved here per `plan-it`'s question-the-prescribed-approach step.
+7. The prescribed scope (close the validation gap and fix both branches) describes the required *outcome*, not a same-diff requirement. `[engineer-verified]` — mechanism resolved here per `plan-it`'s question-the-prescribed-approach step.
 8. The two plans' stale Verification text is as the Step 3 exploration reported. `[verified: Step 3 findings; files not reopened]`
 9. Whether either stale plan's Verification legitimately needs a whole-repo claim under CLAUDE.md's second exception. `[unverified]` — the follow-up must check before substituting, and a blanket replace would be the same unexamined-copy behavior this plan exists to stop.
 10. `.claude/plans/` is a cross-stack convention of this stow package, not a project-specific token. `[verified: plan-it/SKILL.md lines 17, 23]`
@@ -138,4 +138,4 @@ Check each plan's Verification against CLAUDE.md's second named exception before
 
 **A drift guard pinning SKILL.md's warn-list sentence to the script's `soft_checks` labels** — a second sync mechanism layered on the one that already exists for the residual list. The duplication is three short clauses in one sentence; a guard for it is the compounding-defensive-layer shape CLAUDE.md warns about.
 
-**A PreToolUse Bash hook inspecting live pytest invocations** — engineer-rejected in Step 4, and G3 means it could not discriminate the legitimate exceptions any better than this check can.
+**A PreToolUse Bash hook inspecting live pytest invocations** — engineer-rejected, and G3 means it could not discriminate the legitimate exceptions any better than this check can.
