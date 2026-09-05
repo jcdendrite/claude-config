@@ -81,7 +81,7 @@ fi
 # Fail-CLOSED exception to this file's fail-open posture: an unresolvable
 # default branch denies rather than allowing.
 # Latency tradeoff: see docs/design-decisions.md's entry for
-# _lib_resolve_default_branch (#52).
+# _lib_resolve_default_branch (#54).
 DEFAULT_BRANCH=$(_lib_resolve_default_branch "$CWD")
 STAGED_CONTENT=$(_lib_capped git -C "$CWD" show :"$SETTINGS_REPO_PATH" 2>/dev/null)
 if [ -z "$DEFAULT_BRANCH" ] || ! _lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" >/dev/null 2>&1; then

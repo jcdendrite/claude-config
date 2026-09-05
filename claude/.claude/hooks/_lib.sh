@@ -552,6 +552,8 @@ _lib_cumulative_diff_hash() {
 # (main, master, develop) against existing origin/<candidate> refs. Designed
 # to be shared by every caller that needs "the branch a commit is normally
 # compared against" rather than a hardcoded "main" literal.
+# Candidate order is a prior, not a guarantee: with origin/HEAD unset and
+# several candidate refs present, the first match wins even when it is stale.
 # `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
 # latter never returns empty, which would skip the candidate-loop fallback.
 # Two-outcome contract:
