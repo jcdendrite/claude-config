@@ -4757,6 +4757,58 @@ class TestPriceTurnSpeedGeoMultipliers:
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
 
 
+class TestReportableUnpricedModelIds:
+    """Direct unit tests for pricing._reportable_unpriced_model_ids, the
+    shared predicate TestExcludedSpendBanner's _cost_report fixtures also
+    exercise -- these pin its branches by direct call so a bug in the
+    predicate itself is distinguishable from a print-wording bug in the
+    banner that consumes it."""
+
+    def test_empty_dict_reports_nothing(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({}) == []
+
+    def test_priced_looking_key_with_nonzero_tokens_is_reportable(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
+
+    def test_synthetic_at_zero_tokens_is_not_reportable(self):
+        """A corpus with no synthetic records at all still seeds this key at
+        0 in some callers -- a $0 entry is not spend excluded from anything."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 0}) == []
+
+    def test_synthetic_at_nonzero_tokens_is_reportable(self):
+        """Forward-looking guard, not a case observed in a real corpus (see
+        the production docstring) -- pins that a naive `!= _SYNTHETIC_MODEL_ID`
+        filter, which would silently drop this branch, is rejected."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 100}) == [
+            _mod.pricing._SYNTHETIC_MODEL_ID
+        ]
+
+    def test_multiple_unpriced_ids_all_reported(self):
+        result = _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
+        assert sorted(result) == ["claude-example-10", "claude-example-9"]
+
+
+class TestFormatDriftDetected:
+    """Direct unit tests for pricing._format_drift_detected, the OR of the
+    two module-level drift flags TestPricingIntegrityBanner's _cost_report
+    fixtures also exercise through the full report."""
+
+    def test_false_when_neither_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is False
+
+    def test_true_when_only_usage_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is True
+
+    def test_true_when_only_subagent_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", True)
+        assert _mod.pricing._format_drift_detected() is True
+
+
 class TestDedupTurnsByRequestId:
     """Direct tests for _dedup_turns_by_request_id, the shared turn iterator
     cmd_audit_routing, _cost_report, _context_distribution_report,
@@ -7529,6 +7581,23 @@ class TestCacheRebuildExcessPricing:
         excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-unknown-model", usage)
         assert excess is None
         assert unpriced_tokens > 0
+
+    def test_fable_5_1_warm_read_leg_uses_reduced_cache_read_multiplier(self):
+        """This function re-derives rates["cache_read"] via its own
+        _model_rates(model) call, independent of _price_turn -- cache-
+        rebuild's entire thesis is a cache-read-vs-cache-write delta, the
+        exact axis Fable 5.1's reduced cache-read multiplier deviates on, so
+        this is the site most exposed to the Fable pricing change. Like
+        test_transcript_cost.py::TestFablePricing, this validates rate
+        arithmetic only -- it never confirms "claude-fable-5-1" is the exact
+        string Claude Code writes to message.model."""
+        usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
+        excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
+        # write: 1,000,000/1e6 * 10.00*1.25 = 12.50; warm read uses the
+        # 0.025x reduced multiplier, not the standard 0.1x: 1,000,000/1e6 *
+        # 10.00*0.025 = 0.25; excess = 12.25.
+        assert excess == pytest.approx(12.25)
+        assert unpriced_tokens == 0
 
 
 class TestCacheRebuildClassification:

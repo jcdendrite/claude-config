@@ -570,7 +570,7 @@ An Opus turn whose model ID has no pricing-table entry is excluded from the doll
 
 **Purpose.** Price-weighted dollar cost by token class (cache read, cache write 5m/1h, output, input), model ID, context-at-turn bucket, and main-thread-vs-subagent thread, plus a top-N-sessions-by-dollars breakdown and an optional `--by-project` per-project breakdown. Every other subcommand in this toolkit is denominated in raw token counts; `cost` is the one that answers "which lever actually moves the bill," since cache-read is 0.1× base input while output is 5× — a 50× spread raw token counts erase. **Context-at-turn** is defined as `input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m` tokens for a turn — the sum of everything read into context for that turn, excluding output.
 
-Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price differently), derived from one base input rate per model plus the pricing page's stated multipliers (output 5×, 5m cache write 1.25×, 1h cache write 2×, cache read 0.1×). Each model ID carries a re-verify-by date; when the current date is past it, a `STALE PRICING` banner prints inside the same output block as the dollar tables — never a separate log line a copy-paste of the tables could drop. An unrecognized model ID (e.g. `<synthetic>`) is never silently priced at $0: it gets its own row and its tokens are counted in a separate "Unpriced tokens" total, excluded from every dollar figure. Sidechain (subagent-dispatched) turns are priced — `cost` reads with `include_subagents=True`, unlike `audit-routing`'s main-thread-only scope, since subagent spend is real spend.
+Pricing is looked up per exact model ID (Sonnet 5 and Sonnet 4.6 price differently), derived from one base input rate per model plus the pricing page's stated multipliers (output 5×, 5m cache write 1.25×, 1h cache write 2×, cache read 0.1× — 0.025× for Claude Fable 5.1, the one model ID the pricing page states a reduced cache-hit rate for). Each model ID carries a re-verify-by date; when the current date is past it, a `STALE PRICING` banner prints inside the same output block as the dollar tables — never a separate log line a copy-paste of the tables could drop. An unrecognized model ID is never silently priced at $0: the full report gives it its own row and counts its tokens in the "Unpriced tokens" total, excluded from every dollar figure, and both render paths also print a loud `EXCLUDED SPEND` banner naming (full report) or counting (`--summary`) every such ID — except `<synthetic>` at exactly zero tokens, which has nothing real to report. Sidechain (subagent-dispatched) turns are priced — `cost` reads with `include_subagents=True`, unlike `audit-routing`'s main-thread-only scope, since subagent spend is real spend.
 
 Two further multipliers apply on top of the per-model rate, read from the usage record itself rather than a per-model eligibility list: `usage.speed == "fast"` doubles every class's dollars (2×, the vendor's fast-mode rate), and `usage.inference_geo == "us"` multiplies every class's dollars by 1.1× (the vendor's data-residency surcharge). Both compose multiplicatively when present on the same turn (2.2× total) and apply regardless of whether the turn's model is actually eligible for fast mode or data residency — `speed`/`inference_geo` report the API's own settled outcome, not an echo of the request, so a turn that carries either field is trusted as-is.
 
@@ -585,7 +585,7 @@ Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift`
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`). When given, each scanned root's actual earliest in-scope turn is tracked (regardless of the filter) and compared against the requested window start: a root whose earliest turn is more than a day newer prints its own `WARNING: cost: <root>: earliest turn found is …` line, naming that date and the requested window start, so a corpus that starts partway through the requested window is visible instead of silently under-reporting. One warning per short root — a well-covered root never suppresses a sibling root's own warning.
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
 - `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope, and refused together with `--summary`.
-- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's `## Cost` section). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It does print the scan-count diagnostic ("scanned N transcripts, M skipped") and the zero-scope `WARNING`, since those are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Always prints "Unpriced tokens: N tokens across M model IDs", even at zero. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report.
+- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's PR body cost block). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It folds the transcript-scanned count, and — only when nonzero — the unreadable-transcript count, into its own `Scope:` line instead of the full report's per-root `cost: account-N: scanned …` diagnostic, and still prints the zero-scope `WARNING`, since both are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Prints a loud `EXCLUDED SPEND` banner, counting (never naming) every unrecognized model ID, only when there is real excluded spend to report — silent on an all-priced corpus, unlike the full report's own unconditional per-model unpriced breakdown. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report.
 
 **Per-account breakdown.** When `--config-dir` puts more than one root in scope, the full report (not `--summary`, which refuses `--config-dir` outright) also prints a `## Cost by account` section: one `### account-N` block per scanned root, each carrying its own token-class and model-ID tables scoped to that account's own spend. No separate flag — it auto-appears whenever more than one root is in scope, the same way `edit-format`'s own per-account breakdown does. Each account's own token-class and model-ID tables let a reader see e.g. "account-2 is 100% Sonnet, never Opus" that a combined total alone would hide. It is designed to be shareable under the same multi-root contract as `--by-project`'s own redacted `account-N` labeling — no raw project name or config-dir path is ever printed in this section.
 
@@ -593,90 +593,101 @@ Redacted project labels (`private-project-N`, `account-N`) and the printed corpu
 
 **Worktree-isolated subagent attribution.** A subagent dispatched with `isolation: "worktree"` runs on a harness-generated `worktree-agent-<hash>` branch, not the branch that dispatched it. `--branches` filters on each record's *attributed* branch, not that literal value: for every `worktree-agent-*` record, `cost` resolves the dispatching session's own branch active at that record's timestamp (falling forward to the session's earliest branch if the record predates every main-thread record), and folds the subagent's dollars and tokens into that branch's total — the same real spend a plain literal-`gitBranch` filter would otherwise silently drop. The one genuinely unattributable case — a session with no main-thread branch-bearing record at all — renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a `worktree-agent-*` record is never resolved against a *different* session's main-thread history. For the separate case of a subagent whose cwd is simply a different, already-existing repo than its parent's (no `isolation: "worktree"` involved), see "A subagent dispatched from another repo's session" above.
 
-**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use. That is the intended read for an account that opts into publishing it (see `pr-description`'s `## Cost` section and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
+**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
 
 The branch itself is never echoed in `--summary`'s text — it only narrows which records the tables below are computed from — so a reviewer confirms scope by re-running the printed command, not by reading a label in the output.
 
 **Sample output (`--summary`, synthetic, illustrative counts only).**
 ```
-Cost summary (all time)
+Computed locally at API list price — this is a compute estimate, not an invoice, and may not match what your plan or contract actually bills.
 
-Scope: this account only (6 transcripts scanned, 4 priced sessions, 812 priced turns) — dropping --summary reports every declared account too
+Scope: this account only, all time (2 transcripts scanned, 1 unreadable, 1 priced sessions, 2 priced turns) — dropping --summary reports every declared account too
+
+EXCLUDED SPEND — the dollar figures below leave out 2,440,000 tokens across 2 unrecognized model IDs. Ask the PR author to run the full report locally to name them, add each base rate, and re-run.
+
 ### Cost by token class
 
 | Class | $ | Share | Tokens |
 |---|---|---|---|
-| cache_read | 612.19 | 48.9% | 6,121,900 |
-| cache_write_5m | 310.44 | 24.8% | 2,483,520 |
-| output | 270.02 | 21.6% | 540,040 |
-| input | 58.87 | 4.7% | 1,177,400 |
-| **total** | **1,251.52** | | |
+| cache_read | 12.90 | 47.8% | 51,000,000 |
+| cache_write_5m | 4.50 | 16.7% | 1,800,000 |
+| cache_write_1h | 2.50 | 9.3% | 250,000 |
+| output | 6.45 | 23.9% | 510,000 |
+| input | 0.65 | 2.4% | 250,000 |
+| **total** | **27.00** | | |
 
 ### Cost by model ID
 
 | Model | $ | Share |
 |---|---|---|
-| claude-sonnet-5 | 1,251.52 | 100.0% |
-
-Unpriced tokens: 0 tokens across 0 model IDs
+| claude-sonnet-5 | 17.50 | 64.8% |
+| claude-opus-5 | 9.50 | 35.2% |
 
 ### Cost by thread
 
 | Thread | $ | Share |
 |---|---|---|
-| main | 975.32 | 77.9% |
-| subagent | 276.20 | 22.1% |
+| main | 27.00 | 100.0% |
+| subagent | 0.00 | 0.0% |
 ```
+The unreadable-transcript clause (`, 1 unreadable`) only appears when the count is nonzero; a fully-readable scan omits it entirely rather than printing a zero.
 
 **Sample output (full report).**
 ```
-## Cost report (last 30d)
+## Cost report (all time)
+
+Computed locally at API list price — this is a compute estimate, not an invoice, and may not match what your plan or contract actually bills.
+
+PRICING INTEGRITY — the transcript format may have drifted, so the figures below may be structurally wrong. Re-run the report directly (not through pr-cost-section.sh) to read the drift diagnostic on stderr.
+
+
+EXCLUDED SPEND — the dollar figures below leave out 1,800,000 tokens on unpriced model IDs: claude-example-9. Add each ID's base rate (source: https://platform.claude.com/docs/en/about-claude/pricing) and re-run.
 
 ## Cost by token class
 
-Class                         $   Share
-cache_read             3,037.00   51.4%
-cache_write_5m         1,533.00   26.0%
-cache_write_1h           572.00    9.7%
-output                   755.00   12.8%
-input                      8.00    0.1%
-total                  5,905.00
+Class                         $   Share         Tokens
+cache_read                16.10   47.2%     59,000,000
+cache_write_5m             4.50   13.2%      1,800,000
+cache_write_1h             2.50    7.3%        250,000
+output                    10.25   30.0%        650,000
+input                      0.79    2.3%        280,000
+total                     34.14
 
 ## Cost by model ID
 
 Model                                     $   Share
-claude-sonnet-5                    4,850.00   82.1%
-claude-opus-5                        674.00   11.4%
-claude-opus-4-8                      289.00    4.9%
-claude-sonnet-4-6                     93.00    1.6%
-<synthetic>                        unpriced      1,240 tokens
+claude-sonnet-5                       19.54   57.2%
+claude-opus-5                          9.50   27.8%
+claude-fable-5                         5.10   14.9%
+claude-example-9                   unpriced  1,800,000 tokens
 
-Unpriced tokens (unknown model IDs): 1,240
+Unpriced tokens (unknown model IDs): 1,800,000
 
 ## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens + ephemeral_1h + ephemeral_5m tokens, 200,000 boundary)
 
 Bucket                $   Share
-<200k          1,866.00   31.6%
->=200k         4,039.00   68.4%
+<200k              0.00    0.0%
+>=200k            34.14  100.0%
 
 ## Cost by thread
 
-Thread          $   Share
-main       4,612.00   78.1%
-subagent   1,293.00   21.9%
+Thread                  $   Share
+main                34.14  100.0%
+subagent             0.00    0.0%
 
 ## Cost by project  (only with --by-project)
 
-Project                       $   Share
-private-project-13        612.00   10.4%
-private-project-2         458.00    7.8%
+Project                               $   Share
+private-project-1                 32.10   94.0%
+private-project-2                  2.04    6.0%
 
 ## Top 20 sessions by dollars
 
 Session          Proj                                  $
-session-1        private-project-13               244.24
-session-2        private-project-2                189.07
+session-1        private-project-1                 32.10
+session-1        private-project-2                  2.04
 ```
+`PRICING INTEGRITY` and `EXCLUDED SPEND` each print only when their own condition fires — a healthy, all-priced, non-drifted corpus shows neither banner, only the caveat sentence directly under the `## Cost report` heading. `claude-fable-5` above is priced, not excluded — Fable rates are in the base table (see "Pricing" above) under the vendor's published API model ID, `[unverified]` against what Claude Code actually writes to `message.model` (see `pricing.py`'s rate-table comment); only a model ID with no table entry (`claude-example-9` here) triggers `EXCLUDED SPEND` and the trailing "Unpriced tokens" line.
 
 **When to reach for it.** Rank workflow-efficiency levers by dollars instead of raw token counts before proposing an optimization — a metric denominated in output tokens alone (like `audit-routing`'s Sonnet-tier estimate) can headline 0.6% of spend while missing an 87%-of-spend context-cost problem entirely. Also the source of the redacted, aggregate-only tables that go into a public cost-audit issue — never publish the top-N-sessions section or any `--no-redact` output, both of which are real-project-identifying by construction. If that issue is filed via `gh issue create`, note that `deny-private-project-refs.sh` does not scan `gh issue create`/`gh issue comment` bodies at all — see `docs/private-project-redaction.md`'s "Known gaps" section — so this redaction is not backstopped by the hook on that publish path. Even a `--this-repo`-scoped, redacted table's `private-project-N` numbering is shaped by the operator's full local project corpus, not just this repo — see `_build_redact_map`'s docstring for the ordinal side-channel this implies. Observed wall-clock for a `--since 30d` run against this toolkit's own transcript corpus: ~10s with `--no-redact`, ~18s with the default redacted run — the redact-map first pass roughly doubles the time, since it fully parses every transcript once just to read a directory name (see `iter_sessions`' docstring; this is a known, deliberately deferred perf gap, not a `cost`-specific one).
 

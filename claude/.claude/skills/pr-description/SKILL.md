@@ -74,11 +74,11 @@ Resolve the section with a single script call:
 ```
 
 Exit 0: enabled and the branch resolved cleanly — stdout is the cost report; embed it **verbatim** under
-`## Cost`, followed by the exact command `~/.claude/scripts/pr-cost-section.sh` as "the exact command
+`## Cost (list-price estimate)`, followed by the exact command `~/.claude/scripts/pr-cost-section.sh` as "the exact command
 that produced it" for reproducibility — never recompose, round, or re-narrate the figures. Exit 1:
 disabled, unreadable, or malformed `<config-dir>/pr-cost-disclosure` — delete the block if one exists,
 no stdout. Exit 2: enabled but the branch is the literal `HEAD` (detached) — omit the section and say
-why, no stdout. Exit 3: branch resolved but the downstream cost report itself failed — omit `## Cost`
+why, no stdout. Exit 3: branch resolved but the downstream cost report itself failed — omit `## Cost (list-price estimate)`
 and note in the body that the report failed to generate, unlike exit 1's silent deletion. The sentinel
 check (`<config-dir>/pr-cost-disclosure`, trimmed and lowercased, exactly `dollars`) is per Claude
 account, not per repo: cost is an organizational fact, and each account is its own billing entity.
@@ -93,7 +93,7 @@ account enabling this for one engagement should not assume the fields are harmle
 
 ## Prose tightening pass
 
-Gate: resolve `config_dir` exactly as the Cost section's gate above; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+Gate: resolve `config_dir` exactly as the Cost section's gate above; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the `## Cost (list-price estimate)` / `## Deferred review findings` blocks and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
 
 ## Checks
 
@@ -106,7 +106,7 @@ section delimited by `<!-- code-review:deferred:start -->` /
 `/code-review` runs and must survive byte-identical, delimiters included.
 Lift the delimited span out before the coherence pass and reinsert it
 verbatim afterward — left in place it is precisely the "what is this?" span
-that pass is told to flag. A `## Cost` section (`<!-- pr-cost:start -->` /
+that pass is told to flag. A `## Cost (list-price estimate)` section (`<!-- pr-cost:start -->` /
 `<!-- pr-cost:end -->`, "Cost section" above) gets the same lift-out
 treatment but not the same reinsert rule, stated here rather than left to
 proximity: it regenerates fresh every sync, never reinserted verbatim.
