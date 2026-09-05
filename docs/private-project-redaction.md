@@ -64,16 +64,21 @@ definitions.
 | Home-rooted path | a path rooted at `/Users/<username>/` or `/home/<username>/` | a relative or repo-rooted path |
 | Long hex identifier | a 32+ character contiguous hex run, or a UUID-shaped four-hyphen-group hex sequence | a shorter hex run (e.g. a short git SHA) |
 | Internal hostname | a hostname ending in `.internal`, `.corp`, `.local`, `.lan`, `.intranet`, or `.private` — for `.internal`/`.corp`/`.lan`/`.intranet`/`.private`, also an FQDN shape like `host[.]corp[.]example[.]com` where the TLD word is a subdomain label, not the string end | a hostname on any other TLD, or a filename convention like `settings.local.json` (only `.local`'s boundary excludes a following dot-segment — `.local` doubles as a common per-machine-override filename convention, e.g. `[.]env[.]local`, that the other five words don't) |
-| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word (also matches a markdown anchor link sharing the same shape, deliberately — see below) | a plain GitHub issue reference like `#421` (all-digit, excluded so this scan doesn't collide with ordinary issue cross-references) |
+| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word written outside markdown link syntax | a plain GitHub issue reference like `#421` (all-digit runs are excluded). A markdown anchor link's fragment inside `[text](destination#<anchor-name>)` is exempted too — see below |
 
 Every example above is deliberately non-matching — e.g. the `<username>`
 placeholder uses `<`, which falls outside the detector's `[A-Za-z0-9_.-]`
 charset — so committing this table doesn't trip its own detectors.
 
-The Slack-channel detector intentionally also matches markdown anchor links
-(e.g. `docs/skills.md#<heading-slug>`), which share the same
-lowercase-hyphenated shape as a real channel name; rephrase around a false
-positive rather than loosen the charset.
+The Slack-channel detector still matches a bare anchor fragment like
+`docs/skills.md#<heading-slug>`, since it shares the real-channel-name
+shape. Rephrase around that false positive rather than loosening the
+charset. An anchor fragment inside a real link's destination —
+`[text](other-file.md#<anchor-name>)` — is exempted instead, so a
+functional cross-file anchor link doesn't need rewording. That exemption is
+purely syntactic: it doesn't check that the destination resolves to a real
+file. See `_LIB_SLACK_CHANNEL_SHAPE_REGEX`'s comment in `_lib.sh` for the
+exemption's matching mechanics.
 
 ## Why the blocklist can't be armed by default
 
