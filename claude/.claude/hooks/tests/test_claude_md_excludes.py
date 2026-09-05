@@ -47,13 +47,7 @@ _STOW_SOURCE_RULE_IDS = [str(f.relative_to(REPO_ROOT)) for f in _STOW_SOURCE_RUL
 
 # Same rationale as _STOW_SOURCE_RULE_FILES, applied to the sibling
 # project-scope directory: globs rather than names a rule file, so a
-# rule-file rename cannot break this module. This does not close
-# select-tests.py's routing gap for this file (CROSS_DOMAIN_EXCEPTIONS
-# routes a change under this directory to SKILLS_TESTS_DIR only, never
-# HOOKS_TESTS_DIR, regardless of how this module discovers the files) —
-# an agent's scoped select-tests.py run won't locally catch a regression
-# here; only full CI will. Same accepted, pre-existing cost as the sibling
-# _STOW_SOURCE_RULE_FILES glob.
+# rule-file rename cannot break this module.
 _PROJECT_SCOPE_RULE_FILES = sorted(PROJECT_SCOPE_RULES_DIR.rglob("*.md"))
 _PROJECT_SCOPE_RULE_IDS = [str(f.relative_to(REPO_ROOT)) for f in _PROJECT_SCOPE_RULE_FILES]
 
