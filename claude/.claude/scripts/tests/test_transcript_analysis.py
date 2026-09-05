@@ -14288,7 +14288,13 @@ class TestDenialHookLabelEnumeration:
 # reliably fails that source line, driving this exact wording for real
 # rather than hand-typing it — one entry per _DENIAL_HOOK_LABELS member
 # reachable through this shared path.
-_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+# These 24 rows must land unedited: an edit here would mean the bootstrap
+# stub's emitted bytes changed where they should not have. Kept as an
+# independently-typed copy — never referenced by _BOOTSTRAP_FALLBACK_HOOKS's
+# own definition below — so test_original_24_bootstrap_fallback_rows_are_unedited
+# compares two separately-authored literals rather than a tuple against a
+# slice of its own construction, which would pass regardless of content.
+_BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24: tuple[tuple[str, str], ...] = (
     ("block-gh-pr-merge.sh", "gh-pr-merge"),
     ("check-claude-md-length.sh", "CLAUDE.md length"),
     ("check-skill-length.sh", "skill length"),
@@ -14314,6 +14320,65 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-worktree-for-file-writes.sh", "worktree-enforcement"),
     ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
 )
+
+# require-architect-consult.sh and deny-invisible-commit-content.sh already
+# emitted this exact wording; they were simply unenumerated in
+# _DENIAL_HOOK_LABELS until now. Written as its own flat tuple, not built by
+# concatenating _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24 — see that tuple's own
+# comment for why the two are kept independent.
+_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "gh-pr-merge"),
+    ("check-claude-md-length.sh", "CLAUDE.md length"),
+    ("check-skill-length.sh", "skill length"),
+    ("deny-credential-bash-reads.sh", "credential-path Bash"),
+    ("deny-credential-file-reads.sh", "credential-file read"),
+    ("deny-data-file-reads.sh", "data-file read"),
+    ("deny-env-reads.sh", "env-read"),
+    ("deny-escaped-backticks-in-pr-body.sh", "backtick-escape"),
+    ("deny-network-installs.sh", "network-install"),
+    ("deny-pii-in-commits.sh", "PII commit"),
+    ("deny-private-project-refs.sh", "redaction"),
+    ("deny-repo-relocation.sh", "repo-relocation"),
+    ("deny-reviewer-tree-mutation.sh", "reviewer-tree-mutation"),
+    ("enforce-marker-script-shape.sh", "marker-script-shape"),
+    ("guard-settings-session-keys.sh", "settings session-keys"),
+    ("require-code-review.sh", "code-review"),
+    ("require-memory-skill.sh", "memory-skill"),
+    ("require-plan-review.sh", "plan-review"),
+    ("require-routing-read.sh", "routing-read"),
+    ("require-ready-for-review.sh", "ready-for-review"),
+    ("require-respond-pr.sh", "respond-pr"),
+    ("require-stow-reminder.sh", "stow-reminder"),
+    ("require-worktree-for-file-writes.sh", "worktree-enforcement"),
+    ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
+    ("require-architect-consult.sh", "architect-consult"),
+    ("deny-invisible-commit-content.sh", "invisible-commit-content"),
+)
+
+
+def test_original_24_bootstrap_fallback_rows_are_unedited():
+    """The 24 pre-existing _BOOTSTRAP_FALLBACK_HOOKS rows stay exactly as
+    they were before the two rows above were added — a genuine check, since
+    _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24 is a separately-typed literal, not
+    read by _BOOTSTRAP_FALLBACK_HOOKS's own definition."""
+    assert _BOOTSTRAP_FALLBACK_HOOKS[:24] == _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24
+
+
+def test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label():
+    """Completeness guard: a future gate hook that declares its own
+    DENY_GATE_LABEL but is never added here would silently get zero
+    TestDenyGateLabelConformance coverage — the same "forgotten declaration"
+    failure mode that class exists to catch, one layer up."""
+    on_disk = {
+        path.name
+        for path in HOOKS_DIR.glob("*.sh")
+        if _DENY_GATE_LABEL_DECLARATION_RE.search(path.read_text())
+    }
+    enumerated = {name for name, _label in _BOOTSTRAP_FALLBACK_HOOKS}
+    assert on_disk == enumerated, (
+        f"hooks declaring DENY_GATE_LABEL but missing from _BOOTSTRAP_FALLBACK_HOOKS: "
+        f"{on_disk - enumerated}; enumerated but not on disk: {enumerated - on_disk}"
+    )
 
 
 def _isolated_hook_copy(tmp_path: Path, hook_name: str) -> Path:
@@ -14476,6 +14541,203 @@ class TestDenialHookLabelEnumerationRealHooks:
         )
         assert message is not None
         assert _mod._denial_hook_label("", message) == "skill length"
+
+
+# ---------------------------------------------------------------------------
+# DENY_GATE_LABEL conformance test — converts a forgotten or unenumerated
+# declaration from a silent fall-through-to-unmatched into a CI failure.
+# Reads DENY_GATE_LABEL and every deny-message literal straight off each of
+# the 26 gate hooks' own source, rather than trusting _DENIAL_HOOK_LABELS or
+# _DENIAL_CAUSE_MARKERS to have kept up on their own.
+# ---------------------------------------------------------------------------
+
+_DENY_GATE_LABEL_DECLARATION_RE = re.compile(r'^DENY_GATE_LABEL="([^"]*)"', re.MULTILINE)
+
+# Bounds a declared label the same way _DENIAL_HOOK_NAME_MAX_CHARS bounds an
+# extracted one (clause (c)) — independent of any "blocked by ... gate"
+# framing, since this checks the raw declared value.
+_DENIAL_HOOK_NAME_SHAPE_RE = re.compile(r"[\w .-]+")
+
+# Call shapes that carry a deny-message literal: emit_deny, its
+# emit_deny_folding_fresh_lock_context wrapper
+# (require-worktree-for-git-writes.sh), and _lib_parse_tool_input_or_deny's
+# own argument. _lib_staged_length_gate's second (message) argument is
+# reached via its distinct two-argument call shape, since its first argument
+# is a single-quoted grep -E pattern rather than a deny literal.
+_DENY_LITERAL_CALL_START_RE = re.compile(
+    r"(?<![\w])(?:emit_deny|emit_deny_folding_fresh_lock_context|_lib_parse_tool_input_or_deny)\s+\""
+    r"|_lib_staged_length_gate\s+'[^']*'\s+\""
+)
+
+
+def _read_balanced_dquoted(text: str, quote_index: int) -> tuple[str, int]:
+    """Return (literal_content, index_after_closing_quote) for the bash
+    double-quoted string literal whose opening quote is text[quote_index].
+
+    A closing quote is only recognized when it isn't itself
+    backslash-escaped, so a literal carrying an embedded \\" (e.g.
+    block-gh-pr-merge.sh's self-merge-block message) is read whole rather
+    than truncated at the first inner quote. Bash double-quoted strings may
+    also span multiple physical lines (several enforce-marker-script-shape.sh
+    and require-plan-review.sh literals do), so this scans past newlines
+    rather than stopping at end-of-line.
+    """
+    assert text[quote_index] == '"'
+    i = quote_index + 1
+    start = i
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if ch == '"':
+            return text[start:i], i + 1
+        i += 1
+    raise ValueError(f"unterminated double-quoted literal starting at index {quote_index}")
+
+
+def _deny_literals_from_text(text: str) -> list[str]:
+    """Every deny-message literal in one hook's source text. Skips a
+    literal that is a bare $VAR reference (e.g.
+    require-worktree-for-git-writes.sh's wrapper-internal emit_deny "$reason") —
+    its real text is the wrapper's own callers' literals, enumerated
+    separately as their own call sites."""
+    literals = []
+    for m in _DENY_LITERAL_CALL_START_RE.finditer(text):
+        literal, _end = _read_balanced_dquoted(text, m.end() - 1)
+        if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", literal):
+            continue
+        literals.append(literal)
+    return literals
+
+
+def _deny_literals(hook_name: str) -> list[str]:
+    return _deny_literals_from_text((HOOKS_DIR / hook_name).read_text())
+
+
+def _deny_gate_label_declarations(hook_name: str) -> list[str]:
+    text = (HOOKS_DIR / hook_name).read_text()
+    return _DENY_GATE_LABEL_DECLARATION_RE.findall(text)
+
+
+def _declared_deny_gate_label(hook_name: str) -> str:
+    declarations = _deny_gate_label_declarations(hook_name)
+    assert len(declarations) == 1, (
+        f"{hook_name}: expected exactly one DENY_GATE_LABEL declaration, found {len(declarations)}"
+    )
+    return declarations[0]
+
+
+def _marker_kinds_present(text: str) -> list[str]:
+    """Every _DENIAL_CAUSE_MARKERS family whose literal marker substring
+    appears in `text`, case-insensitively, in cascade-precedence order."""
+    lowered = text.lower()
+    return [kind for marker, kind in _mod._DENIAL_CAUSE_MARKERS if marker in lowered]
+
+
+class TestDenyGateLabelConformance:
+    """Four clauses (a)-(d), driven against every one of the 26 gate hooks
+    named in _BOOTSTRAP_FALLBACK_HOOKS. Clauses (b) and (d) each get their
+    own permanent negative-case test below, built by
+    deliberately breaking a scratch copy of a real hook — a one-time
+    demonstration during authoring would leave nothing guarding the check's
+    detection power against a later edit that quietly weakens it."""
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_a_every_gate_hook_declares_exactly_one_label(self, hook_name, _expected_label):
+        declarations = _deny_gate_label_declarations(hook_name)
+        assert len(declarations) == 1, (
+            f"{hook_name} declares {len(declarations)} DENY_GATE_LABEL values, expected exactly one"
+        )
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_b_every_declared_label_is_an_enumerated_member(self, hook_name, _expected_label):
+        label = _declared_deny_gate_label(hook_name)
+        assert label in _mod._DENIAL_HOOK_LABELS, (
+            f"{hook_name} declares DENY_GATE_LABEL={label!r}, which is not a _DENIAL_HOOK_LABELS "
+            f"member — either the label is a typo or the set is stale"
+        )
+
+    def test_clause_b_negative_unenumerated_label_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
+        whose DENY_GATE_LABEL isn't a _DENIAL_HOOK_LABELS member must be
+        flagged, matching what clause (b)'s own check above would report."""
+        original = (HOOKS_DIR / "block-gh-pr-merge.sh").read_text()
+        mutated = original.replace(
+            'DENY_GATE_LABEL="gh-pr-merge"', 'DENY_GATE_LABEL="not-a-real-enumerated-label"', 1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — block-gh-pr-merge.sh's DENY_GATE_LABEL declaration wording drifted"
+        )
+        scratch = tmp_path / "block-gh-pr-merge.sh"
+        scratch.write_text(mutated)
+        declarations = _DENY_GATE_LABEL_DECLARATION_RE.findall(scratch.read_text())
+        assert declarations == ["not-a-real-enumerated-label"]
+        assert declarations[0] not in _mod._DENIAL_HOOK_LABELS
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_c_every_declared_label_matches_the_name_shape(self, hook_name, _expected_label):
+        label = _declared_deny_gate_label(hook_name)
+        assert _DENIAL_HOOK_NAME_SHAPE_RE.fullmatch(label), (
+            f"{hook_name}'s DENY_GATE_LABEL {label!r} doesn't match the name-shaped [\\w .-]+ class"
+        )
+        assert len(label) <= _mod._DENIAL_HOOK_NAME_MAX_CHARS, (
+            f"{hook_name}'s DENY_GATE_LABEL {label!r} exceeds _DENIAL_HOOK_NAME_MAX_CHARS"
+        )
+
+    def test_deny_literal_extraction_is_non_empty_for_every_gate_hook(self):
+        """Vacuity self-check mirroring test_lib.py's builds_path_re
+        precedent: a hook yielding zero literals means the extraction regex
+        has drifted from that hook's call shape, not that the hook has no
+        deny literals — and clause (d) would be silently vacuous for it."""
+        for hook_name, _label in _BOOTSTRAP_FALLBACK_HOOKS:
+            literals = _deny_literals(hook_name)
+            assert literals, (
+                f"{hook_name}: no deny literals extracted — the extraction regex has drifted "
+                f"from this hook's call shape"
+            )
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_d_every_marker_carrying_literal_carries_exactly_one_marker(self, hook_name, _expected_label):
+        for literal in _deny_literals(hook_name):
+            present = _marker_kinds_present(literal)
+            assert len(present) <= 1, (
+                f"{hook_name}'s deny literal {literal!r} carries markers for causes {present}, "
+                f"which defeats _denial_cause_kind's substring cascade"
+            )
+            if present:
+                assert _mod._denial_cause_kind(literal) == present[0]
+
+    def test_clause_d_negative_marker_collision_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
+        whose parse-failure literal carries both the input-parse and
+        helper-proc markers must be flagged by the exactly-one-marker rule —
+        a marker collision is the only construction that defeats
+        _denial_cause_kind's first-match-wins substring cascade, which is
+        exactly why clause (d) forbids it."""
+        original = (HOOKS_DIR / "block-gh-pr-merge.sh").read_text()
+        collision_literal = (
+            "could not parse tool-input JSON, failing closed rather than acting on an unscanned command."
+        )
+        mutated = original.replace(
+            '_lib_parse_tool_input_or_deny "could not parse tool-input JSON."',
+            f'_lib_parse_tool_input_or_deny "{collision_literal}"',
+            1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — block-gh-pr-merge.sh's parse-failure call site wording drifted"
+        )
+        scratch = tmp_path / "block-gh-pr-merge.sh"
+        scratch.write_text(mutated)
+        literals = _deny_literals_from_text(scratch.read_text())
+        assert collision_literal in literals
+        present = _marker_kinds_present(collision_literal)
+        assert present == ["input-parse", "helper-proc"], present
+        assert len(present) > 1
+        # The cascade's first-match-wins order silently masks the literal's
+        # own "failing closed" marker — the exact miscategorization clause
+        # (d) exists to keep out of a real hook's source.
+        assert _mod._denial_cause_kind(collision_literal) == "input-parse"
 
 
 # ---------------------------------------------------------------------------
@@ -14770,6 +15032,80 @@ _BEHAVIORAL_FIXTURES: tuple[tuple[str, str], ...] = (
      "Reduce to the limit or fewer lines before committing."),
 )
 
+# ---------------------------------------------------------------------------
+# Fixtures pinning today's actual on-disk wording, added alongside — never
+# replacing — the frozen fixtures above copied from an earlier rewrite. Both
+# eras must classify identically. lib-source needs no separate fixture set
+# here: TestDenialHookLabelEnumerationRealHooks's
+# test_bootstrap_lib_sh_failure_produces_enumerated_label already drives all
+# 26 gate hooks' real, on-disk bootstrap wording through a subprocess and
+# asserts lib-source, which is stronger proof of current wording than a
+# hand-transcribed string. Only _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES
+# below is itself subprocess-verified (via run_hook_reason); the
+# helper-proc and deny-encode groups are hand-transcribed snapshots with no
+# tripwire against a later body-text edit that leaves the
+# classification-relevant substring untouched.
+# ---------------------------------------------------------------------------
+
+# block-gh-pr-merge.sh and deny-env-reads.sh are the sharpest cases: each
+# hook's own message rewrite deleted a "for <gate> gate" clause from its
+# parse-failure sentence, so a test that only checked the input-parse
+# fragment would miss a corrected sentence that dropped a clause.
+_INPUT_PARSE_CURRENT_WORDING_SHARP_CASES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not parse tool-input JSON."),
+    ("deny-env-reads.sh", "Blocked by env-read gate: could not parse tool-input JSON."),
+)
+
+# deny-pii-in-commits.sh's action-carrying lead-in folded into the body:
+# "Commit blocked by PII/credential guard:" became "Blocked by PII commit
+# gate: Commit — ", moving the action into the body rather than deleting it
+# a second time. block-gh-pr-merge.sh's helper-proc site is the plain-strip
+# case: it carried no gate name at all before the rewrite ("Blocked: ..."),
+# so it gained one rather than losing a clause.
+_HELPER_PROC_CURRENT_WORDING_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh",
+     "Blocked by gh-pr-merge gate: could not determine whether 'gh pr merge 123' invokes gh "
+     "pr merge (status 2) — sed/tr may be missing, killed, or errored. Failing closed per "
+     "this gate's documented fail-closed posture rather than letting an unscanned command "
+     "bypass the self-merge block."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not quote-strip a command fragment (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not quote-strip the scan target (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than scanning with "
+     "degraded quote-split coverage."),
+)
+
+# deny-encode's shared preamble wraps whatever underlying reason the caller
+# passed; this pins the cascade's precedence still holding when that
+# underlying reason is today's on-disk wording rather than the older
+# "Blocked: ..." shape _DENY_ENCODE_FIXTURE above wraps.
+_DENY_ENCODE_CURRENT_WORDING_FIXTURE = (
+    "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
+    "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
+    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
+    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
+    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
+    "reason follows.\nBlocked by code-review gate: could not parse tool-input JSON.\n"
+)
+
+# _lib.sh's own field-shift deny is a deliberate 0x1f-injection bypass
+# attempt, pinned to classify behavioral rather than input-parse — the
+# strongest available signal that the agent tripped a gate rather than
+# encountering harness noise. Duplicated from test_lib.py's
+# _FIELD_SHIFT_DENY_MESSAGE per this repo's DAMP-test-code convention.
+_FIELD_SHIFT_DENY_MESSAGE = (
+    "a tool-input field contained a Unit Separator (U+001F) byte, which would shift "
+    "extracted-field boundaries — refusing rather than acting on values that may not be the "
+    "ones the harness sent."
+)
+
 
 class TestDenialCauseKind:
     """Pins _denial_cause_kind's four infra markers plus its behavioral
@@ -14790,6 +15126,18 @@ class TestDenialCauseKind:
             f"{hook_name}'s parse-failure wording {message!r} did not classify input-parse"
         )
 
+    @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES)
+    def test_real_subprocess_parse_failure_matches_corrected_wording(self, hook_name, message):
+        """The sharpest wording-regression case: each hook's own message
+        rewrite deleted the "for <gate> gate" clause from
+        block-gh-pr-merge.sh's and deny-env-reads.sh's parse-failure
+        sentences, so this drives the real hook and asserts the exact
+        corrected message — not merely that the input-parse fragment still
+        matches somewhere."""
+        got = run_hook_reason(HOOKS_DIR / hook_name, {"tool_name": "Bash", "tool_input": "a string"})
+        assert got == message
+        assert _mod._denial_cause_kind(got) == "input-parse"
+
     @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_FIXTURES)
     def test_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
         assert _mod._denial_cause_kind(message) == "helper-proc", (
@@ -14809,6 +15157,12 @@ class TestDenialCauseKind:
             "deny-escaped-backticks-in-pr-body.sh",
         }
 
+    @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_CURRENT_WORDING_FIXTURES)
+    def test_current_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "helper-proc", (
+            f"{hook_name}'s current failing-closed wording {message!r} did not classify helper-proc"
+        )
+
     def test_deny_encode_preamble_classifies_deny_encode(self):
         assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
 
@@ -14819,6 +15173,13 @@ class TestDenialCauseKind:
         deny-envelope encoding is also what broke the input parse."""
         assert "could not parse tool-input json" in _DENY_ENCODE_FIXTURE.lower()
         assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_current_deny_encode_preamble_classifies_deny_encode(self):
+        """The deny-encode preamble's cascade precedence holds when the
+        underlying wrapped reason is today's on-disk wording too, not only
+        the older shape _DENY_ENCODE_FIXTURE wraps."""
+        assert "could not parse tool-input json" in _DENY_ENCODE_CURRENT_WORDING_FIXTURE.lower()
+        assert _mod._denial_cause_kind(_DENY_ENCODE_CURRENT_WORDING_FIXTURE) == "deny-encode"
 
     def test_real_subprocess_input_parse_classifies_input_parse(self):
         """A real .tool_input-is-a-string payload, which _lib.sh's own
@@ -14836,6 +15197,14 @@ class TestDenialCauseKind:
         assert _mod._denial_cause_kind(message) == "behavioral", (
             f"{hook_file}'s wording {message!r} did not classify behavioral"
         )
+
+    def test_field_shift_deny_classifies_behavioral(self):
+        """_lib.sh's own field-shift deny is a deliberate 0x1f-injection
+        bypass attempt and must classify behavioral, not input-parse — the
+        strongest available signal that the agent tripped a gate rather
+        than encountering harness noise. Guards against a later edit
+        accidentally giving it an infra marker."""
+        assert _mod._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
 
     def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self):
         """Recorded limitation, adversarial case: an agent-controlled Read

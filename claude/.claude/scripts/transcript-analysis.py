@@ -1120,59 +1120,52 @@ _DENIAL_HOOK_NAME_COLON_RE = re.compile(
     rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate):", re.IGNORECASE
 )
 
-# The hand-maintained set of prose labels hooks/*.sh actually emits — sourced
-# by grepping every hook's emit_deny call, not from hooks/*.sh basenames
-# (which match none of these; see the module-level docstring for why). A
-# captured name is trusted only if it's a member of this set; anything else
-# (a coincidental match, an unanticipated wording, an unbounded interpolated
-# value that happened to survive the character-class bound) falls to
-# _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim. Regression
-# coverage: TestDenialHookLabelEnumeration in test_transcript_analysis.py
-# drives each hook's real deny-path wording and asserts the label it
-# produces is a member here, so a hook's wording change or a new hook shows
-# up as a test failure rather than a silently stale set.
+# The hand-maintained set of prose labels hooks/*.sh actually emits. Every
+# gate hook declares its label once as DENY_GATE_LABEL, read by both the
+# bootstrap emit_deny stub and _lib_emit_deny; this set mirrors that
+# declaration. A captured name is trusted only if it's a member of this set;
+# anything else falls to _DENY_SUMMARY_UNMATCHED_HOOK rather than being
+# echoed verbatim. Examples of "anything else": a coincidental match, an
+# unanticipated wording, an unbounded interpolated value that survived the
+# character-class bound. Regression coverage: TestDenialHookLabelEnumeration
+# in test_transcript_analysis.py drives each hook's real deny-path wording
+# and asserts the label it produces is a member here, so a hook's wording
+# change or a new hook shows up as a test failure rather than a silently
+# stale set.
 _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
-    # "blocked by <name> hook/gate" — one entry per hooks/*.sh label.
-    "gh-pr-merge",  # block-gh-pr-merge.sh:49
-    # Still producible today by check-claude-md-length.sh's and
-    # check-skill-length.sh's bootstrap (source-failure) and
-    # parse-input-failure paths, both untouched by the hook-family-
-    # standardization Phase 2 extraction. The commit-detection fail-closed
-    # path that used to share these two labels now goes through the
-    # extracted _lib_staged_length_gate and shares "AGENTS.md length" /
-    # "Skill length" below instead.
-    "CLAUDE.md length",  # check-claude-md-length.sh:51,55
-    "skill length",  # check-skill-length.sh:56,60
-    "credential-path Bash",  # deny-credential-bash-reads.sh:27
-    "credential-file read",  # deny-credential-file-reads.sh:27
-    "data-file read",  # deny-data-file-reads.sh:65
-    "env-read",  # deny-env-reads.sh:47
-    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh:46
-    "network-install",  # deny-network-installs.sh:40
-    "PII commit",  # deny-pii-in-commits.sh:127
-    "redaction",  # deny-private-project-refs.sh:180
-    "repo-relocation",  # deny-repo-relocation.sh:63
-    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh:146
-    "marker-script-shape",  # enforce-marker-script-shape.sh:68
-    "settings session-keys",  # guard-settings-session-keys.sh:49
-    "code-review",  # require-code-review.sh:48
-    "memory-skill",  # require-memory-skill.sh:59
-    "ai-instruction-and-memory-files",  # require-memory-skill.sh:125
-    "plan-review",  # require-plan-review.sh:66
-    "plan-review routing",  # require-routing-read.sh:68
-    "ready-for-review",  # require-ready-for-review.sh:80
-    "respond-pr",  # require-respond-pr.sh:69
-    "routing-read",  # require-routing-read.sh:27
-    "stow-reminder",  # require-stow-reminder.sh:71
-    "worktree-enforcement",  # require-worktree-for-file-writes.sh:50, require-worktree-for-git-writes.sh:91
-    # "<name> invocation denied" (_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE).
-    "marker.sh",  # enforce-marker-script-shape.sh:277,353
-    # "<name> gate:"/"<name> hook:" (_DENIAL_HOOK_NAME_COLON_RE) — a hook
-    # stating its own label as the message's own prefix. check-claude-md-length.sh:85's
-    # message reads "CLAUDE.md/AGENTS.md length gate: ..."; '/' isn't in the
-    # name-shaped class, so only the AGENTS.md half of the label survives.
-    "AGENTS.md length",  # check-claude-md-length.sh:85
-    "Skill length",  # check-skill-length.sh:87
+    # "blocked by <name> hook/gate" — one entry per hooks/*.sh DENY_GATE_LABEL.
+    "gh-pr-merge",  # block-gh-pr-merge.sh
+    "CLAUDE.md length",  # check-claude-md-length.sh
+    "skill length",  # check-skill-length.sh
+    "credential-path Bash",  # deny-credential-bash-reads.sh
+    "credential-file read",  # deny-credential-file-reads.sh
+    "data-file read",  # deny-data-file-reads.sh
+    "env-read",  # deny-env-reads.sh
+    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh
+    "network-install",  # deny-network-installs.sh
+    "PII commit",  # deny-pii-in-commits.sh
+    "redaction",  # deny-private-project-refs.sh
+    "repo-relocation",  # deny-repo-relocation.sh
+    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh
+    "marker-script-shape",  # enforce-marker-script-shape.sh
+    "settings session-keys",  # guard-settings-session-keys.sh
+    "code-review",  # require-code-review.sh
+    "memory-skill",  # require-memory-skill.sh
+    "plan-review",  # require-plan-review.sh
+    "ready-for-review",  # require-ready-for-review.sh
+    "respond-pr",  # require-respond-pr.sh
+    "routing-read",  # require-routing-read.sh
+    "stow-reminder",  # require-stow-reminder.sh
+    "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
+    "architect-consult",  # require-architect-consult.sh
+    "invisible-commit-content",  # deny-invisible-commit-content.sh
+    # Legacy-only: no active hook emits this wording. Each member is kept
+    # permanently so an older recorded transcript still classifies.
+    "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
+    "AGENTS.md length",  # check-claude-md-length.sh's "CLAUDE.md/AGENTS.md length gate:" wording, kept for legacy transcripts
+    "Skill length",  # check-skill-length.sh's "Skill length gate:" wording, kept for legacy transcripts
+    "ai-instruction-and-memory-files",  # require-memory-skill.sh's behavioral-deny wording, kept for legacy transcripts
+    "plan-review routing",  # require-routing-read.sh's behavioral-deny wording, kept for legacy transcripts
 })
 
 # --deny-summary's unmatched-hook-name bucket: a denial matched by
