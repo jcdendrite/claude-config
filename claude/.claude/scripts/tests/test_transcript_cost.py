@@ -2456,15 +2456,22 @@ class TestCostSummary:
         assert "| **total** | **2.00** | | |" in out
         assert _extract_md_grand_total(out) == pytest.approx(2.00)
 
-    def test_summary_caveat_is_first_line_and_no_markdown_heading_anywhere(
+
+class TestListPriceCaveat:
+    """The two render paths diverge on purpose. `--summary` wraps the caveat
+    in a GFM `> [!IMPORTANT]` alert for a GitHub PR body. The full report
+    prints it as a plain sentence instead. A terminal renders
+    `> [!IMPORTANT]` as literal characters, and the full report's own
+    fixed-width tables need a code fence to publish, inside which an alert
+    would render as literal text too."""
+
+    def test_summary_caveat_alert_leads_block_and_no_markdown_heading_anywhere(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The --summary block's first printed line is the list-price caveat
-        sentence, verbatim, and no '## '-prefixed heading appears anywhere in
-        the block -- it sits inside the pr-description skill's own
-        '## Cost (list-price estimate)' heading, so a '##' here would
-        collide with that wrapper. A future edit re-adding a '## ' title
-        line would silently reintroduce that collision without this pin."""
+        """Pins two facts about --summary's output. Its first two lines are
+        the caveat wrapped as a GFM alert. No '## '-prefixed heading appears
+        anywhere — one would collide with pr-description's own
+        '## Cost (list-price estimate)' wrapper."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
@@ -2481,9 +2488,50 @@ class TestCostSummary:
 
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
-        assert out.splitlines()[0] == _mod.cost._LIST_PRICE_CAVEAT
+        lines = out.splitlines()
+        assert lines[0] == "> [!IMPORTANT]"
+        assert lines[1] == f"> {_mod.cost._LIST_PRICE_CAVEAT}"
+        # The alert's two lines are immediately followed by a blank line in this
+        # print sequence. GFM blockquote termination is assumed, not executed
+        # against a markdown parser here.
+        assert lines[2] == ""
         # "## " (an H2), not "### " (--summary's own sub-tables, which stay H3).
-        assert not any(line.startswith("## ") for line in out.splitlines())
+        assert not any(line.startswith("## ") for line in lines)
+
+    def test_full_report_caveat_is_a_plain_sentence_not_an_alert(self, fake_projects, capsys):
+        """See the class docstring for why this path stays a plain sentence."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        lines = capsys.readouterr().out.splitlines()
+        assert _mod.cost._LIST_PRICE_CAVEAT in lines
+
+    def test_summary_firing_banner_is_not_folded_into_the_alert(self, tmp_path, monkeypatch, capsys):
+        """STALE PRICING carries its own leading blank line, so it can't abut
+        the alert -- pinned against a later reorder or a dropped
+        "redundant-looking" newline, which would fold the banner into the
+        blockquote in a real rendered PR body. EXCLUDED SPEND and PRICING
+        INTEGRITY share the same leading-newline shape but aren't separately
+        pinned here."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000)])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 12, 5))
+        lines = capsys.readouterr().out.splitlines()
+        banner = next(i for i, line in enumerate(lines) if line.startswith("STALE PRICING"))
+        assert lines[banner - 1] == ""
+        assert not lines[banner].startswith("> ")
 
 
 class TestExcludedSpendBanner:
