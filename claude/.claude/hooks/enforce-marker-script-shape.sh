@@ -604,7 +604,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status)'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review|review-pr)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff|review-pr)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status)'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -669,16 +669,19 @@ Valid shapes:
   ~/.claude/scripts/marker.sh write plan-review
   ~/.claude/scripts/marker.sh write ready-for-review
   ~/.claude/scripts/marker.sh write cumulative-review
+  ~/.claude/scripts/marker.sh write review-pr
   ~/.claude/scripts/marker.sh activate plan-review
   ~/.claude/scripts/marker.sh activate ready-for-review
   ~/.claude/scripts/marker.sh activate respond-pr
   ~/.claude/scripts/marker.sh activate memory-skill
   ~/.claude/scripts/marker.sh activate handoff
+  ~/.claude/scripts/marker.sh activate review-pr
   ~/.claude/scripts/marker.sh deactivate plan-review
   ~/.claude/scripts/marker.sh deactivate ready-for-review
   ~/.claude/scripts/marker.sh deactivate respond-pr
   ~/.claude/scripts/marker.sh deactivate memory-skill
   ~/.claude/scripts/marker.sh deactivate handoff
+  ~/.claude/scripts/marker.sh deactivate review-pr
   ~/.claude/scripts/marker.sh clear-stale
   ~/.claude/scripts/marker.sh clear-stale --dry-run
   ~/.claude/scripts/marker.sh resolve-session-id

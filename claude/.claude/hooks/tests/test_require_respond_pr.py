@@ -1,6 +1,7 @@
 """Tests for require-respond-pr.sh."""
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -15,9 +16,11 @@ from helpers import (
     build_path_without,
     edit_input,
     extract_skill_command,
+    head_sha,
     run_hook,
     run_hook_reason,
     run_skill_command,
+    write_review_pr_completion_marker,
 )
 
 from .conftest import _seed_session
@@ -1068,4 +1071,276 @@ class TestRespondPrStructuralInvariants:
             f"gated_write_patterns, or sub_pattern_only_allowlist: {missing} "
             "— wire it into a gate, or add it to sub_pattern_only_allowlist "
             "with a reason."
+        )
+
+
+# -- review-pr's active-bypass marker (reads) and unconditional write deny -
+# ----------------------------------------------------------------------------
+#
+# Uses the shared `git_repo`/`isolated_home` fixtures from conftest.py
+# rather than `current_repo_foo_bar` above: these tests need a resolvable
+# HEAD (git_repo has a real commit; current_repo_foo_bar does not) but no
+# particular origin.
+
+REVIEW_PR_PR_NUMBER = 42
+REVIEW_PR_PR_IDENTITY = f"foo/bar#{REVIEW_PR_PR_NUMBER}"
+
+
+def _write_review_pr_active_marker(home, session_id, pid=None):
+    marker_dir = home / ".claude" / ".review-pr-active.d"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    (marker_dir / session_id).write_text(str(pid if pid is not None else os.getpid()))
+
+
+def _write_findings_body(tmp_path, content="# findings\n", name="findings.md"):
+    body_file = tmp_path / name
+    body_file.write_text(content)
+    body_hash = hashlib.sha256(body_file.read_bytes()).hexdigest()
+    return body_file, body_hash
+
+
+def _review_command(pr_number, body_file, flag="--comment"):
+    return f"gh pr review {pr_number} {flag} -F {body_file}"
+
+
+@pytest.fixture
+def git_repo_foo_bar_origin(git_repo):
+    """`git_repo` with an `origin` remote resolving to foo/bar -- matching
+    REVIEW_PR_PR_IDENTITY's stored owner/repo, so a completion marker built
+    from that identity describes a plausible review of this repo. Not
+    load-bearing for the unconditional-deny tests below, which deny
+    regardless of any repo match, but keeps the fixture data internally
+    consistent."""
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/foo/bar.git"],
+        cwd=git_repo,
+        check=True,
+    )
+    return git_repo
+
+
+class TestReviewPrActiveMarkerReadBypass:
+    def test_active_marker_releases_a_matched_read(self, isolated_home, git_repo):
+        sid = "test-session-review-pr-read"
+        _write_review_pr_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(
+                    "gh api repos/foo/bar/pulls/5/reviews --paginate", session_id=sid
+                ),
+                cwd=git_repo,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_absence_of_marker_still_denies_a_read(self, isolated_home, git_repo):
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(
+                    "gh api repos/foo/bar/pulls/5/reviews --paginate",
+                    session_id="no-such-session",
+                ),
+                cwd=git_repo,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_dead_pid_marker_is_evicted_and_denies(self, isolated_home, git_repo):
+        sid = "test-session-review-pr-dead"
+        _write_review_pr_active_marker(isolated_home, sid, pid=99999999)
+        marker = isolated_home / ".claude" / ".review-pr-active.d" / sid
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(
+                    "gh api repos/foo/bar/pulls/5/reviews --paginate", session_id=sid
+                ),
+                cwd=git_repo,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+        assert not marker.exists(), "hook must evict the orphan marker on dead PID"
+
+
+class TestGhPrEditBodyMutatingFormsDenied:
+    """The 'never edit someone else's PR body' invariant, folded into this
+    hook's gated-write patterns independent of either bypass marker."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'gh pr edit 5 --body "new body text"',
+            "gh pr edit 5 --body-file /tmp/new-body.md",
+        ],
+    )
+    def test_denied_with_no_marker(self, isolated_home, git_repo, command):
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=git_repo, home=isolated_home) == "deny"
+
+    def test_denied_even_with_a_live_review_pr_active_marker(
+        self, isolated_home, git_repo
+    ):
+        """A live review-pr marker only releases a matched READ -- every
+        matched WRITE is denied unconditionally regardless of marker state,
+        and `gh pr edit`'s body-mutating form is a matched write."""
+        sid = "test-session-review-pr-edit"
+        _write_review_pr_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input('gh pr edit 5 --body "new body text"', session_id=sid),
+                cwd=git_repo,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_title_only_edit_is_not_gated(self, isolated_home, git_repo):
+        """Bounds the pattern from the other side: only body-mutating forms
+        fold into this gate -- `gh pr edit` covers title, labels, and more,
+        and gating every use would be broader than the invariant this closes."""
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input('gh pr edit 5 --title "new title"'),
+                cwd=git_repo,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+
+class TestReviewPrWriteDeniedUnconditionally:
+    """Every `gh pr review`/`reviews` write during an active /review-pr
+    session is denied unconditionally -- posting must go through
+    ~/.claude/scripts/review-pr-post.sh instead, which independently
+    re-verifies the completion marker before ever calling gh. Neither a
+    non-approving verdict flag nor a completion marker whose HEAD, PR
+    identity, and body hash all match the gated command changes that: this
+    hook grants no write bypass of its own, for any verdict."""
+
+    SID = "test-session-review-pr-write"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --comment -F body.md",
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --request-changes -F body.md",
+            f"gh pr review {REVIEW_PR_PR_NUMBER} --approve -F body.md",
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews -f event=COMMENT -f body=@body.md",
+            f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews -f event=APPROVE -f body=@body.md",
+            (
+                "gh api graphql -f query='mutation { submitPullRequestReview(input: "
+                '{reviewId: "PRR_abc", event: COMMENT}) { clientMutationId } }\''
+            ),
+        ],
+    )
+    def test_write_denied_with_no_marker_at_all(
+        self, isolated_home, git_repo_foo_bar_origin, command
+    ):
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "flag", ["--comment", "--request-changes", "--approve", "-c", "-r", "-a"]
+    )
+    def test_write_denied_with_a_live_active_marker_and_no_completion_marker(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path, flag
+    ):
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, _ = _write_findings_body(tmp_path)
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file, flag=flag)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_write_denied_even_with_a_fully_matching_completion_marker(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        """The write-authorization cross-check this hook used to run is
+        gone: a completion marker whose stored HEAD, PR identity, and body
+        hash all match the gated command exactly no longer releases a write
+        here -- that verification now happens inside review-pr-post.sh,
+        never in this hook."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, body_hash = _write_findings_body(tmp_path)
+        write_review_pr_completion_marker(
+            isolated_home,
+            git_repo_foo_bar_origin,
+            REVIEW_PR_PR_IDENTITY,
+            head_sha(git_repo_foo_bar_origin),
+            body_hash,
+            sid,
+        )
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_deny_message_redirects_to_review_pr_post_script(
+        self, isolated_home, git_repo_foo_bar_origin, tmp_path
+    ):
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        body_file, _ = _write_findings_body(tmp_path)
+        command = _review_command(REVIEW_PR_PR_NUMBER, body_file)
+        reason = run_hook_reason(
+            RESPOND_PR_HOOK,
+            bash_input(command, session_id=sid),
+            cwd=git_repo_foo_bar_origin,
+            home=isolated_home,
+        )
+        assert "review-pr-post.sh" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "~/.claude/scripts/review-pr-post.sh comment",
+            "~/.claude/scripts/review-pr-post.sh request-changes",
+            "~/.claude/scripts/review-pr-post.sh comment && echo posted",
+        ],
+    )
+    def test_wrapper_script_invocation_is_allowed_through(
+        self, isolated_home, git_repo_foo_bar_origin, command
+    ):
+        """The redirect design depends on this hook never matching the
+        wrapper script's own invocation -- the `gh pr review` call it makes
+        happens inside the wrapper, invisible to this hook. Neither the
+        filename nor the chained form trips PATTERN_PR_WRITE_CMD, which
+        requires the literal `gh` `pr` `comment|review` token sequence."""
+        sid = self.SID
+        _write_review_pr_active_marker(isolated_home, sid)
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(command, session_id=sid),
+                cwd=git_repo_foo_bar_origin,
+                home=isolated_home,
+            )
+            == "allow"
         )

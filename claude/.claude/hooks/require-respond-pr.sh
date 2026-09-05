@@ -48,6 +48,27 @@
 # an unrelated neighboring command can be denied alongside a gated one; and
 # the gate cannot see inside a query body sourced from a file, so it denies
 # those wholesale rather than inspecting them.
+#
+# Second bypass path: /review-pr's active marker at
+# ~/.claude/.review-pr-active.d/<session_id> releases a matched READ the
+# same way respond-pr's does. A matched WRITE is never released here at
+# all: every `gh pr review`/`reviews` write during an active /review-pr
+# session is denied unconditionally, redirecting to
+# ~/.claude/scripts/review-pr-post.sh, which independently re-verifies the
+# HEAD, PR identity, and findings-body hash recorded by /review-pr's own
+# completion marker (see that script's header, and
+# _lib_review_pr_completion_marker_fields in _lib.sh for the read it
+# shares with marker.sh's `write review-pr` arm) before it ever calls gh.
+# `--approve` is not a reachable code path in that script, so this gate
+# needs no approve-spelling denylist of its own.
+# Named accepted gap: this gate decides per whole command, like every other
+# arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
+# with an unrelated command executes atomically -- an attacker able to
+# inject that chain already has direct Bash access with no gate at all.
+#
+# `gh pr edit` with a body-mutating flag (--body/--body-file) is also
+# gated here, independent of either marker: the "never edit someone else's
+# PR body" invariant otherwise rests on skill prose alone.
 
 set -uo pipefail
 
@@ -85,6 +106,16 @@ fi
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then
   exit 0
+fi
+
+# review-pr active marker: computed here, used further down. Unlike
+# respond-pr's blanket bypass above, this does NOT exit 0 unconditionally --
+# a live marker only proves a /review-pr session is running, never that the
+# review itself happened. It releases reads unconditionally further below;
+# a write additionally requires the completion marker checked there.
+REVIEW_PR_ACTIVE=0
+if _lib_active_bypass_marker_live ".review-pr-active.d" "$SESSION_ID"; then
+  REVIEW_PR_ACTIVE=1
 fi
 
 # grep matches within a line and `.` never crosses a newline, so any command
@@ -209,6 +240,14 @@ PATTERN_GRAPHQL_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(qu
 PATTERN_ANY_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_FIELD_FLAG='(-f|-F|--field|--raw-field)[[:space:]=]'
 PATTERN_MUTATING_METHOD='(-X|--method)[[:space:]=]*(POST|PATCH|PUT|DELETE)'
+# `gh pr edit` covers title, labels, reviewers, and more -- only the
+# body-mutating forms fold into this gate ("never edit someone else's PR
+# body" is the invariant being closed here, not every `pr edit` use). Two
+# separate patterns rather than one combined regex: bash ERE has no
+# lookahead, so "pr edit ... AND a body flag somewhere in the command" is
+# expressed as two `[[ ]]` tests joined by `&&`, not one alternation.
+PATTERN_PR_EDIT_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'edit([[:space:]]|$)'
+PATTERN_PR_EDIT_BODY_FLAG='(--body|--body-file)([[:space:]]|=)'
 
 if [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED ]]; then
   :
@@ -221,6 +260,8 @@ elif [[ "$COMMAND_FLAT" =~ $PATTERN_ISSUE_WRITE_CMD ]]; then
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_MUTATION ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_FILE_BODY ]]; then
+  :
+elif [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_CMD ]] && [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_BODY_FLAG ]]; then
   :
 else
   exit 0
@@ -252,6 +293,15 @@ for write_signal in "${gated_write_patterns[@]}"; do
   fi
 done
 
+# `gh pr edit` carries no read form -- reaching the arm chain above (which
+# requires the body flag too) already means this is a write, so it is set
+# directly rather than added to gated_write_patterns above, which would
+# make the body flag alone (with no `pr edit` anywhere) count as a write
+# signal for every OTHER matched arm too.
+if [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_CMD ]] && [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_BODY_FLAG ]]; then
+  GATED_WRITE=1
+fi
+
 # The mutating-method signal is checked separately because it is the one that
 # must fold case, and the patterns above must not: `repos/` path segments and
 # GraphQL mutation names are case-significant. `gh` normalizes the method
@@ -265,21 +315,24 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; then
 fi
 shopt -u nocasematch
 
-# The cross-repo bypass below releases reads only. It exists so that research
-# on an external repo is not mistaken for a PR response here, and research is
-# a read; there is no legitimate cross-repo write it needs to permit, because
-# the attribution the gate protects is owed to readers of any public PR, not
-# only this repo's.
-#
-# Confining it to reads is also what makes it safe to decide on substring
-# evidence. Both extractions below scan the whole command for a repo-shaped
-# token, so any text in the call — including a comment body the model was
-# induced to write — can supply one. While a write can be released that way,
-# a decoy reference to another repo anywhere in the command hands back an
-# unattributed write to this one; a decoy that only releases a read costs
-# nothing, since the read was never the thing being protected.
+# review-pr read bypass: an active marker releases a matched READ
+# unconditionally (step 1 needs the complete three-endpoint fetch the same
+# way an author does). A matched WRITE is never released here -- see the
+# unconditional-deny block below.
+if [ "$REVIEW_PR_ACTIVE" -eq 1 ] && [ "$GATED_WRITE" -eq 0 ]; then
+  exit 0
+fi
+
+# Every gated write is denied unconditionally past this point: respond-pr's
+# blanket bypass above already released any write issued from inside that
+# skill, and review-pr's active marker (checked above) releases reads only,
+# never a write. Posting a `gh pr review` must go through
+# ~/.claude/scripts/review-pr-post.sh, which independently re-verifies the
+# HEAD, PR identity, and findings-body hash recorded by /review-pr's own
+# completion marker before it ever calls gh, and cannot construct an
+# `--approve` invocation.
 if [ "$GATED_WRITE" -eq 1 ]; then
-  emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. Stop and ask the user how they want to proceed."
+  emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh comment|request-changes instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0
 fi
 
@@ -298,24 +351,29 @@ fi
 # release is a read. (3) the -R/--repo form is reachable only if a future
 # arm gates a read issued through `gh pr`; every `gh pr` form gated today is
 # a write and stops above.
-# Both extractions read COMMAND_FLAT, not COMMAND. `sed` is per-line exactly as
-# grep is, so a wrapped cross-repo URL would otherwise be invisible here while
-# the arm chain above already saw it — the two would disagree about the same
-# command. That direction fails closed (the repo goes unrecognized and the
-# command denies), but a gate whose two halves read different text is a gate
-# whose behaviour cannot be reasoned about from either half alone.
-COMMAND_REPO=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's#.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*#\1#p;s#.*repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+.*#\1#p' | head -1)
-if [ -z "$COMMAND_REPO" ]; then
-  COMMAND_REPO=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's#.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*#\2#p' | head -1)
-fi
-
-# `gh api repos/{owner}/{repo}/...` is documented gh syntax: gh substitutes
-# the current repo at call time. The placeholder is literal text, so it reads
-# as a repo name unlike any origin and would otherwise release the very
-# same-repo access this gate exists to catch.
-if [[ "$COMMAND_REPO" == *[{}]* ]]; then
-  COMMAND_REPO=""
-fi
+#
+# Repo the gated command targets: the explicit -R/--repo flag or a
+# repos/OWNER/REPO/... path. Reads COMMAND_FLAT, not COMMAND: `sed` is
+# per-line exactly as grep is, so a wrapped cross-repo URL would otherwise
+# be invisible here while the arm chain above already saw it. That
+# direction fails closed (the repo goes unrecognized and the command
+# denies).
+_extract_command_repo() {
+  local repo
+  repo=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*,\1,p;s,.*repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+.*,\1,p' | head -1)
+  if [ -z "$repo" ]; then
+    repo=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*,\2,p' | head -1)
+  fi
+  # `gh api repos/{owner}/{repo}/...` is documented gh syntax: gh
+  # substitutes the current repo at call time. The placeholder is literal
+  # text, so it reads as a repo name unlike any origin and would otherwise
+  # release the very same-repo access this gate exists to catch.
+  if [[ "$repo" == *[{}]* ]]; then
+    repo=""
+  fi
+  printf '%s' "$repo"
+}
+COMMAND_REPO=$(_extract_command_repo)
 
 if [ -n "$COMMAND_REPO" ]; then
   # _lib_capped, not bare git: a stale index lock or a network-mounted .git

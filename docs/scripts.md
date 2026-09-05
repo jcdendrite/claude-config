@@ -53,6 +53,13 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. The 17 valid invocation shapes are allowlisted in `settings.json` for silent auto-approval; shape validation is enforced by `enforce-marker-script-shape.sh` (see [`docs/hooks.md`](hooks.md)).
 
+- **`review-pr-post.sh`** — the only code path `/review-pr` Step 9 may use to post a `gh pr review`; takes exactly one argument, `comment` or `request-changes` (a two-element `case`), so `--approve` is not a reachable invocation. Before calling `gh`, and independent of the `require-respond-pr.sh` gate that redirects here (see [`docs/hooks.md`](hooks.md)), it re-verifies:
+  - This session's own `/review-pr` completion marker exists.
+  - The worktree's current HEAD still equals the marker's recorded `headRefOid`.
+  - The findings-body file at the fixed path `<config-dir>/.review-pr-active.d/<session_id>.body` still hashes to the marker's recorded value.
+
+  Any mismatch aborts with no `gh` call. Strips `GH_HOST`/`GH_ENTERPRISE_TOKEN` from `gh`'s environment on the call itself, so an ambient `GH_HOST` can't redirect the post to a different host. After a successful post, deletes the completion marker it consumed — a retry fails closed instead of double-posting.
+
 - **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 
   - Prints `LAUNCH_SHA: <oid>` once at start.

@@ -783,6 +783,37 @@ def stage_settings(repo: Path, settings_file: Path, content: str) -> None:
     )
 
 
+def review_pr_completion_marker_path(
+    home: Path, repo: Path, session_id: str, config_dir: Path | None = None
+) -> Path:
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / "review-pr-markers" / f"{repo_hash}.{session_id}"
+
+
+def write_review_pr_completion_marker(
+    home: Path,
+    repo: Path,
+    pr_identity: str,
+    head_ref_oid: str,
+    body_hash: str,
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+) -> Path:
+    """Write review-pr's three-line completion marker directly (PR identity,
+    headRefOid, body hash) -- the shape `marker.sh write review-pr` produces
+    and `_lib_review_pr_completion_marker_fields` (_lib.sh) reads. Written
+    independently of the real write arm (unlike
+    write_plan_review_marker, which shells out to the production hash
+    function) so a test seeding a marker here checks require-respond-pr.sh's
+    read side against known-correct content, not against marker.sh's own
+    output."""
+    marker = review_pr_completion_marker_path(home, repo, session_id, config_dir)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{pr_identity}\n{head_ref_oid}\n{body_hash}\n")
+    return marker
+
+
 def plan_review_marker_path(
     home: Path, repo: Path, session_id: str, config_dir: Path | None = None
 ) -> Path:
