@@ -721,6 +721,51 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         assert "how many were dismissed as undecidable" in self._body()
 
 
+class TestSkillFidelityReviewerNameResolutionOrdering:
+    """Pin Name resolution's Glob-then-filter-then-Read ordering.
+
+    The prior ordering read every label's whole body before the
+    out-of-scope and decidability filters ran, which is what let
+    code-review/SKILL.md -- a skill textually out of scope -- get read
+    whole regardless. Anchor order, not mere presence, is the contract
+    -- a regression that reintroduces a body Read ahead of the filters
+    would still contain all three anchor phrases, just in the wrong
+    order.
+    """
+
+    def _body(self):
+        return _agent_body("skill-fidelity-reviewer")
+
+    def test_globs_for_existence_before_filtering_before_reading(self):
+        """Existence must resolve via Glob, then the out-of-scope and
+        decidability filters apply, and only a skill surviving both gets
+        a body Read."""
+        body = self._body()
+        glob_anchor = body.index("`Glob` for `~/.claude/skills/<name>/SKILL.md`")
+        filter_anchor = body.index("check it against the out-of-scope list above")
+        read_anchor = body.index(
+            "`Read` the body only for a skill that reaches this step"
+        )
+        assert glob_anchor < filter_anchor < read_anchor, (
+            "anchor order inverted -- Name resolution must Glob for "
+            "existence, then filter, then Read, in that order"
+        )
+
+    def test_unfamiliar_skill_defaults_to_reading_not_guessed_undecidable(self):
+        """A skill name matching neither the out-of-scope list nor the
+        enumerated undecidable exemplars -- an unfamiliar skill with a
+        diff-invisible artifact, say -- must default to a body read
+        rather than a guessed dismissal. Without this default, an
+        unfamiliar skill's dismissal is indistinguishable in output
+        shape from a correctly-reasoned one, silently regressing the
+        exact property this agent exists to protect."""
+        body = self._body()
+        assert (
+            'A name matching neither list defaults to a body read, not '
+            'a guessed "undecidable"' in body
+        )
+
+
 class TestSkillFidelityReviewerArchitectConsultCheck:
     """Pin the architect-consult check's mandatory-emission contract and the
     Input-contract correction it depends on.
@@ -4363,6 +4408,40 @@ def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() ->
             "missing — ROUTING.md's findings_path wiring paragraph must reuse "
             "code-review/SKILL.md's contract statement verbatim."
         )
+
+
+_LEDGER_INLINE_OBLIGATION_TOKEN = "copied into the spawn prompt as literal text"
+
+
+def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -> None:
+    """The spawn-step paragraph in plan-review/ROUTING.md must state the
+    Ledger cross-check instruction is copied into the spawn prompt as
+    literal text, not left as a pointer to the "## Ledger cross-check"
+    section below.
+
+    Sampled dispatches carried a pointer instead of the inlined instruction,
+    so the obligation to inline it is pinned at the spawn step rather than
+    left to a one-time skill-review pass to keep catching a reversion.
+    Scoped to the text preceding the "## Ledger cross-check" heading rather
+    than a file-wide substring search: the token is a future-proofing bound,
+    not a condition that holds today (the token currently appears nowhere
+    inside that section) — if a later edit to the section's own wording ever
+    introduces the token or a shorter substring of it there, an unscoped
+    search would stop catching a reverted spawn-step paragraph.
+    """
+    routing_text = _ROUTING_MD_PATH.read_text()
+    ledger_heading = "## Ledger cross-check"
+    heading_index = routing_text.index(ledger_heading)
+    spawn_step_text = routing_text[:heading_index]
+
+    assert _LEDGER_INLINE_OBLIGATION_TOKEN in spawn_step_text, (
+        "plan-review/ROUTING.md: the spawn-step section (before "
+        f"{ledger_heading!r}) no longer states the ledger cross-check "
+        f"instruction is {_LEDGER_INLINE_OBLIGATION_TOKEN!r} — a pointer to "
+        "the Ledger cross-check section is not sufficient, since the "
+        "spawned reviewer's prompt must carry the instruction's literal "
+        "wording."
+    )
 
 
 def _routing_reviewer_agent_names() -> set[str]:
