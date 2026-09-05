@@ -34,9 +34,9 @@
 #   is also an integrity control: an unowned or symlinked destination is
 #   never printed to output that may feed straight into
 #   `claude --append-system-prompt-file`. A row's $src field is sanitized
-#   (control bytes stripped) before printing, since it is printed to a
-#   different session's terminal below -- stripped, not rejected, so a
-#   poisoned row still surfaces rather than vanishing from the output.
+#   (control bytes stripped) before printing, since it reaches a different
+#   session's terminal below. Stripping, not rejecting, means a poisoned
+#   row still surfaces rather than vanishing from the output.
 # - stderr: the reload hint for the newest printed row on success. On
 #   failure, one of three distinct diagnoses:
 #     - no index found (no day-files at all)

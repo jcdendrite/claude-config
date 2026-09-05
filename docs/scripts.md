@@ -170,7 +170,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - is owned by `$EUID`
 
   This is both a truthfulness control (age-based tmp cleanup can reap an individual destination independently of the index's own 30-day day-file sweep) and an integrity control on a surface whose output may be fed straight into `claude --append-system-prompt-file`. A row's `$src` field is also stripped of raw control bytes before printing (`_lib_sanitize_for_terminal` in `_lib.sh`), since it is printed to a different session's terminal and a crafted continuity-file path must not carry a raw OSC/CSI escape into it; the row still surfaces with the stripped field rather than being dropped. Two vectors stay explicitly out of that sanitizer's scope:
-  - the C1 control range (0x80-0x9f), the 8-bit single-byte encoding ECMA-48 defines as equivalent to a 7-bit `ESC` introducer — extending coverage to it would require UTF-8-validity-aware logic this byte-oriented helper doesn't have, since a raw strip risks corrupting a legitimate multi-byte UTF-8 path
+  - the C1 control range (0x80-0x9f), the 8-bit single-byte encoding ECMA-48 defines as equivalent to a 7-bit `ESC` introducer. Stripping it would need UTF-8-validity-aware logic this byte-oriented helper doesn't have, since a raw strip risks corrupting a legitimate multi-byte UTF-8 path
   - Unicode bidi-override/zero-width spoofing (e.g. U+202E), a display-trickery vector distinct from OSC/CSI escape injection
 
   Prints the reload hint for the newest matching row to stderr on success. On failure, exits 1 with a distinct stderr diagnosis for:
