@@ -512,7 +512,7 @@ _lib_active_plan_hash() {
 # `write cumulative-review` arm, which hashes a recorded subject through this
 # same function rather than a second, possibly-drifting copy of the recipe.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
-# this function doesn't treat empty input as failure; refusing an empty
+# this function doesn't treat empty input as failure. Refusing an empty
 # subject is marker.sh's precondition, not this helper's.
 # Exit 0, non-empty stdout: the sha256 hex digest of TEXT.
 # Exit 1, empty stdout: sha256sum/awk produced no output (tool misbehavior).

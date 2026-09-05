@@ -2103,6 +2103,39 @@ class TestMarkerScriptCumulativeReview:
         )
         assert second.returncode == 2, "a second write with no fresh subject must refuse"
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_write_failure_does_not_consume_the_subject(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """mkdir -p failing to create cumulative-review-markers/ must not
+        rm -f the recorded subject -- a retry needs the subject still on
+        disk. Mirrors test_record_path_failure_leaves_prior_subject_intact's
+        chmod technique in scripts/tests/test_pr_diff_against_base.py."""
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(cumulative_diff_repo, isolated_home, env).returncode == 0
+        subject_path = _cumulative_review_subject_path(isolated_home, cumulative_diff_repo, self.SID)
+        assert subject_path.exists()
+
+        config_dir = isolated_home / ".claude"
+        config_dir.chmod(0o555)
+        try:
+            result = _run(
+                ["write", "cumulative-review"],
+                cwd=cumulative_diff_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
+        finally:
+            config_dir.chmod(0o755)
+
+        assert result.returncode != 0, (
+            "a failed mkdir -p must not report success"
+        )
+        assert subject_path.exists(), (
+            "a failed marker write must leave the subject for a retry to consume"
+        )
+
     def test_two_sessions_record_and_write_independently(
         self, isolated_home, cumulative_diff_repo, tmp_path
     ):

@@ -393,12 +393,15 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: could not hash the recorded cumulative-review subject. Abort without writing a marker.\n' >&2
           exit 2
         }
-        mkdir -p "$CONFIG_DIR/cumulative-review-markers"
-        printf '%s\n' "$MARKER_VALUE" \
-          > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID"
         # Consumed on success: bounds a recorded-but-unreviewed subject to
-        # authorizing at most one write.
-        rm -f "$SUBJECT_FILE"
+        # authorizing at most one write. Chained via && rather than an `if`
+        # so a failed mkdir/printf leaves the subject for a retry. The &&
+        # chain also propagates that failure as the script's own exit
+        # status, matching every other write arm's unguarded last command.
+        mkdir -p "$CONFIG_DIR/cumulative-review-markers" \
+          && printf '%s\n' "$MARKER_VALUE" \
+            > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID" \
+          && rm -f "$SUBJECT_FILE"
         ;;
       *)
         printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review\n" "$SKILL" >&2
