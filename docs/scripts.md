@@ -61,6 +61,12 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - `--diff-file` additionally writes the diff to `<config-dir>/cumulative-review-diff-markers/<repo-hash>.<session-id>` and announces the path on stderr as `DIFF_FILE: <path>`, for a reviewer with no `Bash` to `Read` directly.
   - Both flags' own resolution runs only after the diff has already reached stdout, so a failure recording either artifact is reported on stderr without changing the script's exit code or withholding the diff.
   - A gate run abandoned before step 8 never calls `marker.sh deactivate ready-for-review`, so both artifacts persist until the same session id deactivates again, which may never happen — `clear-stale` cannot reach either directory.
+- **`review-pr-post.sh`** — the only code path `/review-pr` Step 9 may use to post a `gh pr review`; takes exactly one argument, `comment` or `request-changes` (a two-element `case`), so `--approve` is not a reachable invocation. Before calling `gh`, and independent of the `require-respond-pr.sh` gate that redirects here (see [`docs/hooks.md`](hooks.md)), it re-verifies:
+  - This session's own `/review-pr` completion marker exists.
+  - The worktree's current HEAD still equals the marker's recorded `headRefOid`.
+  - The findings-body file at the fixed path `<config-dir>/.review-pr-active.d/<session_id>.body` still hashes to the marker's recorded value.
+
+  Any mismatch aborts with no `gh` call. Strips `GH_HOST`/`GH_ENTERPRISE_TOKEN` from `gh`'s environment on the call itself, so an ambient `GH_HOST` can't redirect the post to a different host. After a successful post, deletes the completion marker it consumed — a retry fails closed instead of double-posting.
 
 - **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 
