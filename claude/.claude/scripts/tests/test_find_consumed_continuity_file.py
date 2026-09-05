@@ -51,9 +51,8 @@ def _run(args: list[str], tmpdir_root: Path) -> subprocess.CompletedProcess:
 
 
 def test_no_index_reports_distinct_diagnosis(tmp_path: Path) -> None:
-    """An index directory with no consumed.*.tsv day-files at all -- the
-    day-file replacement for the old flat file's absence. Asserts stderr's
-    exact content, not a substring, so a regression in the per-file
+    """An index directory with no consumed.*.tsv day-files at all is the
+    no-index case. Asserts stderr's exact content, not a substring, so a regression in the per-file
     `[ -f "$f" ] && [ ! -L "$f" ] || continue` guard -- the guard that
     actually stops an unexpanded glob pattern from being read as a literal
     path -- surfaces as a diagnosis mismatch instead of passing silently."""
@@ -313,12 +312,9 @@ def test_utf8_source_still_prints(tmp_path: Path) -> None:
 
 def test_hostile_slug_argument_channel_carries_no_raw_escape_byte(tmp_path: Path) -> None:
     """Channel-level guard, not a specific-stripped-string assertion: a
-    hostile slug argument containing a raw ANSI escape must never reach
-    stdout or stderr un-stripped, regardless of which diagnostic line
-    formats it -- resilient to a future print-site addition rather than
-    needing per-site enumeration. This is the site a prior round's
-    call-site-by-call-site fix missed: the "no row matched %s" diagnosis
-    interpolates $SLUG, which can carry the same taint as a row's own $src
+    hostile slug argument must never reach stdout or stderr un-stripped from
+    any print site, including the "no row matched %s" diagnosis, which
+    interpolates $SLUG and can carry the same taint as a row's own $src
     (resume-context.sh's not-found hint pre-fills it from ${SRC##*/})."""
     dest = tmp_path / "resume-context.abc123"
     dest.write_text("moved content\n")
