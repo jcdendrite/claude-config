@@ -102,6 +102,39 @@ class TestLaunchMode:
         assert "unrecoverable" in result.stderr
         assert "find-consumed-continuity-file.sh does-not-exist-handoff.md" in result.stderr
 
+    def test_missing_source_hint_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
+        """Channel-level guard (ciso-reviewer finding), not a
+        specific-stripped-string assertion: a raw OSC/CSI escape in the
+        requested path must never reach stdout or stderr un-stripped in the
+        not-found diagnosis -- this script's fresh-TTY launch path is a more
+        dangerous injection surface than a chat pane."""
+        stub, recorder = _install_recorder(tmp_path)
+        missing = str(tmp_path / "evil") + "\x1b[31mFAKE\x1b[0m-handoff.md"
+        result = _run(
+            [missing],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "\x1b" not in result.stdout
+        assert "\x1b" not in result.stderr
+        assert not recorder.exists()
+
+    def test_moved_announcement_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
+        """Channel-level guard (ciso-reviewer finding): the launch-mode
+        'moved' announcement must never print a raw control byte from $SRC
+        verbatim into the invoking terminal."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "evil\x1b[31mFAKE\x1b[0m-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            [str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "\x1b" not in result.stdout
+        assert "\x1b" not in result.stderr
+        assert recorder.exists()
+
     def test_happy_path_moves_and_launches(self, tmp_path: Path) -> None:
         stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "foo-handoff.md"
@@ -302,6 +335,24 @@ class TestCwdFlag:
         )
         assert result.returncode != 0
         assert result.stderr.strip()
+        assert src.exists(), "source must not be moved when --cwd fails validation"
+        assert not recorder.exists()
+
+    def test_cwd_flag_not_a_directory_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
+        """Channel-level guard: a hostile --cwd value containing a raw
+        ANSI escape must never reach stdout or stderr un-stripped in the
+        "not a directory" diagnosis."""
+        stub, recorder = _install_recorder(tmp_path)
+        hostile_cwd = str(tmp_path / "evil") + "\x1b[31mFAKE\x1b[0m"
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", hostile_cwd, str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "\x1b" not in result.stdout
+        assert "\x1b" not in result.stderr
         assert src.exists(), "source must not be moved when --cwd fails validation"
         assert not recorder.exists()
 

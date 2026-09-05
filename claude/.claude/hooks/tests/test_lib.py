@@ -2868,6 +2868,34 @@ class TestLibResumeContextIndexDir:
         assert result.returncode == 0, result.stderr
         assert stat.S_IMODE(preexisting_dir.stat().st_mode) == 0o700
 
+    def test_second_call_under_set_e_does_not_abort_via_command_substitution(self, tmp_path: Path) -> None:
+        """The function's doc comment states its unguarded `mkdir` is safe
+        under `set -e` only because every call happens inside a `$(...)`
+        command substitution, never called directly -- the second call's
+        expected EEXIST must not abort the calling script. Calls the
+        function twice via `x=$(...)` under `set -euo pipefail`, matching
+        resume-context.sh's own `set -euo pipefail` then `. _lib.sh` order,
+        and asserts both calls succeed."""
+        script = (
+            "set -euo pipefail\n"
+            f". {_LIB_SH}\n"
+            "first=$(_lib_resume_context_index_dir)\n"
+            'printf "first:%s\\n" "$first"\n'
+            "second=$(_lib_resume_context_index_dir)\n"
+            'printf "second:%s\\n" "$second"\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert f"first:{expected_dir}" in result.stdout
+        assert f"second:{expected_dir}" in result.stdout
+
 
 def test_lib_print_recovery_hint_prints_reload_command_to_stderr_only() -> None:
     result = subprocess.run(
@@ -2879,6 +2907,21 @@ def test_lib_print_recovery_hint_prints_reload_command_to_stderr_only() -> None:
     )
     assert result.stdout == ""
     assert result.stderr.strip() == "reload with: claude --append-system-prompt-file /tmp/some-dest-path"
+
+
+# _lib_sanitize_for_terminal — direct unit coverage of all three documented
+# stripped ranges (0x01-0x08, 0x0a-0x1f, 0x7f) plus the tab exemption. The
+# channel-level tests in test_resume_context.py and
+# test_find_consumed_continuity_file.py only exercise \x1b (middle range);
+# this pins the other two ranges' boundary bytes and the tab carve-out
+# directly against the helper, independent of any caller.
+def test_lib_sanitize_for_terminal_strips_all_three_ranges_and_preserves_tab() -> None:
+    result = _run_lib_call(
+        r"_lib_sanitize_for_terminal $'a\x01b\x08c\x0ad\x1fe\x7ff\tg'",
+        env=dict(os.environ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "abcdef\tg"
 
 
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its

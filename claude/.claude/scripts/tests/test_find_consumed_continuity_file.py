@@ -293,6 +293,63 @@ def test_day_file_replaced_by_symlink_is_skipped_but_remaining_sibling_still_rea
     assert [line.split("\t")[1] for line in lines] == [str(live_dest)]
 
 
+def test_utf8_source_still_prints(tmp_path: Path) -> None:
+    """A $src with ordinary multi-byte UTF-8 characters (no control bytes)
+    passes through _lib_sanitize_for_terminal unstripped -- the
+    terminal-injection sanitizer must not alter legitimate non-ASCII source
+    paths."""
+    dest = tmp_path / "resume-context.abc123"
+    dest.write_text("moved content\n")
+    src = tmp_path / "originals" / "café-hello-handoff.md"
+    _write_index(tmp_path, [("2026-01-01T00:00:00Z", str(dest), str(src))])
+
+    result = _run(["café"], tmp_path)
+
+    assert result.returncode == 0
+    stamp, printed_dest, printed_src = result.stdout.rstrip("\n").split("\t")
+    assert printed_dest == str(dest)
+    assert printed_src == str(src)
+
+
+def test_hostile_slug_argument_channel_carries_no_raw_escape_byte(tmp_path: Path) -> None:
+    """Channel-level guard, not a specific-stripped-string assertion: a
+    hostile slug argument containing a raw ANSI escape must never reach
+    stdout or stderr un-stripped, regardless of which diagnostic line
+    formats it -- resilient to a future print-site addition rather than
+    needing per-site enumeration. This is the site a prior round's
+    call-site-by-call-site fix missed: the "no row matched %s" diagnosis
+    interpolates $SLUG, which can carry the same taint as a row's own $src
+    (resume-context.sh's not-found hint pre-fills it from ${SRC##*/})."""
+    dest = tmp_path / "resume-context.abc123"
+    dest.write_text("moved content\n")
+    _write_index(
+        tmp_path, [("2026-01-01T00:00:00Z", str(dest), str(tmp_path / "originals" / "unrelated-handoff.md"))]
+    )
+
+    result = _run(["evil\x1b[31mFAKE\x1b[0m"], tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "\x1b" not in result.stderr
+
+
+def test_hostile_src_in_matched_row_channel_carries_no_raw_escape_byte(tmp_path: Path) -> None:
+    """Channel-level guard: a row's $src field carrying a raw ANSI escape
+    must never reach stdout or stderr un-stripped when its destination is
+    still live and the row is printed -- the row surfaces stripped, not
+    dropped, matching this reader's strip-not-reject contract."""
+    dest = tmp_path / "resume-context.abc123"
+    dest.write_text("moved content\n")
+    src = str(tmp_path / "originals" / "evil-handoff.md") + "\x1b[31mFAKE\x1b[0m"
+    _write_index(tmp_path, [("2026-01-01T00:00:00Z", str(dest), src)])
+
+    result = _run(["evil"], tmp_path)
+
+    assert result.returncode == 0
+    assert "\x1b" not in result.stdout
+    assert "\x1b" not in result.stderr
+
+
 def test_o_operator_guards_both_the_writer_directory_and_the_reader_destination() -> None:
     """Source-grep pin (ciso-reviewer finding): a future edit weakening
     either ownership guard -- e.g. swapping `-O` for `-w` or `-r` -- should

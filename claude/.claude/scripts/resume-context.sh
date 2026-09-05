@@ -59,6 +59,14 @@
 #   reads as "nothing recoverable").
 # - The legacy-location fallback (below) prints the resolved legacy path to
 #   stderr on use — same sensitivity class as the not-found hint above.
+# - Every stderr print of $SRC, $LEGACY_SRC, and $LAUNCH_CWD uses a sanitized
+#   display copy (computed once, right after each is set, via
+#   _lib_sanitize_for_terminal) rather than the raw value — a raw OSC/CSI
+#   escape from a crafted continuity-file path or --cwd argument must not
+#   reach the invoking terminal unmodified, a more dangerous injection
+#   surface here than a chat pane. Only the display copies are sanitized:
+#   file-path operations below (`[ -f "$SRC" ]`, `mv`, `cd`) always use the
+#   raw value.
 # - A third, durable-enough channel: every successful move also appends a
 #   <timestamp, destination, source> row to a per-uid index under the same
 #   temp-dir root (_lib_resume_context_index_dir), sharded one file per UTC
@@ -175,6 +183,7 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       LAUNCH_CWD=$2
+      LAUNCH_CWD_DISPLAY=$(_lib_sanitize_for_terminal "$LAUNCH_CWD")
       shift 2
       ;;
     --)
@@ -197,6 +206,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 SRC=$1
+SRC_DISPLAY=$(_lib_sanitize_for_terminal "$SRC")
 
 if [ -n "$LAUNCH_CWD" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
   printf 'resume-context.sh: --cwd is not valid with --consume-only (that mode never launches)\n' >&2
@@ -204,7 +214,7 @@ if [ -n "$LAUNCH_CWD" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
 fi
 
 if [ -n "$LAUNCH_CWD" ] && [ ! -d "$LAUNCH_CWD" ]; then
-  printf 'resume-context.sh: --cwd target is not a directory: %s\n' "$LAUNCH_CWD" >&2
+  printf 'resume-context.sh: --cwd target is not a directory: %s\n' "$LAUNCH_CWD_DISPLAY" >&2
   exit 1
 fi
 
@@ -223,20 +233,22 @@ if [ ! -f "$SRC" ] && [ "$CONFIG_DIR" != "$HOME/.claude" ]; then
   case "$SRC" in
     "$CONFIG_DIR"/handoffs/*|"$CONFIG_DIR"/briefs/*)
       LEGACY_SRC="$HOME/.claude${SRC#"$CONFIG_DIR"}"
+      LEGACY_SRC_DISPLAY=$(_lib_sanitize_for_terminal "$LEGACY_SRC")
       if [ -f "$LEGACY_SRC" ]; then
-        printf 'resume-context.sh: not found under %s; found it at the legacy location instead: %s\n' "$CONFIG_DIR" "$LEGACY_SRC" >&2
+        printf 'resume-context.sh: not found under %s; found it at the legacy location instead: %s\n' "$CONFIG_DIR" "$LEGACY_SRC_DISPLAY" >&2
         SRC="$LEGACY_SRC"
+        SRC_DISPLAY="$LEGACY_SRC_DISPLAY"
       fi
       ;;
   esac
 fi
 
 if [ ! -f "$SRC" ]; then
-  printf 'resume-context.sh: source file not found: %s\n' "$SRC" >&2
+  printf 'resume-context.sh: source file not found: %s\n' "$SRC_DISPLAY" >&2
   printf 'resume-context.sh: it may already have been consumed — moved copies are at\n' >&2
   printf 'resume-context.sh:   %s/resume-context.* (newest first: ls -t)\n' "$TMPDIR_ROOT" >&2
   printf 'resume-context.sh: those are cleared on reboot; if none remain, it is unrecoverable.\n' >&2
-  printf 'resume-context.sh: or look it up: %s/scripts/find-consumed-continuity-file.sh %s\n' "$CONFIG_DIR" "${SRC##*/}" >&2
+  printf 'resume-context.sh: or look it up: %s/scripts/find-consumed-continuity-file.sh %s\n' "$CONFIG_DIR" "${SRC_DISPLAY##*/}" >&2
   exit 1
 fi
 
@@ -246,7 +258,7 @@ fi
 # would then dereference it — silently narrowing permissions on whatever
 # arbitrary file the symlink points to, not on a continuity file at all.
 if [ -L "$SRC" ]; then
-  printf 'resume-context.sh: refusing to move a symlink: %s\n' "$SRC" >&2
+  printf 'resume-context.sh: refusing to move a symlink: %s\n' "$SRC_DISPLAY" >&2
   exit 1
 fi
 
@@ -263,7 +275,7 @@ fi
 DEST=$(mktemp "$TMPDIR_ROOT/resume-context.XXXXXX")
 
 if ! mv -- "$SRC" "$DEST"; then
-  printf 'resume-context.sh: failed to move %s to %s\n' "$SRC" "$DEST" >&2
+  printf 'resume-context.sh: failed to move %s to %s\n' "$SRC_DISPLAY" "$DEST" >&2
   exit 1
 fi
 
@@ -288,7 +300,7 @@ if [ "$CONSUME_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-printf 'resume-context.sh: moved %s -> %s\n' "$SRC" "$DEST" >&2
+printf 'resume-context.sh: moved %s -> %s\n' "$SRC_DISPLAY" "$DEST" >&2
 print_recovery_hint "$DEST"
 
 # Applied after the move, not before: SRC/DEST are already resolved (SRC may
@@ -296,7 +308,7 @@ print_recovery_hint "$DEST"
 # against $TMPDIR_ROOT), so changing directory here cannot affect either.
 if [ -n "$LAUNCH_CWD" ]; then
   cd -- "$LAUNCH_CWD" || {
-    printf 'resume-context.sh: failed to cd into %s\n' "$LAUNCH_CWD" >&2
+    printf 'resume-context.sh: failed to cd into %s\n' "$LAUNCH_CWD_DISPLAY" >&2
     exit 1
   }
 fi

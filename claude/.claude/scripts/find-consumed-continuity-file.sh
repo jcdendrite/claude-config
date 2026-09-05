@@ -33,7 +33,10 @@
 #   destination independently of the index's own 30-day day-file sweep. It
 #   is also an integrity control: an unowned or symlinked destination is
 #   never printed to output that may feed straight into
-#   `claude --append-system-prompt-file`.
+#   `claude --append-system-prompt-file`. A row's $src field is sanitized
+#   (control bytes stripped) before printing, since it is printed to a
+#   different session's terminal below -- stripped, not rejected, so a
+#   poisoned row still surfaces rather than vanishing from the output.
 # - stderr: the reload hint for the newest printed row on success. On
 #   failure, one of three distinct diagnoses:
 #     - no index found (no day-files at all)
@@ -47,6 +50,7 @@ set -euo pipefail
 . "$(dirname "$0")/../hooks/_lib.sh"
 
 SLUG="${1:-}"
+SLUG_DISPLAY=$(_lib_sanitize_for_terminal "$SLUG")
 
 NO_INDEX_MSG='find-consumed-continuity-file.sh: no index found (nothing has been consumed yet)'
 
@@ -78,6 +82,15 @@ for f in "$DIR"/consumed.*.tsv; do
       esac
     fi
     MATCHED=$((MATCHED + 1))
+    # $src is printed to a different session's terminal below; sanitize it
+    # here so a raw OSC/CSI escape from a crafted path never reaches
+    # rendered output. Matching above intentionally used the raw $src, not
+    # this sanitized copy, so stripping can't affect which rows match.
+    # A poisoned slug is written raw into the index row: resume-context.sh's
+    # not-found hint pre-fills the *stripped* slug, which won't necessarily
+    # substring-match this row's raw src, so that handoff isn't recoverable
+    # via the suggested lookup command.
+    src=$(_lib_sanitize_for_terminal "$src")
     if [ -f "$dest" ] && [ ! -L "$dest" ] && [ -O "$dest" ]; then
       printf '%s\t%s\t%s\n' "$stamp" "$dest" "$src"
       PRINTED=$((PRINTED + 1))
@@ -104,7 +117,7 @@ fi
 
 if [ "$MATCHED" -eq 0 ]; then
   if [ -n "$SLUG" ]; then
-    printf 'find-consumed-continuity-file.sh: no row matched %s\n' "$SLUG" >&2
+    printf 'find-consumed-continuity-file.sh: no row matched %s\n' "$SLUG_DISPLAY" >&2
   else
     printf 'find-consumed-continuity-file.sh: index has no rows\n' >&2
   fi
