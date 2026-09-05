@@ -61,7 +61,7 @@ Never dispatch an agent — of any type — whose instructions are to do no work
 - Hold while other dispatches finish.
 
 A no-op agent returns at once, so it waits for nothing — waiting isn't an
-action a dispatch can perform — yet still pays a full agent's context cost
+action a dispatch can perform. It still pays a full agent's context cost
 for an empty return. When pending dispatches are all that remain, end the
 turn without a tool call and let their completion drive the next one.
 
