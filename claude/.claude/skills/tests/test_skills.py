@@ -3244,7 +3244,9 @@ _PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
         "This pass reviews the cumulative diff with no responsibility-boundary "
         "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
         "Per-commit findings from earlier in this branch's fix loop feed in as "
-        "context, not a substitute for this pass."
+        "context, not a substitute for this pass. The cache marker is written "
+        "only from a clean pass of this step's own cumulative `/code-review`, "
+        "never from a fix commit's staged-diff pass."
     ),
 }
 
@@ -3516,8 +3518,8 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
     lines = skill_md_path.read_text().splitlines(keepends=True)
     start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
     section_text = "".join(lines[start_idx:end_idx])
-    assert "pr-diff-against-base.sh" in section_text, (
-        f"{skill_md_path}: Step 3 no longer dispatches via pr-diff-against-base.sh"
+    assert "pr-diff-against-base.sh --record" in section_text, (
+        f"{skill_md_path}: Step 3 no longer dispatches via pr-diff-against-base.sh --record"
     )
     assert "git diff --cached" not in section_text, (
         f"{skill_md_path}: Step 3 must never produce a staged-diff (git diff "
