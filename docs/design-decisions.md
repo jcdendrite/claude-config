@@ -214,9 +214,9 @@ The rule is encoded in two planning skills: `plan-it` instructs that effort sect
 
 ### Sources
 
-- `claude/.claude/skills/plan-it/SKILL.md` — the governing rule (Step 5, effort section guidance)
-- `claude/.claude/skills/plan-review/SKILL.md` — enforcement (checklist item B15)
-- `claude/.claude/skills/plan-it/REFERENCES.md` — cross-template research confirming no canonical PR planning template uses hour/day estimates at single-PR scope
+- `claude-skills/skills/plan-it/SKILL.md` — the governing rule (Step 5, effort section guidance)
+- `claude-skills/skills/plan-review/SKILL.md` — enforcement (checklist item B15)
+- `claude-skills/skills/plan-it/REFERENCES.md` — cross-template research confirming no canonical PR planning template uses hour/day estimates at single-PR scope
 
 ## 15. Convention skills wired by explicit pointer, not description-based auto-trigger
 
@@ -245,7 +245,7 @@ The fix wires §14's principle into disposition: the code-review skill's Finding
 
 ### Sources
 
-- `claude/.claude/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
+- `claude-skills/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
 - §14 — the parent principle this extends
 
 ## 17. `loop` and `simplify` flipped from `off` to `name-only` (2026-06-17)
@@ -456,7 +456,7 @@ Two tradeoffs are accepted rather than closed.
 
 The corrected `reviewer-yield` measurement (GH-762, PR #764) puts `skill-fidelity-reviewer`'s zero-finding-bucket cited-path edit rate well below every peer reviewer's. §9 established this agent's charter and its own findings-rate re-measurement instruction; it contains no discussion of the cited-path column, so citing it for why that rate is expected is a misattribution. This entry, not §9, is the record's home for the cited-path reasoning below.
 
-**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude/.claude/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
+**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude-skills/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
 
 **Mechanism 2: on a clean pass the scanned output names specifications, not the branch's work surface.** Citations are drawn from the last assistant text plus every `Write` blob. With `findings_path` set, the inline return is a one-line pointer, and the substance lives in the findings file. On a clean pass, that file's content is a dismissal list naming skills and skill bodies — the specs the agent read, not the diff it was handed. A branch is not normally editing the skill it invoked, which is what keeps the numerator small.
 
@@ -470,7 +470,7 @@ Together this means the cross-reviewer `Rate` comparison is not like-for-like. A
 
 - `claude/.claude/scripts/transcript_analysis/reviewer_yield.py` — `_normalize_cited_path` (lexical, hashed join key) and `_reviewer_yield_cited_keys` (citation candidates drawn from the last assistant text and every `Write` blob).
 - `claude/.claude/agents/skill-fidelity-reviewer.md` — Name resolution (config-dir path reads); Output format (findings-file substance on a clean pass).
-- `claude/.claude/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
+- `claude-skills/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
 - `docs/transcript-analysis.md`'s `reviewer-yield` section — the `Cited`/`Active`/`Edited`/`Rate` column definitions and the digest-only redaction note.
 - GH-762 / PR #764 — the reviewer-yield measurement fix this observation post-dates.
 
@@ -564,14 +564,14 @@ Two `tighten-prose` rules were declined rather than promoted. The ~20–25-word 
 
 `comment-discipline-reviewer` gained no new rule to enforce: all six of its review angles were already stated in `claude/.claude/CLAUDE.md`'s Code Comments section before this change. Per §9, that reviewer is a fresh-context sweep against a rule the authoring session already had loaded, not a backstop for a missing rule, so the gap it closes is authoring-session satisficing on a rule already in context — a gap no CLAUDE.md line can close. This change should be expected to move `tighten-prose`'s rewrite volume and not that reviewer's finding volume.
 
-The new section's "one idea per sentence" restates the core of §Code Comments' "Split multi-fact comments" bullet, and the overlap is deliberate rather than an oversight. It stands under the Engineering Judgment section's "a small duplicated value that beats a bad abstraction" exception, not the "instructional prose that must stand alone" exception — both sections live in the same always-loaded file behind the identical load path, so no consumer ever sees one without the other, which is what the stand-alone exception is meant to protect against. Four files at six sites (`claude/.claude/skills/code-review/SKILL.md`, `claude/.claude/agents/code-writer.md`, `claude/.claude/agents/comment-discipline-reviewer.md`, `claude/.claude/skills/plan-it/SKILL.md`) cite the Code Comments section by name as a self-contained rule set, so trimming it to defer upward would ripple into those sites — including a `SKILL.md` edit that would pull hook-enforced `/skill-review` into a prose-only change — for a saving of one repeated clause. The comment-scoped bullet also carries a remedy the general rule does not: an explicit list when the facts are genuinely parallel.
+The new section's "one idea per sentence" restates the core of §Code Comments' "Split multi-fact comments" bullet, and the overlap is deliberate rather than an oversight. It stands under the Engineering Judgment section's "a small duplicated value that beats a bad abstraction" exception, not the "instructional prose that must stand alone" exception — both sections live in the same always-loaded file behind the identical load path, so no consumer ever sees one without the other, which is what the stand-alone exception is meant to protect against. Four files at six sites (`claude-skills/skills/code-review/SKILL.md`, `claude/.claude/agents/code-writer.md`, `claude/.claude/agents/comment-discipline-reviewer.md`, `claude-skills/skills/plan-it/SKILL.md`) cite the Code Comments section by name as a self-contained rule set, so trimming it to defer upward would ripple into those sites — including a `SKILL.md` edit that would pull hook-enforced `/skill-review` into a prose-only change — for a saving of one repeated clause. The comment-scoped bullet also carries a remedy the general rule does not: an explicit list when the facts are genuinely parallel.
 
 ### Sources
 
-- `claude/.claude/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
+- `claude-skills/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
 - `claude/.claude/agents/comment-discipline-reviewer.md` — the six review angles, all already covered by existing CLAUDE.md rules.
-- `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
-- `claude/.claude/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
+- `claude-skills/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
+- `claude-skills/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
 
 ## 39. `claudeMdExcludes` suppresses the nested-discovery duplicate of `claude/.claude/CLAUDE.md` (2026-08-31)
 
@@ -676,8 +676,8 @@ work nothing else does.
 - [anthropics/claude-code #65657](https://github.com/anthropics/claude-code/issues/65657) — report that the system-prompt trailer overrides `attribution.commit`; closed as not planned.
 - [anthropics/claude-code #77830](https://github.com/anthropics/claude-code/issues/77830) — report that the `Claude-Session:` trailer is injected via the Bash tool description and ignores `attribution`; closed, labeled a bug and reproduced.
 - [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web), "Share sessions" — sessions are private by default and become visible to others only on an explicit share.
-- `claude/.claude/skills/respond-pr/SKILL.md` — the Attribution section's prefix-and-trailer requirement, and the prefix's pre-PATCH self-authorship check.
-- `claude/.claude/skills/pr-description/SKILL.md` — the top-and-bottom trailer placement rule.
+- `claude-skills/skills/respond-pr/SKILL.md` — the Attribution section's prefix-and-trailer requirement, and the prefix's pre-PATCH self-authorship check.
+- `claude-skills/skills/pr-description/SKILL.md` — the top-and-bottom trailer placement rule.
 - `claude/.claude/hooks/require-respond-pr.sh` — the tool-call-boundary gate routing every comment write through the skill that applies the prefix.
 
 ## 41. `ScheduleWakeup` misapplied outside `/loop`: documented, not guarded (2026-09-01)
@@ -721,7 +721,7 @@ The correct alternative already lives in this repo. `handoff/SKILL.md`'s collect
 - [anthropics/claude-code #88260](https://github.com/anthropics/claude-code/issues/88260) and [#88205](https://github.com/anthropics/claude-code/issues/88205) — the missing-`prompt`-field validation-error sub-mode.
 - `claude/.claude/hooks/require-routing-read.sh:33-60` — the marker-as-predicate mechanism and its fail-open default, and why it doesn't transfer to a harness-owned skill.
 - `claude/.claude/hooks/consume-durable-continuity-file-on-read.sh` — the advisory-nudge shape considered and declined here.
-- `claude/.claude/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
+- `claude-skills/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
 - `.claude/plans/harness-context-mismatched-tool-dispatch.md` — full assumption ledger, per-mechanism reasoning, and the corpus-evidence sourcing this entry summarizes.
 
 ## 42. `/code-review`'s Fix-route step routes a mechanism-inventing fix through `plan-architect`, dispatched rather than hooked (2026-09-02)

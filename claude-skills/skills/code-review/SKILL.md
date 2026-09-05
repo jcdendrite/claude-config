@@ -443,7 +443,7 @@ The dispatcher fires reviewers per file-path domain detection. Each agent self-s
 
 If the review is **clean** (no blockers, no unresolved critical findings, and you reviewed the currently staged changes), record it by running this command exactly once:
 
-<!-- HOOK_TEST_FIXTURE: marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/code-review/SKILL.md) to verify it matches require-code-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: marker-write — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/code-review/SKILL.md) to verify it matches require-code-review.sh's marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh write code-review
 ```

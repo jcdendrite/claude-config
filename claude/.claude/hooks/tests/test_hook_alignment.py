@@ -147,7 +147,7 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
 # Layer 1 — Gate/skill pairing                                       #
 # ------------------------------------------------------------------ #
 
-_SKILLS_DIR = _REPO_ROOT / "claude" / ".claude" / "skills"
+_SKILLS_DIR = _REPO_ROOT / "claude-skills" / "skills"
 _SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
 
 
@@ -761,7 +761,7 @@ def _sha256sum_case_skill_review(tmp_path: Path) -> tuple[Path, Path, dict, str]
     repo = tmp_path / "skill-review-repo"
     repo.mkdir()
     _init_repo_with_commit(repo)
-    skill_file = repo / "claude" / ".claude" / "skills" / "test-skill" / "SKILL.md"
+    skill_file = repo / "claude-skills" / "skills" / "test-skill" / "SKILL.md"
     skill_file.parent.mkdir(parents=True, exist_ok=True)
     skill_file.write_text("## test skill\n")
     subprocess.run(["git", "add", str(skill_file.relative_to(repo))], cwd=repo, check=True)

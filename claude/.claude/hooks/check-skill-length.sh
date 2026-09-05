@@ -64,9 +64,9 @@ fi
 # Per-skill limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
-    claude/.claude/skills/code-review/SKILL.md|claude/.claude/skills/plan-review/SKILL.md|claude/.claude/skills/plan-review/ROUTING.md)
+    claude-skills/skills/code-review/SKILL.md|claude-skills/skills/plan-review/SKILL.md|claude-skills/skills/plan-review/ROUTING.md)
       echo 500 ;;
-    claude/.claude/skills/pr-description/SKILL.md)
+    claude-skills/skills/pr-description/SKILL.md)
       echo 210 ;;
     *)
       echo 200 ;;
@@ -74,8 +74,8 @@ limit_for() {
 }
 
 # Path prefixes are repo-root-relative for this repo's layout. Covers both
-# stowed skills (claude/.claude/skills/) and project-scoped plugins
+# stowed skills (claude-skills/skills/) and project-scoped plugins
 # (plugins/*/skills/), plus the single hardcoded plan-review/ROUTING.md
 # exception (see limit_for() above). In other repos this pattern matches
 # nothing and the gate exits 0 silently.
-_lib_staged_length_gate '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^claude/\.claude/skills/plan-review/ROUTING\.md$' "Skill length gate: one or more SKILL.md files grew past their per-skill limit."
+_lib_staged_length_gate '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^claude-skills/skills/plan-review/ROUTING\.md$' "Skill length gate: one or more SKILL.md files grew past their per-skill limit."

@@ -3,7 +3,7 @@ __pycache__/
 .venv/
 
 # macOS Finder metadata. Unanchored so one line covers every directory it can
-# appear in (repo root, claude/.claude/, claude/.claude/skills/, ...).
+# appear in (repo root, claude/.claude/, claude-skills/skills/, ...).
 .DS_Store
 
 # Per-machine and per-session Claude Code state at repo root.

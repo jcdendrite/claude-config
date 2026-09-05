@@ -142,6 +142,12 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   CLAUDE_CONFIG_DIR=~/.claude-work register-marketplace        # register for a different profile
   ```
 
+- **`stow-packages.sh`** — prints this repo's stow packages, one tab-separated row per package: `<repo-relative package directory>` then `<stow target, relative to $HOME>`. Self-locates its repo root the same way `register-marketplace.sh` does (`readlink -f` on `$0` plus three `dirname`/`cd` levels). Refuses (non-zero exit, stderr message) if a listed package directory is absent under that resolved root, rather than printing a row for a package that doesn't exist. `install.sh` iterates its output rather than hardcoding the package list, attaching its `--ignore` args only to the row named `claude`. A consumer installing this repo's content into a non-`$HOME` config directory reads these rows to discover a newly-added package instead of hardcoding the list.
+
+  ```bash
+  ~/.claude/scripts/stow-packages.sh
+  ```
+
 - **`ensure-account-dir.sh`** — creates the active account's `handoffs/` or `briefs/` directory, taking exactly one argument (`handoffs` or `briefs`; anything else, including empty, exits non-zero). Resolves the config dir via `_lib_config_dir()` (same helper `register-marketplace.sh` uses) and `mkdir -p`'s the resolved, hardcoded target — never interpolates the argument into a path, so a traversal-shaped or unrecognized argument is rejected outright rather than building an arbitrary path. Exits non-zero, creating nothing, on a resolution failure (unset `$HOME` with no `CLAUDE_CONFIG_DIR` override, or a relative `CLAUDE_CONFIG_DIR`) — unlike `handoff-record-conversion.sh`'s best-effort telemetry, this script's caller is about to write into the directory, so a silent no-op on failure would leave the write with nowhere to land. Called by `/handoff` and `/brief` before each writes its continuity file.
 
   ```bash

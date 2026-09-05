@@ -71,9 +71,10 @@ if [ -z "$SKILL_NAME" ]; then
   exit 0
 fi
 
-# Match the final component after the last ':' or '/' -- stow-source
-# copies render directory-qualified (.claude/worktrees/<branch>/claude:name)
-# and plugin skills render as plugin:name, per claude/.claude/CLAUDE.md.
+# Match the final component after the last ':' or '/' -- two qualified
+# forms exist: directory-qualified (.claude/worktrees/<branch>/claude:name)
+# when the stow source sits under a `.claude` ancestor directory, and
+# plugin-qualified (plugin:name) for plugin skills.
 LABEL="${SKILL_NAME##*:}"
 LABEL="${LABEL##*/}"
 [ "$LABEL" = "handoff" ] || exit 0

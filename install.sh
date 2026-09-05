@@ -226,6 +226,57 @@ fi
 # INSTALL_TEST_FIXTURE: un-adopt-loop — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: skills-package-migration — start
+# An existing install's ~/.claude/skills symlink may still resolve into
+# claude/.claude/skills, this repo's superseded skills location, leaving it
+# dangling. Removing it here lets the stow call below lay down the new
+# symlink at the same target instead of refusing over a pre-existing
+# conflicting link.
+# No CLAUDE_SESSION_MAY_BE_ACTIVE gate: a link resolving into the old path is
+# already dangling by the time this runs. A live session has therefore
+# already lost its skills regardless, so removing it can only help.
+#
+# Set (=1) whenever real, non-stow-managed content sits at ~/.claude/skills.
+# The stow-adopt-ignore block's manifest loop below checks this and skips
+# stowing the claude-skills row, so stow never unfolds into that real
+# content and merges its symlinks alongside it.
+skills_migration_blocks_adopt=""
+if _stow_migration_lib_realpath_resolves_to "$HOME/.claude/skills" "$REPO_DIR/claude/.claude/skills"; then
+  if ! rm -- "$HOME/.claude/skills"; then
+    echo "[install] could not remove the stale ~/.claude/skills symlink into the old claude/.claude/skills location -- investigate and re-run install.sh; the claude-skills package will not be stowed until this is resolved" >&2
+    skills_migration_blocks_adopt=1
+  else
+    echo "[install] removed ~/.claude/skills, a stale symlink into the old claude/.claude/skills location" >&2
+  fi
+elif _stow_migration_lib_realpath_resolves_to "$HOME/.claude/skills" "$REPO_DIR/claude-skills/skills"; then
+  echo "[install] ~/.claude/skills already resolves to claude-skills/skills -- nothing to migrate" >&2
+elif [ -L "$HOME/.claude/skills" ]; then
+  echo "[install] ~/.claude/skills is a symlink pointing somewhere other than claude/.claude/skills -- leaving it in place; if it's stale, remove it and re-run install.sh" >&2
+  skills_migration_blocks_adopt=1
+elif [ -d "$HOME/.claude/skills" ]; then
+  echo "[install] ~/.claude/skills is a real directory, not the stow-managed symlink this install expects -- move or remove it, then re-run install.sh" >&2
+  skills_migration_blocks_adopt=1
+elif [ -e "$HOME/.claude/skills" ]; then
+  echo "[install] ~/.claude/skills exists but is neither a symlink nor a directory -- investigate and remove it before re-running install.sh" >&2
+  skills_migration_blocks_adopt=1
+else
+  echo "[install] ~/.claude/skills does not exist yet -- nothing to migrate" >&2
+fi
+
+# Checked unconditionally on every run, not only inside the branch above
+# that found a stale old-path symlink to remove.
+# Mirrors _report_and_clean_stale_migration_copy's unconditional per-run
+# re-check for plans/handoffs/briefs above.
+# Non-empty, not just -e: an empty leftover directory holds nothing worth
+# warning about.
+if [ -n "$(ls -A -- "$REPO_DIR/claude/.claude/skills" 2>/dev/null)" ]; then
+  echo "[install] warning: $REPO_DIR/claude/.claude/skills still holds real content -- this repo's skills package moved to claude-skills/skills, so nothing here reads that old location any more. Move or delete it manually." >&2
+fi
+# INSTALL_TEST_FIXTURE: skills-package-migration — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them against a real `stow` binary. Keep both markers
 # on their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — start
@@ -272,7 +323,43 @@ else
   echo "[install] warning: could not determine untracked claude/.claude/ entries -- proceeding with no --ignore args; stow will refuse outright if any are still real, unmigrated content" >&2
 fi
 rm -f -- "$untracked_entries_file"
-stow -v "${stow_ignore_args[@]}" -t "$HOME" claude
+
+# stow-packages.sh is the single source of truth for the package list (see
+# its own header comment).
+# stow_ignore_args above is attached only to the row named "claude", matched
+# by field rather than position so a package stow-packages.sh appends later
+# doesn't inherit it by accident.
+stow_packages_file="$(mktemp)"
+# This file's sole `trap ... EXIT` -- a second one elsewhere would silently
+# overwrite this cleanup instead of composing with it (see
+# claude/.claude/rules/shell-script-conventions.md).
+trap 'rm -f -- "$stow_packages_file"' EXIT
+if ! "$REPO_DIR/claude/.claude/scripts/stow-packages.sh" > "$stow_packages_file"; then
+  echo "[install] error: could not enumerate stow packages via stow-packages.sh" >&2
+  exit 1
+fi
+claude_package_seen=""
+while IFS=$'\t' read -r package_dir stow_target_rel; do
+  [ -n "$package_dir" ] || continue
+  stow_target="$HOME"
+  [ "$stow_target_rel" != "." ] && stow_target="$HOME/$stow_target_rel"
+  if [ "$package_dir" = "claude" ]; then
+    claude_package_seen=1
+    stow -v "${stow_ignore_args[@]}" -t "$stow_target" "$package_dir"
+  elif [ "$package_dir" = "claude-skills" ] && [ -n "$skills_migration_blocks_adopt" ]; then
+    echo "[install] skipping stow of claude-skills -- ~/.claude/skills is real, non-stow-managed content (see the warning above); move or remove it, then re-run install.sh" >&2
+  else
+    stow -v -t "$stow_target" "$package_dir"
+  fi
+done < "$stow_packages_file"
+if [ -z "$claude_package_seen" ]; then
+  echo "[install] error: stow-packages.sh's manifest has no row named 'claude' -- refusing to continue without stowing the mandatory package" >&2
+  exit 1
+fi
+if [ -n "$skills_migration_blocks_adopt" ]; then
+  echo "[install] error: claude-skills was not stowed -- ~/.claude/skills is real, non-stow-managed content (see the warning printed above); move or remove it, then re-run install.sh" >&2
+  exit 1
+fi
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
@@ -511,7 +598,7 @@ _report_repo_sentinel() {
 # expected-content/polarity grammar (including the content-mode/default-state
 # invariant). polarity applies only when expected_content is empty;
 # content-mode rows (e.g. pr-cost-disclosure) always use opt-in semantics and
-# mirror claude/.claude/skills/pr-description/SKILL.md's mode grammar
+# mirror claude-skills/skills/pr-description/SKILL.md's mode grammar
 # byte-for-byte — a manual pin, not an enforced sync, so a change to one side
 # needs the matching edit on the other. Resolution is not union:
 # $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never
@@ -628,10 +715,10 @@ if [ -f "$SETTINGS_FILE" ]; then
     # Whether $1 (a "name@marketplace" plugin id) is already installed at
     # project scope for $REPO_DIR, given $2 as a "$id\t$projectPath" TSV of
     # existing scope=="project" entries. Canonicalizes each entry's path
-    # the same way ensure_local_bin_on_path's readlink -f fallback does, not
-    # the `cmd1 || cmd2`-inside-`$()` form used above for marketplace
-    # registration — that form can concatenate BSD readlink's partial
-    # stdout with the fallback on a dangling target.
+    # the same way ensure_local_bin_on_path's readlink -f fallback does:
+    # check the assignment's own exit status, not `cmd1 || cmd2`-inside-
+    # `$()`, which can concatenate BSD readlink's partial stdout with the
+    # fallback on a dangling target.
     _project_plugin_already_installed() {
       local plugin_id="$1" existing_tsv="$2" entry_id entry_path entry_path_real
       while IFS=$'\t' read -r entry_id entry_path; do

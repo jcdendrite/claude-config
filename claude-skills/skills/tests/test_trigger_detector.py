@@ -20,6 +20,10 @@ from pathlib import Path
 
 import pytest
 import run_skill_evals
+
+# pyproject.toml's pythonpath also puts claude/.claude/tests on the import
+# path, where this shared test helper lives.
+from helpers import REPO_ROOT
 from run_skill_evals import (
     DISPOSITION_MIN_EFFECTIVE_SAMPLES,
     DISPOSITION_PASS_THRESHOLD,
@@ -40,7 +44,7 @@ from run_skill_evals import (
     seed_temp_project_git,
 )
 
-FIXTURES_DIR = Path(__file__).resolve().parents[4] / "evals" / "fixtures"
+FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
 
 
 def _lines(fixture_name: str) -> list[str]:

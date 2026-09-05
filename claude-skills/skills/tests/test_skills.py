@@ -47,7 +47,7 @@ import pytest
 
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
-from helpers import SCRIPTS_DIR, extract_skill_command, run_skill_command
+from helpers import CLAUDE_DIR, REPO_ROOT, SCRIPTS_DIR, SKILLS_DIR, extract_skill_command, run_skill_command
 
 # Single source of truth for SKILL.md structural rules — the commit-gate hook
 # shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
@@ -60,14 +60,13 @@ from validate_skill_structure import (
     validate,
 )
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
-# Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
-_PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
+# Plugins live at the repo root, alongside claude/ and claude-skills/: <repo>/plugins/<name>/skills/<skill>/SKILL.md
+_PLUGINS_DIR = REPO_ROOT / "plugins"
 # The stowed global instruction file, installed to ~/.claude/CLAUDE.md.
-_GLOBAL_CLAUDE_MD = SKILLS_DIR.parent / "CLAUDE.md"
+_GLOBAL_CLAUDE_MD = CLAUDE_DIR / "CLAUDE.md"
 
 
-_AGENTS_DIR = SKILLS_DIR.parent / "agents"
+_AGENTS_DIR = CLAUDE_DIR / "agents"
 
 
 def _agent_body(agent_name: str) -> str:
@@ -152,7 +151,7 @@ def _settings_skill_overrides() -> dict[str, str]:
     Returns the override map keyed by skill name. Skills absent from the map
     default to "on" (fully model-invokable with description in budget).
     """
-    settings_path = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
+    settings_path = REPO_ROOT / "claude/.claude/settings.json"
     settings = json.loads(settings_path.read_text())
     return settings.get("skillOverrides", {})
 
@@ -1889,10 +1888,10 @@ def test_trigger_cases_files_well_formed() -> None:
     run_skill_evals.VALID_METHODS must be handled explicitly here — an
     unrecognized method fails loudly rather than silently skipping validation.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     found_files: list[Path] = []
     for base in [
-        repo_root / "claude" / ".claude" / "skills",
+        repo_root / "claude-skills" / "skills",
         repo_root / "plugins",
     ]:
         for p in base.glob("*/evals/*-cases.json"):
@@ -1957,7 +1956,7 @@ class TestValidateDispositionFidelityCase:
     scenario_file — the validator only checks existence, not content shape.
     """
 
-    _REPO_ROOT = Path(__file__).resolve().parents[4]
+    _REPO_ROOT = REPO_ROOT
     _EXISTING_SCENARIO_FILE = "evals/fixtures/dispatch-session-handoff.md"
 
     def test_valid_case_passes(self) -> None:
@@ -2000,7 +1999,7 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
     (repo or bundled skills available by name without description budget cost). Each must
     appear as a | `/<name>` | table row so its rationale is visible to contributors.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
     docs_text = (repo_root / "docs/skills.md").read_text()
     for skill_name, state in settings.get("skillOverrides", {}).items():
@@ -2038,7 +2037,7 @@ _DRY_RUN_CLEANUP_FORMS = [
 def test_destructive_cleanup_forms_require_ask_not_allow() -> None:
     """Destructive cleanup invocations must be in permissions.ask, absent
     from permissions.allow. --dry-run siblings must stay in permissions.allow."""
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     settings = json.loads((repo_root / "claude/.claude/settings.json").read_text())
     permissions = settings.get("permissions", {})
     allow = permissions.get("allow", [])
@@ -2300,10 +2299,10 @@ def _all_skill_md_files() -> list[Path]:
     a recursive glob from the repo root would scan them and fail on another
     branch's content.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     found: list[Path] = []
     for base, pattern in [
-        (repo_root / "claude" / ".claude" / "skills", "*/SKILL.md"),
+        (repo_root / "claude-skills" / "skills", "*/SKILL.md"),
         (repo_root / ".claude" / "skills", "*/SKILL.md"),
         (repo_root / "plugins", "*/skills/*/SKILL.md"),
     ]:
@@ -2464,7 +2463,7 @@ def test_skill_bodies_carry_no_citation_urls() -> None:
     that direction; see _closed_fence_line_indices for why under-flagging is
     treated as the unacceptable failure mode.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     skill_files = _all_skill_md_files()
 
     violations: list[str] = []
@@ -2767,7 +2766,7 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     contributor fixes the whole set in one pass — same convention as
     test_skill_bodies_carry_no_citation_urls above.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     violations = _citation_report(_all_skill_md_files(), repo_root=repo_root)
 
     assert not violations, (
@@ -2787,7 +2786,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     doc_path = repo_root / "docs" / "handoff-nudge.md"
     expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
     citations = [
@@ -4084,7 +4083,7 @@ def _all_doc_paths() -> list[Path]:
     repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
     docs/case-studies/** hold preserved historical records (CLAUDE.md
     Axis 3) and are excluded, matching the plan's Out of scope list."""
-    repo_root = SKILLS_DIR.parent.parent.parent
+    repo_root = REPO_ROOT
     docs_root = repo_root / "docs"
     paths = [
         path
