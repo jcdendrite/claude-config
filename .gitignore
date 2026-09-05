@@ -34,11 +34,10 @@ claude/.claude/plans/
 
 # Per-session findings written by /code-review specialist subagents. This
 # entry is belt-and-suspenders for this repo. The general-repo mechanism is
-# code-review/SKILL.md's idempotent append to
-# $(git rev-parse --git-path info/exclude) plus deny-reviewer-tree-mutation.sh
-# confirming with `git check-ignore` at write time — a denied write falls back
-# to inline output automatically, so no repo depends on this line being
-# committed.
+# findings-path-suffix.sh's duplicate-tolerant append to the repo's ignore list.
+# deny-reviewer-tree-mutation.sh confirms with `git check-ignore` at write
+# time that the directory is actually ignored. A denied write falls back to
+# inline output automatically. No repo depends on this line being committed.
 agent-reviews/
 
 # Belt-and-suspenders: the user-local private-projects blocklist read by

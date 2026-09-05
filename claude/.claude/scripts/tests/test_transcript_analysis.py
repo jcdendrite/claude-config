@@ -15,7 +15,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, build_path_without, run_hook_reason
+from helpers import (
+    CONSULT_CLASSIFICATION_TABLE,
+    HOOKS_DIR,
+    SKILLS_DIR,
+    bash_input,
+    build_path_without,
+    run_hook_reason,
+)
 
 from .conftest import (
     _agent_use,
@@ -2538,6 +2545,181 @@ class TestReviewTrace:
         reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
         assert reviewer_types == {"comment-discipline-reviewer", "skill-fidelity-reviewer"}
 
+    # -----------------------------------------------------------------------
+    # architect-consult classification
+    # -----------------------------------------------------------------------
+
+    def test_architect_consult_mode_consult_first_line_emits_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=consult emits an architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nSome question.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_mode_plan_sections_first_line_emits_no_consult_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=plan-sections emits no architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=plan-sections\n## Context")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert not any(e["kind"] == "architect-consult" for e in events)
+
+    def test_architect_consult_empty_prompt_emits_event_fail_safe(self):
+        """An empty-string prompt is not the MODE=plan-sections literal, so
+        the fail-safe direction classifies it as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_consult_missing_prompt_key_emits_event_fail_safe(self):
+        """A block whose `input` dict lacks the `prompt` key entirely also
+        classifies as a consult -- `_agent_use` always populates `prompt` and
+        can't build this shape, so this constructs the raw dict literal."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[{
+                      "type": "tool_use", "id": "a1", "name": "Agent",
+                      "input": {"subagent_type": "plan-architect", "description": "x"},
+                  }]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    @pytest.mark.parametrize(
+        "first_line,expect_consult",
+        [pytest.param(fl, ec, id=tid) for fl, ec, tid in CONSULT_CLASSIFICATION_TABLE],
+    )
+    def test_classification_matches_table(self, first_line, expect_consult):
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt=first_line)]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        emitted_consult = any(e["kind"] == "architect-consult" for e in events)
+        assert emitted_consult is expect_consult
+
+    def test_sidechain_architect_consult_excluded(self):
+        """A plan-architect consult dispatch inside a sidechain record must
+        not produce an architect-consult event -- review-trace's session_iter
+        never requests subagent records, so a consult dispatched from inside
+        a subagent is structurally invisible here."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  sidechain=True,
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
+
+    def test_non_plan_architect_dispatch_never_misclassified_as_consult(self):
+        """A staff-backend-engineer dispatch with no MODE=plan-sections first
+        line still emits zero architect-consult events and exactly one
+        reviewer-spawn -- guards against the `stype ==` gate being dropped,
+        which would reclassify every ordinary reviewer dispatch as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer", prompt="Review this diff.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 0
+        assert sum(1 for e in events if e["kind"] == "reviewer-spawn") == 1
+
+    def test_architect_consult_event_attributed_to_own_branch_not_session_first_branch(self):
+        """Mirrors test_events_attributed_to_own_branch_not_session_first_branch
+        for the architect-consult kind: a session opening on one branch, then
+        moving to another before the consult dispatch, attributes the event
+        to its own (later) branch and model."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0]["branch"] == "feature-x"
+        assert consult_events[0]["model"] == "opus"
+
+    def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
+        """The blindness property pinned at the layer it is defined: the
+        event dict itself carries only the classification result plus the
+        metadata every event kind carries, never a prompt-derived field."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt="MODE=consult\nSecret rationale nobody should see.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model"}
+
+    def test_architect_consult_prompt_body_never_reaches_review_trace_output(self, fake_projects, capsys):
+        """The prompt string is never stored on the event dict, so it can
+        never leak into printed output -- a distinctive rationale substring
+        embedded in the prompt must not appear anywhere in review-trace's
+        stdout."""
+        secret_rationale = "UNIQUE_RATIONALE_MARKER_892"
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt=f"MODE=consult\n{secret_rationale}")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert secret_rationale not in out
+        assert "consult-session.jsonl" in out
+
+    def test_architect_consults_header_count_renders(self, fake_projects, capsys):
+        """The per-session header line's architect-consults=<N> count reflects
+        the number of architect-consult events emitted for that session."""
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+
+    def test_session_holding_only_consult_event_emits_session_block(self, fake_projects, capsys):
+        """A session whose only review-relevant event is an architect-consult
+        dispatch still emits a session block -- consult-only sessions aren't
+        silently dropped like a session with zero events."""
+        _write_jsonl(fake_projects / "consult-only.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "consult-only.jsonl" in out
+        assert "consult      " in out
+
     def test_sidechain_skill_invocation_excluded(self):
         """A code-review Skill call inside a sidechain record must not produce a skill event."""
         records = [
@@ -3352,6 +3534,23 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
         assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
+
+    def test_deny_summary_corpus_window_widened_by_consult_event_outside_denial_range(self):
+        """The corpus min/max window reads every event kind, not just denial.
+        An architect-consult event timestamped outside the range the
+        corpus's own denial events establish must move the window -- proving
+        the widening is real, not merely that the session registers."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _asst("claude-opus-4-7", branch="main", ts="2026-07-20T09:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-20T09:00:00.000Z")
 
     def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before

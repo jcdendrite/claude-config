@@ -387,7 +387,7 @@ CLASSIFICATION SUMMARY
 
 ## review-trace
 
-**Purpose.** Emit an ordered event timeline per session — skill invocations, hook denials, and reviewer-agent spawns.
+**Purpose.** Emit an ordered event timeline per session — skill invocations, hook denials, reviewer-agent spawns, and plan-architect consult dispatches.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -406,8 +406,9 @@ Branch and model are resolved *per event*, from the record that produced it — 
 REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 
 ### <config-dir>/projects/my-project/abc123.jsonl
-branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=4
+branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=4  architect-consults=1
   [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=main model=opus)
+  [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=main model=opus)
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
   [2026-05-20T10:45:00.000Z] line  120  denial       hook=  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
@@ -416,7 +417,11 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
 
 The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch.
 
-**When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read.
+**When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has three limits:
+
+- It reports only that a plan-architect consult dispatch occurred on that branch, never which prescription site required it.
+- It is invisible for a consult dispatched from inside a subagent, since `review-trace` never loads subagent records.
+- It means the dispatch was initiated, not that it completed.
 
 ### `--deny-summary`
 

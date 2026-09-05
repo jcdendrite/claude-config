@@ -227,11 +227,33 @@ class TestBlockGhPrMerge:
         subcommand and the match would miss."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh --repo o/r pr merge")) == "deny"
 
-    def test_full_path_invocation_now_denied(self):
-        """Closed as a side effect of the command-word matcher (see
-        _lib_fragment_invokes_tool): a path ending in /gh resolves the same
-        as the bare token, not only a literal `gh` word."""
+    def test_full_path_invocation_denied(self):
+        """A path ending in `/gh` (e.g. `/usr/bin/gh pr merge`) resolves the
+        same as the bare `gh` token via _lib_fragment_invokes_tool's
+        command-word match."""
         assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("/usr/bin/gh pr merge 291")) == "deny"
+
+    def test_gh_pr_leaf_flag_interposed_before_merge_denied(self):
+        """A leaf flag registered on `gh pr merge` itself (`--body`), not a
+        global flag like `--repo`, written between the surface word and
+        `merge` — GH-559/GH-430's interposed-flag bypass class. gh's cobra
+        resolution consumes `--body` and its value while walking to
+        `merge`, so the shared _lib_tool_argv_from_subcmd grammar must do
+        the same or the word sequence never reaches `pr`, `merge`."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh pr --body x merge 42")) == "deny"
+
+    def test_gh_pr_boolean_flag_interposed_before_merge_allowed(self):
+        """`gh pr --auto merge 291` allows, correctly: cobra's loose
+        lookahead consumes `merge` as `--auto`'s command-word neighbor
+        while resolving the subcommand (the same mechanism that consumes a
+        value-taking flag's own value), so gh itself never reaches `pr
+        merge` and never merges. This is the correct verdict, not an
+        accepted regression — the test exists so a future change to the
+        flag-shape logic can't silently reintroduce the interposed-flag
+        bypass for this shape without a red test. Distinct from `gh pr
+        merge --auto 291` above (flag *after* the subcommand), which is
+        unaffected by this grammar and still denies."""
+        assert run_hook(BLOCK_GH_PR_MERGE_HOOK, bash_input("gh pr --auto merge 291")) == "allow"
 
     def test_sed_absent_from_path_denies(self, tmp_path):
         """Status-2 propagation: the matcher could not determine whether

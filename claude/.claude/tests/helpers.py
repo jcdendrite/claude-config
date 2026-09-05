@@ -1167,3 +1167,22 @@ def build_no_realpath_m_path_env(tmp_path: Path) -> str:
     (shim_dir / "grealpath").write_text(FORCED_FALLBACK_GREALPATH_SHIM)
     (shim_dir / "grealpath").chmod(0o755)
     return f"{shim_dir}:{os.environ['PATH']}"
+
+# (first_line, expect_consult, id) rows behind plan-architect consult
+# classification, reused by test_log_reviewer_round.py's bash-latch test and
+# test_transcript_analysis.py's Python-classifier test. Proves the two
+# runtimes agree on classification behaviorally, not that their source text
+# matches byte-for-byte -- a byte-equality assertion across the literal sites
+# would still pass with the Python `!=` comparison inverted to `==`. No
+# pytest import here (see module docstring), so each test file wraps these
+# rows in pytest.param(...) at its own @pytest.mark.parametrize call site.
+CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
+    ("MODE=consult", True, "mode_consult"),
+    ("MODE=plan-sections", False, "mode_plan_sections"),
+    ("", True, "empty_first_line"),
+    ("MODE=plna-sections", True, "typo_mode_value"),
+    ("Just look at the plan and tell me if it's sound.", True, "no_mode_line"),
+    ("MODE=plan-sections ", True, "mode_plan_sections_trailing_space"),
+    ("Some preamble.\nMODE=plan-sections", True, "mode_plan_sections_not_first_line"),
+    ("MODE=plan-sections\r\n## Section A", True, "mode_plan_sections_crlf"),
+]

@@ -723,20 +723,34 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
-    def test_rules_dir_change_also_selects_skills_tests(self):
-        """test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs
+    def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
+        """test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
+        test_claude_md_excludes.py (HOOKS_TESTS_DIR) both rglob
         claude/.claude/rules/*.md by path, not by import."""
         result = _mod.select_pytest_targets(["claude/.claude/rules/shell-script-conventions.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR}
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
 
     def test_github_actions_workflows_rule_md_change_also_selects_hooks_tests(self):
-        """test_ci_path_filter.py (HOOKS_TESTS_DIR) reads this exact file by
-        path, not by import -- a sibling rule file under the same directory
-        does not need HOOKS_TESTS_DIR, only this one does."""
+        """test_ci_path_filter.py (HOOKS_TESTS_DIR) reads this exact file by path,
+        not by import. Both this exact-match row and the RULES_DIR row above
+        supply HOOKS_TESTS_DIR for this path. See this row's own comment in
+        select-tests.py for why both are kept."""
         result = _mod.select_pytest_targets([_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR}
+
+    def test_github_actions_workflows_rule_md_row_declares_hooks_tests_directly(self):
+        """This row's declaration is narrower than the RULES_DIR row's and
+        outlives changes to it."""
+        sibling_rule_path = "claude/.claude/rules/shell-script-conventions.md"
+        matching_rows = [
+            targets
+            for predicate, targets in _mod.CROSS_DOMAIN_EXCEPTIONS
+            if predicate(_mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD) and not predicate(sibling_rule_path)
+        ]
+        assert len(matching_rows) == 1
+        assert matching_rows[0] == (_mod.HOOKS_TESTS_DIR,)
 
     def test_plans_dir_change_selects_no_tests(self):
         """No test reads any file under .claude/plans/ by path or
@@ -853,13 +867,14 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
 
-    def test_root_rules_dir_change_selects_skills_tests(self):
+    def test_root_rules_dir_change_selects_hooks_and_skills_tests(self):
         """test_rules_frontmatter.py (SKILLS_TESTS_DIR) rglobs both this
         directory and RULES_DIR (claude/.claude/rules/) for frontmatter
-        validation."""
+        validation. test_claude_md_excludes.py (HOOKS_TESTS_DIR) rglobs both
+        directories too."""
         result = _mod.select_pytest_targets([".claude/rules/settings-json-conventions.md"])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
 
     def test_root_skills_dir_change_selects_skills_tests(self):
         """test_skills.py's _all_skill_md_files() (SKILLS_TESTS_DIR) globs
@@ -1072,8 +1087,9 @@ _FILE_TARGETS: frozenset[str] = frozenset({
 # (SCRIPTS_TESTS_DIR). Each pair was hand-checked against its citing test's
 # own read call. This list is not derived from SKILL_FILES_READ_BY_HOOK_TESTS
 # or the CLAUDE_SETTINGS_JSON row, so it is DAMP test data (CLAUDE.md's named
-# exception) rather than a DRY violation. Add a newly-mapped cross-domain
-# read here too.
+# exception) rather than a DRY violation. Add a newly-mapped read here only
+# when it fits that scope. A HOOKS_TESTS_DIR entry whose read path is not a
+# SKILL_FILES_READ_BY_HOOK_TESTS member fails the equality test below.
 _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
     ("claude/.claude/hooks/tests/test_reconciliation_block_consistency.py",
      "claude/.claude/skills/code-review/SKILL.md"),
@@ -1095,6 +1111,10 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "plugins/skill-management/skills/skill-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_claude_enable_tool.py",
      "claude/.claude/settings.json"),
+    ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
+     "claude/.claude/skills/code-review/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
+     "claude/.claude/skills/ready-for-review/SKILL.md"),
 )
 
 
