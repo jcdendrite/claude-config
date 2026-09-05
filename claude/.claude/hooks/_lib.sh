@@ -2593,26 +2593,16 @@ _lib_print_recovery_hint() {
 # mirroring post-crash-sessions.py's _sanitize_for_terminal strip-not-reject
 # semantics for the same threat. Tab (0x09) is excluded because it is a
 # legitimate field separator in at least one caller's format, not a byte
-# that caller needs guarding against. Shared by resume-context.sh
-# ($SRC/$LEGACY_SRC/$LAUNCH_CWD in its stderr diagnostics) and
-# find-consumed-continuity-file.sh (a row's $src field), both of which print
-# an attacker/prompt-injection-reachable path string to a terminal and must
-# not let a raw OSC/CSI escape reach it unmodified. Pure-bash character loop
-# rather than `tr -d`: both callers use this unconditionally on their main
-# success path (not behind a `|| true` best-effort guard the way
-# record_consumed_destination's own `tr` use is), so a stripped-down PATH
-# missing `tr` must not abort the script over a display-only sanitizer.
-# Deliberately does not strip the C1 control range (0x80-0x9f) -- ECMA-48
-# defines this 8-bit single-byte range as equivalent to a 7-bit ESC
-# introducer, so a bare 0x9b/0x9d can still reach a terminal that honors
-# raw 8-bit C1 bytes as control introducers (most default UTF-8 terminal
-# emulators do not). This helper indexes by bash's locale-aware character
-# unit, not by raw byte, so blindly stripping 0x80-0x9f would also risk
-# splitting a legitimate multi-byte UTF-8 path whose continuation byte
-# falls in that range -- closing the C1 gap correctly needs UTF-8-validity-
-# aware logic this helper does not have. Also out of scope: Unicode
-# bidi-override and zero-width spoofing (e.g. U+202E), a display-trickery
-# vector distinct from OSC/CSI escape injection.
+# that caller needs guarding against. Shared by resume-context.sh and
+# find-consumed-continuity-file.sh. Both print an attacker/prompt-injection-
+# reachable path to a terminal and must not let a raw OSC/CSI escape
+# through unmodified.
+# Pure-bash loop, not `tr -d`, so a PATH missing `tr` can't abort this
+# always-on-success-path sanitizer.
+# Out of scope -- see docs/scripts.md's find-consumed-continuity-file.sh
+# entry for the full rationale:
+#   - the C1 control range (0x80-0x9f)
+#   - Unicode bidi-override / zero-width spoofing
 _lib_sanitize_for_terminal() {
   local value="$1" out="" i char
   for (( i = 0; i < ${#value}; i++ )); do

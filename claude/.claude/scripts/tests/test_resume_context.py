@@ -103,11 +103,11 @@ class TestLaunchMode:
         assert "find-consumed-continuity-file.sh does-not-exist-handoff.md" in result.stderr
 
     def test_missing_source_hint_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
-        """Channel-level guard (ciso-reviewer finding), not a
-        specific-stripped-string assertion: a raw OSC/CSI escape in the
-        requested path must never reach stdout or stderr un-stripped in the
-        not-found diagnosis -- this script's fresh-TTY launch path is a more
-        dangerous injection surface than a chat pane."""
+        """Channel-level guard, not a specific-stripped-string assertion: a
+        raw OSC/CSI escape in the requested path must never reach stdout or
+        stderr un-stripped in the not-found diagnosis -- this script's
+        fresh-TTY launch path is a more dangerous injection surface than a
+        chat pane."""
         stub, recorder = _install_recorder(tmp_path)
         missing = str(tmp_path / "evil") + "\x1b[31mFAKE\x1b[0m-handoff.md"
         result = _run(
@@ -120,9 +120,9 @@ class TestLaunchMode:
         assert not recorder.exists()
 
     def test_moved_announcement_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
-        """Channel-level guard (ciso-reviewer finding): the launch-mode
-        'moved' announcement must never print a raw control byte from $SRC
-        verbatim into the invoking terminal."""
+        """Channel-level guard: the launch-mode 'moved' announcement must
+        never print a raw control byte from $SRC verbatim into the invoking
+        terminal."""
         stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "evil\x1b[31mFAKE\x1b[0m-handoff.md"
         src.write_text("hello handoff\n")
@@ -542,6 +542,30 @@ class TestLegacyConfigDirFallback:
         moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
 
+    def test_legacy_location_hint_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
+        """Channel-level guard: the legacy-location fallback hint must
+        never print a raw control byte from $LEGACY_SRC verbatim into the
+        invoking terminal."""
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-container"
+        (home / ".claude" / "handoffs").mkdir(parents=True)
+        legacy_src = home / ".claude" / "handoffs" / "evil\x1b[31mFAKE\x1b[0m-handoff.md"
+        legacy_src.write_text("hello handoff\n")
+        requested_src = config_dir / "handoffs" / legacy_src.name
+
+        result = _run(
+            ["--consume-only", str(requested_src)],
+            {
+                "HOME": str(home),
+                "CLAUDE_CONFIG_DIR": str(config_dir),
+                "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert "legacy location" in result.stderr
+        assert "\x1b" not in result.stdout
+        assert "\x1b" not in result.stderr
+
     def test_trailing_slash_on_config_dir_does_not_disable_fallback(self, tmp_path: Path) -> None:
         """Regression test: CONFIG_DIR must strip a trailing slash before use
         in the case-pattern match, matching _lib_config_dir's ${VAR%/}
@@ -753,8 +777,8 @@ class TestConsumedIndex:
         assert not _day_file(tmp_path).exists()
 
     def test_row_exceeding_length_cap_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
-        """resume-context.sh's 2048-byte row cap (staff-backend-engineer
-        finding): bash's `printf` builtin chunks a write into multiple
+        """resume-context.sh's 2048-byte row cap: bash's `printf` builtin
+        chunks a write into multiple
         write(2) calls past roughly 4096 bytes, which is no longer atomic
         under O_APPEND. A source path long enough to push the serialized
         row past the cap must skip the append -- fail closed, the same
@@ -815,8 +839,8 @@ class TestConsumedIndex:
         assert rows[0].split("\t")[2] == str(src)
 
     def test_row_under_character_cap_but_over_byte_cap_skips_append(self, tmp_path: Path) -> None:
-        """Byte-vs-character cap defect (staff-platform-engineer finding):
-        `${#row}` counts characters under a multi-byte locale, so a
+        """Byte-vs-character cap defect: `${#row}` counts characters under
+        a multi-byte locale, so a
         non-ASCII $src can pass a 2048-character cap while the bytes
         actually written exceed it. Nine nested directory components of 78
         three-byte-each CJK characters (234 bytes/component, comfortably
@@ -892,17 +916,16 @@ class TestConsumedIndex:
             assert len(row.split("\t")) == 3, f"malformed row: {row!r}"
 
     def test_concurrent_consumes_produce_no_interleaved_or_truncated_rows(self, tmp_path: Path) -> None:
-        """The actual test of the no-lock design's central claim
-        (ciso-reviewer + staff-sdet finding): launches several real
-        --consume-only subprocesses concurrently against the same index,
-        which the sequential test above cannot exercise at all, since
-        sequential invocations never race on the shared append.
+        """The actual test of the no-lock design's central claim: launches
+        several real --consume-only subprocesses concurrently against the
+        same index, which the sequential test above cannot exercise at
+        all, since sequential invocations never race on the shared append.
         Relies on Popen-launch scheduling jitter for genuine overlap rather
         than an explicit synchronization barrier -- a future flake
         investigation should not mistake incidental non-overlap for a
         passing invariant. One fixture source contains a non-ASCII path
-        component (staff-platform-engineer finding: all-ASCII fixtures are
-        why the character-vs-byte cap defect went unexercised previously)."""
+        component, since an all-ASCII fixture set cannot exercise the
+        character-vs-byte cap distinction."""
         stub, _ = _install_recorder(tmp_path)
         sources = []
         for i in range(8):
@@ -938,18 +961,14 @@ class TestConsumedIndex:
             assert fields[2], f"row missing a source field: {row!r}"
 
     def test_concurrent_appends_survive_a_racing_sweep_of_a_stale_sibling(self, tmp_path: Path) -> None:
-        """(staff-backend-engineer + staff-platform-engineer, BLOCKER
-        regression) Pre-seeds a day-file named for a past date, backdated
-        31+ days, then launches N=8 concurrent --consume-only subprocesses.
-        Each one's own retention sweep can race the others' appends to
-        today's file, but the sweep only ever unlinks the *stale* file
-        (already day-boundary-separated from today's), never the live one
-        an append targets -- unlike the flat single-file design this
-        replaces, which lost 9/11/6/6/8 of 12 rows across five runs of this
-        exact scenario shape when a staleness-gated rewrite raced a
-        concurrent plain append. A count-only assertion can't tell N good
-        rows from N-1 good rows plus one corrupted line, so every row is
-        parsed and checked individually."""
+        """Pre-seeds a day-file named for a past date, backdated 31+ days,
+        then launches N=8 concurrent --consume-only subprocesses. Each
+        one's own retention sweep can race the others' appends to today's
+        file, but the sweep only ever unlinks the *stale* file (already
+        day-boundary-separated from today's), never the live one an append
+        targets. A count-only assertion can't tell N good rows from N-1
+        good rows plus one corrupted line, so every row is parsed and
+        checked individually."""
         stub, _ = _install_recorder(tmp_path)
         index_dir = _index_dir(tmp_path)
         index_dir.mkdir(parents=True)
@@ -993,8 +1012,8 @@ class TestConsumedIndex:
             seen_dests.add(fields[1])
 
     def test_reader_finds_the_writer_row_end_to_end(self, tmp_path: Path) -> None:
-        """Contract test at the writer/reader boundary (staff-sdet finding):
-        invokes the real resume-context.sh and the real
+        """Contract test at the writer/reader boundary: invokes the real
+        resume-context.sh and the real
         find-consumed-continuity-file.sh as two separate subprocesses under
         one shared RESUME_CONTEXT_TMPDIR, so a future edit reintroducing two
         independent copies of the tmpdir-root formula fails here even

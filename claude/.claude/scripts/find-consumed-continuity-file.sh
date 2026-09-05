@@ -86,10 +86,11 @@ for f in "$DIR"/consumed.*.tsv; do
     # here so a raw OSC/CSI escape from a crafted path never reaches
     # rendered output. Matching above intentionally used the raw $src, not
     # this sanitized copy, so stripping can't affect which rows match.
-    # A poisoned slug is written raw into the index row: resume-context.sh's
-    # not-found hint pre-fills the *stripped* slug, which won't necessarily
-    # substring-match this row's raw src, so that handoff isn't recoverable
-    # via the suggested lookup command.
+    #
+    # A poisoned slug is written raw into the index row. resume-context.sh's
+    # not-found hint pre-fills the *stripped* slug instead. That stripped
+    # hint won't necessarily substring-match this row's raw src, so the
+    # handoff isn't recoverable via the suggested lookup command.
     src=$(_lib_sanitize_for_terminal "$src")
     if [ -f "$dest" ] && [ ! -L "$dest" ] && [ -O "$dest" ]; then
       printf '%s\t%s\t%s\n' "$stamp" "$dest" "$src"

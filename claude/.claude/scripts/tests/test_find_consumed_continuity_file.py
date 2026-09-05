@@ -351,9 +351,9 @@ def test_hostile_src_in_matched_row_channel_carries_no_raw_escape_byte(tmp_path:
 
 
 def test_o_operator_guards_both_the_writer_directory_and_the_reader_destination() -> None:
-    """Source-grep pin (ciso-reviewer finding): a future edit weakening
-    either ownership guard -- e.g. swapping `-O` for `-w` or `-r` -- should
-    fail this test loudly rather than regress silently."""
+    """Source-grep pin: a future edit weakening either ownership guard --
+    e.g. swapping `-O` for `-w` or `-r` -- should fail this test loudly
+    rather than regress silently."""
     lib_sh = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
     assert '[ -O "$dir" ]' in lib_sh.read_text()
     assert '[ -O "$dest" ]' in _SCRIPT.read_text()
