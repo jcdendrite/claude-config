@@ -2519,6 +2519,36 @@ class TestMarkerScriptReviewPr:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a symlink at the fixed location must not write a marker: {stray}"
 
+    def test_write_refuses_a_symlink_at_the_completion_marker_destination(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """TOCTOU regression: the completion marker's own destination path
+        is predictable ($CONFIG_DIR/review-pr-markers/<repo-hash>.<session-id>),
+        so a pre-planted symlink there must not be followed by the write --
+        a plain `>` redirect follows and truncates through a symlink, the
+        same bug shape already fixed for FINDINGS_BODY_PATH above."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("# findings body\n")
+        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+
+        repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        completion_marker = marker_dir / f"{repo_hash}.{sid}"
+        real_target = tmp_path / "attacker-chosen-marker-target.txt"
+        real_target.write_text("pre-existing content\n")
+        completion_marker.symlink_to(real_target)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert completion_marker.is_symlink(), "the symlink itself must survive, unmodified"
+        assert real_target.read_text() == "pre-existing content\n", (
+            "the write must not follow the symlink and truncate its target"
+        )
+
     def test_deactivate_removes_active_marker_sibling_completion_marker_and_body_file(
         self, isolated_home, git_repo, tmp_path
     ):
@@ -2672,3 +2702,34 @@ class TestMarkerScriptReviewPr:
         result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert findings_body.exists(), "clear-stale must not evict a live .body findings file"
+
+
+class TestMarkerWriteSymlinkHardeningAcrossArms:
+    """`_write_marker_no_follow`'s O_NOFOLLOW write hardening (proved for
+    review-pr's own arm in TestMarkerScriptReviewPr) is shared by every
+    `write <skill>` arm, not just review-pr's -- code-review, the
+    most-used arm, stands in for the other four plain-hash arms
+    (skill-review, plan-review, ready-for-review, cumulative-review), which
+    route through the identical shared helper."""
+
+    SID = "test-session-code-review-write-symlink"
+
+    def test_code_review_write_refuses_a_symlink_at_the_completion_marker_destination(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        completion_marker = marker_dir / f"{repo_hash}.{sid}"
+        real_target = tmp_path / "attacker-chosen-marker-target.txt"
+        real_target.write_text("pre-existing content\n")
+        completion_marker.symlink_to(real_target)
+
+        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert completion_marker.is_symlink(), "the symlink itself must survive, unmodified"
+        assert real_target.read_text() == "pre-existing content\n", (
+            "the write must not follow the symlink and truncate its target"
+        )
