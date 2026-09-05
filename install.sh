@@ -226,6 +226,35 @@ fi
 # INSTALL_TEST_FIXTURE: un-adopt-loop — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: skills-package-migration — start
+# The skills tree moved from claude/.claude/skills to claude-skills/skills
+# (see .claude/plans/skill-listing-duplication.md), so an existing install's
+# ~/.claude/skills symlink still resolving into the old path is now dangling.
+# Removing it here lets the stow call below lay down the new symlink at the
+# same target instead of refusing over a pre-existing conflicting link.
+# No CLAUDE_SESSION_MAY_BE_ACTIVE gate: a link resolving into the old path is
+# already dangling by the time this runs. A live session has therefore
+# already lost its skills regardless, so removing it can only help.
+if _stow_migration_lib_realpath_resolves_to "$HOME/.claude/skills" "$REPO_DIR/claude/.claude/skills"; then
+  if ! rm -- "$HOME/.claude/skills"; then
+    echo "[install] could not remove the stale ~/.claude/skills symlink into the old claude/.claude/skills location -- investigate and re-run install.sh" >&2
+  else
+    echo "[install] removed ~/.claude/skills, a stale symlink into the old claude/.claude/skills location" >&2
+  fi
+elif _stow_migration_lib_realpath_resolves_to "$HOME/.claude/skills" "$REPO_DIR/claude-skills/skills"; then
+  echo "[install] ~/.claude/skills already resolves to claude-skills/skills -- nothing to migrate" >&2
+elif [ -L "$HOME/.claude/skills" ]; then
+  echo "[install] ~/.claude/skills is a symlink pointing somewhere other than claude/.claude/skills -- leaving it in place; if it's stale, remove it and re-run install.sh" >&2
+elif [ -d "$HOME/.claude/skills" ]; then
+  echo "[install] ~/.claude/skills is a real directory, not the stow-managed symlink this install expects -- move or remove it, then re-run install.sh" >&2
+else
+  echo "[install] ~/.claude/skills does not exist yet -- nothing to migrate" >&2
+fi
+# INSTALL_TEST_FIXTURE: skills-package-migration — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them against a real `stow` binary. Keep both markers
 # on their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: stow-adopt-ignore — start

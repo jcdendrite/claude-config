@@ -18,6 +18,7 @@ REPO_DIR="$(cd -- "$(dirname -- "$resolved")/../../.." && pwd -P)"
 # package directory, stow target (relative to $HOME) — one row per package.
 packages=(
   $'claude\t.'
+  $'claude-skills\t.claude'
 )
 
 for package in "${packages[@]}"; do
