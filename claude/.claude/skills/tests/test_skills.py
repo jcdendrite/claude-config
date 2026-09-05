@@ -3637,10 +3637,10 @@ _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES: dict[str, str] = {
         "nudge will arrive on its own."
     ),
     "model_recognized_false": (
-        '`"model_recognized":false` — also report `model` and `context_window`, '
-        "and treat the result as a soft number. The window fell back to the 1M "
-        "default, so the threshold may not match the running model. Those two "
-        "fields let the engineer judge how far off it is."
+        '`"model_recognized":false` — the window fell back to the 1M default, '
+        "so also report `model`/`context_window` and treat the result as a "
+        "soft number; those two fields are what let the engineer judge how "
+        "far off it is."
     ),
     "cannot_resolve_or_schema_drift": (
         '`"status":"cannot-resolve"` or `"status":"schema-drift"` — name the '
@@ -3652,11 +3652,12 @@ _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES: dict[str, str] = {
     "fallback_to_judgment_and_closing": (
         "When `--check` can't resolve a measurement, weigh session length, "
         "how much of the task remains, and whether this is a natural seam. "
-        "A §2 reason that applies on its own terms, an explicit engineer "
-        "request, or a session ending anyway each warrant a handoff without "
-        "a cost argument at all. Do not quote the raw `session_id` into "
-        "prose that may reach a commit, PR body, or handoff file. If none "
-        "of the above warrant writing, run `~/.claude/scripts/marker.sh "
+        "Any of these warrant a handoff without a cost argument at all: a "
+        "§2 reason that applies on its own terms; an explicit engineer "
+        "request; or the session ending anyway. Do not quote the raw "
+        "`session_id` into prose that may reach a commit, PR body, or "
+        "handoff file. If none of the above warrant writing, run "
+        "`~/.claude/scripts/marker.sh "
         "deactivate handoff` before stopping — the marker activated above "
         "has no further purpose once the write itself doesn't happen."
     ),
