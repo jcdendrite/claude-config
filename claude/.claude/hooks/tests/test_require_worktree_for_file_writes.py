@@ -72,6 +72,8 @@ class TestRequireWorktreeForFileWrites:
         reason = run_hook_reason(FILE_WRITES_HOOK, edit_input(path))
         assert reason is not None
         assert "untracked" not in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
 
     def test_staged_not_committed_marker_deny_omits_stray_hint(self, staged_marker_repo):
         """The hint's actual gate is index-tracked (git ls-files --error-unmatch),
