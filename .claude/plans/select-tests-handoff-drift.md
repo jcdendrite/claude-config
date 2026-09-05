@@ -2,9 +2,9 @@
 
 **Status: abandoned.** The systemic fix drafted below (Approach, Critical
 files) was rejected by `/plan-review` for a foundation-level defect — see
-`docs/design-decisions.md` §48 for the decision and rationale. No code from
+`docs/design-decisions.md` §49 for the decision and rationale. No code from
 Critical files was implemented. This file is kept, uncommitted content
-finalized to reflect that outcome, as the durable evidence record §48
+finalized to reflect that outcome, as the durable evidence record §49
 cites rather than restates. Critical files below is superseded by the
 "Critical files (final)" note at the end of that section.
 
@@ -106,7 +106,7 @@ Deliberately rejected: keying the check on a list of test-runner tokens (`pytest
 
 **Reuse:** `extract_h2_sections` for §3 extraction. `soft_checks` registration follows the existing `(label, result)` tuple form in `main`. No new CLI flags, no new file formats.
 
-**Critical files (final): None.** `/plan-review` rejected the design for a foundation-level defect (see Status note, top of file). Separately, the engineer concluded no enforcement mechanism should be built at all, since the root cause traces to two aging pre-`select-tests.py` plans rather than a live systemic gap. This plan's deliverable is the root-cause investigation and assumption ledger above, per `plan-it`'s own "work that changes no repository file" convention. The two stale plan files this investigation traces the drift to were corrected by their own branches' sessions directly, not from here (see `docs/design-decisions.md` §48).
+**Critical files (final): None.** `/plan-review` rejected the design for a foundation-level defect (see Status note, top of file). Separately, the engineer concluded no enforcement mechanism should be built at all, since the root cause traces to two aging pre-`select-tests.py` plans rather than a live systemic gap. This plan's deliverable is the root-cause investigation and assumption ledger above, per `plan-it`'s own "work that changes no repository file" convention. The two stale plan files this investigation traces the drift to were corrected by their own branches' sessions directly, not from here (see `docs/design-decisions.md` §49).
 
 ## Verification
 

@@ -972,6 +972,13 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
 
+# A plan-architect Agent/Task dispatch whose prompt's first line is anything
+# other than this literal is a consult. This re-expresses
+# log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
+# see docs/design-decisions.md §48 for the cross-runtime duplication rationale.
+_ARCHITECT_CONSULT_SUBAGENT_TYPE = "plan-architect"
+_ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
+
 # Shared by review-trace's two zero-match termini (default timeline and
 # --deny-summary) so both read identically under the scope header.
 _REVIEW_TRACE_NO_SESSIONS_MSG = "No sessions matched in scope."
@@ -1409,6 +1416,17 @@ def _print_deny_summary(
     )
 
 
+def _is_architect_consult_dispatch(tool_input: dict) -> bool:
+    """True for a plan-architect Agent/Task dispatch whose prompt is a
+    consult rather than a MODE=plan-sections call — fail-safe toward
+    consult, so a missing `prompt` key or an empty first line both classify
+    as a consult. See docs/design-decisions.md §48 for why this duplicates
+    log-reviewer-round.sh's _maybe_write_consult_latch instead of sharing it."""
+    prompt = tool_input.get("prompt") or ""
+    first_line = prompt.split("\n", 1)[0]
+    return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
+
+
 def _review_trace_session_events(
     records: list[dict],
     since_ts: float | None,
@@ -1416,8 +1434,8 @@ def _review_trace_session_events(
     branch_filter: set[str] | None,
     skill_filter: str | None = None,
 ) -> tuple[list[dict], dict[str, str], int]:
-    """Detect cmd_review_trace's four per-session event kinds (skill, denial,
-    friction, reviewer-spawn) from one session's records.
+    """Detect cmd_review_trace's five per-session event kinds (skill, denial,
+    friction, reviewer-spawn, architect-consult) from one session's records.
 
     Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather
@@ -1511,17 +1529,29 @@ def _review_trace_session_events(
                         "model": evt_model,
                     })
                 elif block_name in ("Agent", "Task"):
-                    stype = (block.get("input") or {}).get("subagent_type") or ""
-                    if not _is_reviewer_subagent_type(stype):
-                        continue
-                    events.append({
-                        "kind": "reviewer-spawn",
-                        "subagent_type": stype,
-                        "ts": rec_ts_str,
-                        "line_no": line_no,
-                        "branch": evt_branch,
-                        "model": evt_model,
-                    })
+                    tool_input = block.get("input") or {}
+                    stype = tool_input.get("subagent_type") or ""
+                    if _is_reviewer_subagent_type(stype):
+                        events.append({
+                            "kind": "reviewer-spawn",
+                            "subagent_type": stype,
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                        })
+                    elif stype == _ARCHITECT_CONSULT_SUBAGENT_TYPE and _is_architect_consult_dispatch(tool_input):
+                        # A consult dispatch was initiated -- no dependence on
+                        # a tool_result, unlike log-reviewer-round.sh's
+                        # PostToolUse latch. The prompt itself never lands on
+                        # the event dict, only this classification result.
+                        events.append({
+                            "kind": "architect-consult",
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                        })
 
         # --- Signal 2a: hook denials, legacy shape (attachment record) ---
         if rec_type == "attachment":
@@ -1720,7 +1750,7 @@ def _compute_deny_summary_data(
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
-    Four event types are detected per session:
+    Five event types are detected per session:
     - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
     - denial: a hook-blocking denial in either transcript shape — a legacy
       `attachment` record (type==hook_blocking_error) or a current-format
@@ -1732,6 +1762,10 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       Deduped by tool_use_id in its own set, independent of denial dedup.
     - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
       _is_reviewer_subagent_type
+    - architect-consult: Agent/Task spawn where subagent_type is
+      plan-architect and the prompt's first line is not the literal
+      MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
+      consult dispatch was initiated, not that it completed.
 
     denial and friction are deliberately separate event kinds: has_denial,
     denials=N, and --deny-only's session-selection all stay denial-kind-only,
@@ -1803,6 +1837,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         skill_count = sum(1 for e in events if e["kind"] == "skill")
         denial_count = sum(1 for e in events if e["kind"] == "denial")
         spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
+        consult_count = sum(1 for e in events if e["kind"] == "architect-consult")
         branches_seen = ",".join(sorted({e["branch"] for e in events}))
         models_seen = ",".join(sorted({e["model"] for e in events}))
 
@@ -1812,6 +1847,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         print(
             f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
             f"  denials={denial_count}  reviewer-spawns={spawn_count}"
+            f"  architect-consults={consult_count}"
         )
         for evt in events:
             ts_label = evt.get("ts") or "?"
@@ -1832,6 +1868,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
+            elif kind == "architect-consult":
+                print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
 
     if not emitted_any_session:
         print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
