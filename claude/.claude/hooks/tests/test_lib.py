@@ -6,7 +6,8 @@ _lib_is_no_gate_release_agent.
 
 The parse tests drive the helper via a throwaway shell harness that defines
 emit_deny before sourcing _lib.sh (the canonical caller pattern), then calls
-_lib_parse_tool_input_or_deny and reports either DENY:<msg> or OK:<tool>:<cmd>.
+_lib_parse_tool_input_or_deny and reports either DENY:<msg> or
+OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><0x1e><overflow>.
 """
 from __future__ import annotations
 
@@ -20,21 +21,32 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import build_path_without
+from helpers import DEFAULT_TEST_SESSION_ID, HOOKS_DIR, bash_input, build_path_without, run_hook
 
 from .conftest import _worktree_lock_reason
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
 
+# require-code-review.sh is an unmodified production caller of
+# _lib_parse_tool_input_or_deny, used by the delimiter-shift regression test
+# below to prove the fixed parser, not just the unit harness, denies.
+_REQUIRE_CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
+
 # Shell harness: define emit_deny BEFORE sourcing _lib.sh (canonical pattern),
-# call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success.
+# call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success, followed by
+# the four newly-folded fields and the field-shift overflow variable, each
+# separated by 0x1e (a delimiter distinct from the parser's own 0x1f, so
+# neither can be mistaken for the other). The "OK:<TOOL_NAME>:<COMMAND>"
+# prefix is kept exactly as before so existing startswith() assertions
+# elsewhere in this file keep matching unedited.
 # {lib} is substituted by the test with the absolute path to _lib.sh.
 _HARNESS_TEMPLATE = (
     'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
     ". {lib}; "
     '_lib_parse_tool_input_or_deny "test-msg"; '
-    'printf "OK:%s:%s\\n" "$TOOL_NAME" "$COMMAND"'
+    'printf "OK:%s:%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\n" '
+    '"$TOOL_NAME" "$COMMAND" "$CWD" "$SESSION_ID" "$FILE_PATH" "$AGENT_TYPE" "$_lib_parse_overflow"'
 )
 
 
@@ -48,6 +60,31 @@ def _run_harness(stdin_text: str, env: dict | None = None) -> subprocess.Complet
         check=False,
         env=env,
     )
+
+
+def _parse_ok_fields(stdout: str) -> dict[str, str]:
+    """Split _HARNESS_TEMPLATE's OK line into its six extracted fields plus
+    the trailing field-shift overflow variable.
+
+    `OK:<TOOL_NAME>:<COMMAND>` keeps the legacy colon-joined prefix intact
+    so pre-existing startswith() assertions on that prefix are unaffected;
+    everything after it is 0x1e-delimited so COMMAND's own colons or
+    embedded newlines can't be mistaken for a field boundary.
+    """
+    assert stdout.startswith("OK:"), repr(stdout)
+    tool_name, _, remainder = stdout[len("OK:") :].partition(":")
+    command, cwd, session_id, file_path, agent_type, overflow = remainder.split("\x1e")
+    return {
+        "tool_name": tool_name,
+        "command": command,
+        "cwd": cwd,
+        "session_id": session_id,
+        "file_path": file_path,
+        "agent_type": agent_type,
+        # printf's own trailing "\n" follows the overflow field; strip
+        # exactly that one byte to recover the raw shell value.
+        "overflow": overflow[:-1] if overflow.endswith("\n") else overflow,
+    }
 
 
 def _run_lib_call(call: str, env: dict) -> subprocess.CompletedProcess:
@@ -126,6 +163,289 @@ def test_non_bash_tool_with_file_path_returns_ok_empty_command() -> None:
     assert result.returncode == 0
     # COMMAND is empty for non-Bash tools — OK:<tool>:<cmd> where <cmd> is ""
     assert result.stdout.startswith("OK:Edit:"), repr(result.stdout)
+
+
+# --- Six-field fold: .cwd, .session_id, .tool_input.file_path, .agent_type,
+# and the field-shift detector ---------------------------------------------
+
+
+def test_six_field_payload_returns_all_fields_without_cross_contamination() -> None:
+    """All six fields extracted by the folded jq call land in their own
+    global with the exact payload value — the six-field analogue of
+    test_valid_bash_payload_returns_ok above. Every field is given a
+    distinct value so a field landing in the wrong global would be caught.
+    """
+    payload = json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls -la", "file_path": "/tmp/f.txt"},
+            "cwd": "/repo",
+            "session_id": "sess-123",
+            "agent_type": "main",
+        }
+    )
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["tool_name"] == "Bash"
+    assert fields["command"] == "ls -la"
+    assert fields["cwd"] == "/repo"
+    assert fields["session_id"] == "sess-123"
+    assert fields["file_path"] == "/tmp/f.txt"
+    assert fields["agent_type"] == "main"
+
+
+def test_multiline_command_round_trips_byte_for_byte() -> None:
+    """A default-delimiter `read` truncates COMMAND at its first embedded
+    newline; `-d ''` with 0x1f as IFS must preserve one exactly, since a
+    Bash command legitimately spans lines (an && chain, or a heredoc)."""
+    multiline_command = "echo one &&\necho two"
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": multiline_command}})
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["command"] == multiline_command
+
+
+def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload() -> None:
+    """The field-shift detector's invariant: a well-formed six-field
+    payload leaves the overflow variable holding exactly the herestring's
+    own trailing newline, AGENT_TYPE has no stray whitespace, and no deny
+    fires."""
+    payload = json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls", "file_path": "/tmp/f"},
+            "cwd": "/repo",
+            "session_id": "sess-1",
+            "agent_type": "main",
+        }
+    )
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["overflow"] == "\n"
+    assert not any(ch.isspace() for ch in fields["agent_type"])
+
+
+def test_overflow_variable_holds_only_trailing_newline_when_final_field_absent() -> None:
+    """.agent_type — the last of the six jq fields — entirely absent from
+    the payload (not merely empty) must not be mistaken for an overflow
+    condition: jq's `// ""` default still yields exactly six fields, so
+    dropping the trailing key doesn't drop a delimiter along with it."""
+    payload = json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls", "file_path": "/tmp/f"},
+            "cwd": "/repo",
+            "session_id": "sess-1",
+        }
+    )
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["agent_type"] == ""
+    assert fields["overflow"] == "\n"
+
+
+def _extract_parse_fn_slice(lib_sh_text: str) -> str:
+    """Slice _lib.sh from `_lib_parse_tool_input_or_deny()`'s definition to
+    its closing brace, so the adversarial test's field list is derived from
+    the code rather than hand-copied."""
+    lines = lib_sh_text.splitlines()
+    start = next(i for i, line in enumerate(lines) if re.match(r"^_lib_parse_tool_input_or_deny\(\)", line))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
+    return "\n".join(lines[start : end + 1])
+
+
+def _extract_jq_fields(fn_slice: str) -> list[str]:
+    """The jq field list, in first-appearance order, from the single-quoted
+    argument on the `_lib_jq -r` line."""
+    jq_line = next(
+        line for line in fn_slice.splitlines() if "_lib_jq -r" in line and not line.lstrip().startswith("#")
+    )
+    quoted = re.search(r"'(.*)'", jq_line)
+    assert quoted is not None, "no single-quoted jq program found on the _lib_jq -r line"
+    fields = re.findall(r"\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", quoted.group(1))
+    seen: list[str] = []
+    for field in fields:
+        if field not in seen:
+            seen.append(field)
+    return seen
+
+
+def _extract_read_names(fn_slice: str) -> list[str]:
+    """The `read` variable list, bounded to the substring between `-d ''`
+    and the first `<<<`, so the herestring's own tail (`jq_out`, and `x1f`
+    from its escape sequence) can't inflate the count. Comment lines are
+    skipped: a surrounding comment also mentions `read -r -d ''` without
+    the `<<<` that bounds the real code line."""
+    read_line = next(
+        line
+        for line in fn_slice.splitlines()
+        if "read -r -d ''" in line and not line.lstrip().startswith("#")
+    )
+    start = read_line.index("-d ''") + len("-d ''")
+    end = read_line.index("<<<", start)
+    return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", read_line[start:end])
+
+
+_PARSE_FN_SLICE = _extract_parse_fn_slice(_LIB_SH.read_text())
+_JQ_FIELDS = _extract_jq_fields(_PARSE_FN_SLICE)
+_READ_NAMES = _extract_read_names(_PARSE_FN_SLICE)
+
+# jq-field-path → the flat key _parse_ok_fields exposes it under.
+_JQ_FIELD_TO_FLAT_KEY = {
+    ".tool_name": "tool_name",
+    ".tool_input.command": "command",
+    ".cwd": "cwd",
+    ".session_id": "session_id",
+    ".tool_input.file_path": "file_path",
+    ".agent_type": "agent_type",
+}
+
+_FIELD_SHIFT_DENY_MESSAGE = (
+    "a tool-input field contained a Unit Separator (U+001F) byte, which "
+    "would shift extracted-field boundaries — refusing rather than acting "
+    "on values that may not be the ones the harness sent."
+)
+
+# The four infra cause markers, checked case-insensitively by
+# transcript-analysis.py's _denial_cause_kind cascade. A field-shift deny
+# carrying none of them falls through to that cascade's "behavioral"
+# default instead of misfiling a deliberate bypass attempt as infra noise.
+_FORBIDDEN_CAUSE_MARKERS = (
+    "could not encode its deny reason",
+    "could not source _lib.sh",
+    "could not parse tool-input json",
+    "failing closed",
+)
+
+
+def test_read_variable_count_is_jq_field_count_plus_one() -> None:
+    """The structural tie the field-shift detector depends on: one overflow
+    variable beyond the jq field count. A field added to one list without
+    the other must fail loudly rather than silently lose coverage."""
+    assert len(_READ_NAMES) == len(_JQ_FIELDS) + 1
+
+
+def test_read_variable_order_matches_jq_field_order() -> None:
+    """The cardinality check above only proves the two lists are the same
+    length. This proves they line up positionally: read_names[i] must be
+    the flat-key-uppercased form of jq_fields[i] for every jq field index.
+    A future edit that transposes two fields in the jq format string
+    without making the mirror transposition in the `read` variable list
+    would pass the cardinality check but must fail here."""
+    expected_read_names = [_JQ_FIELD_TO_FLAT_KEY[field].upper() for field in _JQ_FIELDS]
+    assert _READ_NAMES[: len(_JQ_FIELDS)] == expected_read_names
+
+
+def test_jq_field_list_extraction_is_non_empty() -> None:
+    """Vacuity self-check mirroring test_lib.py's own builds_path_re
+    precedent: an empty extraction means the regex has drifted from the
+    code, not that there are zero fields to guard."""
+    assert _JQ_FIELDS, (
+        "no jq fields extracted from _lib_parse_tool_input_or_deny — the "
+        "regex has drifted from the code and this test is now vacuous"
+    )
+
+
+def _set_dotted_field(payload: dict, jq_field: str, value: str) -> dict:
+    """Set VALUE at the dotted path named by a jq field expression such as
+    '.tool_input.command', building intermediate objects as needed."""
+    keys = jq_field.lstrip(".").split(".")
+    node = payload
+    for key in keys[:-1]:
+        node = node.setdefault(key, {})
+    node[keys[-1]] = value
+    return payload
+
+
+def _base_six_field_payload() -> dict:
+    return {
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls -la", "file_path": "/tmp/f.txt"},
+        "cwd": "/repo",
+        "session_id": "sess-1",
+        "agent_type": "main",
+    }
+
+
+@pytest.mark.parametrize("jq_field", _JQ_FIELDS)
+def test_unit_separator_injected_into_any_field_denies_as_field_shift(jq_field: str) -> None:
+    """A 0x1f inside any one of the six extracted fields must deny with the
+    field-shift message rather than silently shifting every later field.
+    The field-shift detector is a field-count property, not a per-field
+    guard.
+
+    .tool_input.file_path gets its own weight here: it is agent-authored
+    text, not harness-controlled, so it is the field an attacker can most
+    directly shape.
+    """
+    payload = _set_dotted_field(_base_six_field_payload(), jq_field, "va\x1flue")
+    result = _run_harness(json.dumps(payload))
+    assert result.returncode == 0
+    assert result.stdout.startswith("DENY:"), repr(result.stdout)
+    reason = result.stdout[len("DENY:") :].rstrip("\n")
+    assert reason == _FIELD_SHIFT_DENY_MESSAGE
+    lowered = reason.lower()
+    for marker in _FORBIDDEN_CAUSE_MARKERS:
+        assert marker not in lowered, (jq_field, marker, reason)
+
+
+# .tool_name already denies on an embedded newline under its own
+# pre-existing PreToolUse-contract check (unrelated to the field-shift fix
+# above), so it is excluded from the "newline is ordinary data" pairing —
+# asserting "must not deny" there would contradict that existing contract.
+_NEWLINE_SAFE_JQ_FIELDS = [field for field in _JQ_FIELDS if field != ".tool_name"]
+
+
+@pytest.mark.parametrize("jq_field", _NEWLINE_SAFE_JQ_FIELDS)
+def test_newline_in_field_is_preserved_as_ordinary_data(jq_field: str) -> None:
+    """A newline is legal data in a path or command and must not deny —
+    paired with the 0x1f-injection test above so the field-shift boundary
+    (0x1f specifically, not any control byte) is pinned from both sides."""
+    payload = _set_dotted_field(_base_six_field_payload(), jq_field, "va\nlue")
+    result = _run_harness(json.dumps(payload))
+    assert result.returncode == 0
+    assert result.stdout.startswith("OK:"), repr(result.stdout)
+    fields = _parse_ok_fields(result.stdout)
+    assert fields[_JQ_FIELD_TO_FLAT_KEY[jq_field]] == "va\nlue"
+
+
+def test_command_containing_unit_separator_denies_via_require_code_review(
+    isolated_home: Path, git_repo: Path
+) -> None:
+    """Continuity coverage that require-code-review.sh — an unmodified
+    production caller of _lib_parse_tool_input_or_deny — still delegates to
+    the fixed parser. A literal 0x1f in .tool_input.command must deny, not
+    field-shift .cwd and let the review gate's own exit-0 branch fire on an
+    empty REPO_ROOT. The invariant itself is proven at the unit layer by the
+    adversarial-payload test above. This is end-to-end continuity coverage
+    that the production caller reaches the same code path."""
+    result = run_hook(
+        _REQUIRE_CODE_REVIEW_HOOK,
+        bash_input("git commit -m 'x\x1fy'", session_id=DEFAULT_TEST_SESSION_ID),
+        cwd=git_repo,
+    )
+    assert result == "deny"
+
+
+def test_deny_gate_label_unset_falls_back_to_basename_derived_label() -> None:
+    """A hook that sources _lib.sh without declaring DENY_GATE_LABEL still
+    self-identifies, via a `${0##*/}`-minus-`.sh` derivation — the one
+    place the $0 fallback does real work, for a forgotten declaration."""
+    harness = f'. {_LIB_SH}; _lib_emit_deny "scratch body text"'
+    result = subprocess.run(
+        ["bash", "-c", harness, "scratch-hook.sh"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+    assert reason == "Blocked by scratch-hook gate: scratch body text"
 
 
 @pytest.mark.timing

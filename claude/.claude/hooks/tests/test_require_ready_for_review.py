@@ -1559,7 +1559,7 @@ class TestRequireReadyForReview:
         )
         payload = json.loads(result.stdout)
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "PR creation blocked" in reason
+        assert "PR creation —" in reason
         assert "Push to a branch" not in reason
 
     # -- gh failure → fail-open ------------------------------------------

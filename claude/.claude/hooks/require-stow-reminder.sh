@@ -65,12 +65,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="stow-reminder"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -81,13 +83,12 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by stow-reminder gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by stow-reminder gate: could not parse tool-input JSON. Refusing to evaluate under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate under malformed input."
 
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Internal filter (defense-in-depth against settings.json `if` drift).
@@ -239,6 +240,6 @@ else
   REASON_DETAIL="changes install.sh"
 fi
 
-emit_deny "Blocked by stow-reminder gate: this PR $REASON_DETAIL. Stow links each top-level child individually, and a brand-new child only appears in ~/.claude/ after re-running install.sh — git pull alone does not create the symlink. install.sh itself is not stowed and only takes effect when invoked, so a change to it ships on git pull only if it removes stowed behavior, with the replacement landing only after a manual re-run. Without a reminder in the PR body, whoever merges won't know to re-run install.sh, and the change will silently fail to take effect. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to pick up this change.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
+emit_deny "this PR $REASON_DETAIL. Stow links each top-level child individually, and a brand-new child only appears in ~/.claude/ after re-running install.sh — git pull alone does not create the symlink. install.sh itself is not stowed and only takes effect when invoked, so a change to it ships on git pull only if it removes stowed behavior, with the replacement landing only after a manual re-run. Without a reminder in the PR body, whoever merges won't know to re-run install.sh, and the change will silently fail to take effect. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to pick up this change.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
 
 exit 0

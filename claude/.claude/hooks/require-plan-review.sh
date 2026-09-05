@@ -50,12 +50,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="plan-review"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -66,11 +68,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by plan-review gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by plan-review gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Gate Write, Edit, MultiEdit, and ExitPlanMode tool calls.
 case "$TOOL_NAME" in
@@ -78,15 +80,14 @@ case "$TOOL_NAME" in
   *) exit 0 ;;
 esac
 
-# Extract target path immediately after parsing — used both for the
+# Target path already extracted by the shared parse — used both for the
 # repo-scope guard below and the deny gate.
-TARGET_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
+TARGET_PATH="$FILE_PATH"
 
 # Resolve the repo from the payload's cwd rather than this hook process's
 # ambient cwd, so the marker is keyed to the tree the session is working in.
 # Downstream hashing already threads this root (_lib_active_plan_hash), so
 # root resolution is the only site that needs converting here.
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Not in a git repo — can't check for plan files or key the marker.
@@ -114,20 +115,20 @@ if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
       # through to the repo-relative check -- that would silently re-permit
       # the exact silent-allow bug this branch exists to close whenever a
       # stale repo-relative marker happens to be present.
-      emit_deny "Blocked by plan-review gate: cannot read the plan-mode file '$PLAN_MODE_FILE_PATH' named by ExitPlanMode, so the gate cannot tell whether it has been reviewed.
+      emit_deny "cannot read the plan-mode file '$PLAN_MODE_FILE_PATH' named by ExitPlanMode, so the gate cannot tell whether it has been reviewed.
 
 Plan presentation stays blocked until this is fixed — an unreadable plan-mode file is an unknown review state, not an absent one. Repair the file (chmod, or address whatever plan mode did to lose track of it), then retry. Running /plan-review first will fail the same way, since it hashes the same file."
       exit 0
     fi
     if ! CONFIG_DIR=$(_lib_config_dir); then
-      emit_deny "Blocked by plan-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+      emit_deny "could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
       exit 0
     fi
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
     if _lib_marker_value_present "$CONFIG_DIR/plan-review-markers" "$PLAN_MODE_HASH" "$REPO_HASH."; then
       exit 0
     fi
-    emit_deny "Plan presentation blocked by the plan-review gate: this session is in harness plan mode and the plan file ExitPlanMode named has no plan-review marker covering its current content.
+    emit_deny "Plan presentation — this session is in harness plan mode and the plan file ExitPlanMode named has no plan-review marker covering its current content.
 
   Run /plan-review against the plan-mode file before calling ExitPlanMode. The skill records the review in ~/.claude/plan-review-markers/ and plan presentation will be allowed on retry."
     exit 0
@@ -201,7 +202,7 @@ if ! CURRENT_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
   # would be circular, since marker.sh hits the identical condition and
   # aborts. This hook gates only Write/Edit/MultiEdit/ExitPlanMode, so Bash
   # stays available to repair the file — point at that escape hatch.
-  emit_deny "Blocked by plan-review gate: cannot read the active plan file '$CURRENT_HASH', so the gate cannot tell whether the plan has been reviewed.
+  emit_deny "cannot read the active plan file '$CURRENT_HASH', so the gate cannot tell whether the plan has been reviewed.
 
 This is not a missing review — running /plan-review will fail the same way, because it hashes the same file. Repair the file first, using a Bash command (this gate does not block Bash):
 
@@ -218,7 +219,6 @@ if [ -z "$CURRENT_HASH" ]; then
 fi
 
 # Plans exist — look for a review covering this exact plan state.
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 
 # Active-marker bypass: the /plan-review skill is currently running.
 # This marker stays strictly session-keyed, unlike the completion marker
@@ -250,7 +250,7 @@ fi
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the write/ExitPlanMode through.
 if ! CONFIG_DIR=$(_lib_config_dir); then
-  emit_deny "Blocked by plan-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  emit_deny "could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
   exit 0
 fi
 PLAN_REVIEW_MARKERS_DIR="$CONFIG_DIR/plan-review-markers"
@@ -308,13 +308,13 @@ if WORKTREE_LIST=$(_lib_capped git -C "$REPO_ROOT" worktree list --porcelain 2>/
 fi
 
 if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
-  emit_deny "Plan presentation blocked by the plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found.
+  emit_deny "Plan presentation — an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found.
 
   Run /plan-review against the plan file before calling ExitPlanMode. The skill records the review in ~/.claude/plan-review-markers/ and plan presentation will be allowed on retry.
 
   If no plan covers this session yet → run /plan-it first. It authors the plan and hands off to /plan-review."
 else
-  emit_deny "Write/Edit blocked by plan-review gate: an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found. A review from an earlier session still counts — the gate matches on the plan's content, not on which session reviewed it — so this means the plan set has changed since its last review, or has never been reviewed. Committed, unmodified plan files are treated as historical and do not arm the gate. Editing the plan file itself is exempt from this gate — this deny is for a different, non-plan target, so the plan is still editable. Next step depends on whether a plan covers this change:
+  emit_deny "Write/Edit — an uncommitted or modified plan file exists in .claude/plans/ but no plan-review marker covering the current plan set was found. A review from an earlier session still counts — the gate matches on the plan's content, not on which session reviewed it — so this means the plan set has changed since its last review, or has never been reviewed. Committed, unmodified plan files are treated as historical and do not arm the gate. Editing the plan file itself is exempt from this gate — this deny is for a different, non-plan target, so the plan is still editable. Next step depends on whether a plan covers this change:
 
   - If a plan covers this change → run /plan-review against it. The skill records the review in ~/.claude/plan-review-markers/ and this write will be allowed through on retry.
 

@@ -109,12 +109,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="ready-for-review"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -125,11 +127,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by ready-for-review gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by ready-for-review gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
@@ -146,12 +148,10 @@ fi
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 COMMAND_UNQUOTED_EXIT=$?
 if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by ready-for-review gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
-CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Strips a bare origin/upstream token only when it is the first non-flag word
@@ -245,7 +245,7 @@ is_gh_pr_create=false
 FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 FRAGMENTS_SPLIT_EXIT=$?
 if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by ready-for-review gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
   exit 0
 fi
 while IFS= read -r frag; do
@@ -330,7 +330,7 @@ REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the push/PR-ready command through.
 if ! CONFIG_DIR=$(_lib_config_dir); then
-  emit_deny "Blocked by ready-for-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  emit_deny "could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
   exit 0
 fi
 if _lib_marker_value_present "$CONFIG_DIR/ready-for-review-markers" "$CURRENT_HEAD" "$REPO_HASH."; then
@@ -341,9 +341,9 @@ fi
 # gh pr ready) gh pr view confirmed the branch has an open PR — block,
 # naming whichever of the three commands triggered the gate.
 if $is_gh_pr_ready; then
-  emit_deny "PR ready-for-review marking blocked by ready-for-review gate: no /ready-for-review gate run covering the current HEAD was found — either this PR has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+  emit_deny "PR ready-for-review marking — no /ready-for-review gate run covering the current HEAD was found — either this PR has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
 elif $is_gh_pr_create; then
-  emit_deny "PR creation blocked by ready-for-review gate: no /ready-for-review gate run covering the current HEAD was found. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
+  emit_deny "PR creation — no /ready-for-review gate run covering the current HEAD was found. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this command will be allowed through. Do not ask the user for permission — run the skill, address any findings, and proceed. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and proceed without re-asking the user."
 else
-  emit_deny "Push to a branch with an open PR blocked by ready-for-review gate: no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
+  emit_deny "Push to a branch with an open PR — no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi

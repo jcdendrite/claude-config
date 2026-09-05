@@ -28,12 +28,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="env-read"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -44,18 +46,17 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by env-read gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON for env-read gate."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Defense-in-depth: only act on Read calls (settings.json already matches Read).
 if [ "$TOOL_NAME" != "Read" ]; then
   exit 0
 fi
 
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 [ -z "$FILE_PATH" ] && exit 0
 
 BASENAME=$(basename -- "$FILE_PATH")
@@ -64,7 +65,7 @@ case "$BASENAME" in
   .env.example|.env.template|.env.sample)
     : ;;  # allowlist candidate — fall through to symlink-target check
   .env|.env.*)
-    emit_deny "Read of '${FILE_PATH}' denied by env-read gate. Dotenv files commonly hold secrets; reading pulls them into Claude's conversation context. If this is a non-secret template, rename it to .env.example, .env.template, or .env.sample. Otherwise inspect it with a shell command (e.g. \`! cat ${FILE_PATH}\`) instead of the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+    emit_deny "Read of '${FILE_PATH}' — Dotenv files commonly hold secrets; reading pulls them into Claude's conversation context. If this is a non-secret template, rename it to .env.example, .env.template, or .env.sample. Otherwise inspect it with a shell command (e.g. \`! cat ${FILE_PATH}\`) instead of the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
     exit 0
     ;;
   *)
@@ -76,7 +77,7 @@ esac
 if [ -L "$FILE_PATH" ]; then
   RESOLVED=$(readlink -f -- "$FILE_PATH" 2>/dev/null)
   if [ -z "$RESOLVED" ] || [ ! -e "$RESOLVED" ]; then
-    emit_deny "Read of '${FILE_PATH}' denied: symlink target is unresolvable or missing. Fail-closed — the env-read gate cannot verify what file would actually be read."
+    emit_deny "Read of '${FILE_PATH}' — symlink target is unresolvable or missing. Fail-closed — the env-read gate cannot verify what file would actually be read."
     exit 0
   fi
   RESOLVED_BASENAME=$(basename -- "$RESOLVED")
@@ -84,7 +85,7 @@ if [ -L "$FILE_PATH" ]; then
     .env.example|.env.template|.env.sample)
       exit 0 ;;
     .env|.env.*)
-      emit_deny "Read of '${FILE_PATH}' denied: the symlink resolves to '${RESOLVED}', whose basename matches a denied env pattern."
+      emit_deny "Read of '${FILE_PATH}' — the symlink resolves to '${RESOLVED}', whose basename matches a denied env pattern."
       exit 0
       ;;
     *)

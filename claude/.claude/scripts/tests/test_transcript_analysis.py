@@ -14374,21 +14374,25 @@ class TestDenialHookLabelEnumerationRealHooks:
     def test_marker_sh_path_traversal_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's own path-traversal deny path —
         distinct real wording from the bootstrap-failure case above, which
-        shares the same 'marker.sh' label."""
+        shares the same 'marker-script-shape' label. The message now leads
+        with 'Blocked by marker-script-shape gate:', so _DENIAL_HOOK_NAME_RE
+        wins the label-extraction cascade ahead of the legacy
+        'marker.sh invocation denied' pattern."""
         cmd = "../../.claude/scripts/marker.sh write code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_hook_label("", message) == "marker-script-shape"
         assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_marker_sh_unknown_subcommand_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's general 'invocation denied'
         wording for an unenumerated subcommand — distinct real wording from
-        the path-traversal case above, which shares the same 'marker.sh' label."""
+        the path-traversal case above, which shares the same
+        'marker-script-shape' label."""
         cmd = "~/.claude/scripts/marker.sh forge code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_hook_label("", message) == "marker-script-shape"
         assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_agents_md_over_limit_produces_enumerated_label(self, tmp_path):
@@ -14410,7 +14414,7 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-claude-md-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+        assert _mod._denial_hook_label("", message) == "CLAUDE.md length"
 
     def test_skill_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-skill-length.sh's real 'grew past their per-skill limit' deny
@@ -14433,15 +14437,15 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-skill-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "Skill length"
+        assert _mod._denial_hook_label("", message) == "skill length"
 
     def test_claude_md_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
         """check-claude-md-length.sh's commit-detection fail-closed path (sed
         absent from PATH, same technique test_check_skill_length.py's
-        test_sed_absent_from_path_denies uses) now goes through the shared
-        _lib_staged_length_gate and shares check-claude-md-length.sh's
-        over-limit label "AGENTS.md length" — pinning the post-Phase-2
-        merged classification so a future wording change is caught."""
+        test_sed_absent_from_path_denies uses) goes through the shared
+        _lib_staged_length_gate, whose deny is prefixed by
+        check-claude-md-length.sh's own DENY_GATE_LABEL, "CLAUDE.md length" —
+        pinning that classification so a future wording change is caught."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -14452,15 +14456,15 @@ class TestDenialHookLabelEnumerationRealHooks:
             extra_env={"PATH": restricted_path},
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+        assert _mod._denial_hook_label("", message) == "CLAUDE.md length"
 
     def test_skill_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
         """check-skill-length.sh's commit-detection fail-closed path (sed
         absent from PATH, same technique test_check_skill_length.py's
-        test_sed_absent_from_path_denies uses) now goes through the shared
-        _lib_staged_length_gate and shares check-skill-length.sh's
-        over-limit label "Skill length" — pinning the post-Phase-2 merged
-        classification so a future wording change is caught."""
+        test_sed_absent_from_path_denies uses) goes through the shared
+        _lib_staged_length_gate, whose deny is prefixed by
+        check-skill-length.sh's own DENY_GATE_LABEL, "skill length" —
+        pinning that classification so a future wording change is caught."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -14471,7 +14475,7 @@ class TestDenialHookLabelEnumerationRealHooks:
             extra_env={"PATH": restricted_path},
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "Skill length"
+        assert _mod._denial_hook_label("", message) == "skill length"
 
 
 # ---------------------------------------------------------------------------
