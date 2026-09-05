@@ -20,8 +20,8 @@ hand, rather than checking that instruction against CLAUDE.md's own
 684 claude-config transcripts (2026-08-04 to 2026-09-04) confirmed this is
 a recurring pattern, not a one-off. That account is the only one with
 claude-config project directories, so the audit stayed scoped to
-claude-config's own history rather than mixed with private-project data,
-and the counts below are safe to publish.
+claude-config's own history rather than mixed with private-project data.
+The counts below are therefore safe to publish.
 Of 29 sessions whose Bash history matched a
 full-suite-shaped pytest invocation after the rule shipped
 (2026-08-25T07:49:24Z), 15 genuinely ran the bare full-suite command; the
@@ -32,9 +32,9 @@ still-active branches — `prevent-runaway-subagent-cost` and
 `review-pipeline-orchestrator-subagent` — each with a plan file whose
 Verification section named the raw full-suite command. Both plan files
 were written before `select-tests.py` existed (2026-08-21 and 2026-08-23,
-predating the rule by 2-4 days) and were never updated after the rule
-shipped; each branch's successive handoffs carried the stale command
-forward unchanged. Neither `handoff/SKILL.md`'s §3 clause nor
+predating the rule by 2-4 days) and were never updated after. Each
+branch's successive handoffs carried the stale command forward
+unchanged. Neither `handoff/SKILL.md`'s §3 clause nor
 `check-handoff.py` validates a handoff's named verification command against
 CLAUDE.md's canonical rule before writing it forward. The intended outcome:
 close that validation gap so this class of drift cannot silently recur on
@@ -42,11 +42,11 @@ any branch, and correct the two branches already carrying a stale command.
 
 ## Approach
 
-Close the drift at the one point where a stale command is *copied forward* rather than where it is *run*: `handoff` §3. Two changes ship together. A `handoff/SKILL.md` §3 clause requires the verification command be re-derived from the project's current documentation, flagging the plan stale in §6 when the two disagree. A new soft check in `check-handoff.py` fires when §3 names a plan path but cites no command source outside that plan. The two stale plan files are **not** in this diff: neither exists on this branch's tree, so no edit here can reach them; they ship as a fully-specified per-branch follow-up in Out of scope.
+Close the drift at the one point where a stale command is *copied forward* rather than where it is *run*: `handoff` §3. Two changes ship together. A `handoff/SKILL.md` §3 clause requires the verification command be re-derived from the project's current documentation, flagging the plan stale in §6 when the two disagree. A new soft check in `check-handoff.py` fires when §3 names a plan path but cites no command source outside that plan. The two stale plan files are **not** in this diff — neither exists on this branch's tree, so no edit here can reach them. The fully-specified per-branch follow-up is in Out of scope.
 
-The key design fact is one the engineer's own mechanism rationale already conceded: **no mechanical check can tell a stale full-suite command from CLAUDE.md's two legitimate full-suite exceptions**, because those exceptions are stated as conditions on intent ("genuinely calls for a whole-repo claim"), not as a machine-readable predicate. So the check must not try to judge the command. It judges *provenance* instead — whether the author cited a source for the command that is something other than the plan file being implemented. That is mechanizable, project-agnostic, and it is exactly the step the 11 drifted sessions skipped.
+**No mechanical check can discriminate a stale command from CLAUDE.md's intent-based exceptions**, so the check judges provenance instead — whether the author cited a source outside the plan file being implemented — which is mechanizable, project-agnostic, and exactly the step the 11 drifted sessions skipped.
 
-Deliberately rejected: keying the check on a list of test-runner tokens (`pytest`, `npm test`, `go test`, …). `check-handoff.py` ships to every stow consumer, so a runner list is both a maintenance surface that will miss runners and a stack-specific token set in a global script. Keying on `.claude/plans/<name>.md` instead needs no list at all, is `plan-it`'s own cross-stack convention, and catches a stale lint or build command as readily as a test one.
+Deliberately rejected: a test-runner token list (`pytest`, `npm test`, `go test`, …) — a stack-specific maintenance surface in a global script since `check-handoff.py` ships to every stow consumer. Keyed on `.claude/plans/<name>.md` instead: `plan-it`'s own cross-stack convention, needing no list, and catching a stale lint or build command as readily as a test one.
 
 **Root problem:** a verification command named in a handoff §3 is copied from its plan file without being re-checked against the project's current documented command, so a plan predating a command change propagates the stale command through every successive handoff on that branch.
 
@@ -58,7 +58,12 @@ Deliberately rejected: keying the check on a list of test-runner tokens (`pytest
 - **G5** — The two stale plan files sit on separate still-active branches whose worktrees may be lock-held by live sessions. Another session owns them.
 
 **Mechanisms:**
-- **M1 — `check_section3_plan_command_provenance` soft check** (`anchors: root`). Lighter primitives weighed and *kept alongside* rather than substituted: a `RESIDUAL_CHECKLIST_ITEMS` entry alone fails because that block is unconditional boilerplate printed on every run, and the drifted sessions read past exactly this prose class; a SKILL.md §3 clause alone fails because the §3 clause *is* the surface that drifted. Both ship as M2 — the WARN is the increment over them, quoting the specific plan path back at the author. Heavier alternatives rejected: a PreToolUse Bash hook (engineer-rejected, and G3 means it cannot discriminate either), and a project-config file enumerating allowed commands (a new file format and a new drift source).
+- **M1 — `check_section3_plan_command_provenance` soft check** (`anchors: root`). Lighter and heavier alternatives considered:
+  - `RESIDUAL_CHECKLIST_ITEMS` entry alone — rejected; that block is unconditional boilerplate the drifted sessions already read past.
+  - SKILL.md §3 clause alone — rejected; §3 is itself the surface that drifted.
+  - Both together (M1 + M2, the chosen design) — kept; the WARN is the increment over either alone, quoting the specific plan path back at the author.
+  - PreToolUse Bash hook — rejected (engineer-rejected; G3 means it can't discriminate the legitimate exception either).
+  - Project-config file enumerating allowed commands — rejected; a new file format and a new drift source.
 - **M2 — `handoff/SKILL.md` §3 clause, checklist-bullet extension, warn-list sentence** (`anchors: root`). The §3 clause's current "its verification command" has an antecedent pointing at the plan; that ambiguity is the authoring-time half of the defect.
 - **M3 — Scope split: systemic fix on this branch, plan corrections as a specified per-branch follow-up** (`anchors: row G1, row G5`).
 
@@ -87,7 +92,14 @@ Deliberately rejected: keying the check on a list of test-runner tokens (`pytest
 - Known false non-suppression worth a one-line comment: an evidence string legitimately naming a doc with `handoff` in its filename (e.g. `docs/handoff-nudge.md`) does not suppress. Document it; do not add a second guard for it.
 - Do **not** add a `RESIDUAL_CHECKLIST_ITEMS` entry — this item is mechanized, so it belongs in `soft_checks`, and adding one would force a paired edit to the drift guard's keyword tuple.
 
-**`claude/.claude/scripts/tests/test_check_handoff.py`** — new `TestCheckSection3PlanCommandProvenance` class, unit-level, mirroring `TestCheckSection3AnchorShapes`'s shape (`_doc(overrides={3: ...})`, assert on the returned list). Cover: no plan path → no warning; plan path with a full-suite command and no verified tag → warns; the same draft with `[verified: CLAUDE.md Commands block]` → suppressed; `[verified: the plan file's Verification section]` → still warns; a plan path inside a backtick span still fires (the raw-scan inversion — this is the assertion that pins point 6 above). The incident-reproduction case (plan path plus a bare full-suite pytest command, untagged) is the class's centerpiece.
+**`claude/.claude/scripts/tests/test_check_handoff.py`** — new `TestCheckSection3PlanCommandProvenance` class, unit-level, mirroring `TestCheckSection3AnchorShapes`'s shape (`_doc(overrides={3: ...})`, assert on the returned list). Cover:
+- No plan path → no warning.
+- Plan path with a full-suite command, no verified tag → warns.
+- Same draft with `[verified: CLAUDE.md Commands block]` → suppressed.
+- `[verified: the plan file's Verification section]` → still warns.
+- Plan path inside a backtick span → still fires (pins ledger row 6, the raw-scan requirement).
+
+The incident-reproduction case (plan path plus a bare full-suite pytest command, untagged) is the class's centerpiece.
 
 `TestCli._clean_draft`'s §3 is `"Run the test suite. [assumed]"` — no plan path, so the new check cannot fire there and `test_clean_fixture_passes_every_hard_check_and_exits_0` needs no change. Leave that fixture alone.
 
@@ -115,7 +127,12 @@ Deliberately rejected: keying the check on a list of test-runner tokens (`pytest
 
 From this worktree:
 
-- `../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py` — the project's documented test command, worktree-relative per README's Tests section. This diff touches `claude/.claude/scripts/` (→ scripts tests), `claude/.claude/skills/handoff/SKILL.md` (→ skills tests, plus scripts and hooks tests via its cross-domain exception), and `.claude/plans/` (no targets), so the selection is scoped, not widened. Running the full suite by hand here would be the exact behavior this plan exists to stop.
+- `../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py` — the project's documented test command, worktree-relative per README's Tests section. This diff touches:
+  - `claude/.claude/scripts/` → scripts tests.
+  - `claude/.claude/skills/handoff/SKILL.md` → skills tests, plus scripts and hooks tests via its cross-domain exception.
+  - `.claude/plans/` → no targets.
+
+  So the selection is scoped, not widened. Running the full suite by hand here would be the exact behavior this plan exists to stop.
 - `../../../.venv/bin/ruff check claude/.claude/` — Python changed.
 - `/skill-review` — hook-enforced by `require-skill-review.sh` because `handoff/SKILL.md` is staged; `git commit` is blocked until its marker is written.
 - `/code-review` before commit, per CLAUDE.md.
