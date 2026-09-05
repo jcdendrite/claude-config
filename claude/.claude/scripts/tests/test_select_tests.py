@@ -1111,6 +1111,10 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "plugins/skill-management/skills/skill-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_claude_enable_tool.py",
      "claude/.claude/settings.json"),
+    ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
+     "claude/.claude/skills/code-review/SKILL.md"),
+    ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
+     "claude/.claude/skills/ready-for-review/SKILL.md"),
 )
 
 

@@ -39,7 +39,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
@@ -3953,40 +3952,50 @@ class TestStowedScriptPathContract:
 
 # --- findings_path wiring in plan-review/ROUTING.md ---
 # See .claude/plans/consult-dispatch-findings-file.md for the design; ledger
-# rows cited in the docstrings below are that plan's assumption ledger.
+# rows cited in the docstrings below are that plan's assumption ledger. The
+# mechanical recipe (info/exclude append, <epoch>-<slug> derivation) moved
+# into claude/.claude/scripts/findings-path-suffix.sh — see
+# .claude/plans/findings-path-script.md — leaving each dispatcher body with
+# only the contract statement (path template, spawn-synchronously rule,
+# read-back protocol).
 #
-# Three tests: the recipe-sync tripwire between code-review/SKILL.md and
-# ROUTING.md, the reviewer-contract coverage backstop for the requirement
-# that only contract-carrying reviewers receive a findings_path, and
-# mechanical execution of ROUTING.md's own HOOK_TEST_FIXTURE recipe.
+# Four tests:
+# 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
+#    verbatim on the two surviving contract tokens.
+# 2. Reviewer-contract coverage backstop: only contract-carrying reviewers
+#    may receive a findings_path.
+# 3. Script-invocation presence check across the three dispatchers.
+# 4. Retired-recipe absence scan across every skill body, so a fourth
+#    dispatcher copy-pasting the old recipe fails rather than passing unseen.
 
 _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 
-# Derivation expressions pinned verbatim, not just the placeholder template —
-# ROUTING.md's wiring paragraph must reuse code-review/SKILL.md:293's shell
-# expressions rather than re-deriving them, so a future edit to `date -u +%s`
-# or `cut -c1-15` in one file would drop the exact substring pinned here and
-# fail, rather than passing a looser template-only check. The background-spawn
-# rule is pinned as the negated phrase actually used ("not `run_in_background`"),
-# not the bare `run_in_background` token — a future edit permitting background
-# spawn would still contain the bare substring and pass while re-introducing
-# the same-turn read-back race the rule exists to prevent.
+# Contract tokens pinned verbatim, not just paraphrased — code-review/SKILL.md
+# and plan-review/ROUTING.md must reuse the same findings_path template and
+# background-spawn rule, so a future edit to either would drop the exact
+# substring pinned here and fail, rather than passing a looser template-only
+# check. The background-spawn rule is pinned as the negated phrase actually
+# used ("not `run_in_background`"), not the bare `run_in_background` token —
+# a future edit permitting background spawn would still contain the bare
+# substring and pass while re-introducing the same-turn read-back race the
+# rule exists to prevent. ready-for-review/SKILL.md is deliberately excluded
+# here: it spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-
+# <suffix>.md`, not the `<agent-name>` placeholder) and says "synchronously"
+# rather than carrying the `not run_in_background` phrase, so its contract
+# statement is not a verbatim match for these two tokens.
 _FINDINGS_PATH_RECIPE_TOKENS = (
-    "$(date +%s)",
-    "$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)",
-    "agent-reviews/<agent-name>-<epoch>-<slug>.md",
-    "git rev-parse --git-path info/exclude",
+    "agent-reviews/<agent-name>-<suffix>.md",
     "not `run_in_background`",
 )
 
 
 def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() -> None:
     """code-review/SKILL.md and plan-review/ROUTING.md must carry the same
-    findings_path derivation expressions, verbatim.
+    findings_path contract tokens, verbatim.
 
     Modeled on test_invalid_skip_rationale_labels_match_across_review_skills
     above — same two-dispatcher-sync shape, applied to the findings_path
-    recipe instead of the skip-rationale label set. Asserts presence per
+    contract instead of the skip-rationale label set. Asserts presence per
     token per file rather than block byte-equality: the surrounding prose
     legitimately differs between a dispatcher-generic paragraph
     (code-review/SKILL.md) and one scoped to reviewers carrying the
@@ -3999,12 +4008,12 @@ def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() ->
 
     for token in _FINDINGS_PATH_RECIPE_TOKENS:
         assert token in code_review_text, (
-            f"code-review/SKILL.md: findings_path recipe token {token!r} missing."
+            f"code-review/SKILL.md: findings_path contract token {token!r} missing."
         )
         assert token in routing_text, (
-            f"plan-review/ROUTING.md: findings_path recipe token {token!r} "
+            f"plan-review/ROUTING.md: findings_path contract token {token!r} "
             "missing — ROUTING.md's findings_path wiring paragraph must reuse "
-            "code-review/SKILL.md's derivation verbatim."
+            "code-review/SKILL.md's contract statement verbatim."
         )
 
 
@@ -4074,93 +4083,60 @@ def test_routing_reviewer_table_agents_carry_file_based_output_contract() -> Non
         )
 
 
-def test_findings_path_fixture_recipe_is_idempotent_and_matches_documented_path_shape(
-    tmp_path: Path,
-) -> None:
-    """Executes ROUTING.md's `findings-path-recipe` HOOK_TEST_FIXTURE in a
-    seeded git repo: the append to `info/exclude` must be genuinely
-    idempotent (running the recipe twice leaves exactly one `agent-reviews/`
-    line), and the derived path must resolve to the documented
-    `agent-reviews/<agent-name>-<epoch>-<slug>.md` shape.
+# The three findings_path dispatchers, keyed by name for parametrize test-id
+# readability. plan-review is keyed on its ROUTING.md co-located file, not
+# SKILL.md, since that's where its findings_path wiring paragraph lives.
+_FINDINGS_PATH_DISPATCHER_BODIES: dict[str, Callable[[], str]] = {
+    "code-review": lambda: _skill_body("code-review"),
+    "plan-review/ROUTING.md": lambda: _ROUTING_MD_PATH.read_text(),
+    "ready-for-review": lambda: _skill_body("ready-for-review"),
+}
 
-    Seeded with one commit (`git commit --allow-empty -m init`, mirroring
-    hooks/tests/conftest.py's `git_repo` fixture) before invoking the
-    recipe: on an unborn HEAD, `git rev-parse --abbrev-ref HEAD` fails with
-    exit 128 rather than resolving a branch name, so an unseeded repo would
-    exercise the derivation's failure path instead of its documented shape.
-    test_skills.py has no conftest.py of its own (ROUTING.md is mapped only
-    to SKILLS_TESTS_DIR by select-tests.py, keeping this test out of
-    hooks/tests/), so the seeding step is written inline rather than
-    inherited from a fixture.
 
-    After the idempotency check, checks out a branch name that is both
-    longer than 20 characters and contains a `/`, exercising two
-    boundaries the default-branch case above leaves untested. Against the
-    short, slash-free default branch, the `cut -c1-20` truncation
-    boundary is never approached, so a regression to `-c1-21` or a
-    dropped `cut` step would still pass. The default branch also never
-    contains a `/`, so a regression that breaks or drops the
-    `tr '/' '-'` step is likewise invisible.
+@pytest.mark.parametrize("dispatcher_name", sorted(_FINDINGS_PATH_DISPATCHER_BODIES))
+def test_findings_path_dispatcher_calls_suffix_script(dispatcher_name: str) -> None:
+    """Each of the three findings_path dispatchers must call
+    findings-path-suffix.sh rather than restating the derivation inline.
+
+    Mirrors TestPrDescriptionCostSectionWiring.test_declares_account_scoped_mode_gate's
+    shape (asserting a body invokes a named script by its literal path), applied
+    to all three dispatchers instead of one.
     """
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True
+    body = _FINDINGS_PATH_DISPATCHER_BODIES[dispatcher_name]()
+    assert "~/.claude/scripts/findings-path-suffix.sh" in body, (
+        f"{dispatcher_name}: no longer calls findings-path-suffix.sh"
     )
 
-    recipe = extract_skill_command(_ROUTING_MD_PATH, "findings-path-recipe")
-    env = dict(os.environ, AGENT_NAME="staff-backend-engineer")
 
-    subprocess.run(["bash", "-c", recipe], cwd=repo, env=env, check=True)
-    second_run = subprocess.run(
-        ["bash", "-c", recipe], cwd=repo, env=env, check=True, capture_output=True, text=True
-    )
+# These three shell expressions must not appear in any skill body now that
+# findings-path-suffix.sh computes them. Absence is checked across the whole
+# skill corpus (below), not just the three known dispatchers — a copy-paste
+# of the retired recipe into a fourth skill would otherwise pass unseen. A
+# literal-substring check like this one can't catch an equivalent alternate
+# spelling (e.g. `date '+%s'`) — it only closes the copy-paste regression
+# shape, not every possible reimplementation.
+_RETIRED_FINDINGS_PATH_RECIPE_EXPRESSIONS = (
+    "$(date +%s)",
+    "$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)",
+    "git rev-parse --git-path info/exclude",
+)
 
-    exclude_lines = (repo / ".git" / "info" / "exclude").read_text().splitlines()
-    assert exclude_lines.count("agent-reviews/") == 1, (
-        f"info/exclude carries {exclude_lines.count('agent-reviews/')} 'agent-reviews/' "
-        f"lines after two runs of the recipe — the append is not idempotent: {exclude_lines!r}"
-    )
 
-    findings_path = second_run.stdout.strip()
-    assert re.fullmatch(
-        r"agent-reviews/staff-backend-engineer-\d+-[A-Za-z0-9-]{1,20}\.md", findings_path
-    ), (
-        f"recipe output {findings_path!r} does not match the documented "
-        "agent-reviews/<agent-name>-<epoch>-<slug>.md shape"
-    )
+def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body() -> None:
+    """None of the three retired findings_path derivation expressions may
+    appear in any SKILL.md (stowed or plugin) or in plan-review/ROUTING.md.
 
-    long_branch_name = "feature/a-very-long-branch-name-here"
-    expected_slug = long_branch_name.replace("/", "-")[:20]
-    subprocess.run(
-        ["git", "checkout", "-q", "-b", long_branch_name], cwd=repo, check=True
-    )
-    third_run = subprocess.run(
-        ["bash", "-c", recipe], cwd=repo, env=env, check=True, capture_output=True, text=True
-    )
-
-    exclude_lines_after_checkout = (repo / ".git" / "info" / "exclude").read_text().splitlines()
-    assert exclude_lines_after_checkout.count("agent-reviews/") == 1, (
-        f"info/exclude carries {exclude_lines_after_checkout.count('agent-reviews/')} "
-        "'agent-reviews/' lines after a third run on a different branch — the append "
-        f"is not idempotent across branches: {exclude_lines_after_checkout!r}"
-    )
-
-    long_branch_findings_path = third_run.stdout.strip()
-    match = re.fullmatch(
-        r"agent-reviews/staff-backend-engineer-(\d+)-([A-Za-z0-9-]+)\.md",
-        long_branch_findings_path,
-    )
-    assert match, (
-        f"recipe output {long_branch_findings_path!r} does not match the documented "
-        "agent-reviews/<agent-name>-<epoch>-<slug>.md shape"
-    )
-    slug = match.group(2)
-    assert slug == expected_slug, (
-        f"recipe derived slug {slug!r} from branch {long_branch_name!r}, expected the "
-        f"exact 20-character, slash-free truncation {expected_slug!r} — 'tr' and 'cut' "
-        "must both run, in that order, on the full branch name"
-    )
+    Modeled on test_ready_for_review_step3_never_produces_a_staged_diff's
+    present-AND-absent shape, but scoped to the whole corpus rather than one
+    file — this is the reachable half of the fourth-file regression: a new
+    dispatcher copy-pasting the retired recipe fails here rather than
+    silently forking the mechanism a second time.
+    """
+    for path in [*_all_skill_md_paths(), _ROUTING_MD_PATH]:
+        text = path.read_text()
+        for expr in _RETIRED_FINDINGS_PATH_RECIPE_EXPRESSIONS:
+            assert expr not in text, (
+                f"{path}: retired findings_path recipe expression {expr!r} still "
+                "present — call findings-path-suffix.sh instead of restating the "
+                "derivation inline"
+            )
