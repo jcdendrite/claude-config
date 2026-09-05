@@ -448,6 +448,23 @@ def test_deny_gate_label_unset_falls_back_to_basename_derived_label() -> None:
     assert reason == "Blocked by scratch-hook gate: scratch body text"
 
 
+def test_deny_gate_label_set_renders_in_reason() -> None:
+    """The common case, direct at the _lib_emit_deny unit layer: a hook that
+    declares DENY_GATE_LABEL gets that exact label in the rendered reason,
+    not the $0-derived fallback the sibling test above covers."""
+    harness = f'DENY_GATE_LABEL="a-declared-label"; . {_LIB_SH}; _lib_emit_deny "scratch body text"'
+    result = subprocess.run(
+        ["bash", "-c", harness, "scratch-hook.sh"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+    assert reason == "Blocked by a-declared-label gate: scratch body text"
+
+
 @pytest.mark.timing
 def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     """Hung jq (sleeping >5s) → DENY via timeout exit=124, within 6s.

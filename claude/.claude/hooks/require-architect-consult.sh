@@ -60,7 +60,7 @@ esac
 
 # Only a reviewer-persona spawn can trip this gate -- a code-writer,
 # general-purpose, Explore, or Plan dispatch is never gated.
-SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
+SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
 _lib_is_reviewer_persona "$SUBAGENT_TYPE" || exit 0
 
 # Machine-wide kill switch, checked before any git call.

@@ -106,7 +106,7 @@ fi
 # or empty planFilePath (Write/Edit/MultiEdit, or an ExitPlanMode call outside
 # plan mode) falls through to the repo-relative check unchanged.
 if [ "$TOOL_NAME" = "ExitPlanMode" ]; then
-  PLAN_MODE_FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.planFilePath // empty')
+  PLAN_MODE_FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.planFilePath // empty')
   if [ -n "$PLAN_MODE_FILE_PATH" ]; then
     # ExitPlanMode's own tool description was checked directly this session and confirms the approval UI renders from the file named by planFilePath, not independently from tool_input.plan: "it will read the plan from the file you wrote... The user will see the contents of your plan file when they review it."
     PLAN_MODE_HASH=$(_lib_capped sha256sum -- "$PLAN_MODE_FILE_PATH" 2>/dev/null | awk '{print $1}')

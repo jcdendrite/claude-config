@@ -22,7 +22,8 @@
 #
 # Known gaps (out of scope by design):
 #   - `gh api repos/OWNER/REPO/pulls/N/merge` — the gh-api path to merge.
-#     Different command shape; excluded by the implementation brief.
+#     Different command shape: this hook inspects tool_input.command text
+#     for a `gh pr merge` invocation, not the REST API surface `gh api` reaches.
 #   - `eval "gh pr merge..."`, `bash -c "gh pr merge..."` — subshell wrappers.
 #     The hook inspects tool_input.command, not the expanded subshell content.
 #     Claude Code agents operating in good faith do not use these forms.
