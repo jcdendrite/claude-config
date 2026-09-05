@@ -518,7 +518,7 @@ class TestCodeWriterSelfReviewScope:
 
 class TestMemoryStoreAuditGatePauseWiring:
     """Pin the two riskiest instructions in memory-store-audit/SKILL.md: the
-    classifier dispatch by name (Step 2) and the per-item AskUserQuestion
+    inline classification contract (Step 2) and the per-item AskUserQuestion
     pause immediately before the filing (Step 4) and quarantine (Step 6)
     calls. Neither pause is hook-enforced, so this prose is the only
     regression coverage standing between an LLM session and an unattended
@@ -531,9 +531,65 @@ class TestMemoryStoreAuditGatePauseWiring:
         assert match, f"memory-store-audit/SKILL.md has no '## Step {step_number}' section"
         return match.group(0)
 
-    def test_step_2_dispatches_memory_store_classifier_by_name(self):
+    def test_step_2_classifies_inline_against_section_5(self):
+        """Step 2 must classify in-session, not dispatch a classifier agent
+        (see docs/design-decisions.md §42 for why the dedicated agent was
+        deleted). The four verdicts stay defined in Step 2 itself, §5 is
+        cited by pointer, and §5's own routing table is not restated
+        verbatim -- a restated copy would drift from the single source of
+        truth in ai-instruction-and-memory-files/SKILL.md.
+        """
         body = _skill_body("memory-store-audit")
-        assert "memory-store-classifier" in self._step_section(body, 2)
+        step_2 = self._step_section(body, 2)
+        assert "memory-store-classifier" not in step_2
+        for verdict in ("migrate", "delete on contact", "keep", "file as issue"):
+            assert verdict in step_2, f"Step 2 no longer defines the {verdict!r} verdict"
+        assert "ai-instruction-and-memory-files" in step_2 and "§5" in step_2
+        assert "Candidate content" not in step_2, (
+            "Step 2 restates §5's routing table verbatim instead of citing it by pointer"
+        )
+
+    def test_step_2_forbids_cross_file_blending(self):
+        """Pins Step 2's no-cross-file-blending instruction -- without it, a
+        multi-project inventory pass risks leaking one project's detail
+        into another project's `file as issue` title bound for a public
+        GitHub issue.
+        """
+        body = _skill_body("memory-store-audit")
+        step_2 = self._step_section(body, 2)
+        assert "never on another file read earlier or" in step_2, (
+            "memory-store-audit/SKILL.md Step 2 no longer states that a "
+            "file's classification must draw only on that file's own "
+            "content. Restore an explicit no-cross-file-blending "
+            "instruction -- see this test's docstring for why a "
+            "multi-project inventory pass needs one."
+        )
+
+    def test_step_2_file_as_issue_verdict_guards_against_private_leak(self):
+        """Pins the `file as issue` verdict's Exclusion and Redaction
+        sub-rules, which guard Step 4's public-GitHub-issue-filing path
+        against private-project-content leakage.
+        """
+        body = _skill_body("memory-store-audit")
+        step_2 = " ".join(self._step_section(body, 2).split())
+        assert (
+            "Exclusion:** a candidate whose underlying gap is only "
+            "reachable via, or evidenced by, private-project-specific "
+            "content must not get this verdict. Downgrade it to *keep*"
+        ) in step_2, (
+            "memory-store-audit/SKILL.md Step 2 no longer downgrades a "
+            "private-project-evidenced candidate away from `file as "
+            "issue` -- restore the Exclusion sub-rule."
+        )
+        assert (
+            "Redaction:** before adding any *file as issue* row, "
+            "generalize or strip private-project-identifying detail "
+            "from the proposed title"
+        ) in step_2, (
+            "memory-store-audit/SKILL.md Step 2 no longer requires "
+            "redacting private-project detail from a `file as issue` "
+            "title before adding it -- restore the Redaction sub-rule."
+        )
 
     def test_step_4_pauses_on_ask_user_question_before_filing(self):
         body = _skill_body("memory-store-audit")

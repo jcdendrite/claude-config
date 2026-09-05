@@ -147,3 +147,7 @@ disk space is a concern: `> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.memory-audit-n
   `<config-dir>/.memory-audit-quarantine/` rather than being removed, so a
   skipped approval costs a quarantined file, not an unrecoverable one. No
   equivalent bound exists for a skipped issue-filing pause.
+- **Step 2's cross-file isolation is prose-only.** `/memory-store-audit`'s
+  per-file classification instruction (pinned by
+  `test_step_2_forbids_cross_file_blending`) is the only enforcement —
+  nothing checks it under a real multi-project pass.
