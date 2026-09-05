@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    CLAUDE_DIR,
+    CONSULT_CLASSIFICATION_TABLE,
     HOOKS_DIR,
     agent_input,
     architect_consult_latch_path,
@@ -25,6 +27,7 @@ from helpers import (
 from .conftest import _dead_pid
 
 LOG_REVIEWER_ROUND_HOOK = HOOKS_DIR / "log-reviewer-round.sh"
+PLAN_ARCHITECT_AGENT = CLAUDE_DIR / "agents" / "plan-architect.md"
 
 REVIEWER_PERSONA = "staff-backend-engineer"
 
@@ -416,6 +419,35 @@ class TestLogReviewerRoundConsultLatch:
         )
         run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
         assert not architect_consult_latch_path(isolated_home / ".claude", repo).exists()
+
+    @pytest.mark.parametrize(
+        "first_line,expect_consult",
+        [pytest.param(fl, ec, id=tid) for fl, ec, tid in CONSULT_CLASSIFICATION_TABLE],
+    )
+    def test_latch_classification_matches_table(
+        self, isolated_home, tmp_path, first_line, expect_consult
+    ):
+        repo = tmp_path / "latch-parity"
+        _init_repo(repo)
+        payload = agent_input(
+            session_id="s-latch-parity",
+            subagent_type="plan-architect",
+            prompt=first_line,
+        )
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+        latch_exists = architect_consult_latch_path(isolated_home / ".claude", repo).exists()
+        assert latch_exists is expect_consult
+
+
+class TestPlanArchitectModeLiteralTripwire:
+    def test_mode_plan_sections_heading_present(self):
+        """A wiring-presence tripwire only -- plan-architect.md is
+        LLM-consumed prose with no runtime to assert behavior against.
+        Anchored on the `## MODE=plan-sections` section heading, the more
+        structurally stable of the file's two occurrences of the literal,
+        not the prose sentence describing it."""
+        body = PLAN_ARCHITECT_AGENT.read_text()
+        assert "## MODE=plan-sections" in body
 
 
 class TestLogReviewerRoundConcurrency:

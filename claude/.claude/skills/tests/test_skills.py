@@ -723,6 +723,89 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         assert "how many were dismissed as undecidable" in self._body()
 
 
+class TestSkillFidelityReviewerArchitectConsultCheck:
+    """Pin the architect-consult check's mandatory-emission contract and the
+    Input-contract correction it depends on.
+
+    The check can never legitimately emit [SILENT-SKIP] -- a reviewer that
+    reverted to treating zero rows as an unmet obligation would silently
+    reintroduce the false-claim risk this forecloses. And the Input
+    contract's two stale clauses must stay corrected:
+    a future edit that reintroduced either -- "every Agent/Task dispatch" or
+    "present only for code-review's obligation" -- would make the agent
+    believe absence of a row proves absence of a dispatch, which the new
+    step's own reasoning depends on being false.
+    """
+
+    def _body(self):
+        """Whitespace-normalized so a substring spanning a markdown line
+        wrap (the body's line width isn't a contract this test pins) still
+        matches -- same convention as this file's other agent/skill-body
+        substring pins."""
+        return " ".join(_agent_body("skill-fidelity-reviewer").split())
+
+    def _section(self, body: str) -> str:
+        start = body.index("## The architect-consult check")
+        end = body.index("## The standard")
+        return body[start:end]
+
+    def test_declares_own_heading_independent_of_code_review_scope(self):
+        """The new check must fire on timeline-presence alone, not only
+        when a completed code-review pass is in scope."""
+        body = self._body()
+        assert "## The architect-consult check" in body
+        assert "independent of whether any `code-review` pass is in scope" in self._section(body)
+
+    def test_silent_skip_named_inapplicable(self):
+        """[SILENT-SKIP] must be explicitly ruled out for this check, with
+        the absence-is-not-evidence reason -- not merely omitted."""
+        section = self._section(self._body())
+        assert "never `[SILENT-SKIP]`" in section
+        assert "absence of a row is not evidence of absence" in section
+
+    def test_states_two_outcome_verdict_set(self):
+        """The check's two honest outcomes -- consult-observed [DISCLOSED]
+        and the dismissed-as-undecidable fallback -- must both appear."""
+        section = self._section(self._body())
+        assert "[DISCLOSED]" in section
+        assert "Dismissed as undecidable" in section
+
+    def test_initiation_not_completion_wording(self):
+        """The check must state a consult dispatch was initiated, never that
+        it completed."""
+        assert "*initiated*, never that it completed" in self._section(self._body())
+
+    def test_input_contract_no_longer_claims_every_agent_task_dispatch(self):
+        """The stale 'every Agent/Task dispatch' claim must be gone --
+        _is_reviewer_subagent_type gates reviewer-spawn rows."""
+        assert "every `Agent`/`Task` dispatch on this branch's main thread" not in self._body()
+
+    def test_input_contract_no_longer_claims_timeline_is_code_review_only(self):
+        """The stale 'present only when checking code-review's
+        spawn-dispatch obligation' claim must be gone -- the timeline now
+        also serves the architect-consult check."""
+        assert "present only when checking" not in self._body()
+
+    def test_input_contract_names_architect_consult_rows(self):
+        """The Input contract must say what the timeline does contain --
+        reviewer-spawn rows plus architect-consult rows, main thread only."""
+        body = self._body()
+        assert "`architect-consult` rows" in body
+        assert "main-thread only, never subagent records" in body
+
+    def test_description_names_architect_consult_check(self):
+        """The frontmatter description must name the third check for a
+        human skimming the roster."""
+        assert "plan-architect consult dispatch" in self._body()
+
+    def test_output_format_has_architect_consult_record_section(self):
+        """The consult-observed record needs its own labeled Output-format
+        slot, excluded from both <N> and <M>."""
+        body = self._body()
+        assert "## Architect consults observed" in body
+        assert "Never counted in `<N>` or `<M>`" in body
+
+
 class TestPrDescriptionTwoModeDispatch:
     """Pin pr-description's author/sync branching, in both directions.
 
