@@ -332,7 +332,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
   [ -z "$rec_type" ] && continue
   case "$rec_type" in
     SENTINEL)
-      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: $field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree."
+      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: $field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, or use the EnterWorktree tool."
       exit 0
       ;;
     CD)
@@ -377,7 +377,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       # whatever `running_cwd` currently holds), an unresolved cd earlier
       # in this command, or an unresolved/ambiguous `-C`.
       if [ "$in_group" = "1" ] || [ "$op" = "||" ] || [ "$op" = "&" ] || [ "$c_status" = "UNRESOLVED" ] || ! $resolvable; then
-        emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd — or spawn an agent with isolation: worktree."
+        emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd."
         exit 0
       fi
 
@@ -433,7 +433,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         continue
       fi
 
-      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
+      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree). See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
       exit 0
       ;;
     *)

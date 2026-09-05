@@ -29,7 +29,7 @@ Always spawn `ciso-reviewer` when the plan touches auth/authz, secrets, tokens, 
 
 Spawn per question (not per file-path domain) — "plan touches backend" isn't enough; the question needs a specific shape.
 
-When you spawn: pick the specialist that serves the question (table below is reference, not roster) and pass plan scope, section, specific question, **Item ownership** routing, plus the **Ledger cross-check** instruction below when the plan carries an assumption ledger. For re-review rounds, pass the prior round's findings-file paths under `agent-reviews/`, falling back to those findings inline when the prior round wrote none — an older round, a denied write, or a fresh worktree. What's been applied stays inline regardless: `marker.sh write plan-review` records only a content hash of the plan set, so there is no on-disk artifact for that half to point at. Reviewers without prior context re-discover; that's wasted spawn.
+When you spawn: pick the specialist that serves the question (table below is reference, not roster) and pass plan scope, section, specific question, **Item ownership** routing, plus the **Ledger cross-check** instruction below when the plan carries an assumption ledger. For re-review rounds, pass the prior round's findings-file paths under `agent-reviews/`, falling back to those findings inline when the prior round wrote none — an older round, a denied write, or a parent worktree created after that round ran. What's been applied stays inline regardless: `marker.sh write plan-review` records only a content hash of the plan set, so there is no on-disk artifact for that half to point at. Reviewers without prior context re-discover; that's wasted spawn.
 
 | Domain | Agent | Focus |
 |--------|-------|-------|
