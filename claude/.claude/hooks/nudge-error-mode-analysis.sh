@@ -52,6 +52,14 @@
 
 INPUT=$(cat 2>/dev/null)
 
+# 1. Source _lib.sh and resolve the active config directory before any
+# ~/.claude-rooted path is built. Fail-open per this hook's own contract
+# (see header): an unresolvable config dir just leaves the nudge dormant.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
 # Extract all four fields in a single jq pass to avoid four separate subshell
 # spawns. Sequential reads from the jq output: each field on its own line
 # handles empty values and paths with spaces correctly. Pre-initialize to ""
@@ -69,17 +77,9 @@ TRANSCRIPT_PATH=""
   IFS= read -r TRANSCRIPT_PATH
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // "")' \
+    | _lib_jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // "")' \
     2>/dev/null
 ) 2>/dev/null || true
-
-# 1. Source _lib.sh and resolve the active config directory before any
-# ~/.claude-rooted path is built. Fail-open per this hook's own contract
-# (see header): an unresolvable config dir just leaves the nudge dormant.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
-CONFIG_DIR=$(_lib_config_dir) || exit 0
 
 # 2. Opt-in gate: dormant unless the contributor has explicitly armed the
 # hook. Absent this file, every invocation exits here before doing any

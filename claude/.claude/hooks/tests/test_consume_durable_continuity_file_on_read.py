@@ -185,6 +185,23 @@ class TestConsumeDurableContinuityFileOnRead:
         assert fixture.exists(), "jq unavailable — hook can't even parse tool_name, must not consume"
         assert result.stdout == "", "jq unavailable — must emit no systemMessage"
 
+    def test_malformed_json_does_not_block_and_emits_no_output(self, isolated_home):
+        """hook-class: informational — malformed stdin must not block the
+        Read tool result. _lib_jq on unparseable input yields empty
+        TOOL_NAME, which the `[ "$TOOL_NAME" = "Read" ]` guard rejects."""
+        env = dict(os.environ)
+        env["HOME"] = str(isolated_home)
+        result = subprocess.run(
+            [str(CONSUME_HOOK)],
+            input="not valid json {{",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+
     def test_read_brief_file_consumes_it(self, isolated_home):
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/briefs/example-task.md")

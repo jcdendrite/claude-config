@@ -43,13 +43,13 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/null)
 case "$TOOL_NAME" in
   Agent | Task) ;;
   *) exit 0 ;;
 esac
 
-SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
+SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
 
 # _resolve_round_context: sets CONFIG_DIR, REPO_ROOT, STATE_KEY as a side
 # effect. Returns 1 (leaving at least one unset) on any resolution
@@ -58,7 +58,7 @@ SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.subagent_type // emp
 _resolve_round_context() {
   CONFIG_DIR=$(_lib_config_dir) || return 1
   local cwd
-  cwd=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+  cwd=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null)
   [ -z "$cwd" ] && cwd="$PWD"
   REPO_ROOT=$(_lib_capped git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   [ -n "$REPO_ROOT" ] || return 1
@@ -68,7 +68,7 @@ _resolve_round_context() {
 
 _record_reviewer_round() {
   local session_id
-  session_id=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+  session_id=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty' 2>/dev/null)
   # A live /plan-review or /ready-for-review fan-out must not consume a
   # round-counting slot. An empty or unusable session_id makes both checks
   # report "not live" (the function's own arity/validity guard), which
@@ -117,7 +117,7 @@ _record_reviewer_round() {
 
 _maybe_write_consult_latch() {
   local prompt first_line
-  prompt=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.prompt // empty' 2>/dev/null)
+  prompt=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.prompt // empty' 2>/dev/null)
   first_line="${prompt%%$'\n'*}"
   # Fail-safe direction: any first line other than the literal
   # MODE=plan-sections -- including an absent one -- is a consult

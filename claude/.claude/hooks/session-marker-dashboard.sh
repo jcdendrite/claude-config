@@ -33,7 +33,12 @@
 # Exit 0 always — this hook must not block session startup.
 
 INPUT=$(cat 2>/dev/null)
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty' 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
@@ -41,9 +46,6 @@ fi
 # SESSION_ID feeds each marker_status path below as a path component ("../"
 # would probe a caller-chosen path's existence/mtime); fail the same way an
 # empty id already does.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 0
 fi
@@ -88,10 +90,10 @@ fi
 
 LEDGER_SUMMARY=""
 if [ ! -f "$CONFIG_DIR/.review-narrative-ledger-disabled" ]; then
-  PAYLOAD_CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+  PAYLOAD_CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null)
   REPO_ROOT=""
   if [ -n "$PAYLOAD_CWD" ]; then
-    REPO_ROOT=$(git -C "$PAYLOAD_CWD" rev-parse --show-toplevel 2>/dev/null)
+    REPO_ROOT=$(_lib_capped git -C "$PAYLOAD_CWD" rev-parse --show-toplevel 2>/dev/null)
   fi
   if [ -n "$REPO_ROOT" ]; then
     REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")

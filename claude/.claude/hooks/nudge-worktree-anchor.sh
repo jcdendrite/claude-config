@@ -73,7 +73,7 @@ CWD=""
   IFS= read -r CWD
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.session_id // ""),(.cwd // "")' \
+    | _lib_jq -r '(.session_id // ""),(.cwd // "")' \
     2>/dev/null
 ) 2>/dev/null || true
 

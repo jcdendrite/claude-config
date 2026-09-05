@@ -101,10 +101,10 @@ fi
 # crashed consume hook that exits non-zero would break the Read tool call.
 INPUT=$(cat) || exit 0
 
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
+TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/null) || exit 0
 [ "$TOOL_NAME" = "Read" ] || exit 0
 
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
+FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
 [ -n "$FILE_PATH" ] || exit 0
 
 case "$FILE_PATH" in
