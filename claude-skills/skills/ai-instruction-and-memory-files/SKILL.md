@@ -50,7 +50,7 @@ count undercounts density (long-paragraph lines bury rules); see
 `docs/instruction-file-sizing-evidence.md` §3-4 for what the placement
 literature actually supports and does not support before citing "lost in
 the middle" for rule placement. Apply the
-**behavior test** below per line; place critical rules near start or end. CLAUDE.md is **advisory** while
+**behavior test** below per line. CLAUDE.md is **advisory** while
 hooks are **deterministic**; they guarantee the action happens — prefer a
 hook or structural test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
 

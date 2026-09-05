@@ -37,12 +37,15 @@ every figure in this section as **asserted, not measured**.
   > instructions. Claude scans structure the same way readers do: organized
   > sections are easier to follow than dense paragraphs."
 
-  The 200-line target is scoped to CLAUDE.md specifically: "This limit
-  applies only to `MEMORY.md`. Claude Code loads a CLAUDE.md file of up to
-  4 MiB in full and skips a larger file. Shorter files produce better
-  adherence." The 4 MiB figure is a hard skip threshold, not a
-  recommendation — a file under it loads in full regardless of size, and a
-  file over it is silently dropped.
+  The 200-line figure for CLAUDE.md is a stated recommendation with no
+  enforcement mechanism, not a hard limit — the docs draw that same
+  distinction themselves: "This limit applies only to `MEMORY.md`. Claude
+  Code loads a CLAUDE.md file of up to 4 MiB in full and skips a larger
+  file. Shorter files produce better adherence." The truncation mechanism
+  described elsewhere on the page is MEMORY.md-only; CLAUDE.md's only hard
+  technical limit is the 4 MiB full-file skip. The 4 MiB figure is a hard
+  skip threshold, not a recommendation — a file under it loads in full
+  regardless of size, and a file over it is silently dropped.
 
   The same page states `MEMORY.md`'s load window: "The first 200 lines of
   `MEMORY.md`, or the first 25KB, whichever comes first, are loaded at the

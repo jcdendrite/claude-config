@@ -722,3 +722,11 @@ class TestFindDuplicatePathsSets:
             [(file_a, ["**/*.sql", "**/*.py"]), (file_b, ["**/*.sql"])]
         )
         assert duplicates == {}
+
+    def test_paths_lists_in_different_order_are_still_flagged_as_duplicate(self, tmp_path):
+        file_a = tmp_path / "a.md"
+        file_b = tmp_path / "b.md"
+        duplicates = find_duplicate_paths_sets(
+            [(file_a, ["**/*.sql", "**/*.py"]), (file_b, ["**/*.py", "**/*.sql"])]
+        )
+        assert duplicates == {frozenset(["**/*.sql", "**/*.py"]): [file_a, file_b]}

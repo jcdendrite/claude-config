@@ -37,6 +37,24 @@ def make_bytes(n: int, filler: str = "a") -> str:
     return filler * (n - 1) + "\n"
 
 
+def make_multibyte_bytes(n: int, filler: str = "é") -> str:
+    """Return content that is exactly n bytes (UTF-8 encoded), padded with a
+    multi-byte filler character plus a trailing newline. Isolates byte count
+    from character/codepoint count: `filler` must encode to more than one
+    byte, so a test built on this can distinguish `wc -c` semantics from a
+    codepoint count, which every `make_bytes` (single-byte ASCII filler)
+    test cannot. `n - 1` must be evenly divisible by the filler's UTF-8
+    byte length so the padding lands on an exact character boundary."""
+    filler_byte_length = len(filler.encode("utf-8"))
+    if filler_byte_length < 2:
+        raise ValueError(f"filler {filler!r} must be multi-byte in UTF-8")
+    if (n - 1) % filler_byte_length != 0:
+        raise ValueError(
+            f"n - 1 ({n - 1}) must be divisible by filler byte length {filler_byte_length}"
+        )
+    return filler * ((n - 1) // filler_byte_length) + "\n"
+
+
 def make_repo_with_byte_file(tmp_path: Path, target_path: str, head_bytes: int) -> Path:
     """Git repo with `target_path` committed at exactly `head_bytes` bytes."""
     repo = tmp_path / "repo"
@@ -342,6 +360,22 @@ class TestCheckClaudeMdLength:
             == "allow"
         )
 
+    def test_byte_cap_already_over_limit_same_size_allows(self, isolated_home, tmp_path):
+        """HEAD over BYTE_LIMIT, staged at the same byte count (different
+        content, not growing) → allow. Byte-dimension analog of
+        test_already_over_limit_same_size_allows."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 10)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 10, filler="b"))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
     def test_byte_cap_under_limit_growing_allows(self, isolated_home, tmp_path):
         """HEAD and staged both under BYTE_LIMIT: growing but never crossing
         the limit → allow."""
@@ -419,6 +453,28 @@ class TestCheckClaudeMdLength:
         assert str(new_bytes) in reason
         assert str(BYTE_LIMIT + 1) in reason
         assert str(BYTE_LIMIT) in reason
+
+    def test_byte_cap_multibyte_utf8_content_denies_at_byte_threshold(
+        self, isolated_home, tmp_path
+    ):
+        """Staged content's UTF-8 byte count crosses BYTE_LIMIT while its
+        character/codepoint count stays well under it — isolates `wc -c`
+        byte semantics from a codepoint count, which no `make_bytes`
+        (single-byte ASCII filler) test can distinguish."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        multibyte_content = make_multibyte_bytes(BYTE_LIMIT + 1, filler="é")
+        assert len(multibyte_content.encode("utf-8")) == BYTE_LIMIT + 1
+        assert len(multibyte_content) < BYTE_LIMIT
+        (repo / CLAUDE_MD_PATH).write_text(multibyte_content, encoding="utf-8")
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
 
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, tmp_path
