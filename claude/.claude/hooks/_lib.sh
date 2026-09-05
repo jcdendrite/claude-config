@@ -2523,3 +2523,75 @@ _lib_append_line_locked() {
   fi
   printf '%s\n' "$line" >> "$file"
 }
+
+# _lib_resume_context_tmpdir_root
+# The one home for resume-context.sh's temp-dir-root formula
+# (${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}), shared by the move itself and
+# by _lib_resume_context_index_file below -- a second independent copy of
+# this formula would silently split the index from the destinations it
+# indexes on any future rename.
+_lib_resume_context_tmpdir_root() {
+  printf '%s\n' "${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
+}
+
+# _lib_resume_context_index_file
+# Prints the path to the per-uid consumed-continuity-file index
+# (<tmpdir-root>/resume-context-index-$EUID/consumed.tsv), creating and
+# permission-guarding its parent directory first.
+# Returns 1, printing nothing, if the parent dir is a symlink or not owned
+# by $EUID. /tmp's predictable per-uid path makes it plantable by another
+# local user, so ownership -- not the chmod below -- is the actual control.
+# mkdir(2)'s atomicity plus the -O check closes the race: a successful call
+# always yields a directory owned by the calling EUID, and a failed call is
+# caught by `[ -O ]` evaluating false since forging EUID ownership needs
+# privilege an attacker doesn't have.
+_lib_resume_context_index_file() {
+  local dir
+  dir="$(_lib_resume_context_tmpdir_root)/resume-context-index-$EUID"
+  # EEXIST here is the expected steady state from the second call onward;
+  # left unguarded by design — safe under `set -e` only because this
+  # function always runs inside a command substitution (`$(...)`), never
+  # called directly. A future direct call would need its own `|| true`.
+  ( umask 077; mkdir -- "$dir" ) 2>/dev/null
+  [ ! -L "$dir" ] && [ -d "$dir" ] && [ -O "$dir" ] || return 1
+  # The repair chmod below closes a check-then-act window only because
+  # $TMPDIR_ROOT is a sticky-bit (1777) directory in production: sticky bit
+  # is what stops a non-owner from unlinking/renaming this directory entry
+  # even with world-write on the parent. RESUME_CONTEXT_TMPDIR is
+  # documented test-only, so production always targets real /tmp.
+  chmod 700 -- "$dir" 2>/dev/null
+  printf '%s\n' "$dir/consumed.tsv"
+}
+
+# _lib_resume_context_retention_cutoff
+# Prints the UTC ISO8601 timestamp (%Y-%m-%dT%H:%M:%SZ) 30 days before now,
+# the same stamp format record_consumed_destination writes, for pruning
+# consumed.tsv rows older than that cutoff by lexical comparison. Returns
+# 1, printing nothing, if the cutoff can't be computed -- callers treat
+# that as "skip pruning this round," never as a reason to block the append.
+# Computed via epoch arithmetic rather than `date -d`/`date -v` relative
+# syntax, since those are GNU- and BSD-specific respectively with no shared
+# form and this repo targets macOS system bash 3.2 (line ~901). Only the
+# epoch-to-ISO8601 conversion needs the GNU/BSD fork below; `date -u +%s`
+# and the subtraction are portable as-is.
+_lib_resume_context_retention_cutoff() {
+  local now_epoch cutoff_epoch
+  now_epoch=$(date -u +%s) || return 1
+  cutoff_epoch=$(( now_epoch - 30*24*60*60 ))
+  date -u -d "@$cutoff_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
+    date -u -r "$cutoff_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null
+}
+
+# _lib_print_recovery_hint DEST
+# Prints, to stderr, the reload command a human would run to load a moved
+# continuity file back into a session's system prompt. Shared by
+# resume-context.sh (after a launch-mode move) and
+# find-consumed-continuity-file.sh (after resolving a slug to a still-live
+# destination), so the reload string can't drift between the two callers.
+# Uses the literal `claude`, not $RESUME_CONTEXT_LAUNCHER: this is a hint
+# for a human to run manually, potentially in a later shell/session where
+# that override won't be set.
+_lib_print_recovery_hint() {
+  local dest="$1"
+  printf 'reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
+}

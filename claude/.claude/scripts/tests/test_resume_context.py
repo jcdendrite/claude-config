@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 _SCRIPT = Path(__file__).parent.parent / "resume-context.sh"
@@ -85,7 +86,9 @@ class TestLaunchMode:
         """The not-found branch must name the actual RESUME_CONTEXT_TMPDIR in
         use (not a hardcoded /tmp), and include the reboot caveat, so a human
         who re-runs resume-context on an already-consumed path is pointed at
-        where the moved copy lives."""
+        where the moved copy lives. It must also name the lookup script with
+        the requested file's own basename, giving that human a second,
+        cross-session recovery path alongside the ls -t glob above."""
         stub, _ = _install_recorder(tmp_path)
         missing = tmp_path / "does-not-exist-handoff.md"
         result = _run(
@@ -96,6 +99,7 @@ class TestLaunchMode:
         assert f"{tmp_path}/resume-context.*" in result.stderr
         assert "cleared on reboot" in result.stderr
         assert "unrecoverable" in result.stderr
+        assert "find-consumed-continuity-file.sh does-not-exist-handoff.md" in result.stderr
 
     def test_happy_path_moves_and_launches(self, tmp_path: Path) -> None:
         stub, recorder = _install_recorder(tmp_path)
@@ -545,3 +549,324 @@ class TestLegacyConfigDirFallback:
         assert result.returncode != 0
         assert "not found" in result.stderr
         assert "legacy location" not in result.stderr
+
+
+def _index_path(tmpdir_root: Path) -> Path:
+    return tmpdir_root / f"resume-context-index-{os.geteuid()}" / "consumed.tsv"
+
+
+def _stamp(days_ago: float) -> str:
+    """A stamp in record_consumed_destination's own format, `days_ago` days
+    before now -- used to build retention-sweep fixtures without hardcoding
+    a calendar date that ages past the 30-day cutoff as the suite's clock
+    moves forward."""
+    return (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class TestConsumedIndex:
+    """Coverage for record_consumed_destination, the best-effort append run
+    after a successful move and before the destination's mode-fixing chmod.
+    """
+
+    def test_consume_only_appends_one_row_naming_dest_and_source(self, tmp_path: Path) -> None:
+        stub, _ = _install_recorder(tmp_path)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        dest = result.stdout.strip()
+        rows = _index_path(tmp_path).read_text().splitlines()
+        assert len(rows) == 1
+        _stamp, row_dest, row_src = rows[0].split("\t")
+        assert row_dest == dest
+        assert row_src == str(src)
+
+    def test_launch_mode_also_appends_a_row_and_still_execs_launcher(self, tmp_path: Path) -> None:
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            [str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert recorder.exists()
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        rows = _index_path(tmp_path).read_text().splitlines()
+        assert len(rows) == 1
+        assert rows[0].split("\t")[1] == str(moved[0])
+
+    def test_index_file_and_directory_modes_on_first_creation(self, tmp_path: Path) -> None:
+        stub, _ = _install_recorder(tmp_path)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        index = _index_path(tmp_path)
+        assert stat.S_IMODE(index.stat().st_mode) == 0o600
+        assert stat.S_IMODE(index.parent.stat().st_mode) == 0o700
+
+    def test_preexisting_loose_index_file_is_tightened_on_next_append(self, tmp_path: Path) -> None:
+        stub, _ = _install_recorder(tmp_path)
+        index = _index_path(tmp_path)
+        index.parent.mkdir(parents=True)
+        index.parent.chmod(0o700)
+        # Stamp must stay recent (not a hardcoded past date), or the
+        # retention prune below would drop it and defeat this test's own
+        # intent -- proving a loose-permission row survives a repair pass.
+        index.write_text(f"{_stamp(1)}\t/tmp/stale-dest\t/tmp/stale-src\n")
+        index.chmod(0o644)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert stat.S_IMODE(index.stat().st_mode) == 0o600
+        assert len(index.read_text().splitlines()) == 2
+
+    def test_symlinked_index_directory_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
+        stub, _ = _install_recorder(tmp_path)
+        real_dir = tmp_path / "elsewhere"
+        real_dir.mkdir()
+        _index_path(tmp_path).parent.symlink_to(real_dir)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
+        assert not src.exists()
+        assert not (real_dir / "consumed.tsv").exists()
+
+    def test_symlinked_index_file_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
+        """Distinct from the directory-symlink case above: here the parent
+        directory is legitimate and the index *file* itself is the
+        symlink -- record_consumed_destination's own `[ -L "$index" ]`
+        guard, not _lib_resume_context_index_file's directory guard."""
+        stub, _ = _install_recorder(tmp_path)
+        index = _index_path(tmp_path)
+        index.parent.mkdir(parents=True)
+        index.parent.chmod(0o700)
+        real_target = tmp_path / "elsewhere.tsv"
+        real_target.write_text("not a real index\n")
+        index.symlink_to(real_target)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
+        assert not src.exists()
+        assert real_target.read_text() == "not a real index\n"
+
+    def test_src_containing_newline_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
+        """resume-context.sh:129 -- an embedded newline in $src would forge
+        an extra TSV row if written through; the guard must skip the append
+        entirely rather than escaping or truncating it."""
+        stub, _ = _install_recorder(tmp_path)
+        src = tmp_path / "foo\ntask.md"
+        src.write_bytes(b"hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
+        assert not src.exists()
+        assert not _index_path(tmp_path).exists()
+
+    def test_row_exceeding_length_cap_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
+        """resume-context.sh's 2048-byte row cap (staff-backend-engineer
+        finding): bash's `printf` builtin chunks a write into multiple
+        write(2) calls past roughly 4096 bytes, which is no longer atomic
+        under O_APPEND. A source path long enough to push the serialized
+        row past the cap must skip the append -- fail closed, the same
+        shape as the newline-forging guard above -- not fall back to a
+        riskier write. Uses nested short directory components (each well
+        under the 255-byte single-component limit) to build a long total
+        path without tripping ENAMETOOLONG."""
+        stub, _ = _install_recorder(tmp_path)
+        deep = tmp_path
+        for _ in range(15):
+            deep = deep / ("a" * 150)
+        deep.mkdir(parents=True)
+        src = deep / "task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
+        assert not src.exists()
+        assert not _index_path(tmp_path).exists()
+
+    def test_normal_length_row_still_appends(self, tmp_path: Path) -> None:
+        """Regression guard against an off-by-one in the length-cap check
+        above: an ordinary short src/dest pair must not be caught by it."""
+        stub, _ = _install_recorder(tmp_path)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        rows = _index_path(tmp_path).read_text().splitlines()
+        assert len(rows) == 1
+
+    def test_row_older_than_30_days_is_pruned_on_next_append(self, tmp_path: Path) -> None:
+        stub, _ = _install_recorder(tmp_path)
+        index = _index_path(tmp_path)
+        index.parent.mkdir(parents=True)
+        index.parent.chmod(0o700)
+        index.write_text(f"{_stamp(31)}\t/tmp/old-dest\t/tmp/old-src\n")
+        index.chmod(0o600)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        rows = index.read_text().splitlines()
+        assert len(rows) == 1
+        assert "old-src" not in rows[0]
+
+    def test_row_within_30_days_survives_next_append(self, tmp_path: Path) -> None:
+        stub, _ = _install_recorder(tmp_path)
+        index = _index_path(tmp_path)
+        index.parent.mkdir(parents=True)
+        index.parent.chmod(0o700)
+        index.write_text(f"{_stamp(29)}\t/tmp/recent-dest\t/tmp/recent-src\n")
+        index.chmod(0o600)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        rows = index.read_text().splitlines()
+        assert len(rows) == 2
+        assert any("recent-src" in row for row in rows)
+
+    def test_ten_sequential_consumes_produce_ten_well_formed_rows(self, tmp_path: Path) -> None:
+        """Proves absence of corruption without concurrency -- not the
+        no-lock design's actual claim, which the concurrent-writer test
+        below covers."""
+        stub, _ = _install_recorder(tmp_path)
+        for i in range(10):
+            src = tmp_path / f"foo{i}-task.md"
+            src.write_text(f"hello {i}\n")
+            result = _run(
+                ["--consume-only", str(src)],
+                {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+            )
+            assert result.returncode == 0, result.stderr
+
+        rows = _index_path(tmp_path).read_text().splitlines()
+        assert len(rows) == 10
+        for row in rows:
+            assert len(row.split("\t")) == 3, f"malformed row: {row!r}"
+
+    def test_concurrent_consumes_produce_no_interleaved_or_truncated_rows(self, tmp_path: Path) -> None:
+        """The actual test of the no-lock design's central claim
+        (ciso-reviewer + staff-sdet finding): launches several real
+        --consume-only subprocesses concurrently against the same index,
+        which the sequential test above cannot exercise at all, since
+        sequential invocations never race on the shared append.
+        Relies on Popen-launch scheduling jitter for genuine overlap rather
+        than an explicit synchronization barrier -- a future flake
+        investigation should not mistake incidental non-overlap for a
+        passing invariant."""
+        stub, _ = _install_recorder(tmp_path)
+        sources = []
+        for i in range(8):
+            src = tmp_path / f"concurrent{i}-task.md"
+            src.write_text(f"hello {i}\n")
+            sources.append(src)
+
+        env = dict(os.environ)
+        env.update({"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)})
+        procs = [
+            subprocess.Popen(
+                [str(_SCRIPT), "--consume-only", str(src)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            for src in sources
+        ]
+        outputs = [proc.communicate() for proc in procs]
+        for proc, (_stdout, stderr) in zip(procs, outputs, strict=True):
+            assert proc.returncode == 0, stderr
+
+        rows = _index_path(tmp_path).read_text().splitlines()
+        assert len(rows) == len(sources)
+        for row in rows:
+            fields = row.split("\t")
+            assert len(fields) == 3, f"malformed (truncated or merged) row: {row!r}"
+            assert fields[1], f"row missing a destination field: {row!r}"
+            assert fields[2], f"row missing a source field: {row!r}"
+
+    def test_reader_finds_the_writer_row_end_to_end(self, tmp_path: Path) -> None:
+        """Contract test at the writer/reader boundary (staff-sdet finding):
+        invokes the real resume-context.sh and the real
+        find-consumed-continuity-file.sh as two separate subprocesses under
+        one shared RESUME_CONTEXT_TMPDIR, so a future edit reintroducing two
+        independent copies of the tmpdir-root formula fails here even
+        though each script's own unit tests would still pass in isolation.
+        """
+        stub, _ = _install_recorder(tmp_path)
+        src = tmp_path / "shared-boundary-task.md"
+        src.write_text("hello brief\n")
+        write_result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert write_result.returncode == 0, write_result.stderr
+        dest = write_result.stdout.strip()
+
+        reader_script = Path(__file__).parent.parent / "find-consumed-continuity-file.sh"
+        env = dict(os.environ)
+        env["RESUME_CONTEXT_TMPDIR"] = str(tmp_path)
+        read_result = subprocess.run(
+            [str(reader_script), "shared-boundary"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert read_result.returncode == 0, read_result.stderr
+        assert dest in read_result.stdout

@@ -77,8 +77,10 @@
 # - resume-context.sh moves the file, then chmods it, and only prints the
 #   destination once both succeed — so a chmod failure leaves the file
 #   moved with empty stdout here, and neither output channel reports it.
-#   Not closed: closing it means reordering resume-context.sh's move/chmod/
-#   print sequence, which is outside this hook.
+#   A chmod failure after a successful move still leaves the destination
+#   recorded in resume-context.sh's cross-session index (see docs/scripts.md's
+#   find-consumed-continuity-file.sh entry), so it stays recoverable even
+#   though neither of this hook's own two channels reports it.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.

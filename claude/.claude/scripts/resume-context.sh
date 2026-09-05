@@ -40,13 +40,16 @@
 # - Launch mode prints the move and a reload hint to stderr before exec'ing
 #   the launcher. This is best-effort UX, not the recovery guarantee: it may
 #   not survive `exec` into an alt-screen TUI, and is lost entirely under a
-#   piped or `-p` invocation. It's fine either way — a successful exec means
-#   you're already resuming, and the not-found branch below is the
-#   dependable recovery path if you need to look back later. This line
-#   includes the original source path (which can embed the continuity
-#   file's slug), so it assumes the invoking terminal/session isn't itself
-#   being captured to a shared or lower-trust log (script(1), tmux/terminal
-#   logging, CI log capture on a shared runner).
+#   piped or `-p` invocation. That's fine either way — a successful exec
+#   means you're already resuming, and the not-found branch below is the
+#   dependable recovery path if you need to look back later.
+# - This line includes the original source path, which can embed the
+#   continuity file's slug. Printing it assumes the invoking
+#   terminal/session isn't itself being captured to a shared or
+#   lower-trust log, such as:
+#     - script(1)
+#     - tmux/terminal logging
+#     - CI log capture on a shared runner
 # - Consume-only mode's stdout contract is exactly the destination path and
 #   nothing else (a single line, no trailing content) — a downstream
 #   PostToolUse hook parses this via command substitution.
@@ -56,6 +59,12 @@
 #   reads as "nothing recoverable").
 # - The legacy-location fallback (below) prints the resolved legacy path to
 #   stderr on use — same sensitivity class as the not-found hint above.
+# - A third, durable-enough channel: every successful move also appends a
+#   <timestamp, destination, source> row to a per-uid index under the same
+#   temp-dir root (_lib_resume_context_index_file), so a *different* session
+#   can resolve the destination later — see find-consumed-continuity-file.sh's
+#   own header for why and how. Best-effort only, per
+#   record_consumed_destination's own doc comment below.
 #
 # Known limitations:
 # - Shell *aliases* for `claude` are not visible here (aliases aren't
@@ -89,6 +98,9 @@
 #   not on the continuity file itself.
 set -euo pipefail
 
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "$0")/../hooks/_lib.sh"
+
 usage() {
   cat >&2 <<'EOF'
 Usage: resume-context.sh [--cwd <dir>] <continuity-file-path>
@@ -96,15 +108,63 @@ Usage: resume-context.sh [--cwd <dir>] <continuity-file-path>
 EOF
 }
 
-# Prints the reload command a human would run to load a moved continuity
-# file back into a session's system prompt. Kept in one place (rather than
-# inlined at each call site) so the reload string can't drift between the
-# launch-mode announcement and any future caller. Uses the literal `claude`,
-# not $LAUNCHER: this is a hint for a human to run manually, potentially in a
-# later shell/session where $RESUME_CONTEXT_LAUNCHER won't be set.
+# Delegates to the shared implementation in _lib.sh so the reload string
+# can't drift between this script's launch-mode announcement and
+# find-consumed-continuity-file.sh's own reload hint.
 print_recovery_hint() {
-  local dest="$1"
-  printf 'resume-context.sh: reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
+  _lib_print_recovery_hint "$1"
+}
+
+# record_consumed_destination SRC DEST
+# Best-effort append of a <timestamp, destination, source> row to the
+# per-uid index, run after a successful move and before the mode-fixing
+# chmod below so the index still names the destination even if that chmod
+# later fails. Any guard failure below skips the write entirely and never
+# falls back to a looser path -- the move is the contract, not the index.
+# Also best-effort-prunes rows older than 30 days before appending (see
+# _lib_resume_context_retention_cutoff) -- a failed prune step leaves the
+# index untouched and falls through to the append unaffected.
+record_consumed_destination() {                 # invoked as `... || true`
+  local src="$1" dest="$2" index stamp row cutoff pruned
+  case "$src" in *$'\n'*) return 0 ;; esac      # a newline would forge a row
+  # $dest gets no equivalent guard: it is always a mktemp-produced path
+  # under $TMPDIR_ROOT, never attacker-reachable input, unlike $src above.
+  index=$(_lib_resume_context_index_file) || return 0
+  [ -L "$index" ] && return 0
+  [ -e "$index" ] && chmod 600 -- "$index" 2>/dev/null
+  stamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 0
+  row="$stamp"$'\t'"$dest"$'\t'"$src"
+  # bash's `printf` builtin chunks output into multiple write(2) calls past
+  # roughly 4096 bytes (verified via strace), and only a single write(2)
+  # call is atomic under O_APPEND -- 2048 leaves headroom below that
+  # threshold for cross-platform/shell-version variance. $stamp and $dest
+  # are bounded and script-controlled; $src has no length cap. The +1
+  # accounts for the trailing newline the actual write also carries.
+  [ "$(( ${#row} + 1 ))" -gt 2048 ] && return 0
+  # No `--` before $index in either awk call below: mawk (Debian/Ubuntu's
+  # default `awk`) doesn't recognize it as an end-of-options marker and
+  # tries to open it as a filename. $index is always an absolute,
+  # script-controlled mktemp-area path, never attacker-influenced, so
+  # omitting `--` is safe here.
+  # The read-only staleness check below gates the destructive rewrite that
+  # follows. An unconditional mktemp+mv swap on every append would replace
+  # the whole index each time, capable of clobbering a concurrent writer's
+  # plain `>>` even when nothing in the index is actually stale. Gating on
+  # real staleness confines that residual race to the narrow case of an
+  # index holding both a 30-day-stale row and a concurrent fresh writer at
+  # the same instant.
+  if [ -e "$index" ] && cutoff=$(_lib_resume_context_retention_cutoff 2>/dev/null) &&
+    awk -F'\t' -v cutoff="$cutoff" '$1 < cutoff { stale = 1 } END { exit !stale }' "$index" 2>/dev/null; then
+    pruned=$(mktemp "${index}.prune.XXXXXX" 2>/dev/null) && {
+      awk -F'\t' -v cutoff="$cutoff" '$1 >= cutoff' "$index" > "$pruned" 2>/dev/null &&
+        mv -- "$pruned" "$index" 2>/dev/null &&
+        chmod 600 -- "$index" 2>/dev/null
+    }
+    [ -n "${pruned:-}" ] && [ -e "$pruned" ] && rm -f -- "$pruned" 2>/dev/null
+  fi
+  ( umask 077; printf '%s\n' "$row" >> "$index" ) 2>/dev/null
+  chmod 600 -- "$index" 2>/dev/null
+  return 0
 }
 
 CONSUME_ONLY=0
@@ -158,7 +218,7 @@ fi
 # invocation documented by both GNU coreutils and BSD/macOS mktemp(1) — no
 # GNU-only extension relied on here. Hoisted above the not-found check so
 # both the not-found hint and the move below share one definition.
-TMPDIR_ROOT="${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
+TMPDIR_ROOT=$(_lib_resume_context_tmpdir_root)
 
 # Also check the legacy $HOME/.claude path before giving up, mirroring this
 # repo's "union, not swap" guard-config fallbacks. Trailing slash stripped
@@ -182,6 +242,7 @@ if [ ! -f "$SRC" ]; then
   printf 'resume-context.sh: it may already have been consumed — moved copies are at\n' >&2
   printf 'resume-context.sh:   %s/resume-context.* (newest first: ls -t)\n' "$TMPDIR_ROOT" >&2
   printf 'resume-context.sh: those are cleared on reboot; if none remain, it is unrecoverable.\n' >&2
+  printf 'resume-context.sh: or look it up: %s/scripts/find-consumed-continuity-file.sh %s\n' "$CONFIG_DIR" "${SRC##*/}" >&2
   exit 1
 fi
 
@@ -211,6 +272,12 @@ if ! mv -- "$SRC" "$DEST"; then
   printf 'resume-context.sh: failed to move %s to %s\n' "$SRC" "$DEST" >&2
   exit 1
 fi
+
+# Best-effort: `|| true` disables `set -e` for record_consumed_destination's
+# whole body by design, so an index-write failure can never abort a move
+# that has already succeeded. See that function's own doc comment for why
+# it runs before the chmod below.
+record_consumed_destination "$SRC" "$DEST" || true
 
 # mv/rename(2) replaces DEST's inode with SRC's, so DEST ends up with SRC's
 # permissions (whatever the writing skill left them at), not mktemp's 0600

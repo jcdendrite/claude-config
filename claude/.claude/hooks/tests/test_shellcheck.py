@@ -44,6 +44,7 @@ KNOWN_EXTENSIONLESS_SHELL_FILES = frozenset(
         "claude/.local/bin/claude-auto",
         "claude/.local/bin/claude-workflow",
         "claude/.local/bin/cleanup-merged-branches",
+        "claude/.local/bin/find-consumed-continuity-file",
         "claude/.local/bin/register-marketplace",
         "claude/.local/bin/resume-context",
         "claude/.local/bin/token-analyzer",
