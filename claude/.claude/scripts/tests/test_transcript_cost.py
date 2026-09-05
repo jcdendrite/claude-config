@@ -2460,18 +2460,18 @@ class TestCostSummary:
 class TestListPriceCaveat:
     """The two render paths diverge on purpose. `--summary` wraps the caveat
     in a GFM `> [!IMPORTANT]` alert for a GitHub PR body. The full report
-    prints it as a plain sentence instead, because a terminal renders
-    `> [!IMPORTANT]` as literal characters, and because its own fixed-width
-    tables need a code fence to publish — inside which an alert would also
-    render as literal text."""
+    prints it as a plain sentence instead. A terminal renders
+    `> [!IMPORTANT]` as literal characters, and the full report's own
+    fixed-width tables need a code fence to publish, inside which an alert
+    would render as literal text too."""
 
     def test_summary_caveat_alert_leads_block_and_no_markdown_heading_anywhere(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Pins two facts about --summary's output: its first two lines are the
-        caveat wrapped as a GFM alert, and no '## '-prefixed heading appears
-        anywhere (one would collide with pr-description's own
-        '## Cost (list-price estimate)' wrapper)."""
+        """Pins two facts about --summary's output. Its first two lines are
+        the caveat wrapped as a GFM alert. No '## '-prefixed heading appears
+        anywhere — one would collide with pr-description's own
+        '## Cost (list-price estimate)' wrapper."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)

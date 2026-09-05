@@ -23,7 +23,7 @@ from transcript_analysis import corpus, pricing, redaction, render, scope
 _WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
 
 # Printed as both render paths' first content line (see _cost_report).
-# The full report prints this sentence directly; --summary wraps it in
+# The full report prints this sentence directly. --summary wraps it in
 # _LIST_PRICE_CAVEAT_ALERT below. Two-part because readers span subscription,
 # API-billed, and contracted-rate accounts, which have three different
 # notions of "what I'm billed."
