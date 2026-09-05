@@ -27,8 +27,16 @@ mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
 branch=$(git rev-parse --abbrev-ref HEAD)
 [[ "$branch" != "HEAD" ]] || exit 2
 
-if ! cost_output=$("$(dirname "$0")/transcript-analysis.py" cost --this-repo --branches "$branch" --summary); then
-  echo "pr-cost-section.sh: transcript-analysis.py cost call failed" >&2
+# The 2>/dev/null below discards child stderr (request-ID-bearing NOTICE
+# lines, format-drift WARNINGs) so it never reaches a public PR body.
+# Accepted residual: an agent invoking transcript-analysis.py directly,
+# bypassing this wrapper, can still capture that stderr -- no hook enforces
+# the wrapper, since the caller is the same already-trusted agent drafting
+# the PR body.
+if ! cost_output=$("$(dirname "$0")/transcript-analysis.py" cost --this-repo --branches "$branch" --summary 2>/dev/null); then
+  echo "pr-cost-section.sh: transcript-analysis.py cost call failed -- re-run" \
+    "transcript-analysis.py cost --this-repo --branches $branch --summary" \
+    "directly to see the diagnostic this redirect discarded" >&2
   exit 3
 fi
 printf '%s\n' "$cost_output"

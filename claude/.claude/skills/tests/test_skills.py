@@ -915,6 +915,10 @@ class TestPrDescriptionCostSectionWiring:
         assert "pr-cost-disclosure" in body
         assert "~/.claude/scripts/pr-cost-section.sh" in body
 
+    def test_declares_cost_heading_literal(self):
+        body = self._body()
+        assert "## Cost (list-price estimate)" in body
+
 
 class TestPrDescriptionProseTighteningPassWiring:
     """Wiring tripwire for the `## Prose tightening pass` section, mirroring

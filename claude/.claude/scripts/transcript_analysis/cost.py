@@ -22,6 +22,14 @@ from transcript_analysis import corpus, pricing, redaction, render, scope
 # not a claim about which branch the dispatched work belongs to.
 _WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
 
+# Printed as both render paths' first content line (see _cost_report). Two-part
+# because readers span subscription, API-billed, and contracted-rate accounts,
+# which have three different notions of "what I'm billed."
+_LIST_PRICE_CAVEAT = (
+    "Computed locally at API list price — this is a compute estimate, not an"
+    " invoice, and may not match what your plan or contract actually bills."
+)
+
 
 def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
     """Build one session's sorted (timestamp, gitBranch) index from its own
@@ -344,33 +352,54 @@ def _print_thread_table(main_total: float, subagent_total: float, grand_total: f
     print(f"{'subagent':<10} {subagent_total:>14,.2f} {render._pct_of(subagent_total, grand_total):>7}")
 
 
+def _print_excluded_spend_banner(unpriced_tokens: dict[str, int], total_unpriced_tokens: int, *, markdown: bool) -> None:
+    """Loud excluded-spend signal -- shape mirrors STALE PRICING
+    (all-caps token, em-dash, fact, action). No-op when
+    pricing._reportable_unpriced_model_ids finds nothing to report (e.g. an
+    all-priced corpus, or a corpus whose only unpriced entry is
+    <synthetic> at zero tokens).
+
+    markdown=True (--summary, the automated public-PR-body path) names a
+    count of unrecognized model IDs, never the ID strings themselves -- a
+    message.model string can carry an account-identifying pre-announcement
+    codename, so it stays on the maintainer-only full-report path, which
+    prints every ID by name.
+    """
+    reportable_ids = pricing._reportable_unpriced_model_ids(unpriced_tokens)
+    if not reportable_ids:
+        return
+    if markdown:
+        print(
+            f"\nEXCLUDED SPEND — the dollar figures below leave out {total_unpriced_tokens:,} tokens across"
+            f" {len(reportable_ids)} unrecognized model IDs. Ask the PR author to run the full report"
+            " locally to name them, add each base rate, and re-run.\n"
+        )
+    else:
+        print(
+            f"\nEXCLUDED SPEND — the dollar figures below leave out {total_unpriced_tokens:,} tokens on"
+            f" unpriced model IDs: {', '.join(sorted(reportable_ids))}. Add each ID's base rate"
+            f" (source: {pricing._PRICING_SOURCE_URL}) and re-run.\n"
+        )
+
+
 def _print_branch_exclusion_diagnostic(
     excluded_turns_by_branch: dict[str, int],
     excluded_transcript_ids: set[str],
     *,
     redact: bool,
-    markdown: bool = False,
 ) -> None:
     """Surface --branches's record-drop path (see _attributed_branch) instead of
     leaving an excluded branch silently invisible in the report.
 
-    No-op when nothing was excluded.
-    markdown=True (--summary's always-redacted shape) prints one aggregate line only --
-    no branch names, no transcript ids.
-    Non-summary mode prints a full per-branch turn-count table: raw branch names under
+    No-op when nothing was excluded. Never called under --summary (see
+    _cost_report's call site) -- --summary drops this diagnostic entirely
+    rather than rendering an aggregate-only variant of it.
+    Prints a full per-branch turn-count table: raw branch names under
     --no-redact, or deterministic sequential "branch-N" labels (sorted real-name order,
     mirroring project_repr_label's convention above) under the redact=True default.
     "?" (unresolved branch) is never assigned a sequential label.
     """
     if not excluded_turns_by_branch:
-        return
-
-    total_excluded_turns = sum(excluded_turns_by_branch.values())
-    if markdown:
-        print(
-            f"\nBranch-filter exclusions: {total_excluded_turns:,} turns excluded across"
-            f" {len(excluded_transcript_ids):,} transcript files (branch names redacted)"
-        )
         return
 
     # "?" (the unresolved-branch sentinel) carries no identifying information,
@@ -494,6 +523,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     )
 
     total_transcripts_scanned = 0
+    # Folded into --summary's scope line as a conditional clause, printed
+    # only when nonzero -- not disclosed per-root the way the
+    # (summary-mode-pruned) scan line below discloses it.
+    total_transcripts_skipped = 0
     if roots is not None:
         glob = scope._projects_glob(args)
         # --this-repo's slugs were already resolved (and cached on args) by
@@ -514,8 +547,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 detail = str(exc) if not redact else "permission denied"
                 print(f"cost: {root_label}: cannot scan ({detail}) — treating as 0 transcripts", file=sys.stderr)
                 scanned, skipped = 0, 0
-            print(f"cost: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
+            if not summary_mode:
+                print(f"cost: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
             total_transcripts_scanned += scanned
+            total_transcripts_skipped += skipped
             if scanned == 0:
                 print(
                     f"WARNING: cost: {root_label}: no transcripts found for this scope"
@@ -761,37 +796,59 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             )
 
     title_since = f"last {since_label}" if since_label else "all time"
+    # unpriced_tokens is fully populated by here; the EXCLUDED SPEND banner
+    # below (printed alongside the title block, not after the per-model
+    # tables) needs the total computed before that print.
+    total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
-        print(f"\nCost summary ({title_since})\n")
+        # The caveat is the block's first printed line, verbatim -- no
+        # leading blank line, since pr-cost-section.sh embeds this stdout
+        # as the PR body's Cost section body with no separator of its own.
+        print(_LIST_PRICE_CAVEAT)
+        unreadable_clause = f", {total_transcripts_skipped:,} unreadable" if total_transcripts_skipped else ""
         print(
-            f"Scope: this account only ({total_transcripts_scanned:,} transcripts scanned, "
-            f"{priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
+            f"\nScope: this account only, {title_since} ({total_transcripts_scanned:,} transcripts scanned"
+            f"{unreadable_clause}, {priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
             " — dropping --summary reports every declared account too"
         )
     else:
         print(f"\n## Cost report ({title_since})\n")
+        print(_LIST_PRICE_CAVEAT)
 
     if stale_models:
         print(
-            "STALE PRICING — today is past the re-verify-by date for: "
+            "\nSTALE PRICING — today is past the re-verify-by date for: "
             + ", ".join(sorted(stale_models))
             + f". Re-check rates at {pricing._PRICING_SOURCE_URL} before publishing the figures below.\n"
         )
 
+    if pricing._format_drift_detected():
+        if summary_mode:
+            print(
+                "\nPRICING INTEGRITY — this tool detected a transcript-format change it does not"
+                " recognize, so the figures below may be incomplete or wrong. Ask the PR author to"
+                " re-run the report locally before relying on them.\n"
+            )
+        else:
+            print(
+                "\nPRICING INTEGRITY — the transcript format may have drifted, so the figures below"
+                " may be structurally wrong. Re-run the report directly (not through"
+                " pr-cost-section.sh) to read the drift diagnostic on stderr.\n"
+            )
+
+    _print_excluded_spend_banner(unpriced_tokens, total_unpriced_tokens, markdown=summary_mode)
+
     _print_token_class_table(class_totals, class_token_totals, grand_total, markdown=summary_mode)
     _print_model_id_table(model_totals, grand_total, markdown=summary_mode)
-    total_unpriced_tokens = sum(unpriced_tokens.values())
-    if summary_mode:
-        # A dedicated, always-present line rather than the full report's
-        # per-model breakdown below — an unrecognized model ID must never
-        # silently understate a published figure with no marker, even at $0.
-        print(f"\nUnpriced tokens: {total_unpriced_tokens:,} tokens across {len(unpriced_tokens)} model IDs")
-    else:
+    if not summary_mode:
+        # An unrecognized model ID must never silently understate a
+        # published figure with no marker -- the full per-model breakdown
+        # here is the maintainer's detail view, EXCLUDED SPEND above is the
+        # loud headline both render paths share.
         for model, tok in sorted(unpriced_tokens.items()):
             print(f"{model:<28} {'unpriced':>14} {tok:>10,} tokens")
         print(f"\nUnpriced tokens (unknown model IDs): {total_unpriced_tokens:,}")
 
-    if not summary_mode:
         print(
             f"\n## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens"
             f" + ephemeral_1h + ephemeral_5m tokens, {pricing._CONTEXT_BUCKET_THRESHOLD:,} boundary)\n"
@@ -803,10 +860,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     _print_thread_table(main_total, subagent_total, grand_total, markdown=summary_mode)
 
-    if branch_filter is not None:
-        _print_branch_exclusion_diagnostic(
-            excluded_turns_by_branch, excluded_transcript_ids, redact=redact, markdown=summary_mode
-        )
+    if branch_filter is not None and not summary_mode:
+        _print_branch_exclusion_diagnostic(excluded_turns_by_branch, excluded_transcript_ids, redact=redact)
 
     if summary_mode:
         return
