@@ -27,6 +27,7 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from _config_dir import config_dir
@@ -95,6 +96,7 @@ from transcript_analysis.redaction import (
     _redact_proj_label,
     _redact_session_id,
     _RedactMapKey,
+    _root_scoped_display_label,
 )
 from transcript_analysis.render import (
     _RECENT_LOOKBACK_N,
@@ -793,18 +795,35 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     row — an MCP server name is a per-account integration identifier.
 
     --since limits both tables to records with a timestamp on or after the
-    window start; the corpus-wide spawn and sidechain-turn counters feeding
+    window start. The corpus-wide spawn and sidechain-turn counters feeding
     _warn_if_subagent_format_drift are read before this filter and are never
     narrowed by it, so a narrow --since window cannot manufacture a false
-    format-drift warning. --config-dir (repeatable) scans additional Claude
-    Code config directories the same way cost does; under more than one root,
-    branch names are redacted (via _assign_root_scoped_redact_label, account-<K>/
-    branch-<N>) since a raw branch slug from a foreign account would
-    otherwise be printed, and _DO_NOT_PUBLISH_BANNER is stamped on stdout
-    and stderr.
+    format-drift warning.
+
+    --config-dir (repeatable) scans additional Claude Code config
+    directories the same way cost does.
+    Under more than one root, branch names are redacted (via
+    _root_scoped_display_label, account-<K>/branch-<N>) since a raw branch
+    slug from a foreign account would otherwise be printed.
+    _DO_NOT_PUBLISH_BANNER is stamped on stdout and stderr under multi-root.
+    Under --this-repo, a branch prints raw (account-<K>/<branch>) only when
+    a non-sidechain record attested that same (root, branch) pair anywhere
+    in the corpus -- a branch seen only on a sidechain record stays opaque,
+    since a subagent's own gitBranch can silently name a different repo than
+    its parent session's. This attestation is corpus-wide, not narrowed by
+    --since: a branch used by a real main-thread session outside the
+    current --since window still discloses, since the question being
+    answered is "did this repo ever use this branch," not "does this
+    exact record appear in the displayed table." The same is true of
+    --branches -- attestation is recorded before that filter too, though
+    only the --since case carries a dedicated regression test.
+    --this-repo's disclosure is repo-agnostic: it applies to whichever repo
+    --this-repo resolves to for the invoking CWD, not specifically to
+    claude-config.
     """
     roots = _resolve_cost_roots(args, "subagents")
     multi_root = len(roots) > 1
+    this_repo = args.this_repo
     branch_filter = _branch_filter(args)
     since_ts, _since_raw = _parse_since_nd_arg(args, "subagents")
 
@@ -841,6 +860,11 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     branch_tool_bytes: dict[tuple[int | None, str], dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
+    # (root_index_or_None, raw gitBranch) pairs a non-sidechain record attested.
+    # --this-repo discloses a branch raw only when it's a member of this set,
+    # since a sidechain record's own gitBranch can silently name a different
+    # repo than its parent session's.
+    main_thread_branches: set[tuple[int | None, str]] = set()
     corpus_spawns = 0
     corpus_sidechain_turns = 0
 
@@ -868,6 +892,8 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                     if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
                         tool_use_names[block["id"]] = block.get("name") or "unknown"
                 branch = rec.get("gitBranch") or ""
+                if branch and not bool(rec.get("isSidechain")):
+                    main_thread_branches.add((root_idx, branch))
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
                 if since_ts is not None:
@@ -879,6 +905,8 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                 branch_data[(root_idx, branch)][thread][fam] += 1
             elif rec_type == "user":
                 branch = rec.get("gitBranch") or ""
+                if branch and not bool(rec.get("isSidechain")):
+                    main_thread_branches.add((root_idx, branch))
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
                 if since_ts is not None:
@@ -909,11 +937,12 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     def _branch_label(key: tuple[int | None, str]) -> str:
         root_idx, branch = key
         return (
-            _assign_root_scoped_redact_label(
-                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map
+            _root_scoped_display_label(
+                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map,
+                disclose=this_repo and key in main_thread_branches,
             )
             if root_idx is not None
-            else branch
+            else _sanitize_table_cell(branch)
         )
 
     print(
@@ -953,7 +982,7 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                         continue
                     row_label = label if first else ""
                     first = False
-                    print(f"{row_label:<40} {thread:<10} {tool_name:<20} {nbytes:>18,}")
+                    print(f"{row_label:<40} {thread:<10} {_sanitize_table_cell(tool_name):<20} {nbytes:>18,}")
 
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
@@ -2274,18 +2303,34 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     alternate model ID (validated against _MODEL_BASE_INPUT_RATES's keys),
     adding the Counterfactual $ and Delta (Actual − Counterfactual) columns.
     --config-dir (repeatable) scans additional Claude Code config
-    directories the same way cost does; under more than one root, both
-    branch names and subagent_type values are redacted
-    (_assign_root_scoped_redact_label) — subagent_type can name a
+    directories the same way cost does.
+    Under more than one root, both branch names and subagent_type values
+    are redacted (_root_scoped_display_label) — subagent_type can name a
     project-scoped custom agent definition, the same disclosure risk
-    gitBranch carries — and the model-mix table is keyed on the redacted
-    (root, subagent_type) pair so two accounts' same-named agentType never
-    merge into one row. --per-session is refused outright under multi-root,
-    since it would otherwise join a foreign account's own session-id prefix
-    to its branch name.
+    gitBranch carries.
+    Both tables aggregate on the raw (root, branch) / (root, subagent_type)
+    pair, not the printed label — the redacted or disclosed label is
+    computed lazily at print time (idempotently, so a value requested by
+    both tables renders the same label each time), so two accounts'
+    same-named agentType (or two raw values differing only in stripped
+    control bytes) never merge into one row.
+    --per-session is refused outright under multi-root, since it would
+    otherwise join a foreign account's own session-id prefix to its branch
+    name.
+    Under --this-repo, every branch prints raw (account-<K>/<branch>) with
+    no attestation gate: this function excludes isSidechain records before
+    ever reading gitBranch, unlike cmd_subagents, so a subagent's own
+    gitBranch never reaches this table.
+    A subagent_type prints raw only when it is tracked in this repo's own
+    agents/ directory or is a Claude Code built-in
+    (_repo_tracked_agent_type_names); every other value stays opaque.
+    --this-repo's disclosure is repo-agnostic: it applies to whichever repo
+    --this-repo resolves to for the invoking CWD, not specifically to
+    claude-config.
     """
     roots = _resolve_cost_roots(args, "subagent-mix")
     multi_root = len(roots) > 1
+    this_repo = args.this_repo
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
 
@@ -2351,17 +2396,26 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     # matching root_idx's None-under-single-root convention below.
     agent_dirs = [root.parent / "agents" for root in roots]
 
-    data: dict[str, dict] = defaultdict(
+    # Keyed on (root_index_or_None, raw gitBranch, session_suffix_or_None) —
+    # raw, never the (possibly-sanitized) display label, so two raw branch
+    # values that differ only in stripped control bytes stay distinct rows
+    # instead of silently merging their spawn/session counts. session_suffix
+    # is jsonl.stem[:8] under --per-session (always root_idx=None, since
+    # multi-root refuses --per-session), and None when sessions on the same
+    # branch aggregate into one row. The printed label (_mix_branch_label,
+    # below) translates root_idx through redact_ordinals only at print time.
+    data: dict[tuple[int | None, str, str | None], dict] = defaultdict(
         lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
     )
-    # (possibly redacted) agentType label -> model-mix row. Only created for
-    # a type that has at least one meta.json match (even a dangling one) —
-    # a dispatch with no matching meta.json at all is excluded entirely,
-    # matching cmd_reviewer_yield's own precedent for the same join. Under
-    # multi-root, keying on the redacted label (rather than the raw
-    # subagent_type) also root-scopes this table: two accounts' same-named
-    # agentType get distinct labels and never merge into one row.
-    model_mix: dict[str, dict] = defaultdict(lambda: {
+    # (root_index_or_None, raw subagent_type) -> model-mix row. Only created
+    # for a type that has at least one meta.json match (even a dangling
+    # one) — a dispatch with no matching meta.json at all is excluded
+    # entirely, matching cmd_reviewer_yield's own precedent for the same
+    # join. Keyed on the raw tuple (not the display label) for the same
+    # reason as `data` above: root_idx alone already root-scopes two
+    # accounts' same-named agentType apart, with no dependency on the label
+    # string encoding that uniqueness.
+    model_mix: dict[tuple[int | None, str], dict] = defaultdict(lambda: {
         "runs": 0,
         "dangling": 0,
         "requested": defaultdict(int),
@@ -2398,23 +2452,15 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
                     stype = inp.get("subagent_type") or "unknown"
-                    stype_label = (
-                        _assign_root_scoped_redact_label(
-                            "agent-type", redact_ordinals[resolved_roots[root_idx]],
-                            stype, subagent_type_redact_map
-                        )
-                        if root_idx is not None
-                        else stype
-                    )
-                    session_data[branch]["spawns"][stype_label] += 1
+                    session_data[branch]["spawns"][stype] += 1
 
                     paired = dispatch_index.get(block.get("id") or "")
                     if paired is not None:
                         paired_jsonl, requested_model = paired
-                        row = model_mix[stype_label]
+                        row = model_mix[(root_idx, stype)]
                         # _declared_pin reads from the on-disk agent file, so it
                         # needs the real subagent_type (stype), never the
-                        # redacted display label (stype_label).
+                        # (possibly-redacted) display label built at print time.
                         row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
                         (
                             observed, actual_dollars, _dollars_by_class, counterfactual_dollars,
@@ -2440,14 +2486,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                         session_data[branch]["skills"][skill] += 1
 
         for branch, sd in session_data.items():
-            branch_label = (
-                _assign_root_scoped_redact_label(
-                    "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map
-                )
-                if root_idx is not None
-                else branch
-            )
-            key = f"{branch_label} [{jsonl.stem[:8]}]" if per_session else branch_label
+            key = (root_idx, branch, jsonl.stem[:8] if per_session else None)
             d = data[key]
             d["sessions"] += 1
             for stype, cnt in sd["spawns"].items():
@@ -2459,15 +2498,40 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print("No data found.")
         return
 
+    def _mix_branch_label(key: tuple[int | None, str, str | None]) -> str:
+        root_idx, branch, session_suffix = key
+        label = (
+            _root_scoped_display_label(
+                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map,
+                disclose=this_repo,
+            )
+            if root_idx is not None
+            else _sanitize_table_cell(branch)
+        )
+        return f"{label} [{session_suffix}]" if session_suffix is not None else label
+
+    def _stype_label(key: tuple[int | None, str]) -> str:
+        root_idx, stype = key
+        return (
+            _root_scoped_display_label(
+                "agent-type", redact_ordinals[resolved_roots[root_idx]], stype, subagent_type_redact_map,
+                disclose=this_repo and stype in _repo_tracked_agent_type_names(),
+            )
+            if root_idx is not None
+            else _sanitize_table_cell(stype)
+        )
+
     print(f"{'Branch':<45} {'Sess':>5} {'Spawns':>7} {'CR':>3} {'PR':>3} {'RR':>3}  Top subagent types")
     print("-" * 120)
     for key in sorted(data):
         d = data[key]
+        root_idx = key[0]
+        branch_label = _mix_branch_label(key)
         spawns_total = sum(d["spawns"].values())
         top = sorted(d["spawns"].items(), key=lambda kv: (-kv[1], kv[0]))
-        top_str = ", ".join(f"{t}({n})" for t, n in top[:5]) or "—"
+        top_str = ", ".join(f"{_stype_label((root_idx, t))}({n})" for t, n in top[:5]) or "—"
         print(
-            f"{key:<45} {d['sessions']:>5} {spawns_total:>7} "
+            f"{branch_label:<45} {d['sessions']:>5} {spawns_total:>7} "
             f"{d['skills'].get('code-review', 0):>3} {d['skills'].get('plan-review', 0):>3} "
             f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
         )
@@ -2479,8 +2543,9 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         header += f" {'Requested':<30} Observed"
         print(f"\n{header}")
         print("-" * len(header))
-        for stype_label in sorted(model_mix):
-            row = model_mix[stype_label]
+        for mix_key in sorted(model_mix):
+            row = model_mix[mix_key]
+            stype_label = _stype_label(mix_key)
             declared = "/".join(sorted(row["declared_seen"])) or _DECLARED_PIN_BUILT_IN
             requested_str = ", ".join(
                 f"{k}({v})" for k, v in sorted(row["requested"].items(), key=lambda kv: (-kv[1], kv[0]))
@@ -2543,6 +2608,12 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
+# Built-in Claude Code subagent_type values -- present in every install, so
+# they can't identify a project. Always allowlisted for --this-repo
+# subagent_type disclosure, regardless of whether this repo's own agents/
+# tree tracks a same-named file.
+_BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
+
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
 # "general-purpose") -- never containing "/" or "..". _declared_pin enforces
 # this shape before building a filesystem path from one, since under
@@ -2560,8 +2631,8 @@ def _declared_pin(
     --config-dir a dispatch's declared pin must be read from the account it
     actually came from. Cached per (agents_dir, agent_type), since the same
     agent_type name can resolve to a different on-disk file under a
-    different root. "built-in" when no on-disk agent file exists
-    (general-purpose, claude-code-guide, Plan carry none), the file has no
+    different root. "built-in" when no on-disk agent file exists (see
+    _BUILT_IN_AGENT_TYPES — none of those three carry one), the file has no
     `model:` frontmatter — Claude Code's own default, not a pin this repo
     can assert on — or agent_type fails the on-disk agent-file naming
     allowlist (agent_type is transcript-sourced data; without this guard, an
@@ -2583,6 +2654,56 @@ def _declared_pin(
             pin = _agent_frontmatter_model(text) or _DECLARED_PIN_BUILT_IN
     declared_pin_cache[key] = pin
     return pin
+
+
+# .resolve() is load-bearing: unresolved, a stow-symlinked invocation would
+# land on the invoking account's own <config-dir>/agents/ instead of this
+# repo's tracked tree.
+_REPO_AGENT_DEFINITIONS_DIR = Path(__file__).resolve().parent.parent / "agents"
+
+
+@lru_cache(maxsize=1)
+def _repo_tracked_agent_type_names() -> frozenset[str]:
+    """Stems of every top-level *.md file this repo's own agents/ directory
+    git-tracks, plus _BUILT_IN_AGENT_TYPES -- the --this-repo subagent_type
+    disclosure allowlist.
+
+    - Tracked state, not on-disk presence (`git ls-files` reads the index)
+      -- an untracked scratch or WIP agent file in the invoking checkout's
+      agents/ directory never allowlists its own name, since every worktree
+      of this repo is a distinct physical checkout that can hold one.
+    - `-z` avoids git's path quoting/escaping corrupting the stem for
+      unusual filenames.
+    - `check=True` makes CalledProcessError reachable at all for a non-git
+      directory -- without it, a non-zero exit leaves stdout empty and the
+      failure silently looks like "zero tracked files" instead of raising
+      into the fallback path below.
+    - Top-level entries only (no "/" in the path), matching _declared_pin's
+      own flat agents_dir / f"{agent_type}.md" resolution -- a nested
+      tracked file over-redacts, the safe direction.
+    - _REPO_AGENT_DEFINITIONS_DIR is read fresh on every call (not captured
+      as a default argument) so a test can monkeypatch the module attribute
+      and call .cache_clear() to force a re-read.
+    - Same exception set and timeout as scope._repo_scoped_project_slugs
+      (scope.py:70-77's rationale: a hung local git must not block the
+      whole CLI with no exit), diverging in one way, deliberately: failure
+      here returns the built-ins alone rather than exiting, since failing
+      closed means more redaction, and an operator's report should not die
+      because git is unavailable.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(_REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return _BUILT_IN_AGENT_TYPES
+    tracked = {
+        entry[: -len(".md")]
+        for entry in proc.stdout.split("\0")
+        if entry and "/" not in entry and entry.endswith(".md")
+    }
+    return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
 
 
 def _dispatch_usage_summary(
@@ -10414,7 +10535,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo. Branch names are"
+            " subdirectory, or it is rejected. Branch names are"
             " redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than one root is in scope."
         ),
     )
@@ -10438,7 +10559,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo or --per-session."
+            " subdirectory, or it is rejected. Refused together with --per-session."
             " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
             " one root is in scope."
         ),
