@@ -302,8 +302,13 @@ see M6 for why this does not split.
   bracket destination (deny, already denied pre- and post-fix; this pins the
   previously-untested assertion), and a brace-wrapped second slug in the same
   link destination (allow) pinning row 11's own brace-wrap exception directly
-  adjacent to the case it qualifies. The pinned corpus is sixteen added cases
-  plus the nine existing ones — twenty-five total.
+  adjacent to the case it qualifies. Three further cases were added
+  during implementation and review: the optional destination-run
+  group's zero-length branch (deny), the second-slug form with a
+  same-page anchor and no path (deny), and a bare mention immediately
+  after a link's closing paren with no whitespace (deny). The pinned
+  corpus is nineteen added cases plus the nine existing ones —
+  twenty-eight total.
 - *Reuse:* the `run_hook` / `bash_input` / `claude_config_repo` shape used
   by all nine existing cases — no new fixtures. The
   `test_structural_detector_in_staged_diff_denied` parametrize list
@@ -371,10 +376,10 @@ independently verify the splice-shape callout above — that callout is
 asserted separately, not derived from this run's output.
 
 This differential is a one-time check, not a persisted assertion: it runs
-during this change and never again. The sixteen added pinned cases plus
-the nine existing ones are therefore the *sole* durable regression guard on
-this constant, which is why the added set covers shapes beyond the fix's
-own scope. Do not treat the differential as standing coverage.
+during this change and never again. The pinned cases above are therefore
+the *sole* durable regression guard on this constant, which is why the
+added set covers shapes beyond the fix's own scope. Do not treat the
+differential as standing coverage.
 
 **1a. Assertion byte-identity across the docstring rewrite.** M3 rewrites
 docstrings on all nine existing cases while leaving their assertions

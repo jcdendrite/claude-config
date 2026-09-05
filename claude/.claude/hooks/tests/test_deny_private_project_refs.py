@@ -2561,13 +2561,18 @@ class TestDenyPrivateProjectRefs:
 
     # Slack-channel shape
     #
-    # These tests pin at the full-hook (`run_hook`) layer deliberately,
-    # because the guarantee this detector provides is the end-to-end deny
-    # verdict rather than a regex-constant match -- a cheaper unit-level
-    # regex pin wouldn't catch a detector left out of `STRUCTURAL_DETECTORS`,
-    # a scan-target regression, or a fast-path/per-detector pattern
-    # drifting out of sync (`deny-private-project-refs.sh` has an explicit
-    # deny branch for exactly that last case).
+    # These tests pin at the full-hook (`run_hook`) layer deliberately.
+    # The hook scans the union of the raw scan target and a quote-stripped
+    # copy of it, and every case below turns on which character sits
+    # immediately before a `#`, `(`, or `]` -- quote stripping deletes
+    # characters and so changes that adjacency, which makes a unit-level
+    # assertion against `_LIB_SLACK_CHANNEL_SHAPE_REGEX` and one raw
+    # literal a different check than the one the hook performs.
+    # A unit pin would also miss a detector left out of
+    # `STRUCTURAL_DETECTORS`, a scan-target regression, or a
+    # fast-path/per-detector pattern drifting out of sync
+    # (`deny-private-project-refs.sh` has an explicit deny branch for
+    # exactly that last case).
 
     def test_structural_slack_channel_no_reference_allowed(self, claude_config_repo):
         assert (
@@ -2753,6 +2758,24 @@ class TestDenyPrivateProjectRefs:
                 bash_input(
                     "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking)"
                     " and also #permission-prompt-tracking'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_structural_slack_bare_mention_after_link_close_paren_denied(self, claude_config_repo):
+        """A bare `#slug` mention immediately after a link's closing paren,
+        with no whitespace between them, is still caught: a close-paren is
+        its own valid start position, independent of the link that produced
+        it. The only route to this match is that close-paren, so dropping it
+        from the start-position class would silently exempt the shape."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [Docs](other-file.md)#eng-super-secret-channel"
+                    " for the breakdown'"
                 ),
                 cwd=claude_config_repo,
             )

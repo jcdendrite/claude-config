@@ -2094,8 +2094,7 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 #   evades this detector too.
 # - Residual gap: a channel reference wrapped as `{#<slug>}` (e.g. a
 #   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
-#   evades this detector. This evasion is positional, not limited to a
-#   standalone bare mention. It applies wherever a `#` is immediately
+#   evades this detector. It applies wherever a `#` is immediately
 #   preceded by `{`: inside a link destination, after a link's closing
 #   paren, or anywhere else on the line.
 # - A CommonMark angle-bracket link destination (`[t](<a b.md#<slug>>)`)
@@ -2105,9 +2104,8 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 # - The link exemption is purely syntactic: it exempts the `#` inside any
 #   well-formed `[text](destination#<slug>)` without verifying that
 #   `destination` resolves to a real file. This is a separate gap from the
-#   smuggled-second-slug one above. That gap is about a second `#` token;
-#   this one is about the first `#` token's destination never being
-#   resolved.
+#   smuggled-second-slug residual above, which concerns a second `#`
+#   token rather than the first token's unresolved destination.
 _LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[)#[:space:]]|(^|[^]])\()([^()#[:space:]]*[^(){#[:space:]])?#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
