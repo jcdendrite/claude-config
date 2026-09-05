@@ -138,11 +138,13 @@ def _resolve_module_level_repo_paths(source: str, *, test_file_relpath: str) -> 
 def _test_corpus(repo_root: Path) -> list[str]:
     """Repo-relative paths of every test_*.py file the completeness scanner
     parses: claude/.claude/hooks/tests/, claude/.claude/scripts/tests/,
-    claude/.claude/skills/tests/, and plugins/*/tests/."""
+    claude/.claude/skills/tests/, claude/.claude/skills/*/tests/ (nested
+    per-skill test trees), and plugins/*/tests/."""
     patterns = (
         "claude/.claude/hooks/tests/test_*.py",
         "claude/.claude/scripts/tests/test_*.py",
         "claude/.claude/skills/tests/test_*.py",
+        "claude/.claude/skills/*/tests/test_*.py",
         "plugins/*/tests/test_*.py",
     )
     corpus = [

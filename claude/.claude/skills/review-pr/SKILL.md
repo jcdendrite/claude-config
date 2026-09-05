@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: "Standardized review of a pull request the operator did not author: acquire PR context, audit for passive-execution risk before checkout, check out by PR ref, invoke /plan-review only when a real plan is linked, invoke /code-review over the diff under a no-fix/no-marker override, confirm before running checks, synthesize tiered findings, and post only on explicit human approval. TRIGGER when: asked to review, give feedback on, or check a pull request that is not the current branch's own open PR. DO NOT TRIGGER when: reviewing your own uncommitted work (use /code-review) or responding to comments on your own open PR (use /respond-pr)."
+description: "Review a PR you did not author: audit for passive-execution risk before checkout, run /plan-review (only if a plan is linked) and /code-review (no-fix/no-marker override), then post only on explicit approval. TRIGGER when: asked to review, give feedback on, or check a PR that isn't the current branch's own open PR. DO NOT TRIGGER when: reviewing your own uncommitted work (use /code-review) or responding to comments on your own open PR (use /respond-pr)."
 argument-hint: "[PR number or URL]"
 ---
 

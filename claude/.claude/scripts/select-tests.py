@@ -29,6 +29,8 @@ SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
 SKILLS_DIR = "claude/.claude/skills"
 SKILLS_TESTS_DIR = "claude/.claude/skills/tests"
+REVIEW_PR_SKILL_DIR = "claude/.claude/skills/review-pr"
+REVIEW_PR_SKILL_TESTS_DIR = "claude/.claude/skills/review-pr/tests"
 AGENTS_DIR = "claude/.claude/agents"
 RULES_DIR = "claude/.claude/rules"
 # Common ancestor for the plugin-generic hooks/skills/agents predicates below.
@@ -342,6 +344,7 @@ def _is_test_source_change(path: str) -> bool:
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, SCRIPTS_DIR), (SCRIPTS_TESTS_DIR,)),
+    (lambda p: _is_under(p, REVIEW_PR_SKILL_DIR), (REVIEW_PR_SKILL_TESTS_DIR,)),
     (_is_skill_md_change, (SKILLS_TESTS_DIR,)),
     (_is_skill_auxiliary_md_change, (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, SKILLS_TESTS_DIR), (SKILLS_TESTS_DIR,)),
