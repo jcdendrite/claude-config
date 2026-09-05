@@ -546,6 +546,39 @@ _lib_cumulative_diff_hash() {
   _lib_hash_diff_text "$diff_output"
 }
 
+# _lib_resolve_default_branch REPO_ROOT
+# Resolve REPO_ROOT's default branch name: first via the local symbolic ref
+# refs/remotes/origin/HEAD, then by probing conventional candidate names
+# (main, master, develop) against existing origin/<candidate> refs. Designed
+# to be shared by every caller that needs "the branch a commit is normally
+# compared against" rather than a hardcoded "main" literal.
+# Candidate order is a prior, not a guarantee: with origin/HEAD unset and
+# several candidate refs present, the first match wins even when it is stale.
+# `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
+# latter never returns empty, which would skip the candidate-loop fallback.
+# Two-outcome contract:
+#   - Non-empty stdout: the resolved default branch name.
+#   - Empty stdout: neither the symbolic ref nor any candidate resolved.
+#     Callers decide their own fallback -- this helper does not pick a fail
+#     posture (same call-site contract as _lib_command_invokes_git_subcmd).
+# Asymmetry: the symbolic-ref path doesn't verify origin/<name> exists, so a
+# dangling origin/HEAD can return a name that still fails to resolve.
+# Callers must verify it themselves (see guard-settings-session-keys.sh).
+_lib_resolve_default_branch() {
+  local repo_root="$1"
+  local default_branch candidate
+  default_branch=$(_lib_capped git -C "$repo_root" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+  if [ -z "$default_branch" ]; then
+    for candidate in main master develop; do
+      if _lib_capped git -C "$repo_root" rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+        default_branch="$candidate"
+        break
+      fi
+    done
+  fi
+  printf '%s' "$default_branch"
+}
+
 # _lib_is_repo_plan_file REPO_ROOT ABS_PATH
 # Both arguments must already be _lib_realpath_m-normalized by the caller --
 # the same precondition the agent-reviews/ check in require-plan-review.sh
