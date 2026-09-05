@@ -7587,7 +7587,10 @@ class TestCacheRebuildExcessPricing:
         _model_rates(model) call, independent of _price_turn -- cache-
         rebuild's entire thesis is a cache-read-vs-cache-write delta, the
         exact axis Fable 5.1's reduced cache-read multiplier deviates on, so
-        this is the site most exposed to the Fable pricing change."""
+        this is the site most exposed to the Fable pricing change. Like
+        test_transcript_cost.py::TestFablePricing, this validates rate
+        arithmetic only -- it never confirms "claude-fable-5-1" is the exact
+        string Claude Code writes to message.model."""
         usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
         excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
         # write: 1,000,000/1e6 * 10.00*1.25 = 12.50; warm read uses the

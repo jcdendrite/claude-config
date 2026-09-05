@@ -1,6 +1,11 @@
 """Rate tables, per-turn pricing, token counts, context windows, and
 requestId-run deduplication -- no dependency on any cmd_* subcommand, scope
 resolution, or redaction.
+
+Assumes a one-shot-per-process caller (the transcript-analysis CLI exits
+after one report): module-level state such as _usage_drift_warned and
+_subagent_format_drift_detected is set once and never reset except by test
+fixtures.
 """
 from __future__ import annotations
 
@@ -59,7 +64,10 @@ _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     # this is the exact string Claude Code writes to message.model -- no
     # claude-fable-* string has been observed in this account's own declared
     # corpus (see _reportable_unpriced_model_ids for the loud-on-miss
-    # backstop this leans on until one is observed).
+    # backstop this leans on until one is observed). Pricing this family also
+    # means its usage now appears by name in every published --summary Cost
+    # block, the same as every other priced model, instead of folding into an
+    # anonymous unpriced-ID count.
     "claude-fable-5": 10.00,
     "claude-fable-5-1": 10.00,
 }
@@ -167,11 +175,10 @@ def _reportable_unpriced_model_ids(unpriced_tokens: dict[str, int]) -> list[str]
 
     Every key qualifies except _SYNTHETIC_MODEL_ID at exactly zero tokens --
     a corpus with no synthetic records at all still seeds that key at 0 in
-    some callers, and a $0 entry is not spend excluded from anything. The
-    nonzero-_SYNTHETIC_MODEL_ID branch is a forward-looking guard, not a
-    case observed in a real corpus: no test corpus that produced this PR's
-    figures ever carried a nonzero-token synthetic record, so its coverage
-    here is deliberate contract-pinning, not a regression reproduction.
+    some callers, and a $0 entry is not spend excluded from anything. This is
+    a forward-looking guard: no observed real corpus has produced a
+    nonzero-token synthetic record, so this branch is contract-pinning, not a
+    regression reproduction.
     """
     return [
         model_id for model_id, tokens in unpriced_tokens.items()

@@ -372,12 +372,13 @@ def _print_excluded_spend_banner(unpriced_tokens: dict[str, int], total_unpriced
         print(
             f"\nEXCLUDED SPEND — the dollar figures below leave out {total_unpriced_tokens:,} tokens across"
             f" {len(reportable_ids)} unrecognized model IDs. Ask the PR author to run the full report"
-            " locally to name them, add each base rate, and re-run.\n"
+            " locally to name them, then report the missing rate to claude-config's pricing.py maintainer.\n"
         )
     else:
+        labeled_ids = sorted(model_id or "(no model field)" for model_id in reportable_ids)
         print(
             f"\nEXCLUDED SPEND — the dollar figures below leave out {total_unpriced_tokens:,} tokens on"
-            f" unpriced model IDs: {', '.join(sorted(reportable_ids))}. Add each ID's base rate"
+            f" unpriced model IDs: {', '.join(labeled_ids)}. Add each ID's base rate"
             f" (source: {pricing._PRICING_SOURCE_URL}) and re-run.\n"
         )
 
@@ -392,8 +393,7 @@ def _print_branch_exclusion_diagnostic(
     leaving an excluded branch silently invisible in the report.
 
     No-op when nothing was excluded. Never called under --summary (see
-    _cost_report's call site) -- --summary drops this diagnostic entirely
-    rather than rendering an aggregate-only variant of it.
+    _cost_report's call site); that mode drops the diagnostic entirely.
     Prints a full per-branch turn-count table: raw branch names under
     --no-redact, or deterministic sequential "branch-N" labels (sorted real-name order,
     mirroring project_repr_label's convention above) under the redact=True default.
@@ -841,10 +841,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     _print_token_class_table(class_totals, class_token_totals, grand_total, markdown=summary_mode)
     _print_model_id_table(model_totals, grand_total, markdown=summary_mode)
     if not summary_mode:
-        # An unrecognized model ID must never silently understate a
-        # published figure with no marker -- the full per-model breakdown
-        # here is the maintainer's detail view, EXCLUDED SPEND above is the
-        # loud headline both render paths share.
+        # An unrecognized model ID must never silently understate a published figure.
+        # This per-model breakdown is the maintainer's detail view; EXCLUDED SPEND
+        # above is the loud headline shared by both render paths.
         for model, tok in sorted(unpriced_tokens.items()):
             print(f"{model:<28} {'unpriced':>14} {tok:>10,} tokens")
         print(f"\nUnpriced tokens (unknown model IDs): {total_unpriced_tokens:,}")
