@@ -3383,6 +3383,17 @@ class TestReviewTrace:
         assert "denial-session.jsonl" in out
         assert "skill-only-session.jsonl" not in out
 
+    def test_default_timeline_denial_line_carries_cause_field(self, fake_projects, capsys):
+        """The plain (non-deny-summary) timeline's denial line prints
+        cause=<kind> classified from the denial's own message, alongside
+        the existing hook= field."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "cause=lib-source" in out
+
     # -----------------------------------------------------------------------
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
@@ -4072,6 +4083,52 @@ class TestReviewTrace:
         assert data["hook_shape_counts"][("code-review", "git checkout")] == 1
         assert data["hook_shape_counts"][("worktree-enforcement", "git commit")] == 1
         assert data["hook_shape_counts"][("worktree-enforcement", "git checkout")] == 2
+
+    def test_deny_summary_cause_cross_tab_shows_joint_counts_not_just_marginals(self):
+        """Two hooks each produce a mix of behavioral and lib-source denials
+        with symmetric marginals (code-review: 2 behavioral + 1 lib-source;
+        worktree-enforcement: 1 behavioral + 2 lib-source) — the cause
+        marginal alone can't say which hook hit which failure family.
+        hook_cause_counts must carry the true joint counts."""
+        records = [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b2"),
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b3"),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git commit' is not on the read-only allowlist.",
+                tool_id="b4",
+            ),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+                tool_id="b5",
+            ),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+                tool_id="b6",
+            ),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["hook_cause_counts"][("code-review", "behavioral")] == 2
+        assert data["hook_cause_counts"][("code-review", "lib-source")] == 1
+        assert data["hook_cause_counts"][("worktree-enforcement", "behavioral")] == 1
+        assert data["hook_cause_counts"][("worktree-enforcement", "lib-source")] == 2
+
+    def test_deny_summary_cause_table_prints_header_and_correct_cross_tab_cell(
+        self, fake_projects, capsys
+    ):
+        """--deny-summary's printed output carries the hook/gate x cause table
+        header and a joint count in the right column — not just the
+        marginal hook/gate and friction tables that predate this axis."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b2"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert "## Denials by hook/gate x cause" in out
+        cols = _table_cols(out, header_contains="behavioral", row_contains="code-review")
+        assert cols["behavioral"] == "1"
+        assert cols["lib-source"] == "1"
 
     def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self):
         """A fixture drawn from real transcript-analysis.py corpus denials —
@@ -14310,6 +14367,9 @@ class TestDenialHookLabelEnumerationRealHooks:
             f"{hook_name}'s real bootstrap-failure wording {message!r} produced "
             f"{got!r}, expected the enumerated label {expected_label!r}"
         )
+        # Same real stderr, second axis: this is the strongest available
+        # evidence that the bootstrap-failure wording classifies lib-source.
+        assert _mod._denial_cause_kind(message) == "lib-source"
 
     def test_marker_sh_path_traversal_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's own path-traversal deny path —
@@ -14319,6 +14379,7 @@ class TestDenialHookLabelEnumerationRealHooks:
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
         assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_marker_sh_unknown_subcommand_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's general 'invocation denied'
@@ -14328,6 +14389,7 @@ class TestDenialHookLabelEnumerationRealHooks:
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
         assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_agents_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-claude-md-length.sh's real 'grew past the 200-line limit'
@@ -14410,6 +14472,382 @@ class TestDenialHookLabelEnumerationRealHooks:
         )
         assert message is not None
         assert _mod._denial_hook_label("", message) == "Skill length"
+
+
+# ---------------------------------------------------------------------------
+# _denial_cause_kind — pins the denial-cause axis against every gate hook's
+# current wording. Every fixture literal below is copied from the working
+# tree as it stands at authoring time — never re-derived via git show/git
+# merge-base, which would resolve to a later rewrite's text. A historical
+# transcript keeps its original wording forever, so a fixture reflecting
+# only newer wording would prove nothing about the corpus these tests exist
+# to classify correctly.
+# ---------------------------------------------------------------------------
+
+
+# Bootstrap source-failure wording, one row per gate hook (all 26) — the same
+# "could not source _lib.sh" idiom TestDenialHookLabelEnumeration's fixture
+# rows above already carry for 24 of them, plus the two hooks whose labels
+# (architect-consult, invisible-commit-content) aren't yet _DENIAL_HOOK_LABELS
+# members.
+_LIB_SOURCE_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not source _lib.sh."),
+    ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not source _lib.sh."),
+    ("check-skill-length.sh", "Blocked by skill length gate: could not source _lib.sh."),
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not source _lib.sh."),
+    ("deny-credential-file-reads.sh",
+     "Blocked by credential-file read gate: could not source _lib.sh."),
+    ("deny-data-file-reads.sh", "Blocked by data-file read gate: could not source _lib.sh."),
+    ("deny-env-reads.sh", "Blocked by env-read gate: could not source _lib.sh."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not source _lib.sh."),
+    ("deny-network-installs.sh", "Blocked by network-install gate: could not source _lib.sh."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: could not source _lib.sh — hook cannot evaluate the commit safely."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not source _lib.sh — hook cannot evaluate command "
+     "detection safely."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not source _lib.sh — hook cannot evaluate "
+     "relocation discipline safely."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not source _lib.sh — hook cannot evaluate "
+     "reviewer discipline safely."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not source _lib.sh."),
+    ("guard-settings-session-keys.sh",
+     "Blocked by settings session-keys gate: could not source _lib.sh."),
+    ("require-code-review.sh", "Blocked by code-review gate: could not source _lib.sh."),
+    ("require-memory-skill.sh", "Blocked by memory-skill gate: could not source _lib.sh."),
+    ("require-plan-review.sh", "Blocked by plan-review gate: could not source _lib.sh."),
+    ("require-routing-read.sh", "Blocked by routing-read gate: could not source _lib.sh."),
+    ("require-ready-for-review.sh", "Blocked by ready-for-review gate: could not source _lib.sh."),
+    ("require-respond-pr.sh", "Blocked by respond-pr gate: could not source _lib.sh."),
+    ("require-stow-reminder.sh", "Blocked by stow-reminder gate: could not source _lib.sh."),
+    ("require-worktree-for-file-writes.sh",
+     "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh."),
+    ("require-worktree-for-git-writes.sh",
+     "Blocked by worktree-enforcement hook: could not source _lib.sh — hook cannot evaluate "
+     "git discipline safely."),
+    ("require-architect-consult.sh", "Blocked by architect-consult gate: could not source _lib.sh."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not source _lib.sh."),
+)
+
+# Tool-input parse-failure wording, one row per gate hook (all 26) — each
+# hook's own _lib_parse_tool_input_or_deny argument.
+_INPUT_PARSE_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked: could not parse tool-input JSON for gh-pr-merge gate."),
+    ("deny-data-file-reads.sh",
+     "Blocked by data-file read gate: could not parse tool-input JSON. Refusing to evaluate "
+     "the Read under malformed input."),
+    ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not parse tool-input JSON."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not parse tool-input JSON. Refusing to evaluate "
+     "relocation discipline under malformed input."),
+    ("deny-credential-file-reads.sh",
+     "Blocked by credential-file read gate: could not parse tool-input JSON. Refusing to "
+     "evaluate the Read under malformed input."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not parse tool-input JSON. Refusing to evaluate "
+     "PR body under malformed input."),
+    ("deny-env-reads.sh", "Blocked: could not parse tool-input JSON for env-read gate."),
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not parse tool-input JSON. Refusing to "
+     "evaluate the command under malformed input."),
+    ("require-code-review.sh", "Blocked by code-review gate: could not parse tool-input JSON."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not parse tool-input JSON. Refusing to evaluate "
+     "the command under malformed input."),
+    ("enforce-marker-script-shape.sh", "Blocked: could not parse tool-input JSON."),
+    ("require-worktree-for-file-writes.sh",
+     "Blocked by worktree-enforcement hook (file-writes): could not parse tool-input JSON. "
+     "Refusing to evaluate worktree discipline under malformed input."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: could not parse tool-input JSON. Refusing to evaluate the "
+     "commit under malformed input."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate "
+     "redaction under malformed input."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not parse tool-input JSON. Refusing to "
+     "evaluate reviewer discipline under malformed input."),
+    ("check-skill-length.sh", "Blocked by skill length gate: could not parse tool-input JSON."),
+    ("require-architect-consult.sh", "Blocked by architect-consult gate: could not parse tool-input JSON."),
+    ("require-routing-read.sh", "Blocked by routing-read gate: could not parse tool-input JSON."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not parse tool-input JSON."),
+    ("require-stow-reminder.sh",
+     "Blocked by stow-reminder gate: could not parse tool-input JSON. Refusing to evaluate "
+     "under malformed input."),
+    ("require-plan-review.sh", "Blocked by plan-review gate: could not parse tool-input JSON."),
+    ("require-memory-skill.sh", "Blocked by memory-skill gate: could not parse tool-input JSON."),
+    ("guard-settings-session-keys.sh",
+     "Blocked by settings session-keys gate: could not parse tool-input JSON."),
+    ("require-ready-for-review.sh", "Blocked by ready-for-review gate: could not parse tool-input JSON."),
+    ("require-worktree-for-git-writes.sh",
+     "Blocked by worktree-enforcement hook: could not parse tool-input JSON. Refusing to "
+     "evaluate git discipline under malformed input."),
+    ("require-respond-pr.sh", "Blocked by respond-pr gate: could not parse tool-input JSON."),
+)
+
+# Helper-process ("failing closed") wording — every distinct call site found
+# by a total enumeration of "failing closed"/"Failing closed" across
+# claude/.claude/hooks/*.sh, covering all thirteen gate hooks that carry one
+# (roughly thirty call sites; the shared _lib.sh call site used by
+# check-claude-md-length.sh/check-skill-length.sh via _lib_staged_length_gate
+# has its wording exercised separately by those hooks' own commit-detection
+# fail-closed tests, which assert the reason text but not this module's
+# cause classification, and isn't duplicated here). ${...} shell
+# interpolations are filled with a plausible concrete value; the classifier
+# only needs the literal "failing closed" substring, not the exact exit
+# code or command text.
+_HELPER_PROC_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command with no bypass valve."),
+    ("block-gh-pr-merge.sh",
+     "Blocked: could not determine whether 'gh pr merge 123' invokes gh pr merge (status 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed per this gate's documented "
+     "fail-closed posture rather than letting an unscanned command bypass the self-merge block."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command with no bypass valve."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not split the command into fragments (exit 2) — "
+     "sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command with no bypass valve."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not quote-strip the command text "
+     "(exit 2) — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "allowing an unscanned git commit."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not determine whether this command "
+     "invokes git commit (status 2) — sed/tr may be missing, killed, or errored. Failing "
+     "closed rather than silently allowing an unscanned git commit."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not mask quoted command text (exit 2) — "
+     "awk may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "git commit chain."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not split the masked command into "
+     "fragments (exit 2). Failing closed rather than allowing an unscanned git commit chain."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not split the command into fragments "
+     "(exit 2). Failing closed rather than allowing an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not quote-strip a command fragment "
+     "(exit 2) — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "allowing an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not quote-strip the scan target (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than scanning with "
+     "degraded quote-split coverage."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned mv/rsync."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not split the command into fragments (exit 2) — "
+     "sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "relocation command."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not quote-strip the command text (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command for a review-only agent."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned command for a review-only agent."),
+    ("require-code-review.sh",
+     "Blocked by code-review gate: could not determine whether this command invokes git "
+     "commit (status 2) — sed/tr may be missing, killed, or errored. Failing closed rather "
+     "than letting an unscanned git commit bypass the review gate."),
+    ("require-ready-for-review.sh",
+     "Blocked by ready-for-review gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git push/gh pr command."),
+    ("require-ready-for-review.sh",
+     "Blocked by ready-for-review gate: could not split the command into fragments (exit 2) "
+     "— sed may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git push/gh pr command."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned Bash write that could reach marker state."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned Bash write that could reach marker state."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not determine whether 'marker.sh write "
+     "code-review' invokes marker.sh write/activate (sed/tr may be missing, killed, or "
+     "errored) — failing closed per this gate's documented fail-closed posture rather than "
+     "letting an unscanned command bypass gate-release authority."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not quote-strip the command text (exit 2) — sed/tr "
+     "may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not split the command into fragments (exit 2) — sed "
+     "may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not quote-strip the scanned content (exit 2) — sed/tr "
+     "may be missing, killed, or errored. Failing closed rather than scanning with degraded "
+     "quote-split coverage."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the 'tracker-id' detector failed to scan the gated content "
+     "(grep exit 2) — failing closed. Unscanned content is exactly the leak vector this hook "
+     "guards against."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the structural-detector fast-path pre-check matched, but no "
+     "individual detector in the follow-up loop confirmed which one — failing closed on this "
+     "pattern-composition mismatch between the combined and per-detector regexes."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the structural-detector fast-path pre-check failed to scan "
+     "the gated content (grep exit 2) — failing closed. Unscanned content is exactly the leak "
+     "vector this hook guards against."),
+    ("require-respond-pr.sh",
+     "Blocked by respond-pr gate: could not flatten the command text (exit 2) — awk may be "
+     "missing, killed, or errored. Failing closed rather than evaluating an unflattened "
+     "command that could hide a gated pattern across a line break."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not determine whether this command invokes gh "
+     "pr create/edit — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "letting an unscanned PR body bypass the backtick-escape scan."),
+)
+
+# The single deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
+# wrapping a parse-failure reason to prove deny-encode's cascade precedence
+# over an input-parse fragment embedded in the same message.
+_DENY_ENCODE_FIXTURE = (
+    "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
+    "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
+    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
+    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
+    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
+    "reason follows.\nBlocked: could not parse tool-input JSON.\n"
+)
+
+# The genuinely-behavioral subset of TestDenialHookLabelEnumeration's fixture
+# rows above (duplicated here per this repo's DAMP-test-code convention,
+# rather than threaded through a shared constant) — every other row in that
+# class's parametrization is bootstrap or parse-failure wording, already
+# covered by _LIB_SOURCE_FIXTURES/_INPUT_PARSE_FIXTURES above.
+_BEHAVIORAL_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("require-memory-skill.sh:125",
+     "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to "
+     "MEMORY.md, which is part of Claude Code's auto-memory file system."),
+    ("require-plan-review.sh:239",
+     "Plan presentation blocked by the plan-review gate: an uncommitted or modified "
+     "plan file exists in .claude/plans/ but no plan-review marker covering the "
+     "current plan set was found."),
+    ("require-routing-read.sh:68",
+     "Agent spawn blocked by plan-review routing gate: Read the plan-review skill's "
+     "ROUTING.md before spawning any specialist agent."),
+    ("enforce-marker-script-shape.sh:277",
+     "marker.sh invocation denied (path traversal '..' detected). Command "
+     "(truncated): ~/.claude/scripts/marker.sh write foo"),
+    ("enforce-marker-script-shape.sh:353",
+     "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus"),
+    ("check-claude-md-length.sh:85",
+     "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
+     "Reduce to the limit or fewer lines before committing."),
+    ("check-skill-length.sh:87",
+     "Skill length gate: one or more SKILL.md files grew past their per-skill limit. "
+     "Reduce to the limit or fewer lines before committing."),
+)
+
+
+class TestDenialCauseKind:
+    """Pins _denial_cause_kind's four infra markers plus its behavioral
+    fallback against real and hand-transcribed denial wording. No test here
+    may call git show/git merge-base — every fixture literal is the hook's
+    current wording, copied once from the working tree, so a green run
+    here is evidence about today's text specifically."""
+
+    @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
+    def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "lib-source", (
+            f"{hook_name}'s bootstrap wording {message!r} did not classify lib-source"
+        )
+
+    @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_FIXTURES)
+    def test_parse_failure_wording_classifies_input_parse(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "input-parse", (
+            f"{hook_name}'s parse-failure wording {message!r} did not classify input-parse"
+        )
+
+    @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_FIXTURES)
+    def test_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "helper-proc", (
+            f"{hook_name}'s failing-closed wording {message!r} did not classify helper-proc"
+        )
+
+    def test_helper_proc_fixtures_cover_all_thirteen_census_hooks(self):
+        """Thirteen gate hooks carry at least one helper-proc ("failing
+        closed") deny; a fixture list that silently dropped one would still
+        pass the parametrized test above, so this pins the coverage itself."""
+        covered = {hook_name for hook_name, _message in _HELPER_PROC_FIXTURES}
+        assert covered == {
+            "deny-credential-bash-reads.sh", "block-gh-pr-merge.sh", "deny-network-installs.sh",
+            "deny-invisible-commit-content.sh", "deny-pii-in-commits.sh", "deny-repo-relocation.sh",
+            "deny-reviewer-tree-mutation.sh", "require-code-review.sh", "require-ready-for-review.sh",
+            "enforce-marker-script-shape.sh", "deny-private-project-refs.sh", "require-respond-pr.sh",
+            "deny-escaped-backticks-in-pr-body.sh",
+        }
+
+    def test_deny_encode_preamble_classifies_deny_encode(self):
+        assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_deny_encode_precedes_input_parse_when_both_markers_present(self):
+        """The deny-encode preamble wraps the underlying reason verbatim, so
+        a jq outage during a parse-failure deny carries both markers in one
+        message; deny-encode must win because the outage that broke jq's
+        deny-envelope encoding is also what broke the input parse."""
+        assert "could not parse tool-input json" in _DENY_ENCODE_FIXTURE.lower()
+        assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_real_subprocess_input_parse_classifies_input_parse(self):
+        """A real .tool_input-is-a-string payload, which _lib.sh's own
+        comment documents as the structural-type-error trigger that fails
+        the shared jq call before any hook-specific logic runs."""
+        message = run_hook_reason(
+            HOOKS_DIR / "require-code-review.sh",
+            {"tool_name": "Bash", "tool_input": "a string"},
+        )
+        assert message is not None
+        assert _mod._denial_cause_kind(message) == "input-parse"
+
+    @pytest.mark.parametrize("hook_file,message", _BEHAVIORAL_FIXTURES)
+    def test_behavioral_wording_classifies_behavioral(self, hook_file, message):
+        assert _mod._denial_cause_kind(message) == "behavioral", (
+            f"{hook_file}'s wording {message!r} did not classify behavioral"
+        )
+
+    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self):
+        """Recorded limitation, adversarial case: an agent-controlled Read
+        path containing a cause-marker substring reclassifies a genuinely
+        behavioral env-read denial as helper-proc in this derived aggregate.
+        The gate still denies in real time and the raw record is unchanged;
+        review-trace's own cause= line recovers the individual event."""
+        file_path = "/tmp/failing closed.env"
+        message = (
+            f"Read of '{file_path}' denied by env-read gate. Dotenv files commonly hold "
+            "secrets; reading pulls them into Claude's conversation context. If this is a "
+            "non-secret template, rename it to .env.example, .env.template, or .env.sample. "
+            f"Otherwise inspect it with a shell command (e.g. `! cat {file_path}`) instead of "
+            "the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+        )
+        assert _mod._denial_cause_kind(message) == "helper-proc"
 
 
 # ---------------------------------------------------------------------------

@@ -1292,6 +1292,25 @@ def _denial_hook_label(hook_name: str, message: str) -> str:
     return _DENY_SUMMARY_UNMATCHED_HOOK
 
 
+def _denial_cause_kind(message: str) -> str:
+    """Return one denial's infra-failure family, or the behavioral fallback.
+
+    Sibling of _denial_hook_label: same substring-cascade mechanism over the
+    message text only, never given hook_name. The cause axis is orthogonal
+    to the hook axis, so a denial carries exactly one value from each.
+    Classification matches a body fragment rather than a full sentence,
+    because the surrounding wording differs per hook. A hook that echoes
+    agent-controlled command or path text into its deny body can produce a
+    false infra classification, so counts are approximate in the same sense
+    _HOOK_DENIAL_SIGNATURE already documents.
+    """
+    lowered = message.lower()
+    for marker, kind in _DENIAL_CAUSE_MARKERS:
+        if marker in lowered:
+            return kind
+    return _DENIAL_CAUSE_BEHAVIORAL
+
+
 def _denial_command_shape(command: str) -> str:
     """Classify a denied Bash command's shape for --deny-summary.
 
@@ -1375,10 +1394,30 @@ def _friction_kind_label(tool_denial_kind: str) -> str:
     return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
 
 
+# --deny-summary's/review-trace's denial-cause vocabulary — closed, the same
+# shape as _FRICTION_KINDS above. Its tuple order fixes _print_deny_summary's
+# printed column order for the hook/gate x cause table.
+_DENIAL_CAUSE_BEHAVIORAL = "behavioral"
+_DENIAL_CAUSE_KINDS: tuple[str, ...] = (
+    _DENIAL_CAUSE_BEHAVIORAL, "lib-source", "input-parse", "helper-proc", "deny-encode",
+)
+
+# Ordered (marker, kind) cascade tried against the message in turn; the
+# first match wins. deny-encode is checked first because a jq outage also
+# fails the input parse and would otherwise be reported as the wrong cause.
+_DENIAL_CAUSE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("could not encode its deny reason", "deny-encode"),
+    ("could not source _lib.sh", "lib-source"),
+    ("could not parse tool-input json", "input-parse"),
+    ("failing closed", "helper-proc"),
+)
+
+
 def _print_deny_summary(
     hook_counts: dict[str, int],
     command_shape_counts: dict[str, int],
     hook_shape_counts: Counter[tuple[str, str]],
+    hook_cause_counts: Counter[tuple[str, str]],
     friction_counts: dict[str, int],
     pre_regime_tool_result_count: int,
     corpus_min_ts: float | None,
@@ -1389,6 +1428,8 @@ def _print_deny_summary(
     hook_shape_counts cross-tabs the hook/gate axis against the command-shape
     axis — the two marginal tables alone can't say which hook denied which
     command shape, which is the whole point of the census this feeds.
+    hook_cause_counts cross-tabs the same hook/gate axis against the
+    orthogonal denial-cause axis (_DENIAL_CAUSE_KINDS).
     """
     if corpus_min_ts is not None and corpus_max_ts is not None:
         print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
@@ -1428,6 +1469,24 @@ def _print_deny_summary(
         for hook in hooks:
             row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
                 f"{hook_shape_counts.get((hook, shape), 0):>{col_width}}" for shape in shapes
+            )
+            print(row)
+
+    # Column set is the fixed _DENIAL_CAUSE_KINDS enumeration rather than
+    # sorted-observed — a zero in the lib-source column is itself the
+    # signal, so a fixed column set keeps two runs comparable. Row order
+    # matches the hook/gate marginal table above.
+    if hook_counts:
+        cause_col_width = max((len(k) for k in _DENIAL_CAUSE_KINDS), default=5) + 2
+        print(f"\n## Denials by hook/gate x cause ({total} total)\n")
+        header = f"  {'Hook':<40}" + "".join(
+            f"{_sanitize_table_cell(kind):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
+        )
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for hook, _count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
+                f"{hook_cause_counts.get((hook, kind), 0):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
             )
             print(row)
 
@@ -1713,6 +1772,10 @@ def _compute_deny_summary_data(
     hook_counts: dict[str, int] = defaultdict(int)
     command_shape_counts: dict[str, int] = defaultdict(int)
     hook_shape_counts: Counter[tuple[str, str]] = Counter()
+    # No separate corpus-wide cause accumulator — the per-cause total is a
+    # column sum of this cross-tab, and _DENIAL_CAUSE_KINDS is closed so
+    # every column always prints.
+    hook_cause_counts: Counter[tuple[str, str]] = Counter()
     friction_counts: dict[str, int] = defaultdict(int)
     corpus_min_ts: float | None = None
     corpus_max_ts: float | None = None
@@ -1760,14 +1823,17 @@ def _compute_deny_summary_data(
             hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
             command = tool_use_commands.get(evt["tool_use_id"], "")
             command_shape = _denial_command_shape(command)
+            cause_kind = _denial_cause_kind(evt["message"])
             hook_counts[hook_label] += 1
             command_shape_counts[command_shape] += 1
             hook_shape_counts[(hook_label, command_shape)] += 1
+            hook_cause_counts[(hook_label, cause_kind)] += 1
 
     return {
         "hook_counts": hook_counts,
         "command_shape_counts": command_shape_counts,
         "hook_shape_counts": hook_shape_counts,
+        "hook_cause_counts": hook_cause_counts,
         "friction_counts": friction_counts,
         "corpus_min_ts": corpus_min_ts,
         "corpus_max_ts": corpus_max_ts,
@@ -1835,7 +1901,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
             _print_deny_summary(
                 data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
-                data["friction_counts"], data["pre_regime_tool_result_count"],
+                data["hook_cause_counts"], data["friction_counts"], data["pre_regime_tool_result_count"],
                 data["corpus_min_ts"], data["corpus_max_ts"],
             )
         elif data["any_session_matched"]:
@@ -1889,7 +1955,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 hook = evt['hook_name']
                 uid = evt['tool_use_id']
                 msg = evt['message']
-                print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}{suffix}")
+                cause = _denial_cause_kind(msg)
+                print(
+                    f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
+                    f"  id={uid}  msg={msg!r}{suffix}"
+                )
             elif kind == "friction":
                 fkind = _friction_kind_label(evt['friction_kind'])
                 uid = evt['tool_use_id']
