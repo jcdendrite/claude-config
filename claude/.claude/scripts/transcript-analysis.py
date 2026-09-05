@@ -9495,7 +9495,7 @@ _REARM_BACKTEST_DEFAULT_SPACINGS: tuple[int, ...] = (40_000, 80_000, 120_000)
 # "schema-drift" are written by nudge-handoff-near-context-cap.sh itself
 # (docs/handoff-nudge.md's "Log location" table); "handoff" is appended by
 # the handoff skill's own conversion-signal step
-# (claude/.claude/skills/handoff/SKILL.md, "After writing: record the
+# (claude-skills/skills/handoff/SKILL.md, "After writing: record the
 # conversion signal").
 _NUDGE_LOG_LINE_KINDS = ("nudged", "schema-drift", "handoff")
 

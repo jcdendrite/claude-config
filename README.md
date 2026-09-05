@@ -113,6 +113,7 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 ```
 claude/        # stow package — claude/.claude/ → ~/.claude/
+claude-skills/ # stow package — claude-skills/skills/ → ~/.claude/skills/
 plugins/       # marketplace plugins (see Plugins section below)
 docs/          # design-decisions, walkthrough, hooks, skills, scripts, auto-mode, redaction
 .github/       # workflows, dependabot
@@ -196,7 +197,7 @@ The account segment (email / plan) reads `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.js
 
 ### Plugins (marketplace)
 
-Skills that apply to one or a few private projects — not broadly to all sessions — live as marketplace plugins under `plugins/<name>/` rather than in `claude/.claude/skills/`. This keeps them out of the global skill catalog and lets them be installed only in the repos that need them.
+Skills that apply to one or a few private projects — not broadly to all sessions — live as marketplace plugins under `plugins/<name>/` rather than in `claude-skills/skills/`. This keeps them out of the global skill catalog and lets them be installed only in the repos that need them.
 
 This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plugin lives under `plugins/<name>/` with a `.claude-plugin/plugin.json` manifest and skills under `plugins/<name>/skills/<name>/SKILL.md`.
 
@@ -478,7 +479,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 
 1. **Marker re-injection (automatic).** `session-marker-dashboard.sh` is registered with matcher `startup|clear|compact`, so it fires on session start, after `/clear`, and after compaction. It emits `hookSpecificOutput.additionalContext` with the current state of all active review-skill gate markers, restoring marker knowledge in the resumed context automatically. You don't need to do anything for this to work.
 
-2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `<config-dir>/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude/.claude/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` once context crosses `nudge-handoff-near-context-cap.sh`'s computed threshold — 40% of the model's context window, capped at 150000 tokens (`HANDOFF_NUDGE_ABS_CAP` overrides it) — because cleaner context produces a higher-quality resume file, and every turn spent past a 150000-token prefix on the largest context window is waste. Resume with `resume-context --cwd <worktree-path> <config-dir>/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
+2. **`/handoff` slash command (user-invoked).** When the task will continue in a fresh session, run `/handoff` to write a structured resume file at `<config-dir>/handoffs/<slug>-handoff.md` — durable, so it survives a reboot. The §1–§7 shape is defined inline in `claude-skills/skills/handoff/SKILL.md`. Claude proactively suggests `/handoff` once context crosses `nudge-handoff-near-context-cap.sh`'s computed threshold — 40% of the model's context window, capped at 150000 tokens (`HANDOFF_NUDGE_ABS_CAP` overrides it) — because cleaner context produces a higher-quality resume file, and every turn spent past a 150000-token prefix on the largest context window is waste. Resume with `resume-context --cwd <worktree-path> <config-dir>/handoffs/<slug>-handoff.md` when the handoff named a worktree, or `resume-context <config-dir>/handoffs/<slug>-handoff.md` alone from the main checkout — either form moves the file to a temp path and launches a new session with it loaded, consumption mechanical rather than dependent on the resuming session remembering to read or delete the file. `--cwd` launches the session in that directory outright, rather than depending on the invoker separately `cd`-ing there first.
 3. **Post-compaction authorization boundary restatement (automatic).** `restore-authorization-boundary-on-compact.sh` fires only on `compact`, re-injecting `hookSpecificOutput.additionalContext` that restates the irreversible-action confirmation boundary — advisory, not a gate. Opt out via `~/.claude/.authorization-boundary-disabled`.
 
 ### When to use which
@@ -504,8 +505,8 @@ Pytest suite covering hooks (allow, deny, and ask paths) and skill description c
 
 ```bash
 ./install-dev.sh   # creates .venv and installs requirements-dev.txt (contributor only)
-.venv/bin/pytest claude/.claude/
-.venv/bin/ruff check claude/.claude/                         # Python
+.venv/bin/pytest claude/.claude/ claude-skills/
+.venv/bin/ruff check claude/.claude/ claude-skills/          # Python
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # shell
 ```
 
@@ -520,7 +521,7 @@ Test trees under `claude/.claude/` that carry their own `conftest.py` are Python
 
 `-n auto` resolves to the machine's logical CPU count. To cap it:
 
-- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/` and `select-tests.py`.
+- Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment — pytest-xdist checks it ahead of its own core-count detection, and it applies to both `.venv/bin/pytest claude/.claude/ claude-skills/` and `select-tests.py`.
 - Or pass `-n <N>` on the command line for a single run; `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
 - Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.

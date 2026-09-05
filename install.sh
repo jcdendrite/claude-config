@@ -567,7 +567,7 @@ _report_repo_sentinel() {
 # expected-content/polarity grammar (including the content-mode/default-state
 # invariant). polarity applies only when expected_content is empty;
 # content-mode rows (e.g. pr-cost-disclosure) always use opt-in semantics and
-# mirror claude/.claude/skills/pr-description/SKILL.md's mode grammar
+# mirror claude-skills/skills/pr-description/SKILL.md's mode grammar
 # byte-for-byte — a manual pin, not an enforced sync, so a change to one side
 # needs the matching edit on the other. Resolution is not union:
 # $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never

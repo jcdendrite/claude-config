@@ -57,6 +57,11 @@
 #   gate exits 0 (fail-open). The cost of a missed reminder is one
 #   confused user; the cost of fail-closed in this rare case is
 #   blocking every PR until they fetch main.
+# - `ADDED_PATHS` below is hardcoded to diff against `claude/.claude/`
+#   and structurally cannot see anything added under `claude-skills/`.
+#   A future PR that adds a second immediate child under `claude-skills/`
+#   without also touching `install.sh` gets no reminder — that is the
+#   standing, unclosed gap.
 
 set -uo pipefail
 
