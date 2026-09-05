@@ -359,12 +359,18 @@ class TestDenyNetworkInstalls:
     )
     def test_python_environment_conventions_recipe_allowed(self, isolated_home, command):
         """claude/.claude/rules/python-environment-conventions.md prescribes
-        these three commands for its declared-tool detection branches. The
-        rule's other prescribed forms (`.venv/bin/pip install -r
-        requirements.txt`, `uv sync`, `uv pip install -r requirements.txt`)
-        are already pinned as allowed by test_install_dev_sh_own_invocation_allowed,
-        test_uv_sync_restore_allowed, and test_pip_family_restore_allowed
-        elsewhere in this file."""
+        these three commands for its declared-tool detection branches.
+
+        Already covered elsewhere in this file:
+        - `.venv/bin/pip install -r requirements.txt` by test_install_dev_sh_own_invocation_allowed.
+        - `uv sync` by test_uv_sync_restore_allowed.
+        - `uv pip install -r requirements.txt` by test_pip_family_restore_allowed.
+
+        This test pins the allow path only, for poetry/pipenv's own
+        no-argument restore forms. It does not establish parity with the
+        npm/pip families above: deny-network-installs.sh has no deny-path
+        detection at all for poetry or pipenv package-fetch commands
+        (GH-872)."""
         assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "allow"
 
     def test_editable_vcs_url_allowed_is_a_named_false_allow(self, isolated_home):
@@ -640,6 +646,32 @@ class TestDenyNetworkInstalls:
         docs/security-hardening.md)."""
         assert (
             run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input("npm install >|/tmp/x evil-pkg"), home=isolated_home)
+            == "allow"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Named absent-control — no detection at all, not a heuristic quirk   #
+    # ------------------------------------------------------------------ #
+
+    def test_poetry_add_named_package_allowed_is_a_named_residual(self, isolated_home):
+        """`poetry add` fetches a named package from PyPI, the same fetch
+        shape test_uv_add_denied pins as denied for `uv add`.
+        deny-network-installs.sh has no poetry-specific detection at all,
+        so this falls through to allow. Accepted gap, out of scope for this
+        diff: filed as GH-872, see docs/design-decisions.md §52 for why."""
+        assert (
+            run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input("poetry add lodash-fake-pkg"), home=isolated_home)
+            == "allow"
+        )
+
+    def test_pipenv_install_named_package_allowed_is_a_named_residual(self, isolated_home):
+        """`pipenv install <pkg>` fetches a named package from PyPI. It is
+        indistinguishable from a bare `pipenv install` Pipfile restore to
+        deny-network-installs.sh, which has no pipenv-specific detection at
+        all, so both allow. Accepted gap, out of scope for this diff: filed
+        as GH-872, see docs/design-decisions.md §52 for why."""
+        assert (
+            run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input("pipenv install lodash-fake-pkg"), home=isolated_home)
             == "allow"
         )
 
