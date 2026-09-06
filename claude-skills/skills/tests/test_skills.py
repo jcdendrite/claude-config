@@ -937,9 +937,11 @@ class TestPrDescriptionCostSectionWiring:
     that script rather than in this skill body (docs/worktree-bash-guard.md),
     so pinning their exact source shape a second time here would be
     redundant with that behavioral suite -- same reasoning this class
-    already applies to install.sh's own _report_account_sentinel. This class
-    only proves the delimiters, the script-call wiring, and the raw-markdown
-    embedding rule are present in the skill body's source text.
+    already applies to install.sh's own _report_account_sentinel. The
+    delimiters, the heading, and the reproducibility trailer are emitted by
+    pr-cost-section.sh and pinned byte-exactly by test_pr_cost_section.py;
+    this class only proves the skill body still names the script, both
+    delimiters, the heading, and the raw-markdown rule.
     """
 
     def _body(self):

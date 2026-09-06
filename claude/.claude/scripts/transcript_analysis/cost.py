@@ -807,8 +807,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # tables) needs the total computed before that print.
     total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
-        # No leading blank line: pr-cost-section.sh embeds this stdout verbatim,
-        # with no separator of its own, as the Cost section body.
+        # No leading blank line: pr-cost-section.sh prints this stdout directly under
+        # its own heading, which already supplies the separating blank line.
         # The Scope: print's blank line terminates the GFM alert; omitting it lets
         # lazy continuation fold Scope: into the blockquote.
         print(_LIST_PRICE_CAVEAT_ALERT)

@@ -2470,7 +2470,7 @@ class TestListPriceCaveat:
     ):
         """Pins two facts about --summary's output. Its first two lines are
         the caveat wrapped as a GFM alert. No '## '-prefixed heading appears
-        anywhere — one would collide with pr-description's own
+        anywhere — one would collide with pr-cost-section.sh's own
         '## Cost (list-price estimate)' wrapper."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
