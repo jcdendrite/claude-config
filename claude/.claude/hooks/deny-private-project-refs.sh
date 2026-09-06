@@ -172,12 +172,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="redaction"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -190,11 +192,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by redaction gate: could not source _lib.sh — hook cannot evaluate command detection safely."
+  emit_deny "could not source _lib.sh — hook cannot evaluate command detection safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate redaction under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate redaction under malformed input."
 
 # Defense-in-depth: only act on Bash calls. settings.json already matches
 # the Bash tool, but the hook does not rely on that alone (see repo
@@ -210,7 +212,7 @@ fi
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 COMMAND_UNQUOTED_EXIT=$?
 if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by redaction gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
+  emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
   exit 0
 fi
 
@@ -301,7 +303,7 @@ IS_GH_API=0
 FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 FRAGMENTS_SPLIT_EXIT=$?
 if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by redaction gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
+  emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
   exit 0
 fi
 while IFS= read -r fragment; do
@@ -699,7 +701,7 @@ fi
 SCAN_TARGET_UNQUOTED=$(_lib_strip_shell_quotes "$SCAN_TARGET")
 SCAN_TARGET_UNQUOTED_EXIT=$?
 if [ "$SCAN_TARGET_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by redaction gate: could not quote-strip the scanned content (exit ${SCAN_TARGET_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+  emit_deny "could not quote-strip the scanned content (exit ${SCAN_TARGET_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
   exit 0
 fi
 SCAN_TARGET_BOTH=$(printf '%s\n%s' "$SCAN_TARGET" "$SCAN_TARGET_UNQUOTED")
@@ -713,7 +715,7 @@ HITS=$(printf '%s' "$SCAN_TARGET_BOTH" \
 if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
+  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
   exit 0
 fi
 
@@ -780,17 +782,17 @@ if [ "$structural_fastpath_rc" -eq 0 ]; then
     detector_rc=0
     grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET_BOTH" || detector_rc=$?
     if [ "$detector_rc" -eq 0 ]; then
-      emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
     elif [ "$detector_rc" -ge 2 ]; then
-      emit_deny "Blocked by redaction gate: the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
+      emit_deny "the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
       exit 0
     fi
   done
-  emit_deny "Blocked by redaction gate: the structural-detector fast-path pre-check matched, but no individual detector in the follow-up loop confirmed which one — failing closed on this pattern-composition mismatch between the combined and per-detector regexes."
+  emit_deny "the structural-detector fast-path pre-check matched, but no individual detector in the follow-up loop confirmed which one — failing closed on this pattern-composition mismatch between the combined and per-detector regexes."
   exit 0
 elif [ "$structural_fastpath_rc" -ge 2 ]; then
-  emit_deny "Blocked by redaction gate: the structural-detector fast-path pre-check failed to scan the gated content (grep exit ${structural_fastpath_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
+  emit_deny "the structural-detector fast-path pre-check failed to scan the gated content (grep exit ${structural_fastpath_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
   exit 0
 fi
 
@@ -833,7 +835,7 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
   done < "$PRIVATE_PROJECTS_FILE"
 
   if [ -n "$blocklist_report" ]; then
-    emit_deny "Blocked by redaction gate: staged/committed content matches entries from your ~/.claude/private-projects.md blocklist. Remove these references before retrying:${blocklist_report}
+    emit_deny "staged/committed content matches entries from your ~/.claude/private-projects.md blocklist. Remove these references before retrying:${blocklist_report}
 
 See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
     exit 0

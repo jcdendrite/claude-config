@@ -30,12 +30,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="code-review"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -46,11 +48,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by code-review gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by code-review gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Only gate Bash tool calls — exit 0 (no opinion) for everything else.
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -67,7 +69,7 @@ if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
   exit 0
 fi
 if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
-  emit_deny "Blocked by code-review gate: could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
+  emit_deny "could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
   exit 0
 fi
 
@@ -77,7 +79,6 @@ fi
 # same tree: resolving the root one way and hashing the diff another lets a
 # session whose shell drifted to a different working tree of the same repo
 # satisfy the gate with a review of a tree nobody reviewed.
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
@@ -110,14 +111,14 @@ CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the commit through.
 if ! CONFIG_DIR=$(_lib_config_dir); then
-  emit_deny "Blocked by code-review gate: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
+  emit_deny "could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)."
   exit 0
 fi
 
 # Compliance backstop: non-blocking log line recording ledger presence +
 # marker outcome at both exit paths; never affects this gate's decision. See
 # docs/hooks.md's require-code-review.sh entry for the accepted-risk rationale.
-LEDGER_SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+LEDGER_SESSION_ID="$SESSION_ID"
 LEDGER_STATE="absent"
 if [ -n "$LEDGER_SESSION_ID" ] && _lib_valid_session_id_component "$LEDGER_SESSION_ID" \
   && [ -f "$CONFIG_DIR/review-narrative-ledger/$REPO_HASH.$LEDGER_SESSION_ID.jsonl" ]; then
@@ -156,4 +157,4 @@ _log_compliance_line unmatched
 # Build the reason as a bash variable so the conditional marker-chain
 # note can be interpolated; jq -Rs handles JSON-encoding safely
 # regardless of what characters appear in the appended note.
-emit_deny "Commit blocked by code-review gate: the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/code-review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."
+emit_deny "Commit — the currently staged changes have not been reviewed, or the staged state has changed since the last review. Run the /code-review skill now on the currently staged diff. When the review is clean (no blockers), the skill will record the review in ~/.claude/code-review-markers/ and this commit will be allowed through on retry. Do not ask the user for permission — run the skill, address any findings, and retry the commit."

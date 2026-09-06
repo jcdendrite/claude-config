@@ -96,12 +96,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="invisible-commit-content"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -112,11 +114,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by invisible-commit-content gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by invisible-commit-content gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Only gate Bash tool calls — exit 0 (no opinion) for everything else.
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -131,7 +133,7 @@ fi
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 COMMAND_UNQUOTED_EXIT=$?
 if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+  emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
   exit 0
 fi
 
@@ -147,7 +149,7 @@ if [ "$FAST_REJECT_EXIT" -eq 1 ]; then
   exit 0
 fi
 if [ "$FAST_REJECT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not determine whether this command invokes git commit (status ${FAST_REJECT_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than silently allowing an unscanned git commit."
+  emit_deny "could not determine whether this command invokes git commit (status ${FAST_REJECT_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than silently allowing an unscanned git commit."
   exit 0
 fi
 
@@ -225,14 +227,14 @@ _mask_shell_quotes() {
 MASKED_COMMAND=$(_mask_shell_quotes "$COMMAND")
 MASK_EXIT=$?
 if [ "$MASK_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not mask quoted command text (exit ${MASK_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit chain."
+  emit_deny "could not mask quoted command text (exit ${MASK_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit chain."
   exit 0
 fi
 
 MASKED_FRAGMENTS=$(_lib_split_fragments "$MASKED_COMMAND")
 MASKED_SPLIT_EXIT=$?
 if [ "$MASKED_SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not split the masked command into fragments (exit ${MASKED_SPLIT_EXIT}). Failing closed rather than allowing an unscanned git commit chain."
+  emit_deny "could not split the masked command into fragments (exit ${MASKED_SPLIT_EXIT}). Failing closed rather than allowing an unscanned git commit chain."
   exit 0
 fi
 
@@ -256,7 +258,7 @@ while IFS= read -r masked_fragment; do
 done <<< "$MASKED_FRAGMENTS"
 
 if [ "$COMMIT_FRAGMENT_COUNT" -gt 1 ]; then
-  emit_deny "Commit blocked by invisible-commit-content gate: this Bash call chains ${COMMIT_FRAGMENT_COUNT} git commit invocations together, but every commit gate evaluates \`git diff --cached\` once per Bash tool call — any commit after the first runs against a snapshot no gate re-checked. Each git commit must run as its own, separate Bash tool call."
+  emit_deny "Commit — this Bash call chains ${COMMIT_FRAGMENT_COUNT} git commit invocations together, but every commit gate evaluates \`git diff --cached\` once per Bash tool call — any commit after the first runs against a snapshot no gate re-checked. Each git commit must run as its own, separate Bash tool call."
   exit 0
 fi
 
@@ -287,7 +289,7 @@ ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 STRIPPED_FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 SPLIT_EXIT=$?
 if [ "$SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not split the command into fragments (exit ${SPLIT_EXIT}). Failing closed rather than allowing an unscanned git commit."
+  emit_deny "could not split the command into fragments (exit ${SPLIT_EXIT}). Failing closed rather than allowing an unscanned git commit."
   exit 0
 fi
 
@@ -306,7 +308,7 @@ while IFS= read -r fragment; do
       commit_check_fragment="$DIRECT_MASKED_COMMIT_FRAGMENT"
     fi
     if _lib_commit_fragment_has_worktree_target "$commit_check_fragment"; then
-      emit_deny "Commit blocked by invisible-commit-content gate: this git commit uses -a/--all, a -- pathspec separator, or a bare pathspec argument, which commits working-tree content that was not in the index when every commit gate's \`git diff --cached\` snapshot ran — that content was never reviewed. Stage the changes explicitly first (git add), then commit with no -a/--all and no pathspec."
+      emit_deny "Commit — this git commit uses -a/--all, a -- pathspec separator, or a bare pathspec argument, which commits working-tree content that was not in the index when every commit gate's \`git diff --cached\` snapshot ran — that content was never reviewed. Stage the changes explicitly first (git add), then commit with no -a/--all and no pathspec."
       exit 0
     fi
     exit 0
@@ -317,7 +319,7 @@ while IFS= read -r fragment; do
     # the quoted fragment in the deny message below reads cleanly.
     trimmed_fragment="${fragment#"${fragment%%[![:space:]]*}"}"
     trimmed_fragment="${trimmed_fragment%"${trimmed_fragment##*[![:space:]]}"}"
-    emit_deny "Commit blocked by invisible-commit-content gate: '${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's git commit and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with git commit as a second, separate call."
+    emit_deny "Commit — '${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's git commit and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with git commit as a second, separate call."
     exit 0
   fi
 done <<< "$STRIPPED_FRAGMENTS"

@@ -352,3 +352,52 @@ is what this register already does, so the method gets no row of its own.
 | Re-run failures at higher effort | Named, not investigated | The one guide lever with no prior coverage and no verdict here. Effort pins are static per agent, and nothing re-dispatches the same agent at a higher effort after a failed outcome check, though the guide's precondition (checkable outcomes) holds via tests and the review gates. The nearest existing arrangement differs in kind: `code-writer` runs at `high` with a downstream review pass as backstop (`design-decisions.md` §24), escalating to a different agent rather than re-running the same one. Closing this needs a measurement nobody has run — what share of `code-writer` dispatches fail their own downstream check, and what a lower starting tier would cost against that share. |
 | Set budgets and output caps | Rejected, no exposed surface | Subagent frontmatter (Anthropic, *Create custom subagents*) carries no `task_budget`, `max_tokens`, or output-token-cap field; the only budget-adjacent fields are `maxTurns` (a turn count, not a token limit) and `experimental.cacheTtl` (the cache-duration lever above). `max_tokens` is set by the API caller, which is Claude Code, not this repo. `maxTurns` is reachable and truncates a dispatch rather than pricing it — a safety cap, not a cost lever. |
 | Multi-model architectures (Advisor, Orchestrator) | Already implemented, under different names | Advisor: `plan-architect`'s `MODE=consult` dispatch is a cheap executor escalating one hard design decision to an Opus-pinned read-only agent on demand (`design-decisions.md` §37), and `MODE=plan-sections` is the same escalation on a fixed trigger (§30). Orchestrator: a Sonnet-default parent decomposes and delegates bulk work to `code-writer` and the reviewer roster, with the global `CLAUDE.md`'s Model & Effort Routing rule fixing which tier each dispatch gets. Recorded honestly: the guide's precondition — a multi-model configuration must beat a single model's entire score-vs-spend curve — was never measured here. Both arrangements were adopted on other grounds, not as a validated curve win. |
+
+## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
+
+Full empirical record: [`case-studies/markdown-context-ingestion.md`](case-studies/markdown-context-ingestion.md). Supersedes nothing in the `lsp-token-reduction-feasibility.md` section above — that entry already rejected LSP as a general token lever and named markdown as the bucket it doesn't touch; this row closes the follow-up that finding implies, a markdown-specific LSP.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Markdown LSP / MCP section server, retrieving one heading's text instead of a whole file | Rejected, declined outright | No LSP request returns document text — `documentSymbol` and siblings return ranges and labels only — so a markdown language server would still need a `Read` to retrieve the located section. Two lighter primitives already do this in two calls with zero new infrastructure: `Grep '^#{1,6} '` then a ranged `Read`, or a ranged `Read` directly against a cited `§N`. Both are already mandatory via the global `CLAUDE.md` "Locate before a whole-file read" rule. |
+| A section-extract script or new markdown-parsing dependency | Rejected | The lighter primitives above succeed on their own; the waste heuristic found no evidence of waste for such a tool to recover (weaker than evidence of no waste, so corroborating only); this repo declares no npm toolchain and no markdown parser today. |
+| `context: fork`, a `skills:` preload, or switching agents from `Read` to `Skill` invocation | Rejected | An invoked skill body and a read file both persist in-conversation identically until compaction, so switching between them saves no in-turn bytes. All 812 sampled multi-read subagent dispatches favored observed, as-needed reads over a turn-1 preload of every skill body; zero favored preload. Omitting `Skill` from a subagent's `tools:` disables invocation entirely, with no per-skill allowlist to selectively restrict it. |
+| Trimming the always-loaded `CLAUDE.md`/skill/doc baseline | Named, not solved — owned elsewhere | Weighted in byte-turns, the always-loaded baseline is the single largest measured item (1.41× every main-thread markdown read combined). It sits inside its 200-line commit-time cap today and reclaiming it is scoped to a separate, already-in-flight trimming effort; this plan only records the finding. |
+
+## From `reviewer-instance-continuation.md` — "Reviewer-instance continuation on same-branch, same-session re-dispatch"
+
+Pre-registered gate, fixed before the measurement ran: build the mechanism
+only if both hold — (1) at least 50% of same-session (agent-type, branch)
+repeat dispatches fall under the vendor's 300-second cache-TTL boundary, and
+(2) the projected net savings exceed a $50 floor over the observed window,
+confirmed by the engineer before the measurement. Reproducible via
+`transcript-analysis.py review-trace --this-repo --since <window>`,
+cross-checked two ways against the event count.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Continue a same-branch, same-session reviewer re-dispatch via `SendMessage`, carrying only the delta since the prior pass, instead of a fresh stateless `Agent` dispatch that re-reads every changed file | Rejected (measured, gate criterion 1 fails decisively) | Of 263 same-session (agent-type, branch) repeats measured 2026-09-06 (562 in-scope reviewer-spawn events across 299 distinct triples, `skill-fidelity-reviewer` excluded), only 14.4% (38/263) fall under the 300-second boundary — the ≥50% floor. Median gap 1,435s (~24 min), mean 2,456s. 65.4% of repeats land in the 10–60-minute band, consistent with a read-findings/apply-fixes/re-stage/re-run turnaround rather than a same-round artifact. The 85.6% majority crosses the cache-TTL boundary before the re-dispatch happens, so its prompt cache has already gone cold. A continued instance's carried prefix (the prior read set plus the prior round's own output) is strictly larger than what a fresh dispatch would re-read, so writing that larger prefix to a cold cache costs more than the fresh re-read it would replace — continuation only ever saves money on the warm-cache minority. Criterion 2 (the $50 floor) was not separately evaluated: the "both must hold" rule means criterion 1's decisive failure alone ends this, and the per-dispatch read-token volume needed to price criterion 2 precisely proved unmeasurable with existing `transcript-analysis.py` subcommands — measuring it would need new tooling, which this gate check was scoped not to build. |
+
+**Harness prerequisites, separately verified viable:** this measurement also
+resolved three open questions about whether the harness could even support
+the mechanism, independent of the cost verdict above. `ListAgents` lists a
+completed synchronous dispatch, not only a running one. Two
+same-`subagent_type` dispatches in one turn are individually addressable.
+And a `SendMessage` continuation preserves a spawned agent's own prior
+tool-result content, not merely a message-level thread — two throwaway
+agents each correctly recalled a nanosecond-precision `date +%s%N` value
+from their own earlier Bash output, one with zero further tool calls that
+turn. None of these blocked the mechanism — the gap distribution alone did —
+so a later re-measurement of the gap distribution would not need to
+re-verify these.
+
+**Verdict:** decline. The mechanism's sign, not only its magnitude, depends
+on the inter-round gap staying mostly under the cache TTL, and in this
+repo's own usage it does not: 85.6% of same-session repeats exceed the
+boundary where continuation costs more than it saves. No code change ships.
+Per the plan's own out-of-scope note, `experimental.cacheTtl: 1h` on the
+reviewer roster is the follow-up lever to open if a warm-share fix is wanted
+later — not a revised version of this one, since it raises the write
+multiplier on every dispatch, including the ~66% of same-(agent-type,
+branch) dispatches that are first-of-type on a branch and gain nothing from
+a warm-cache continuation fix.

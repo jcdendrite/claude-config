@@ -90,8 +90,8 @@
 #     undecidable, same class of gap as require-worktree-for-git-writes.sh.
 #   - A git-write or in-place-edit reached through a command name quoted
 #     directly in the Bash arm's own command text (`'sed' -i file`) IS
-#     caught: the Bash arm strips quote characters from $COMMAND before
-#     splitting into fragments, so the word scan sees the bare token. A
+#     caught: each fragment's quote characters are stripped before the word
+#     scan runs against it, so the word scan sees the bare token. A
 #     command name reached only through a nested shell boundary this scan
 #     never executes (`bash -c "git checkout"`) is still undecidable — same
 #     indirection class as the alias/wrapper gap above.
@@ -109,19 +109,22 @@
 #     check — git absent, the resolved cwd not a repo, the timeout firing —
 #     denies rather than allows (fail-closed friction on an unusual
 #     environment, not a missed mutation).
-#   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
-#     exit status is checked and denies with an explicit message rather than
-#     falling through to this hook's normal "no gated fragment matched"
-#     allow path.
+#   - The Bash arm's quote-strip/split failures (top-level segments,
+#     per-fragment quote-stripping, fragment splitting) all fail closed:
+#     each exit status is checked and denies with an explicit message
+#     rather than falling through to this hook's normal "no gated fragment
+#     matched" allow path.
 
 set -uo pipefail
+
+DENY_GATE_LABEL="reviewer-tree-mutation"
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -132,21 +135,16 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by reviewer-tree-mutation hook: could not source _lib.sh — hook cannot evaluate reviewer discipline safely."
+  emit_deny "could not source _lib.sh — hook cannot evaluate reviewer discipline safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by reviewer-tree-mutation hook: could not parse tool-input JSON. Refusing to evaluate reviewer discipline under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate reviewer discipline under malformed input."
 
-# .agent_type is the trust-boundary field the entire gate decision hinges on,
-# so read it fail-closed — matching _lib_parse_tool_input_or_deny's handling of
-# its own jq read. An unchecked read would leave AGENT_TYPE empty on a jq
-# failure (timeout, unstringifiable value) and fall straight through to allow:
-# the one fail-OPEN path in a file that denies on every other read failure.
-if ! AGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.agent_type // empty' 2>/dev/null); then
-  emit_deny "Blocked by reviewer-tree-mutation hook: could not read .agent_type from the tool payload — refusing to evaluate reviewer discipline under an unreadable trust-boundary field."
-  exit 0
-fi
+# .agent_type is the trust-boundary field the entire gate decision hinges on.
+# _lib_parse_tool_input_or_deny already reads it fail-closed (denying on a
+# jq failure before returning), so AGENT_TYPE is never empty here as a
+# silent read failure — only as a genuinely absent field.
 
 # Fast common-path exit, BEFORE any tool-specific work: the main session,
 # code-writer, general-purpose, and every agent outside the closed
@@ -240,7 +238,10 @@ _fragment_raw_write_targets() {
 # Splits $1 on the true command-chaining operators only (;, &&, ||, |, |&, a
 # bare &), keeping $(...)/backtick bytes intact -- unlike _lib_split_fragments,
 # which sub-splits on them -- because the git-invoking-fragment check below
-# needs those bytes still present.
+# needs those bytes still present. Its sed/tr calls, like _lib_split_fragments's
+# and _lib_strip_shell_quotes's, run unbounded (no _lib_capped wrapper):
+# input arrives via an EOF-terminated pipe over an in-memory string, not a
+# filesystem or network resource those calls could stall on.
 _top_level_command_segments() {
   local amp_marker=$'\x01'
   printf '%s' "$1" \
@@ -252,10 +253,9 @@ _top_level_command_segments() {
 
 case "$TOOL_NAME" in
   Write|Edit|MultiEdit)
-    if ! FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null); then
-      emit_deny "Blocked by reviewer-tree-mutation hook: could not read .tool_input.file_path for $TOOL_NAME — refusing to evaluate the write target under an unreadable path field."
-      exit 0
-    fi
+    # _lib_parse_tool_input_or_deny already reads .tool_input.file_path
+    # fail-closed, so FILE_PATH is never empty here as a silent read
+    # failure — only as a genuinely absent field.
     [ -z "$FILE_PATH" ] && exit 0
     case "$FILE_PATH" in
       # Traversal guard FIRST, mirroring require-worktree-for-file-writes.sh:
@@ -272,10 +272,9 @@ case "$TOOL_NAME" in
       # or a nested "*/agent-reviews/*"), not a substring — a file literally
       # named agent-reviews-notes.md must not be exempted.
       agent-reviews/*|*/agent-reviews/*)
-        if ! CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null); then
-          emit_deny "Blocked by reviewer-tree-mutation hook: could not read .cwd from the tool payload — refusing to evaluate whether agent-reviews/ is actually ignored under an unreadable trust-boundary field."
-          exit 0
-        fi
+        # _lib_parse_tool_input_or_deny already reads .cwd fail-closed, so
+        # CWD is never empty here as a silent read failure — the
+        # zero-length check below is for a genuinely absent field.
         # macOS's system /bin/bash (3.2, what a bare `#!/bin/bash` shebang
         # resolves to) treats `cd ''` as a silent no-op that stays in the
         # current directory and returns 0 — unlike bash 4+, which errors.
@@ -291,7 +290,7 @@ case "$TOOL_NAME" in
         # itself the unconfirmed case — denying is the only fail-closed
         # answer, not an oversight.
         if [ -z "$CWD" ]; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: the tool payload carried no .cwd — refusing to check whether agent-reviews/ is ignored without knowing which repo to check."
+          emit_deny "the tool payload carried no .cwd — refusing to check whether agent-reviews/ is ignored without knowing which repo to check."
           exit 0
         fi
         # A findings-file write is only safe when agent-reviews/ is actually
@@ -330,21 +329,21 @@ case "$TOOL_NAME" in
         case "$IGNORE_CHECK_STATUS" in
           0) exit 0 ;;
           1)
-            emit_deny "Blocked by reviewer-tree-mutation hook: 'agent-reviews/' is not actually ignored in this repo — findings_path dispatch is unsafe here. Fall back to inline output; do not create or modify ignore rules yourself — that is the dispatching skill's job, not the reviewer's."
+            emit_deny "'agent-reviews/' is not actually ignored in this repo — findings_path dispatch is unsafe here. Fall back to inline output; do not create or modify ignore rules yourself — that is the dispatching skill's job, not the reviewer's."
             exit 0
             ;;
           3)
-            emit_deny "Blocked by reviewer-tree-mutation hook: could not confirm 'agent-reviews/' is ignored — the payload's .cwd ('$CWD') does not resolve to a directory this process can enter."
+            emit_deny "could not confirm 'agent-reviews/' is ignored — the payload's .cwd ('$CWD') does not resolve to a directory this process can enter."
             exit 0
             ;;
           *)
-            emit_deny "Blocked by reviewer-tree-mutation hook: could not confirm 'agent-reviews/' is ignored (exit $IGNORE_CHECK_STATUS — not a git repo, or the check failed) — refusing to allow the write under an unconfirmed invariant."
+            emit_deny "could not confirm 'agent-reviews/' is ignored (exit $IGNORE_CHECK_STATUS — not a git repo, or the check failed) — refusing to allow the write under an unconfirmed invariant."
             exit 0
             ;;
         esac
         ;;
     esac
-    emit_deny "Blocked by reviewer-tree-mutation hook: $TOOL_NAME targets '$FILE_PATH', which is outside /tmp and outside an agent-reviews/ findings path. $SANCTIONED_ALTERNATIVE"
+    emit_deny "$TOOL_NAME targets '$FILE_PATH', which is outside /tmp and outside an agent-reviews/ findings path. $SANCTIONED_ALTERNATIVE"
     exit 0
     ;;
   Bash)
@@ -383,7 +382,7 @@ case "$TOOL_NAME" in
     TOP_LEVEL_SEGMENTS=$(_top_level_command_segments "$COMMAND")
     TOP_LEVEL_SEGMENTS_EXIT=$?
     if [ "$TOP_LEVEL_SEGMENTS_EXIT" -ne 0 ]; then
-      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into top-level segments (exit ${TOP_LEVEL_SEGMENTS_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      emit_deny "could not split the command into top-level segments (exit ${TOP_LEVEL_SEGMENTS_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
       exit 0
     fi
     while IFS= read -r raw_segment; do
@@ -391,7 +390,7 @@ case "$TOOL_NAME" in
       segment_stripped=$(_lib_strip_shell_quotes "$raw_segment")
       segment_stripped_exit=$?
       if [ "$segment_stripped_exit" -ne 0 ]; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip a command segment (exit ${segment_stripped_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+        emit_deny "could not quote-strip a command segment (exit ${segment_stripped_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
         exit 0
       fi
       if _lib_fragment_invokes_git "$segment_stripped"; then
@@ -407,7 +406,7 @@ case "$TOOL_NAME" in
         # mirroring the sibling hook's own accepted parens over-deny.
         case "$raw_segment" in
           *'$'*|*'`'*|*'{'*|*'}'*)
-            emit_deny "Blocked by reviewer-tree-mutation hook: '$segment_stripped' invokes git and its raw text carries a \$, backtick, or brace construct -- these can reassemble a mutating flag or subcommand into a token this hook's checks don't recognize literally. $SANCTIONED_ALTERNATIVE"
+            emit_deny "'$segment_stripped' invokes git and its raw text carries a \$, backtick, or brace construct -- these can reassemble a mutating flag or subcommand into a token this hook's checks don't recognize literally. $SANCTIONED_ALTERNATIVE"
             exit 0
             ;;
         esac
@@ -428,7 +427,7 @@ case "$TOOL_NAME" in
     FRAGMENTS_RAW=$(_lib_split_fragments "$COMMAND")
     FRAGMENTS_RAW_EXIT=$?
     if [ "$FRAGMENTS_RAW_EXIT" -ne 0 ]; then
-      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into fragments (exit ${FRAGMENTS_RAW_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      emit_deny "could not split the command into fragments (exit ${FRAGMENTS_RAW_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
       exit 0
     fi
 
@@ -437,27 +436,27 @@ case "$TOOL_NAME" in
       fragment=$(_lib_strip_shell_quotes "$raw_fragment")
       fragment_exit=$?
       if [ "$fragment_exit" -ne 0 ]; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip a fragment (exit ${fragment_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+        emit_deny "could not quote-strip a fragment (exit ${fragment_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
         exit 0
       fi
       [ -z "$fragment" ] && continue
 
       if _lib_fragment_is_bare_env_assignment "$fragment"; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' is a bare environment-variable assignment -- a later fragment in the same command can consume it (e.g. git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism), with no git word in THIS fragment for the git-anchored checks below to catch. $SANCTIONED_ALTERNATIVE"
+        emit_deny "'$fragment' is a bare environment-variable assignment -- a later fragment in the same command can consume it (e.g. git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism), with no git word in THIS fragment for the git-anchored checks below to catch. $SANCTIONED_ALTERNATIVE"
         exit 0
       fi
 
       if _lib_fragment_invokes_git "$fragment"; then
         if _lib_fragment_has_command_invoking_git_flag "$fragment"; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
         if _lib_fragment_has_git_write_target_flag "$fragment"; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries a git flag (--output/--output-directory) that writes the command's own output to a caller-chosen filesystem path, with no shell redirect character for a redirect scan to catch. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'$fragment' carries a git flag (--output/--output-directory) that writes the command's own output to a caller-chosen filesystem path, with no shell redirect character for a redirect scan to catch. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
         if _lib_fragment_has_env_assignment_before_git "$fragment"; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' carries an environment-variable assignment before the git word -- git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism can set arbitrary config (e.g. diff.external) this way with no matching CLI flag. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'$fragment' carries an environment-variable assignment before the git word -- git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism can set arbitrary config (e.g. diff.external) this way with no matching CLI flag. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
         subcmd=$(_lib_extract_git_subcmd "$fragment")
@@ -465,7 +464,7 @@ case "$TOOL_NAME" in
         # a reviewer never has a legitimate git-write target anywhere, so
         # any non-read-only subcommand denies regardless of where it runs.
         if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'git $subcmd' is not a read-only git subcommand for a review-only agent (subcommands that can write git state with a flag — branch, tag, worktree, remote, fetch, fsck, reflog, symbolic-ref — are excluded, so a reviewer gets only subcommands that never write), and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
+          emit_deny "'git $subcmd' is not a read-only git subcommand for a review-only agent (subcommands that can write git state with a flag — branch, tag, worktree, remote, fetch, fsck, reflog, symbolic-ref — are excluded, so a reviewer gets only subcommands that never write), and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
         continue
@@ -484,7 +483,7 @@ case "$TOOL_NAME" in
       # the diff, it does not need to run the formatter even to verify.
       for formatter in black isort gofmt prettier rustfmt; do
         if _lib_fragment_invokes_tool "$fragment" "$formatter"; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: '$formatter' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'$formatter' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       done
@@ -495,7 +494,7 @@ case "$TOOL_NAME" in
       # — same over-deny-the-check-mode stance as the pure formatters above.
       if _lib_fragment_invokes_tool "$fragment" terraform || _lib_fragment_invokes_tool "$fragment" tofu; then
         if _lib_fragment_has_token "$fragment" fmt; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'terraform/tofu fmt' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'terraform/tofu fmt' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
@@ -516,19 +515,19 @@ case "$TOOL_NAME" in
         if _lib_fragment_has_token "$fragment" format \
           || _lib_fragment_has_token "$fragment" --fix \
           || _lib_fragment_has_token "$fragment" --fix-only; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'ruff format' / 'ruff --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'ruff format' / 'ruff --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
 
       if _lib_fragment_invokes_tool "$fragment" eslint && _lib_fragment_has_token "$fragment" --fix; then
-        emit_deny "Blocked by reviewer-tree-mutation hook: 'eslint --fix' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
+        emit_deny "'eslint --fix' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
         exit 0
       fi
 
       if _lib_fragment_invokes_tool "$fragment" sed || _lib_fragment_invokes_tool "$fragment" perl; then
         if _fragment_has_token_prefix "$fragment" -i; then
-          emit_deny "Blocked by reviewer-tree-mutation hook: 'sed -i'/'perl -i' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
+          emit_deny "'sed -i'/'perl -i' rewrites the file in place. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
@@ -550,12 +549,12 @@ case "$TOOL_NAME" in
         case "$raw_target" in
           /dev/null) continue ;;
           ../*|*/../*|*/..)
-            emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' writes to '$raw_target', a path-traversal write target outside /tmp. $SANCTIONED_ALTERNATIVE"
+            emit_deny "'$fragment' writes to '$raw_target', a path-traversal write target outside /tmp. $SANCTIONED_ALTERNATIVE"
             exit 0
             ;;
           /tmp/*) continue ;;
         esac
-        emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' writes to '$raw_target', which is outside /tmp. $SANCTIONED_ALTERNATIVE"
+        emit_deny "'$fragment' writes to '$raw_target', which is outside /tmp. $SANCTIONED_ALTERNATIVE"
         exit 0
       done < <(_fragment_raw_write_targets "$fragment")
     # <<< here-string, not < <(...) process substitution: _lib_split_fragments

@@ -214,9 +214,9 @@ The rule is encoded in two planning skills: `plan-it` instructs that effort sect
 
 ### Sources
 
-- `claude/.claude/skills/plan-it/SKILL.md` — the governing rule (Step 5, effort section guidance)
-- `claude/.claude/skills/plan-review/SKILL.md` — enforcement (checklist item B15)
-- `claude/.claude/skills/plan-it/REFERENCES.md` — cross-template research confirming no canonical PR planning template uses hour/day estimates at single-PR scope
+- `claude-skills/skills/plan-it/SKILL.md` — the governing rule (Step 5, effort section guidance)
+- `claude-skills/skills/plan-review/SKILL.md` — enforcement (checklist item B15)
+- `claude-skills/skills/plan-it/REFERENCES.md` — cross-template research confirming no canonical PR planning template uses hour/day estimates at single-PR scope
 
 ## 15. Convention skills wired by explicit pointer, not description-based auto-trigger
 
@@ -245,7 +245,7 @@ The fix wires §14's principle into disposition: the code-review skill's Finding
 
 ### Sources
 
-- `claude/.claude/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
+- `claude-skills/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
 - §14 — the parent principle this extends
 
 ## 17. `loop` and `simplify` flipped from `off` to `name-only` (2026-06-17)
@@ -456,7 +456,7 @@ Two tradeoffs are accepted rather than closed.
 
 The corrected `reviewer-yield` measurement (GH-762, PR #764) puts `skill-fidelity-reviewer`'s zero-finding-bucket cited-path edit rate well below every peer reviewer's. §9 established this agent's charter and its own findings-rate re-measurement instruction; it contains no discussion of the cited-path column, so citing it for why that rate is expected is a misattribution. This entry, not §9, is the record's home for the cited-path reasoning below.
 
-**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude/.claude/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
+**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude-skills/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
 
 **Mechanism 2: on a clean pass the scanned output names specifications, not the branch's work surface.** Citations are drawn from the last assistant text plus every `Write` blob. With `findings_path` set, the inline return is a one-line pointer, and the substance lives in the findings file. On a clean pass, that file's content is a dismissal list naming skills and skill bodies — the specs the agent read, not the diff it was handed. A branch is not normally editing the skill it invoked, which is what keeps the numerator small.
 
@@ -470,7 +470,7 @@ Together this means the cross-reviewer `Rate` comparison is not like-for-like. A
 
 - `claude/.claude/scripts/transcript_analysis/reviewer_yield.py` — `_normalize_cited_path` (lexical, hashed join key) and `_reviewer_yield_cited_keys` (citation candidates drawn from the last assistant text and every `Write` blob).
 - `claude/.claude/agents/skill-fidelity-reviewer.md` — Name resolution (config-dir path reads); Output format (findings-file substance on a clean pass).
-- `claude/.claude/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
+- `claude-skills/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
 - `docs/transcript-analysis.md`'s `reviewer-yield` section — the `Cited`/`Active`/`Edited`/`Rate` column definitions and the digest-only redaction note.
 - GH-762 / PR #764 — the reviewer-yield measurement fix this observation post-dates.
 
@@ -564,14 +564,15 @@ Two `tighten-prose` rules were declined rather than promoted. The ~20–25-word 
 
 `comment-discipline-reviewer` gained no new rule to enforce: all six of its review angles were already stated in `claude/.claude/CLAUDE.md`'s Code Comments section before this change. Per §9, that reviewer is a fresh-context sweep against a rule the authoring session already had loaded, not a backstop for a missing rule, so the gap it closes is authoring-session satisficing on a rule already in context — a gap no CLAUDE.md line can close. This change should be expected to move `tighten-prose`'s rewrite volume and not that reviewer's finding volume.
 
-The new section's "one idea per sentence" restates the core of §Code Comments' "Split multi-fact comments" bullet, and the overlap is deliberate rather than an oversight. It stands under the Engineering Judgment section's "a small duplicated value that beats a bad abstraction" exception, not the "instructional prose that must stand alone" exception — both sections live in the same always-loaded file behind the identical load path, so no consumer ever sees one without the other, which is what the stand-alone exception is meant to protect against. Four files at six sites (`claude/.claude/skills/code-review/SKILL.md`, `claude/.claude/agents/code-writer.md`, `claude/.claude/agents/comment-discipline-reviewer.md`, `claude/.claude/skills/plan-it/SKILL.md`) cite the Code Comments section by name as a self-contained rule set, so trimming it to defer upward would ripple into those sites — including a `SKILL.md` edit that would pull hook-enforced `/skill-review` into a prose-only change — for a saving of one repeated clause. The comment-scoped bullet also carries a remedy the general rule does not: an explicit list when the facts are genuinely parallel.
+The new section's "one idea per sentence" restates the core of §Code Comments' "Split multi-fact comments" bullet, and the overlap is deliberate rather than an oversight. It stands under the Engineering Judgment section's "a small duplicated value that beats a bad abstraction" exception, not the "instructional prose that must stand alone" exception — both sections live in the same always-loaded file behind the identical load path, so no consumer ever sees one without the other, which is what the stand-alone exception is meant to protect against. Four files at six sites (`claude-skills/skills/code-review/SKILL.md`, `claude/.claude/agents/code-writer.md`, `claude/.claude/agents/comment-discipline-reviewer.md`, `claude-skills/skills/plan-it/SKILL.md`) cite the Code Comments section by name as a self-contained rule set, so trimming it to defer upward would ripple into those sites — including a `SKILL.md` edit that would pull hook-enforced `/skill-review` into a prose-only change — for a saving of one repeated clause. The comment-scoped bullet also carries a remedy the general rule does not: an explicit list when the facts are genuinely parallel.
 
 ### Sources
 
-- `claude/.claude/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
+- `claude-skills/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
 - `claude/.claude/agents/comment-discipline-reviewer.md` — the six review angles, all already covered by existing CLAUDE.md rules.
-- `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
-- `claude/.claude/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
+- `claude-skills/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
+- `claude-skills/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
+
 ## 39. `claudeMdExcludes` suppresses the nested-discovery duplicate of `claude/.claude/CLAUDE.md` (2026-08-31)
 
 Nested-CLAUDE.md discovery walks the physical filesystem tree rather than deduplicating against files already loaded through a symlink. A session working in this repo therefore loaded the global-instructions file twice: once at user scope through the `~/.claude/CLAUDE.md` stow symlink, and again as a fresh system-reminder block the first time anything under `claude/.claude/**` was read.
@@ -705,11 +706,13 @@ work nothing else does.
 - [anthropics/claude-code #65657](https://github.com/anthropics/claude-code/issues/65657) — report that the system-prompt trailer overrides `attribution.commit`; closed as not planned.
 - [anthropics/claude-code #77830](https://github.com/anthropics/claude-code/issues/77830) — report that the `Claude-Session:` trailer is injected via the Bash tool description and ignores `attribution`; closed, labeled a bug and reproduced.
 - [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web), "Share sessions" — sessions are private by default and become visible to others only on an explicit share.
-- `claude/.claude/skills/respond-pr/SKILL.md` — the Attribution section's prefix-and-trailer requirement, and the prefix's pre-PATCH self-authorship check.
-- `claude/.claude/skills/pr-description/SKILL.md` — the top-and-bottom trailer placement rule.
+- `claude-skills/skills/respond-pr/SKILL.md` — the Attribution section's prefix-and-trailer requirement, and the prefix's pre-PATCH self-authorship check.
+- `claude-skills/skills/pr-description/SKILL.md` — the top-and-bottom trailer placement rule.
 - `claude/.claude/hooks/require-respond-pr.sh` — the tool-call-boundary gate routing every comment write through the skill that applies the prefix.
 
 ## 41. `ScheduleWakeup` misapplied outside `/loop`: documented, not guarded (2026-09-01)
+
+**Superseded by §49 (2026-09-04):** its mechanism-exhaustion claim never reached the settings layer, where a bare-tool-name `permissions.deny` removes the tool from context entirely instead of rejecting a call after the fact. The three mechanisms rejected below remain correctly rejected.
 
 This repo will not add a hook, advisory nudge, or `CLAUDE.md` line to catch a recurring pattern: the assistant reflexively calls the built-in `ScheduleWakeup` tool as a fallback heartbeat after dispatching a subagent or backgrounding a Bash command, outside the `/loop` dynamic mode the tool is scoped to. `ScheduleWakeup`'s own description (Claude Code 2.1.258) states the scope and the prohibition directly: "Schedule when to resume work in /loop dynamic mode... Do NOT schedule a short-interval wakeup to poll for background work you started — when harness-tracked work finishes, you are re-invoked automatically, so polling is wasted." The misuse violates a constraint already present, verbatim, in the tool's own always-loaded description — this is not a documentation gap this repo can close.
 
@@ -748,7 +751,7 @@ The correct alternative already lives in this repo. `handoff/SKILL.md`'s collect
 - [anthropics/claude-code #88260](https://github.com/anthropics/claude-code/issues/88260) and [#88205](https://github.com/anthropics/claude-code/issues/88205) — the missing-`prompt`-field validation-error sub-mode.
 - `claude/.claude/hooks/require-routing-read.sh:33-60` — the marker-as-predicate mechanism and its fail-open default, and why it doesn't transfer to a harness-owned skill.
 - `claude/.claude/hooks/consume-durable-continuity-file-on-read.sh` — the advisory-nudge shape considered and declined here.
-- `claude/.claude/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
+- `claude-skills/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
 - `.claude/plans/harness-context-mismatched-tool-dispatch.md` — full assumption ledger, per-mechanism reasoning, and the corpus-evidence sourcing this entry summarizes.
 
 ## 42. `/code-review`'s Fix-route step routes a mechanism-inventing fix through `plan-architect`, dispatched rather than hooked (2026-09-02)
@@ -857,7 +860,7 @@ The preimage is the diff bytes alone, deliberately excluding the merge-base SHA 
 
 **Named residual, not fixed here** (§34's "Named residual, not fixed here" is the precedent shape for recording this kind of gap rather than engineering it away). A byte-identical diff rebased onto a moved default branch is not strictly the same review object: a reviewer's ripple and causal-reach judgment can depend on code outside the diff, and a clean rebase surfaces textual conflicts only, not semantic ones. This residual is not closed by folding the base ref into the hash — that would defeat the cache's own motivating case, as above — so it is compensated instead: step 2's verification runs against the rebased tree on every pass and is never cached, and CI runs on every push. The cache skips reviewer judgment over bytes nobody changed, not verification of the tree.
 
-**A second named residual: the write is a zero-evidence self-attestation.** `write cumulative-review`'s only precondition is that the diff hashes to something; nothing binds the write to proof that a review actually ran. This is not a new privilege boundary: every existing marker kind is already self-attested, with no hook correlating a write to completed review work. It does, however, convert step 3 from prose-"unskippable" into a silently skippable step. The accepted mitigation is the same one already in place for the base-move residual above: step 2's verification and CI still run unconditionally on every pass, cache hit or not.
+**A second named residual: the write is a zero-evidence self-attestation.** `write cumulative-review`'s only precondition is that the diff hashes to something; nothing binds the write to proof that a review actually ran. This is not a new privilege boundary: every existing marker kind is already self-attested, with no hook correlating a write to completed review work. It does, however, convert step 3 from prose-"unskippable" into a silently skippable step. The accepted mitigation is the same one already in place for the base-move residual above: step 2's verification and CI still run unconditionally on every pass, cache hit or not. §50 closes the narrower defect this residual was later found to also cover — a write that stamped a diff it never reviewed at all — without closing this residual itself, which stays open at parity with the other four marker kinds.
 
 ### Sources
 
@@ -1041,3 +1044,202 @@ The event also signals dispatch *initiation*, not completion — it fires on an 
 - `claude/.claude/hooks/log-reviewer-round.sh:118-135` (`_maybe_write_consult_latch`) — the bash classification the Python re-expresses.
 - `claude/.claude/agents/plan-architect.md:28-31,33,42` — the `MODE=plan-sections`/`MODE=consult` protocol literal and its two occurrences.
 - `claude/.claude/agents/skill-fidelity-reviewer.md` — the architect-consult check, its Output-format record, and the corrected Input-contract clauses.
+
+## 49. `ScheduleWakeup` denied by bare tool name in `permissions.deny`, reversing §41 (2026-09-04)
+
+Ship `"ScheduleWakeup"` as a second bare tool-name entry in `claude/.claude/settings.json`'s `permissions.deny`, alongside `EnterPlanMode`. A bare tool name removes the tool from context entirely rather than rejecting a call after the fact: "A bare tool name like `Bash` removes the tool from Claude's context entirely, so Claude never sees it" (`code.claude.com/docs/en/permissions`). §41 evaluated a `PreToolUse` gate, a `PostToolUse` advisory nudge, and a `CLAUDE.md` line, and rejected all three — correctly, on their own terms. What its survey never reached was the settings layer, where this primitive already existed and needs no `/loop`-awareness to work: it prevents the call from being formed at all, rather than reasoning about which calls are legitimate.
+
+**Which of §41's three Revisit conditions are met.** Of the three conditions §41 named for reopening itself, only the third is met. `ScheduleWakeup` still accepts out-of-`/loop` calls, and no `PreToolUse` field exposes harness-computed active-mode state. Upstream issues #80350, #88260, and #88205 are all still open, and no changelog entry through Claude Code 2.1.258 addresses this. The first condition is therefore not met. No instance surfaced of a misfire failing to self-correct cleanly, either: every observed case cancelled or disclosed honestly with no fabricated or predicted result, so the second condition is not met. The third condition, a materially higher well-formed-call rate at large context sizes, is met: the well-formed non-`/loop` call turned out to be the majority sub-mode rather than the minority §41 assumed, concentrated at context sizes where a wasted re-invocation is a real cost. The supporting counts and context medians are not reproduced here — the corpus mixes private-project and public transcripts, and any count, ratio, median, or duration would inherit the private half's composition.
+
+**The mechanism-exhaustion lesson.** §41 was correct about every mechanism it evaluated and wrong about the set being complete. A mechanism-exhaustion claim needs a sweep of every configuration layer that could plausibly reach the problem — settings keys, CLI flags, hooks, prose — not only the layer the problem first surfaced in.
+
+**Why nothing addresses the `noop` misconception directly.** The failure is driven by the model reading `noop` as a "check back later, do nothing" mode the tool does not have; errored calls carried a uniform `{delaySeconds, noop, reason}` shape with `prompt` and `stop` never present. No second mechanism — no `CLAUDE.md` line, no skill clause, no advisory nudge — addresses this directly: once the tool is absent from context, the misconception has no expression surface, since the model cannot construct a call to a tool it cannot see. A mechanism that closed a gap the deny already closes would be the same compounding-defensive-layer shape §41 and §42 both name as a wrong-foundation tell.
+
+**Blast radius.** The entry ships in the stow-source settings file, so it reaches every stow consumer, not only this repo. Self-paced `/loop` (no fixed interval) is degraded, but not silently. Across four manual test sessions run against a live `permissions.deny` before this change shipped, `/loop`'s dynamic mode detected the missing tool via `ToolSearch` on its first turn rather than attempting a call that could fail. Those four sessions split into two outcomes:
+
+- Three of four disclosed the gap honestly and fell back to `Monitor`-only (event-driven, no periodic heartbeat) with no fabricated workaround.
+- One of four substituted `CronCreate` as a fallback heartbeat (roughly 20-minute cadence) without asking first — a real observed instance of the substitute-mechanism risk this entry's Revisit list names below, not merely a hypothetical one.
+
+Fixed-interval `/loop <interval> <prompt>` is unaffected, confirmed directly: a `CronCreate` job scheduled and fired successfully under the deny. Deny rules across settings scopes union rather than override, so the opt-out is editing the tracked file. Three override attempts were each tried in turn against a live user-scope deny, and `ScheduleWakeup` stayed absent in all three:
+
+- A project-scope `permissions.allow` entry.
+- A project-local `permissions.allow` entry.
+- Plain omission.
+
+These three attempts cover the project-scope and project-local settings-file layers only. The command-line flag layer, which outranks both in Claude Code's five-level precedence order, was not tried. Other stow consumers' `/loop` usage is not observable from this corpus; the blast-radius argument rests on the deny being reversible in one line plus this entry's documented migration note, not on a claim about other consumers' behavior.
+
+**Revisit** if any of:
+
+- The model substitutes a worse wait mechanism for the removed tool *in production* — repeated `ListAgents`/`TaskOutput` polling, a `Bash sleep`, or a recurring `CronCreate` call.
+- A genuine `/loop` need arises in this repo's own pipeline — none exists today; `ci-watch.sh`, the strongest candidate, is deliberately built to avoid polling via `Bash run_in_background`.
+- A stow consumer reports a silently-truncated self-paced `/loop`.
+- `ScheduleWakeup` gains its own out-of-`/loop` validation upstream, which moots this entry.
+- Claude Code changes bare-tool-name-deny semantics or cross-scope permission-union precedence in a future release. Either would silently invalidate this entry's claims while `test_schedulewakeup_stays_denied_in_settings` keeps passing, since that test pins only the declared config value, not the harness behavior behind it.
+
+**Accepted residual risk.** Three things are accepted rather than closed:
+
+- **The `CronCreate` substitution channel is unguarded.** The pre-implementation gate observed the model substituting `CronCreate` as a fallback heartbeat in 1 of 4 runs, without asking first. That is the exact autonomous-reinvocation risk this deny exists to close, now sitting on an adjacent tool. `CronCreate` carries none of: a guardrail, an ask-tier check, a cap. The first Revisit condition above already covers a production recurrence of this pattern.
+- **No committed artifact backs the manual pre-implementation gate.** Its results are prose only, recorded in this plan and in this entry. No transcript, log, or fixture is committed alongside. This is the same limitation the `EnterPlanMode` sibling accepts, not a new gap unique to this entry. See `.claude/plans/plan-mode-workflow-discipline.md`'s Accepted residual risk section.
+- **No Revisit condition previously covered the underlying mechanism drifting upstream.** The first four Revisit conditions above all track the *model's* behavior. None tracked Claude Code itself changing bare-tool-name-deny semantics or cross-scope union precedence — a change that would silently invalidate this entry's claims while the declared-config test kept passing. The fifth Revisit condition above closes that gap.
+
+**Reversal is not friction-free.** Removing this line re-triggers `ask-review-permissions.sh`'s `ask` decision and a `review-permissions` re-review, exactly like adding it did. "One line to revert" describes the diff size, not the process cost.
+
+### Sources
+
+- [Claude Code permissions docs](https://code.claude.com/docs/en/permissions) — bare-tool-name deny semantics.
+- `docs/design-decisions.md` §41 — the decision this entry reverses.
+- `docs/design-decisions.md` §17 — the `skillOverrides.loop` decision this entry leaves standing.
+- `docs/design-decisions.md` §43 — the settings-scope union precedent this entry's opt-out argument relies on.
+- `claude/.claude/settings.json` — the `permissions.deny` entry itself.
+- `.claude/plans/prevent-non-loop-schedulewakeup-calls.md` — full assumption ledger, per-mechanism reasoning, and the live-verification test-session results this entry summarizes.
+
+## 50. `write cumulative-review` stops recomputing its own artifact: the marker's value is the recorded review subject, not a write-time diff (2026-09-04)
+
+The defect, stated structurally: `marker.sh write cumulative-review` and `marker.sh status` both called the identical helper, `_lib_cumulative_diff_hash`, so the value the write stored was, by construction, whatever the reader would later recompute. A mistimed write — one issued after a fix commit whose only review was a narrow staged-diff `/code-review` — was therefore structurally incapable of producing a marker that failed to match; it stamped whatever diff existed at the moment it ran, regardless of what was reviewed.
+
+The fix moves the write's value source, not its shape. `pr-diff-against-base.sh` gains a `--record` flag, added to `ready-for-review` step 3's existing diff command, that captures the diff at step-3 entry into `<config-dir>/cumulative-review-subject-markers/<repo-hash>.<session-id>`. `write cumulative-review` reads and consumes that recorded subject instead of calling `pr-diff-against-base.sh` itself — present and non-empty, hash it; absent or empty, refuse and write nothing. `status` is unchanged: it still recomputes the diff live via `_lib_cumulative_diff_hash`. A write issued after a fix commit now stamps the pre-fix subject, `status` recomputes the post-fix diff, the two disagree, and the marker reads `historical` — the mistimed write becomes self-defeating instead of harmful.
+
+A corpus sweep across every root in `~/.claude/transcript-config-dirs` found seven executed `write cumulative-review` invocations across six sessions and five branches, all failing the documented step-3 standard, with zero correct executions on record. The mechanism dissolves all seven retrospectively. Five had a fix commit land between a real cumulative pass and the write, so the recorded subject is stale and the marker now reads `historical`. One ran no `pr-diff-against-base.sh` at all in the session, so no subject exists and the write now refuses. One ran only `git diff --stat` with no review in place of the pass, landing in one of the same two outcomes depending on whether an earlier record stood. This is a retrospective result, not a forward guarantee — `--record` sits inside step 3's own routine diff command, so a session that re-enters step 3 after a fix commit and proceeds straight to the write reaches record-then-immediately-write with no review in between through the ordinary flow, not only through deliberate hand-forging.
+
+**What this does not establish: that a review happened.** Record-then-write with no review in between still produces a live marker, and no in-session mechanism distinguishes it from a genuine pass. That is the same self-attestation exposure §44's second residual already names for every marker kind, and parity with the other four is the accepted bar. The control is `ready-for-review/SKILL.md`'s `SCOPE_RULE:ready-for-review-cumulative-unnarrowed` block, not new machinery. It now states the write-authority fact directly: the cache marker is written only from a clean pass of step 3's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
+
+Two disclosures. First, a pre-existing unearned marker outside the roots this session's corpus sweep covered stays `live` forever: only the write arm changed, `status` is untouched, and an unswept unearned marker still matches whatever the reader recomputes. Second, this session evicted the six markers its sweep confirmed unearned, mapped to five branches, as part of landing this change — recorded here as history, not as an implementation step this design depends on.
+
+### Sources
+
+- `.claude/plans/cumulative-review-marker-proof.md` — full assumption ledger, mechanism list, and out-of-scope residuals.
+
+## 51. The no-op-dispatch guard is a CLAUDE.md rule, not a hook (2026-09-03)
+
+A session that spawns a subagent whose only instruction is to wait, occupy the turn, or report back immediately pays a full agent's context for an empty return. The prohibition first shipped as prose in `subagent-delegation/SKILL.md` Step 1 on 2026-09-02. It recurred on 2026-09-03 in a session that never loaded the skill body — only the one-line trigger description from the available-skills listing. That is the whole failure: a skill-body rule reaches a session only when the skill is in context, and this impulse arrives at moments that do not look like delegation decisions. Two occurrences are confirmed, both in this repo's own history:
+
+- `memory-content-migration`, 2026-08-30
+- `discovery-audit-remediation-plan`, 2026-09-03
+
+That is a floor from keyword search and one direct admission, not an exhaustive count: transcripts do not record which skill bodies were in a session's context, so this repo's own history cannot be counted as exhaustive. The rule now also sits in `claude/.claude/CLAUDE.md`'s Agent Briefing section, which every session loads on every turn.
+
+**§1 prefers a hook, and no hook is available here.** A `PreToolUse` hook on the `Agent` tool receives `tool_name`, `tool_input` (`subagent_type`, `prompt`, `description`, `model`), `session_id`, `cwd`, and `transcript_path`. None of those carries a non-content signal for "this dispatch does no work." The one non-content fact reachable — that another `Agent` dispatch is already in flight, via transcript parsing — is not the defect: `plan-it` Step 3 encourages parallel fan-out, so gating on it would deny legitimate dispatches. A hook would therefore have to match on prompt text. Three hooks match the `Agent` tool today, and none supplies that predicate:
+
+- `require-routing-read.sh` (`PreToolUse`) gates on a file-read marker.
+- `require-architect-consult.sh` (`PreToolUse`) reads `tool_input.subagent_type` only to scope itself to reviewer-persona dispatches, then gates on a round-count state unrelated to no-op detection.
+- `log-reviewer-round.sh` (`PostToolUse`, never denies) reads both `tool_input.subagent_type` and `tool_input.prompt` but only to record round state for the same gate.
+
+Reusing any of the three would still mean adding new prompt-content matching for no-op intent specifically — the same cost as a fresh hook. §1's preference holds where a mechanical predicate exists. Here there is none, so the real choice is between two advisory surfaces, and the always-loaded one wins.
+
+**Partial duplication, accepted under a named exception.** CLAUDE.md carries the prohibition, the shapes it covers, and what to do instead. `subagent-delegation` keeps the return-value framing and the delegation-cost reasoning. Both surfaces must stand alone, because a session that loaded the skill and a session that did not are different readers — and the second reader is why this entry exists. That is CLAUDE.md §Engineering Judgment's "instructional prose that must stand alone" exception, not an unexamined copy. The overlapping sentences are worded identically on both surfaces so that `git grep` exposes drift.
+
+**No mechanical enforcer.** The trigger is dispatch intent, not a file-content fact. A test asserting the bullet's literal string would be tautological and would break on any rewording.
+
+**Revisit** if the behavior recurs after this rule ships. The next lever is a `PreToolUse` hook on `Agent`, accepting prompt-content matching and its false-positive cost. At that point two advisory surfaces will have failed, which is itself the evidence that no advisory surface reaches this impulse.
+
+### Sources
+
+- `claude/.claude/CLAUDE.md` §Agent Briefing — the rule's text.
+- `claude/.claude/skills/subagent-delegation/SKILL.md` Step 1 — the same rule with its delegation-cost reasoning.
+- `claude/.claude/hooks/require-routing-read.sh` — an `Agent`-matching `PreToolUse` hook gating on a file-read marker rather than on tool-input content.
+- `claude/.claude/hooks/require-architect-consult.sh` — an `Agent`/`Task`-matching `PreToolUse` hook reading `tool_input.subagent_type` to scope itself, then gating on round-count state.
+- `claude/.claude/hooks/log-reviewer-round.sh` — an `Agent`/`Task`-matching `PostToolUse` hook reading both `tool_input.subagent_type` and `tool_input.prompt` to record round state, never denies.
+- `.claude/plans/guard-placeholder-wait-forks.md` — the first mechanism choice, including the ledger rows that rejected both a hook and CLAUDE.md at that time.
+- `.claude/plans/guard-no-op-dispatch-rule.md` — this change's assumption ledger.
+
+## 52. Reviewer-agent dispatches are scoped to input provenance, not persona, and carry no `isolation: "worktree"` carve-out (2026-09-04)
+
+A session dispatched several reviewer subagents with `isolation: "worktree"` plus a `findings_path` write. Every findings-file write was denied by worktree enforcement, and each agent fell back to inline output. The dispatching session was not misbehaving: repo prose in several places, including the deny message a blocked session reads, licensed the combination.
+
+The corrected rule (`claude/.claude/CLAUDE.md`'s "Agent Briefing" section) is scoped to **input provenance**, not to "reviewer" as a persona: `isolation: "worktree"` is passed only when an agent's input is already committed and its output is disposable, and never when the agent's input is the dispatching session's working tree or its output has to land there. A persona-scoped rule ("never combine `isolation` with `findings_path`") would still license the failure mode's silent half: an isolated reviewer dispatched *without* `findings_path` reads a committed-ref checkout that never contained the changes under review, is denied nothing, and can return a clean verdict on work it never read. That false-clean outcome is why the rule is scoped to provenance rather than to the `findings_path` collision alone. It is deliberately not restated in the CLAUDE.md bullet itself: the always-loaded rule already prohibits the dispatch outright, so spelling out the consequence there would add motivation rather than a new instruction, at a recurring context cost every stow consumer's session pays.
+
+The rule carries no exception clause. The exception is exactly the judgment call that failed on every dispatch that faced it; a carve-out would reinstate it.
+
+The fix is prose plus one structural test — `test_no_agent_declares_worktree_isolation`, asserting no agent file under `claude/.claude/agents/` or `plugins/*/agents/*.md` declares `isolation:` in frontmatter — not a hook gate. A `PreToolUse` gate on `Agent(isolation:worktree)` is deferred, not rejected outright: whether `tool_input.isolation` appears in a hook's raw stdin JSON is unverified, and a gate that could only match on the permission-rule `if` and read `subagent_type` would need a persona allowlist — the same judgment call the corrected rule removes. `permissions.deny` is not a substitute: a permission rule is scoped to one parameter, so it cannot be narrowed by subagent type, and a blanket deny would over-block the two dispatch shapes the corrected rule still permits (parallel exploration of already-committed code, throwaway spikes). Layering a runtime gate on prose that currently commands the mistake is also the compounding-defensive-layers tell — fix the foundation first, then measure whether the corrected prose holds.
+
+Two related defects are filed as separate issues rather than fixed here. First, the lock-reason parser that backs worktree-collision detection does not recognize the harness's own ephemeral-worktree lock-reason shape, so it denies with a liveness-blind message for any legitimately-isolated agent that writes. Fixing that does not make the isolated-reviewer combination work: a relative `findings_path` still resolves inside the ephemeral worktree rather than the parent's tree. Second, the `PreToolUse` gate above, blocked on the stdin-JSON question.
+
+### Sources
+
+- `.claude/plans/reviewer-agent-worktree-isolation-prose.md` — full assumption ledger, mechanism-by-mechanism reasoning, and verification steps.
+
+## 53. Full-suite pytest drift traced to two stale pre-`select-tests.py` plans; no handoff-validation mechanism added (2026-09-04)
+
+A transcript-corpus audit of this repository's own project directories, described in full in the plan, confirmed the full-suite-run pattern was recurring, not a one-off, after the rule shipped (`7200d727`/`bf215df9`, 2026-08-25).
+
+A systemic fix was drafted and rejected. The design added a `check-handoff.py` soft check plus a `handoff/SKILL.md` §3 clause requiring a handoff's named verification command be re-derived from the project's current documentation rather than copied from its plan. `/plan-review` found a foundation-level defect: CLAUDE.md's second full-suite exception ("a plan's Verification step... genuinely calls for a whole-repo claim") is a condition on intent, not a machine-readable predicate. Any mechanism checking "does this command match the default" would therefore silently override a legitimate whole-repo Verification claim on some future plan — trading the observed defect for a different one. This forecloses the whole family of "just check the command against the default" fixes, not only the one drafted here.
+
+The two stale plan files are not fixed by this decision. That correction was handed directly to the two branches' own sessions rather than made from this unrelated branch, since editing another branch's plan file re-arms `require-plan-review.sh` there until re-reviewed. The full ledger, evidence, and rejected design live in `.claude/plans/select-tests-handoff-drift.md`, kept on this branch as the durable record rather than restated here.
+
+**Revisit** if any of:
+
+- A future inherited full-suite run traces to a plan file that postdates `select-tests.py` (2026-08-25) — that would mean the drift is live and recurring rather than two aging plans working through their own backlog, and would reopen the systemic-fix question.
+- Either of the two branches above merges without its Verification section corrected — the stale command becomes a merged, harder-to-notice instruction rather than a live one two sessions were told about directly.
+- `review-pipeline-orchestrator-subagent.md`'s proposed (not yet built) Bash-mutation-restriction hook ships with its command allowlist still omitting `select-tests.py` — that would convert this from a stale instruction into an enforced one.
+
+### Sources
+
+- `.claude/plans/select-tests-handoff-drift.md` — full assumption ledger, per-session provenance classification, and the rejected mechanism's design and `/plan-review` rejection.
+- `CLAUDE.md`'s Commands section — the `select-tests.py` rule and its two named exceptions.
+- `.claude/plans/prevent-runaway-subagent-cost.md` and `.claude/plans/review-pipeline-orchestrator-subagent.md` (each on its own branch) — the two stale Verification sections this entry traces the drift to.
+- `.claude/plans/select-tests-fallback-audit.md` (merged, GH-765) — the prior related audit that fixed five other propagation surfaces without flagging `handoff/SKILL.md`'s silence as one of them.
+
+## 54. `guard-settings-session-keys.sh`'s default-branch diff accepts up to 4 extra `_lib_capped` git calls on its staged path (2026-09-04)
+
+`guard-settings-session-keys.sh` diffs staged `claude/.claude/settings.json` against the repo's resolved default branch, so an unresolvable default branch must deny rather than silently comparing nothing. This is the one fail-closed exception to the hook's otherwise fail-open posture. Resolving that branch via the shared `_lib_resolve_default_branch` (`_lib.sh`) adds up to 4 more `_lib_capped` git calls on the settings.json-staged path:
+- one for the symbolic-ref probe
+- up to three more for the `main`/`master`/`develop` candidate loop
+
+Each call is capped at `_lib_capped`'s default 5s, so the theoretical worst case — every call independently timing out — is ~45s. That is well past the hooks' <100ms/fire budget. On a machine lacking both `timeout(1)` and `gtimeout(1)`, each of these calls instead runs uncapped and can hang indefinitely rather than for a bounded 5s. This diff also roughly doubles the sequential-call count on the settings-staged path (4 pre-existing calls to up to 8), so that uncapped-timeout exposure compounds against more calls, not just a longer one.
+
+This is an accepted tradeoff scoped to the narrow settings.json-staged path, not a general latency regression. The hook's earlier staged-file check exits before reaching this diff on every commit that doesn't touch `claude/.claude/settings.json`, which is what keeps the cost scoped to that one path. The new `.cwd`-extraction `jq` call this diff also adds, however, runs unconditionally on every gated `git commit`, not only the settings.json-staged path. `require-ready-for-review.sh`'s default-branch bypass check pays a comparable call-count shape. It resolves the default branch through its own separately-duplicated logic, not this shared helper.
+
+## 55. Python environment discipline ships as a rule plus a CLAUDE.md clause, not a hook (2026-09-04)
+
+An agent restoring Python dependencies had no instruction naming which interpreter the restore must land in, and `claude/.claude/CLAUDE.md`'s own always-loaded exemption for restoring already-declared dependencies named a bare `pip install -r requirements.txt` as the example — blessing the interpreter-ambiguous form that lets packages land in the machine's system interpreter instead of a project-local one. A `PreToolUse` gate is the usual mechanism for this repo's install-time discipline (§1), but it doesn't fit here: the shared parser exposes exactly `tool_name` and `tool_input.command` (`claude/.claude/hooks/_lib.sh:211-248`, `_lib_parse_tool_input_or_deny`), nothing describing the environment the command's shell will inherit. A gate can't tell a `pip install -r requirements.txt` that lands in an already-correct `PATH` from one that doesn't.
+
+Two shapes make that blindness concrete rather than theoretical. A CI runner's `actions/setup-python` step gives the job a single-project interpreter that already is the project environment — `.github/workflows/tests.yml:142` runs a bare `pip install -r requirements-dev.txt` there, correctly. A direnv- or conda-activated shell puts the right interpreter first on `PATH` before Claude Code ever sees the command, so the same bare form is also correct there. Either a deny or a non-blocking nudge hook would fire on both of these already-correct cases as readily as on the failing one, training the reader to dismiss it — the nudge is no better than the deny for a check the payload can't resolve.
+
+The fix ships as two documentation surfaces instead, split by an altitude difference rather than duplicated: `claude/.claude/CLAUDE.md` loads in every session and every subagent against a hook-enforced 200-line cap (`claude/.claude/hooks/check-claude-md-length.sh:63-74`), so its line states only the example, using venv rather than bare python. `claude/.claude/rules/python-environment-conventions.md` loads lazily, only on a matching `**/*.py`/`**/requirements*.txt`/`**/pyproject.toml`/`**/Pipfile` touch, so it can afford to carry the full detect-then-defer recipe, the PEP 668 explanation, and the CI/direnv carve-out without taking a permanent slot in the always-loaded budget.
+
+The rule prescribes `<venv>/bin/pip install -r requirements.txt`, not `<venv>/bin/python -m pip install -r requirements.txt`, for a reason beyond the durable one stated in the rule body (an explicit `<venv>/bin/pip` path already pins the interpreter through its shebang, so `-m` buys nothing). This repo's own `deny-network-installs.sh` denies the `-m` form today. `_install_check_pip_family` matches the bare `pip` word inside `-m pip` as the manager token. `-m` is absent from `_INSTALL_VALUE_TAKING_MARKERS`, so it consumes no value. The interpreter word `.venv/bin/python` then survives `_install_has_leftover_token` and reads as a named package argument — a false deny, confirmed empirically against the hook (GH-868). This is a distinct gap from the grep-text false-positive filed as GH-850, and it isn't listed in the hook's own header Known-gaps block. Fixing it is out of scope here — bundling a security-hook behavior change into a documentation change doubles the review surface, and GH-850 already set the precedent of filing rather than fixing a gate false-positive found in passing — so a follow-up issue is filed instead, and the rule sidesteps the gap by prescribing the form the gate already allows.
+
+`deny-network-installs.sh` also has a second, more severe gap: it has zero detection for the `poetry`/`pipenv` manager families at all. `grep -n "poetry\|pipenv" claude/.claude/hooks/deny-network-installs.sh` returns no matches. Piping `poetry add <pkg>` or `pipenv install <pkg>` through the hook returns allow for both, confirmed empirically. Unlike the `-m pip` gap above, this gap is fail-open rather than fail-safe. GH-850 and GH-868 both over-block a command that should be allowed. This gap, by contrast, silently permits a network fetch the hook exists to catch. The new rule this section documents only prescribes the safe, no-argument restore verbs (`poetry install`, `pipenv install`), never the fetch-new-package verbs, so following the rule as written doesn't reach the ungated shape. A deviation does, though — the same "hit an ImportError, recall an install command" pattern this whole feature exists to correct for pip/npm/uv lands on a manager family with no hook backstop at all. Filed as GH-872 rather than fixed here, per the same bundling-avoidance precedent as GH-850/GH-868.
+
+**What would flip this.** If the harness ever exposed the resolved interpreter or an active `VIRTUAL_ENV`/`CONDA_PREFIX` in the `PreToolUse` payload, the CI-runner and direnv/conda false-positive shapes above would stop applying, and a gate would become viable — worth revisiting then, not before.
+
+## 56. The consumed-continuity index is keyed per-EUID, so every process at that uid can enumerate recently-consumed slugs (2026-09-05)
+
+`_lib_resume_context_index_dir` (`claude/.claude/hooks/_lib.sh`) keys the consumed-continuity index by `$EUID` only, with no `$CLAUDE_CONFIG_DIR` dimension folded into the path. Every process at that EUID shares one set of day-files, and `find-consumed-continuity-file.sh` with no argument prints all of their still-live rows in one call. On a machine running several `$CLAUDE_CONFIG_DIR`-scoped Claude accounts under one OS user, that includes every one of those accounts' rows. `docs/hooks.md`'s `pr-cost-disclosure` and prose-tightening entries scope their own sentinels to `$CLAUDE_CONFIG_DIR` precisely so one account's opt-in doesn't activate under another; this index does not follow that convention.
+
+The same per-uid write access this read-side risk describes also permits row forgery: any process at that EUID can append a row directly to a day-file, bypassing `record_consumed_destination` entirely, to redirect the recovery flow at a file of its own choosing or to inject a raw terminal escape into a field `find-consumed-continuity-file.sh` prints. That forgery risk is why the reader validates `$dest`'s tmpdir-root/basename contract before trusting it and sanitizes all three printed fields ($stamp, $dest, $src), not only $src — see `find-consumed-continuity-file.sh`'s own header for the mechanics.
+
+That tmpdir-root/basename contract narrows where a forged row's `$dest` can point, but does not verify provenance: it confirms `$dest` lives at `$TMPDIR_ROOT/resume-context.*` and is owned, not a symlink, but never confirms the file was actually produced by `record_consumed_destination`'s own `mktemp` call. A co-resident process at the same EUID can still plant its own file at a conforming path, with fully attacker-authored content, and forge a row pointing at it — that row passes every check above, and this script recommends the file via `claude --append-system-prompt-file`. Accepted as a scoped tradeoff, not an oversight: closing it would need a provenance mechanism (e.g. tagging each written file so the reader can verify it against the index row) on top of the location/ownership/naming contract this design already relies on, and the underlying write access is the same per-uid multi-writer surface already accepted for the read-side risk above.
+
+The destination filename is already fixed and non-descriptive, independent of this index: `resume-context.sh` uses a fixed, non-descriptive `mktemp` prefix specifically so `/tmp` doesn't leak a continuity file's slug via `ls`, and every process at that uid writes into the same tmp root. This index's `$src` field is the original, descriptive `<config-dir>/handoffs/<slug>-handoff.md` (or `briefs/`) path, readable in one command by any process at that uid rather than requiring a content grep of every `resume-context.*` file in `/tmp`.
+
+Accepted as a scoped tradeoff, not an oversight. The threat model this feature targets is a different-uid adversary on a shared box — the same boundary `/tmp`'s own sticky bit and this index's ownership/symlink guards already draw. A same-EUID reader was never in scope. Folding `$CLAUDE_CONFIG_DIR` into the index path would stop two cooperating accounts from commingling rows by accident; it would not create an isolation boundary, since any process at that uid can read any of those directories regardless of path. Closing the residual against a hostile same-uid process needs a different mechanism and its own stated goal.
+
+**Revisit** if any of:
+
+- Account-level isolation on one uid becomes a stated goal elsewhere in this repo, not just an assumption this index happens to rely on.
+- A concrete report surfaces of a consumed handoff/brief slug reaching a reader its consuming operator did not intend — a co-resident account reading another's row is one example, not the only shape.
+
+The same-EUID `$src` exposure accepted here also carries §57's bidi/zero-width residual: a reading process renders a crafted `$src` written by a different process at the same EUID without ever loading that writer's file content into its own system prompt, so §57's dominance argument (real content already loaded) doesn't transfer across the writer/reader boundary this entry accepts. This entry predates §57's collapse and didn't have that factor in view; it's folded in here rather than reopening the tradeoff above.
+
+### Sources
+
+- `.claude/plans/handoff-consume-tmp-index.md` — Assumption ledger row 20, and the "Out of scope" section's same-uid multi-writer residual.
+- `claude/.claude/scripts/resume-context.sh` — the destination-filename non-goal this index's `$src` field newly extends past, and its own header note pointing here.
+- `docs/scripts.md`'s `find-consumed-continuity-file.sh` entry — the reader-side cross-reference to this entry.
+- `docs/hooks.md`'s `pr-cost-disclosure` and "Prose tightening opt-out" entries — the existing `$CLAUDE_CONFIG_DIR`-scoping convention this index departs from.
+
+## 57. `_lib_sanitize_for_terminal` drops its bidi/zero-width-code-point stripping layer, keeping only the C0/DEL strip (2026-09-05)
+
+The bidi-override/isolate/zero-width stripping arms in `_lib_sanitize_for_terminal` (`claude/.claude/hooks/_lib.sh`) were added reactively during code review on this branch — never part of the original plan — after a reviewer raised display-reordering as a theoretical extension of the OSC/CSI-injection threat the function already covered. That addition became the source of its own BLOCKER: the `$'\uHHHH'`-range implementation stripped none of its 13 target code points and corrupted unrelated ASCII/UTF-8 content in the same string whenever the invoking process ran under a non-UTF-8 locale (`LC_ALL=C` or unset `LANG`/`LC_ALL`). The fix — a hand-maintained, byte-wise three-range UTF-8 continuation-byte table matched under a function-scoped `LC_ALL=C` — closed the locale bug but kept producing new boundary-coverage findings across further review rounds: a follow-up round found the fix's own near-miss regression test used a probe character far from every range's actual boundary, so a single-hex-digit boundary overshoot on any of the three ranges (the most mechanically likely edit mistake on a hand-maintained hex table with no source-level cross-reference to the Unicode ranges it encodes) would silently start swallowing adjacent legitimate characters — U+200E (LEFT-TO-RIGHT MARK), U+202F (NARROW NO-BREAK SPACE) — with no test in any round's diff catching it.
+
+Collapsed to the provably-correct C0/DEL-only strip instead of continuing to patch the table. Bytes `0x01-0x1f` (excluding tab) and `0x7f` cannot occur inside any UTF-8 multi-byte sequence, since every UTF-8 continuation and lead byte is `≥0x80` — this range needs no UTF-8-aware matching and has no boundary to get wrong. The engineer ratified dropping the bidi/zero-width layer rather than continuing to harden it: an attacker able to write into `<config-dir>/handoffs/` or `<config-dir>/briefs/` already controls the content fed to `claude --append-system-prompt-file` wholesale, which strictly dominates the residual risk of a misleading rendered path from display-reordering alone — but only once a real, attacker-authored file has actually been loaded. That dominance argument does not reach `resume-context.sh`'s source-not-found branch or its `--cwd` not-a-directory branch: both sanitize and echo a raw CLI argument to stderr before any file is read or needs to exist, so there is no loaded file content for the wholesale-control argument to dominate. The narrower residual on those two branches — a crafted, nonexistent path or `--cwd` value rendering with bidi/zero-width characters intact — is accepted separately, for a narrower reason: closing it would need the same UTF-8-validity-aware matching this collapse removed for lacking a provably-correct byte-wise construction, and the raw value never reaches a filesystem operation (`mv`, `cd`, `[ -f ]` all use the unsanitized argument), so the exposure is limited to a human misreading the rendered text.
+
+**Revisit** if any of:
+
+- A concrete report surfaces of bidi-override or zero-width characters in a continuity-file path causing a real misleading-rendering incident, independent of the dominant OSC/CSI vector this function still covers.
+- The function gains a UTF-8-decoding dependency for an unrelated reason, at which point a validity-aware bidi/zero-width strip would no longer need its own hand-maintained byte table.
+
+### Sources
+
+- `docs/scripts.md`'s `find-consumed-continuity-file.sh` entry — the residual-scope rationale this collapse folds bidi/zero-width into, alongside the pre-existing C1 residual.

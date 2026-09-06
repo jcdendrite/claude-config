@@ -11,8 +11,8 @@
 # How it works:
 # - The /skill-review skill writes
 #   ~/.claude/skill-review-markers/<repo-hash>.<session_id> with the sha256 hash
-#   of `git diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
-#   'claude/.claude/skills/plan-review/ROUTING.md'` when the review is clean. The
+#   of `git diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
+#   'claude-skills/skills/plan-review/ROUTING.md'` when the review is clean. The
 #   marker lives under $HOME (not inside the repo) so it never pollutes
 #   `git status` or risks being accidentally committed.
 # - This hook recomputes the same path-scoped diff hash at commit time and
@@ -105,8 +105,8 @@ fi
 # because SKILL_DIFF also feeds STAGED_SKILL_PATHS below, which the
 # frontmatter/YAML structural validator consumes — ROUTING.md has no
 # frontmatter and must not reach that validator.
-SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
-ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude/.claude/skills/plan-review/ROUTING.md')
+SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
+ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude-skills/skills/plan-review/ROUTING.md')
 if [ -z "$SKILL_DIFF" ] && [ -z "$ROUTING_DIFF" ]; then
   exit 0
 fi
@@ -183,7 +183,7 @@ fi
 CORPUS_PATHS=()
 while IFS= read -r CORPUS_PATH; do
   [ -n "$CORPUS_PATH" ] && CORPUS_PATHS+=("$CORPUS_PATH")
-done < <(git -C "$REPO_ROOT" ls-files 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
+done < <(git -C "$REPO_ROOT" ls-files 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
 
 # Overlay staged blobs: replace corpus path with staged blob path for any
 # staged SKILL.md (so the warning reflects the post-commit state of staged files).
@@ -218,7 +218,7 @@ if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
 
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the commit through.

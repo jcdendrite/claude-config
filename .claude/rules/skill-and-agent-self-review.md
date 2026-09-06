@@ -1,6 +1,6 @@
 ---
 paths:
-  - "claude/.claude/skills/**/SKILL.md"
+  - "claude-skills/skills/**/SKILL.md"
   - ".claude/skills/**/SKILL.md"
   - "plugins/**/skills/**/SKILL.md"
   - "claude/.claude/agents/*.md"
@@ -24,9 +24,9 @@ fixture is exactly the content the item exists to keep out of the repo.
 
 **`REFERENCES.md` is the edit-time co-located reference for a skill.** It holds canonical URLs/quotes/framework notes for a skill, read manually at edit time — it is never loaded at runtime and must not be embedded in `SKILL.md`.
 
-**Citing another skill or doc section: `` `target` § "Heading" ``.** The backticked target file sits immediately before `§`, followed by the target's exact heading text in quotes — e.g. `` `subagent-delegation/SKILL.md` § "Heavy command output — run inline" ``. `test_skill_citations_resolve_to_real_headings` (`claude/.claude/skills/tests/test_skills.py`) resolves every such citation in the skill tree against a real file and an exact heading, so a rename on either side fails CI instead of leaving a silent dead pointer.
+**Citing another skill or doc section: `` `target` § "Heading" ``.** The backticked target file sits immediately before `§`, followed by the target's exact heading text in quotes — e.g. `` `subagent-delegation/SKILL.md` § "Heavy command output — run inline" ``. `test_skill_citations_resolve_to_real_headings` (`claude-skills/skills/tests/test_skills.py`) resolves every such citation in the skill tree against a real file and an exact heading, so a rename on either side fails CI instead of leaving a silent dead pointer.
 
-**Global skill bodies stay platform-agnostic.** Skills under `claude/.claude/skills/` install to every stack — don't hardcode engine/platform tokens (`pg_cron`, `net.http_post`, vendor API names); put stack-specific checks in a project-layer skill (`<skill>-<project>/SKILL.md`) loaded via the base skill's project-layer glob. The project-layer glob is for *additive* refinements of a base flow that already runs a complete pass on its own. A flow with no standalone base to layer onto belongs in the consuming repo as its own skill instead.
+**Global skill bodies stay platform-agnostic.** Skills under `claude-skills/skills/` install to every stack — don't hardcode engine/platform tokens (`pg_cron`, `net.http_post`, vendor API names); put stack-specific checks in a project-layer skill (`<skill>-<project>/SKILL.md`) loaded via the base skill's project-layer glob. The project-layer glob is for *additive* refinements of a base flow that already runs a complete pass on its own. A flow with no standalone base to layer onto belongs in the consuming repo as its own skill instead.
 
 ### When a skill is surfaced by real-world work, abstract first
 

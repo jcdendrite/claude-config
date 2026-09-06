@@ -8,12 +8,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="credential-file read"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -24,18 +26,17 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by credential-file read gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by credential-file read gate: could not parse tool-input JSON. Refusing to evaluate the Read under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate the Read under malformed input."
 
 # Defense-in-depth: only act on Read calls (settings.json already matches Read).
 if [ "$TOOL_NAME" != "Read" ]; then
   exit 0
 fi
 
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 [ -z "$FILE_PATH" ] && exit 0
 
 # Optional personal/org additions: one glob per line (same grammar as data-file-read-guard.md). See docs/security-hardening.md.
@@ -75,7 +76,7 @@ _matches_credential_path() {
 }
 
 if _matches_credential_path "$FILE_PATH"; then
-  emit_deny "Read of '${FILE_PATH}' denied by the credential-file read gate: the path is credential-shaped (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, a non-template .env variant, credentials.json, or a path flagged in ~/.claude/credential-file-guard.md). Reading it pulls a live secret into Claude's conversation context. No bypass valve — the \`!\` shell escape does not avoid this either, since Claude Code adds shell-mode output to the conversation transcript. If the human needs to inspect this file's content, ask them to run a command against it in a separate terminal window outside this session."
+  emit_deny "Read of '${FILE_PATH}' — the path is credential-shaped (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, a non-template .env variant, credentials.json, or a path flagged in ~/.claude/credential-file-guard.md). Reading it pulls a live secret into Claude's conversation context. No bypass valve — the \`!\` shell escape does not avoid this either, since Claude Code adds shell-mode output to the conversation transcript. If the human needs to inspect this file's content, ask them to run a command against it in a separate terminal window outside this session."
   exit 0
 fi
 
@@ -84,11 +85,11 @@ fi
 if [ -L "$FILE_PATH" ]; then
   RESOLVED=$(readlink -f -- "$FILE_PATH" 2>/dev/null)
   if [ -z "$RESOLVED" ] || [ ! -e "$RESOLVED" ]; then
-    emit_deny "Read of '${FILE_PATH}' denied by the credential-file read gate: symlink target is unresolvable or missing. Fail-closed — the gate cannot verify what file would actually be read."
+    emit_deny "Read of '${FILE_PATH}' — symlink target is unresolvable or missing. Fail-closed — the gate cannot verify what file would actually be read."
     exit 0
   fi
   if _matches_credential_path "$RESOLVED"; then
-    emit_deny "Read of '${FILE_PATH}' denied by the credential-file read gate: the symlink resolves to '${RESOLVED}', a credential-shaped path."
+    emit_deny "Read of '${FILE_PATH}' — the symlink resolves to '${RESOLVED}', a credential-shaped path."
     exit 0
   fi
 fi

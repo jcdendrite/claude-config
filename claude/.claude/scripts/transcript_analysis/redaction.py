@@ -15,6 +15,7 @@ from pathlib import Path
 
 from transcript_analysis import scope
 from transcript_analysis.corpus import iter_sessions
+from transcript_analysis.render import _sanitize_table_cell
 
 
 def _derive_proj_label(jsonl: Path) -> str:
@@ -227,3 +228,19 @@ def _assign_root_scoped_redact_label(
         n = sum(1 for k in redact_map if k[0] == ordinal) + 1
         redact_map[key] = f"account-{ordinal}/{kind}-{n}"
     return redact_map[key]
+
+
+def _root_scoped_display_label(
+    kind: str, ordinal: int, value: str, redact_map: dict[tuple[int, str], str], *, disclose: bool
+) -> str:
+    """Return either a disclosed raw label or a redacted one for one
+    (root, value) pair, sharing the account-<K>/ namespace format both paths
+    use.
+
+    disclose=True skips writing to redact_map so it can't inflate later
+    placeholder numbers; disclose=False delegates entirely to
+    _assign_root_scoped_redact_label.
+    """
+    if disclose:
+        return f"account-{ordinal}/{_sanitize_table_cell(value)}"
+    return _assign_root_scoped_redact_label(kind, ordinal, value, redact_map)

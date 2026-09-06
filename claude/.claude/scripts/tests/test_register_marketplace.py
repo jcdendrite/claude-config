@@ -373,3 +373,31 @@ class TestSelfLocation:
         assert result.returncode == 1
         assert _read_log(add_log) == []
         assert "self-location must have resolved incorrectly" in result.stderr
+
+    def test_dangling_readlink_garbage_does_not_corrupt_repo_dir(self, tmp_path: Path) -> None:
+        """A readlink -f that fails but still writes partial garbage to
+        stdout (the documented BSD dangling-symlink bug) must not corrupt
+        REPO_DIR via string concatenation -- same regression shape and fix
+        as stow-packages.sh's own TestSelfLocationSurvivesReadlinkCorruption."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text("{}\n")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        stub_readlink = bin_dir / "readlink"
+        stub_readlink.write_text('#!/bin/sh\nprintf "%s" "/garbage-partial-path"\nexit 1\n')
+        stub_readlink.chmod(0o755)
+        add_log = tmp_path / "add.log"
+        remove_log = tmp_path / "remove.log"
+        _make_claude_full_shim(bin_dir, [], remove_log, add_log)
+
+        result = _run_register_marketplace_script(
+            _REGISTER_MARKETPLACE_SH,
+            home=home,
+            extra_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+
+        real_repo_dir = _REGISTER_MARKETPLACE_SH.parents[3]
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert _read_log(add_log) == [str(real_repo_dir)]

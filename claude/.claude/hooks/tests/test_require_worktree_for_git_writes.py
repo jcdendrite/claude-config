@@ -82,6 +82,8 @@ class TestRequireWorktreeForGitWrites:
         reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
         assert reason is not None
         assert "untracked" not in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
 
     def test_staged_not_committed_marker_deny_omits_stray_hint(self, staged_marker_repo):
         """The hint's actual gate is index-tracked (git ls-files --error-unmatch),
@@ -107,6 +109,8 @@ class TestRequireWorktreeForGitWrites:
         assert reason is not None
         assert "could not determine the git subcommand" in reason
         assert "untracked" not in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
 
     @pytest.mark.parametrize(
         "command",
@@ -1572,6 +1576,8 @@ exec "{real_git}" "$@"
         assert reason is not None
         assert "cannot be safely determined" in reason
         assert "'||'" in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
         assert _worktree_lock_reason(worktree) is None, (
             "a denied write must not acquire the worktree lock"
         )
@@ -1602,6 +1608,8 @@ exec "{real_git}" "$@"
         assert reason is not None
         assert "cannot be safely determined" in reason
         assert "backgrounded with '&'" in reason
+        assert "spawn an agent" not in reason
+        assert "isolation" not in reason
         assert _worktree_lock_reason(worktree) is None, (
             "a denied write must not acquire the worktree lock"
         )

@@ -10,8 +10,8 @@ govern any contribution (human or agent).
 ./install.sh                                                 # first-time setup (stow + plugin registration)
 ./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
 .venv/bin/python3 claude/.claude/scripts/select-tests.py     # test suite, scoped to the domains your changes touch
-.venv/bin/pytest claude/.claude/                             # full test suite (hooks + skills)
-.venv/bin/ruff check claude/.claude/                         # lint (Python)
+.venv/bin/pytest claude/.claude/ claude-skills/              # full test suite (hooks + skills)
+.venv/bin/ruff check claude/.claude/ claude-skills/          # lint (Python)
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
 ```
 
@@ -38,7 +38,9 @@ the worktree-relative `.venv` paths.
 
 ## Working in this repo
 
-**Repo layout:** `claude/` is the stow package — `claude/.claude/` maps 1:1 to `~/.claude/`. Skills, hooks, and reviewer agents live under `claude/.claude/skills/`, `claude/.claude/hooks/`, and `claude/.claude/agents/` respectively.
+**Repo layout:** two stow packages both map onto `~/.claude/`. `claude/.claude/` maps 1:1 onto `~/.claude/`. It holds hooks under `claude/.claude/hooks/` and reviewer agents under `claude/.claude/agents/`. `claude-skills/` holds skills under `claude-skills/skills/`, which stows onto `~/.claude/skills/`.
+
+**`claude-config` depends on no other repository.** `./install.sh` and every documented workflow must work from a fresh clone of this repo alone. Optional integrations with public, independently-installable tools are permitted only when absent-tool behavior degrades gracefully and nothing here fails without them. A private repository is never an acceptable dependency in any form, optional included. Other repos may consume this one's layout; that coupling is theirs to maintain, not a reason to constrain changes here.
 
 **Two CLAUDE.md files, plus path-scoped rules:** see README.md's Docs
 section, "Two `CLAUDE.md` files, plus path-scoped rules" bullet, for
@@ -76,9 +78,13 @@ behavior ("from now on when X…", "whenever X…", "each time X…",
 automatic-trigger request. Route to `claude-hook-review` for hook design and
 review.
 
-**Plugin skills use `plugin:skill` names — never path-prefixed.** This repo's stow source (`claude/.claude/skills/**`) holds the same skill names that stow installs at personal scope (`~/.claude/skills/**`). Because the names clash, Claude Code renders the stow-source copies as directory-qualified duplicates in the available-skills listing — e.g. `.claude/worktrees/<branch>/claude:code-review` — and instructs the model to prefer that form. That qualification applies only to project skills. The three marketplace plugins registered in `enabledPlugins` (`skill-management`, `claude-hook-review`, `plugin-semver`) are never directory-scoped: invoke them by the fully-qualified `plugin:skill` name (`skill-management:skill-review`, `claude-hook-review:claude-hook-review`, `plugin-semver:plugin-semver`) with no directory or worktree path prepended.
+**Marketplace plugin skills use `plugin:skill` names.** Claude Code namespaces every marketplace-installed skill by its plugin name — a separate mechanism from project-skill directory qualification. The three marketplace plugins registered in `enabledPlugins` are invoked by their fully-qualified `plugin:skill` name, with no directory or worktree path prepended:
 
-**Project-scoped plugins:** skills that apply to one or a few private projects — not broadly to all sessions — live under `plugins/<name>/` as marketplace plugins, not in `claude/.claude/skills/`. The repo exposes itself as a marketplace via `.claude-plugin/marketplace.json`. Add `.claude-plugin/plugin.json` and `skills/<name>/SKILL.md` inside `plugins/<name>/`. Install at project scope from the consuming repo: `claude plugin install <name>@claude-config --scope project`.
+- `skill-management` → `skill-management:skill-review`
+- `claude-hook-review` → `claude-hook-review:claude-hook-review`
+- `plugin-semver` → `plugin-semver:plugin-semver`
+
+**Project-scoped plugins:** skills that apply to one or a few private projects — not broadly to all sessions — live under `plugins/<name>/` as marketplace plugins, not in `claude-skills/skills/`. The repo exposes itself as a marketplace via `.claude-plugin/marketplace.json`. Add `.claude-plugin/plugin.json` and `skills/<name>/SKILL.md` inside `plugins/<name>/`. Install at project scope from the consuming repo: `claude plugin install <name>@claude-config --scope project`.
 
 **Plans in this repo affect all stow users.** A plan touching anything under `claude/` is not personal-machine tooling — `claude/` installs to every contributor who runs `./install.sh`. When authoring or reviewing such a plan (`/plan-it`, `/plan-review`), frame the user surface and threat model as "every stow consumer," not the session owner alone. This also governs what a plan file itself may contain: a plan committed under `.claude/plans/` ships in the same PR as the implementation, so cited evidence (command output, file listings) is subject to the same redaction rules as any other public-repo content — see "Redact private-project-identifying content" below. Illustrate with placeholder paths and names, not the contributor's own.
 

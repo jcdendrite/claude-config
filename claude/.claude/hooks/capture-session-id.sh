@@ -47,7 +47,12 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  echo "[capture-session-id] could not source _lib.sh; respond-pr skill will fail at Step 0" >&2
+  exit 0
+fi
+
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty' 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
   echo "[capture-session-id] no session_id in payload; respond-pr skill will fail at Step 0" >&2
   exit 0
@@ -56,10 +61,6 @@ fi
 # SESSION_ID feeds the active.d rewrite loop below as a path component ("../"
 # would escape the resolved config dir's .*-active.d/); fail the same way an
 # empty id already does rather than sanitizing further.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  echo "[capture-session-id] could not source _lib.sh; respond-pr skill will fail at Step 0" >&2
-  exit 0
-fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
   echo "[capture-session-id] session_id is not a valid path component; respond-pr skill will fail at Step 0" >&2
   exit 0

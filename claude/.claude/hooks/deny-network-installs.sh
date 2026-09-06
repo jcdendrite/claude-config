@@ -56,20 +56,22 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="network-install"
+
 # Bootstrap so a failed source of _lib.sh can still deny; re-pointed at
 # _lib_emit_deny once sourced — see _lib.sh for the full contract.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
 if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # shellcheck disable=SC2218 # false positive: this stub-then-override redefinition resolves correctly at call time.
-  emit_deny "Blocked by network-install gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by network-install gate: could not parse tool-input JSON. Refusing to evaluate the command under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate the command under malformed input."
 
 # Defense-in-depth: only act on Bash calls (settings.json already matches Bash).
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -84,7 +86,7 @@ fi
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 COMMAND_UNQUOTED_EXIT=$?
 if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by network-install gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
+  emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
   exit 0
 fi
 
@@ -326,34 +328,34 @@ NETWORK_INSTALL_MATCHED_TOKEN=""
 FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 FRAGMENTS_SPLIT_EXIT=$?
 if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by network-install gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
+  emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command with no bypass valve."
   exit 0
 fi
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
 
   if _install_check_npm_family "$fragment"; then
-    emit_deny "Blocked by network-install gate: this command installs a named package via npm/pnpm/yarn/bun (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN'; adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
+    emit_deny "this command installs a named package via npm/pnpm/yarn/bun (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN'; adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
     exit 0
   fi
 
   if _install_check_pip_family "$fragment"; then
-    emit_deny "Blocked by network-install gate: this command installs a named package via pip/pip3/uv pip (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN'; adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
+    emit_deny "this command installs a named package via pip/pip3/uv pip (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN'; adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
     exit 0
   fi
 
   if _install_check_npx_family "$fragment"; then
-    emit_deny "Blocked by network-install gate: this command uses npx/bunx/uvx/pipx/npm-exec's explicit -y/--yes flag to skip confirmation and fetch-and-run a package (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN') — the same shape as a named install. $_INSTALL_ALTERNATIVE"
+    emit_deny "this command uses npx/bunx/uvx/pipx/npm-exec's explicit -y/--yes flag to skip confirmation and fetch-and-run a package (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN') — the same shape as a named install. $_INSTALL_ALTERNATIVE"
     exit 0
   fi
 
   if _install_check_uv_add "$fragment"; then
-    emit_deny "Blocked by network-install gate: this command installs a named package via uv add (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN'; adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
+    emit_deny "this command installs a named package via uv add (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN'; adds software from a registry rather than restoring already-declared dependencies). $_INSTALL_ALTERNATIVE"
     exit 0
   fi
 
   if _install_check_dlx_family "$fragment"; then
-    emit_deny "Blocked by network-install gate: this command uses pnpm/yarn dlx (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN') to fetch and run a package in a throwaway environment — the same shape as a named install, with no local-resolution ambiguity to disambiguate. $_INSTALL_ALTERNATIVE"
+    emit_deny "this command uses pnpm/yarn dlx (matched manager token '$NETWORK_INSTALL_MATCHED_TOKEN') to fetch and run a package in a throwaway environment — the same shape as a named install, with no local-resolution ambiguity to disambiguate. $_INSTALL_ALTERNATIVE"
     exit 0
   fi
 
@@ -370,7 +372,7 @@ while IFS= read -r fragment; do
 done <<< "$FRAGMENTS"
 
 if [ -n "$SAW_DOWNLOADER_FRAGMENT" ] && [ -n "$SAW_INTERPRETER_FRAGMENT" ]; then
-  emit_deny "Blocked by network-install gate: this command both fetches content (curl/wget) and hands it to a shell or interpreter (bash/sh/zsh/python3/node/ruby/perl) in the same call — the download-and-execute pattern this hook blocks regardless of which operator connects the two, including curl/wget and the interpreter appearing in unrelated parts of a batched command. $_INSTALL_ALTERNATIVE"
+  emit_deny "this command both fetches content (curl/wget) and hands it to a shell or interpreter (bash/sh/zsh/python3/node/ruby/perl) in the same call — the download-and-execute pattern this hook blocks regardless of which operator connects the two, including curl/wget and the interpreter appearing in unrelated parts of a batched command. $_INSTALL_ALTERNATIVE"
   exit 0
 fi
 
@@ -378,7 +380,7 @@ fi
 # a direct substring check — a heuristic, not a parser.
 case "$COMMAND_UNQUOTED" in
   *'<(curl'*|*'<(wget'*)
-    emit_deny "Blocked by network-install gate: this command feeds a curl/wget process substitution directly to a shell — the same download-and-execute pattern as a piped installer. $_INSTALL_ALTERNATIVE"
+    emit_deny "this command feeds a curl/wget process substitution directly to a shell — the same download-and-execute pattern as a piped installer. $_INSTALL_ALTERNATIVE"
     exit 0
     ;;
 esac

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Records a handoff-file write against nudge-handoff-near-context-cap.sh's own
 # log. No args.
-# See claude/.claude/skills/handoff/SKILL.md's "record the conversion signal"
+# See claude-skills/skills/handoff/SKILL.md's "record the conversion signal"
 # section for the caller and the canonical recipe this implements.
 set -euo pipefail
 

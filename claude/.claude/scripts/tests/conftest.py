@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from transcript_analysis import pricing
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -580,6 +581,22 @@ def _isolate_transcript_corpus_lookups(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "isolated-claude-config"))
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "nonexistent-transcript-config-dirs"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_pricing_format_drift_flags(monkeypatch):
+    """Reset pricing's two per-process format-drift flags before every test.
+
+    pytest-xdist's default --dist=load doesn't group by file, so a test that
+    trips _warn_if_run_usage_drift or _warn_if_subagent_format_drift (e.g.
+    test_transcript_analysis.py's and test_transcript_reviewer_yield.py's own
+    drift-canary tests) would otherwise leak a fired flag into a later
+    _cost_report test sharing the same worker, intermittently tripping its
+    PRICING INTEGRITY banner for an unrelated reason. monkeypatch.setattr
+    (not a bare assignment) so the prior value is restored on teardown too.
+    """
+    monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+    monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
 
 
 def _init_repo(path: Path, initial_branch: str = "main") -> None:

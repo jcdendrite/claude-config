@@ -11,7 +11,12 @@ set -uo pipefail
 # marker's read side.
 
 INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty')
 [ "$TOOL_NAME" = "Skill" ] || exit 0
 
 # Single jq pass for all three fields, mirroring
@@ -25,12 +30,8 @@ SESSION_ID=""
   IFS= read -r SESSION_ID
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.tool_input.skill // ""),(.agent_type // ""),(.session_id // "")' 2>/dev/null
+    | _lib_jq -r '(.tool_input.skill // ""),(.agent_type // ""),(.session_id // "")' 2>/dev/null
 ) 2>/dev/null || true
-
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 
 # SESSION_ID feeds the drift-signal path below as a path component ("../"
 # would escape its marker directory); fail the same way an empty id already
@@ -71,9 +72,10 @@ if [ -z "$SKILL_NAME" ]; then
   exit 0
 fi
 
-# Match the final component after the last ':' or '/' -- stow-source
-# copies render directory-qualified (.claude/worktrees/<branch>/claude:name)
-# and plugin skills render as plugin:name, per claude/.claude/CLAUDE.md.
+# Match the final component after the last ':' or '/' -- two qualified
+# forms exist: directory-qualified (.claude/worktrees/<branch>/claude:name)
+# when the stow source sits under a `.claude` ancestor directory, and
+# plugin-qualified (plugin:name) for plugin skills.
 LABEL="${SKILL_NAME##*:}"
 LABEL="${LABEL##*/}"
 [ "$LABEL" = "handoff" ] || exit 0

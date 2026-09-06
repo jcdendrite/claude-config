@@ -54,8 +54,9 @@
 
 # Byte cap for the scanned prompt (<100ms per-fire budget, claude-hook-review
 # §7), applied right after jq extraction — jq's own parse of the raw payload
-# runs uncapped regardless, and a mention past the cap is silently dropped
-# since raising it just reopens the stall it prevents.
+# is timeout-capped at 5s via _lib_jq, not this byte cap, and a mention past
+# the cap is silently dropped since raising it just reopens the stall it
+# prevents.
 _MAX_SCAN_BYTES=65536
 
 # Ceiling on distinct candidates per prompt — see "Known gaps" above for the
@@ -81,7 +82,7 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # run on the full untruncated prompt before the byte cap could apply. cwd and
 # permission_mode are harness-controlled and small, so the combined pass below
 # is safe for them.
-PROMPT=$(printf '%s\n' "$INPUT" | jq -r '.prompt // ""' 2>/dev/null | head -c "$_MAX_SCAN_BYTES") || true
+PROMPT=$(printf '%s\n' "$INPUT" | _lib_jq -r '.prompt // ""' 2>/dev/null | head -c "$_MAX_SCAN_BYTES") || true
 
 CWD=""
 PERMISSION_MODE=""
@@ -90,7 +91,7 @@ PERMISSION_MODE=""
   IFS= read -r PERMISSION_MODE
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.cwd // ""),(.permission_mode // "")' \
+    | _lib_jq -r '(.cwd // ""),(.permission_mode // "")' \
     2>/dev/null
 ) 2>/dev/null || true
 
@@ -206,6 +207,7 @@ if [ "$PERMISSION_MODE" = "plan" ]; then
   ADDITIONAL_CONTEXT="$ADDITIONAL_CONTEXT"$'\n'"Since this session is in plan mode: if the engineer confirms, that skill's own workflow governs over the generic plan-mode phases."
 fi
 
-jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $ctx is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
   '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}' || true
 exit 0

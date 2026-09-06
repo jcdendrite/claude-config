@@ -27,12 +27,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="backtick-escape"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -43,11 +45,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by backtick-escape gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by backtick-escape gate: could not parse tool-input JSON. Refusing to evaluate PR body under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate PR body under malformed input."
 
 # Authoritative gate: only scan gh pr create / edit commands. Checked and
 # fail-closed: an undetermined match (sed/tr missing, killed, or erroring
@@ -57,7 +59,7 @@ IS_GH_PR_CREATE_STATUS=$?
 _lib_command_invokes_tool_subcmd "$COMMAND" gh pr edit
 IS_GH_PR_EDIT_STATUS=$?
 if [ "$IS_GH_PR_CREATE_STATUS" -eq 2 ] || [ "$IS_GH_PR_EDIT_STATUS" -eq 2 ]; then
-  emit_deny "Blocked by backtick-escape gate: could not determine whether this command invokes gh pr create/edit — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned PR body bypass the backtick-escape scan."
+  emit_deny "could not determine whether this command invokes gh pr create/edit — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned PR body bypass the backtick-escape scan."
   exit 0
 fi
 
@@ -125,7 +127,7 @@ fi
 # thing scanned. -F means fixed-string (no regex interpretation), so
 # the backslash is treated literally and not as a regex escape.
 if printf '%s' "$SCAN_TARGET" | grep -qF -- '\`'; then
-  emit_deny "PR body blocked: it contains literal backslash-backtick sequences (\\\`) that break GitHub markdown code-span rendering. Fix: if using a <<'EOF' heredoc (single-quoted delimiter), write backticks literally — do NOT write \\\`; the single-quote suppresses all expansion so the backslash is unnecessary and harmful. If using an unquoted <<EOF heredoc or double-quoted --body \"...\", switch to <<'EOF' so backticks need no escaping. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' subsection for the full rationale."
+  emit_deny "PR body — it contains literal backslash-backtick sequences (\\\`) that break GitHub markdown code-span rendering. Fix: if using a <<'EOF' heredoc (single-quoted delimiter), write backticks literally — do NOT write \\\`; the single-quote suppresses all expansion so the backslash is unnecessary and harmful. If using an unquoted <<EOF heredoc or double-quoted --body \"...\", switch to <<'EOF' so backticks need no escaping. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' subsection for the full rationale."
   exit 0
 fi
 

@@ -34,7 +34,7 @@ def _stage_skill_change(git_repo, body: str = ""):
     `body` appends extra content, so a second call stages a diff with a
     different hash than the first.
     """
-    skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+    skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
     skill_file.parent.mkdir(parents=True, exist_ok=True)
     skill_file.write_text("## test skill\n" + body)
     subprocess.run(
@@ -60,7 +60,7 @@ def _stage_routing_md_change(git_repo, body: str = ""):
     """Stage a plan-review/ROUTING.md change so the hook has a non-empty
     ROUTING.md diff to check. `body` appends extra content, so a second call
     stages a diff with a different hash than the first."""
-    routing_file = git_repo / "claude" / ".claude" / "skills" / "plan-review" / "ROUTING.md"
+    routing_file = git_repo / "claude-skills" / "skills" / "plan-review" / "ROUTING.md"
     routing_file.parent.mkdir(parents=True, exist_ok=True)
     routing_file.write_text("## test routing\n" + body)
     subprocess.run(
@@ -135,7 +135,7 @@ class TestRequireSkillReview:
         _stage_skill_change(git_repo)
         write_skill_review_marker(isolated_home, git_repo)
         # Modify and re-stage the SKILL.md to change the skill diff hash
-        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.write_text("## test skill\n## new content\n")
         subprocess.run(
             ["git", "add", str(skill_file.relative_to(git_repo))],
@@ -155,7 +155,7 @@ class TestRequireSkillReview:
         _stage_skill_change(git_repo)
         write_skill_review_marker(isolated_home, git_repo)
         # Change the skill content so the marker hash is stale
-        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.write_text("## test skill\n## new content\n")
         subprocess.run(
             ["git", "add", str(skill_file.relative_to(git_repo))],
@@ -340,7 +340,7 @@ class TestRequireSkillReview:
         """The same recipe-vs-hook agreement as the test above, for the second
         of the two pathspecs the write side scopes its hash to.
 
-        The write side hashes `claude/.claude/skills/**/SKILL.md` *and*
+        The write side hashes `claude-skills/skills/**/SKILL.md` *and*
         `plugins/*/skills/**/SKILL.md`. A drift in the second is invisible to
         every stowed-path case, because dropping a pathspec that matches
         nothing in the fixture leaves the hash unchanged — both sides go on
@@ -587,7 +587,7 @@ class TestRequireSkillReview:
         path. It also verifies the tmp-dir prefix is stripped from the deny
         reason so the user sees the original repo-relative path.
         """
-        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         # Stage broken YAML (unclosed flow sequence fails yaml.safe_load).
         skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
@@ -606,7 +606,7 @@ class TestRequireSkillReview:
         )
         assert reason is not None, "hook allowed silently; expected deny"
         assert "structural validator" in reason
-        assert "claude/.claude/skills/skill-review/SKILL.md" in reason
+        assert "claude-skills/skills/skill-review/SKILL.md" in reason
         # `mktemp -d` paths look like /tmp/tmp.XXXXXXXX/... — if the prefix
         # strip regresses, that token will leak into the user-facing reason.
         assert "/tmp/tmp." not in reason
@@ -623,7 +623,7 @@ class TestRequireSkillReview:
         let the commit proceed to the marker check, which passes here because
         a current marker is written.
         """
-        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text("---\nname: clean\ndescription: ok\n---\n# body\n")
         subprocess.run(
@@ -658,7 +658,7 @@ class TestRequireSkillReview:
         # the test environment) should detect it and the hook should deny with
         # the structural-validator's message. Reaching that message proves the
         # validator ran, which proves the script picked an executable python.
-        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
         subprocess.run(
@@ -739,7 +739,7 @@ class TestRequireSkillReview:
         validator. A malformed SKILL.md must still be denied even when the
         chain claims to write a marker — the validator gate is independent
         of the marker-hash gate."""
-        skill_file = git_repo / "claude" / ".claude" / "skills" / "skill-review" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
         subprocess.run(
@@ -1133,7 +1133,7 @@ def _run_hook_with_stderr(hook, tool_input: dict, cwd) -> subprocess.CompletedPr
 def _stage_oversized_corpus(git_repo, num_skills: int = 6, chars_each: int = 1500) -> None:
     """Stage multiple SKILL.md files whose combined description chars exceed the 8000-char budget."""
     for i in range(num_skills):
-        skill_file = git_repo / "claude" / ".claude" / "skills" / f"corpus-skill-{i}" / "SKILL.md"
+        skill_file = git_repo / "claude-skills" / "skills" / f"corpus-skill-{i}" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
         description = "x" * chars_each
         skill_file.write_text(
