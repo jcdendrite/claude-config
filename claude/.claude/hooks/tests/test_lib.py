@@ -1664,6 +1664,26 @@ def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
     assert result.stdout == "develop"
 
 
+def test_resolve_default_branch_candidate_probe_reads_remote_ref_not_local_branch(
+    tmp_path: Path,
+) -> None:
+    """Local checked-out branch is `feature`, not one of the probed
+    candidates, and origin/develop is the only live candidate ref (no
+    origin/HEAD) -- the candidate probe must still return develop by
+    reading the remote-tracking ref, not by reporting whatever branch
+    happens to be checked out locally."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "feature")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
+    )
+
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "develop"
+
+
 def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
     """No origin/HEAD symbolic ref and no origin/{main,master,develop} ref at
     all (e.g. a repo with no configured remote) — the helper reports "could
