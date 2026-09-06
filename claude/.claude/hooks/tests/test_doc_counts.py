@@ -428,7 +428,7 @@ _REGISTERED_FACTS: list[DocCountFact] = [
         label=f"limit_for()'s wildcard-arm default in {_CLAUDE_MD_LENGTH_HOOK_REL_PATH}",
         occurrences=[
             Occurrence(
-                rel_path="claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md",
+                rel_path="claude-skills/skills/ai-instruction-and-memory-files/SKILL.md",
                 # Anchored on the full phrase, not the bare word "lines" — a
                 # bare-word pattern also matches this same file's unrelated
                 # "first 200 lines or 25KB of `MEMORY.md`" sentence.
