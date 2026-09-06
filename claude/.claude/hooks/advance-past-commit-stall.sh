@@ -8,8 +8,8 @@
 #
 # Dispatch: matcher-less Stop (per Anthropic's docs, Stop has no matcher
 # support). Fail-silent posture throughout — this hook must never emit a
-# malformed block payload; every non-firing path is a plain `exit 0`, and
-# the reason is encoded through the capped _lib_jq wrapper, so a failed
+# malformed block payload; every non-firing path is a plain `exit 0`.
+# The reason is encoded through the capped _lib_jq wrapper, so a failed
 # encode emits nothing and a broken, missing, or hung jq degrades to
 # silent-allow, not a stuck block loop.
 #
@@ -35,8 +35,8 @@
 #   stall is not caught here.
 # - _lib_capped's timeout(1) fallback is a no-op on stock macOS without GNU
 #   coreutils, so the three git calls below are unbounded there.
-# - --dry-run/default-branch bypass residuals inherited from Part 3's gate
-#   repair are orthogonal to this hook (it does not gate a git operation).
+# - This hook does not gate a git operation, so --dry-run/default-branch
+#   bypass shapes from the push-gate arm are irrelevant here.
 # - STATE_FILE's write-then-read-back race is untested: assumes Stop fires
 #   at most once per session at a time (the harness's own invocation model),
 #   not two concurrent processes racing the same session_id/prompt_id.

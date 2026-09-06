@@ -53,6 +53,9 @@
 #   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
 #   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
 #   create`) bypasses detection for those two arms.
+# - Same two arms match by strict word adjacency, so a flag interposed
+#   before the subcommand (`gh --repo o/r pr create`, `gh --repo o/r pr
+#   ready`) also bypasses detection — tracked by GH-897.
 # - _lib_split_fragments doesn't split fragments on a bare `&` (the shell
 #   background operator).
 # - The git-word scan it feeds locks onto the first `git` occurrence in a

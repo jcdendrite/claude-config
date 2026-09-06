@@ -1432,8 +1432,7 @@ class TestRequireReadyForReview:
     def test_gh_repo_flag_before_subcommand_bypasses_detection(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
     ):
-        """A documented gap, not yet fixed (hook-family-standardization-phase5
-        plan, assumption-ledger row 6): both gh arms match `gh pr
+        """A documented gap, not yet fixed: both gh arms match `gh pr
         ready`/`gh pr create` by strict word adjacency, so a flag interposed
         before the subcommand — `--repo o/r` here — defeats detection. This
         is an inverted assertion pinning the current gap, not the fix; see

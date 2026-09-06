@@ -22,8 +22,9 @@ static shape checks, scoped to claude/.claude/hooks/*.sh:
 - No hook regex uses GNU grep's `\\s` extension, which a POSIX-strict grep
   reads as a literal `s`.
 
-Each of the three carries a small, named exemption dict for a structural
-holdout the sweep didn't convert.
+The first two carry a small, named exemption dict for a structural holdout
+the sweep didn't convert; the `\\s` check has none, since this phase
+converts every live occurrence and leaves no holdout.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -454,11 +455,10 @@ _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS: dict[str, str] = {
     ),
     "require-ready-for-review.sh": (
         "whole-fragment scan retained so a bash -c/eval wrapper stays "
-        "covered, matching the git arm above, at the cost of missing a flag "
-        "interposed before the subcommand — the retained regex misses both "
-        "`gh --repo o/r pr create` and `gh --repo o/r pr ready` "
-        "(adjacency-only), live bypasses tracked by GH-897, the follow-up "
-        "issue covering this hook and require-respond-pr.sh together"
+        "covered, matching the git arm above. Cost: a flag interposed "
+        "before the subcommand is missed, e.g. `gh --repo o/r pr create` "
+        "and `gh --repo o/r pr ready` (adjacency-only). Tracked by GH-897 "
+        "(covers this hook and require-respond-pr.sh together)."
     ),
 }
 
@@ -468,11 +468,38 @@ def _strip_comment(line: str) -> str:
     line, for the three detectors below.
 
     Naive substring split on " #", not shell-aware: no line in the current
-    hook set has a literal " #" inside a string (verified this session).
+    hook set has a literal " #" inside a string.
     """
     if line.lstrip().startswith("#"):
         return ""
     return line.split(" #", 1)[0]
+
+
+def test_strip_comment_full_line() -> None:
+    """A line whose first non-whitespace character is `#` strips to empty,
+    regardless of leading indentation."""
+    assert _strip_comment("  # a comment") == ""
+
+
+def test_strip_comment_same_line_trailing() -> None:
+    """A code line with a trailing ` #comment` keeps only the code prefix,
+    up to but not including the space that starts the `" #"` separator."""
+    assert _strip_comment("jq -n '{}' # inline note") == "jq -n '{}'"
+
+
+def test_strip_comment_no_comment() -> None:
+    """A code line with no `#` anywhere returns unchanged."""
+    assert _strip_comment("jq -n '{}'") == "jq -n '{}'"
+
+
+def test_strip_comment_string_interior_hash_is_a_known_blind_spot() -> None:
+    """Pins the naive `" #"`-split's documented limitation as executable: a
+    literal " #" inside a quoted string is indistinguishable from a real
+    trailing comment, so the string's own content past that point is
+    dropped rather than preserved. Fails loudly if this ever changes, since
+    the three detectors above rely on this exact truncation behavior.
+    """
+    assert _strip_comment("grep -qE 'foo #bar\\s+baz'") == "grep -qE 'foo"
 
 
 # jq in command position: immediately after start-of-line, `|`, `;`, `&`,
@@ -607,6 +634,30 @@ def test_no_inline_command_matcher_regex(hook: Path) -> None:
     )
 
 
+def test_inline_command_matcher_detector_flags_known_variants(tmp_path: Path) -> None:
+    """Meta-test for _inline_command_matcher_hits: every tool-token spelling
+    (`git`, `gh`, escaped- and unescaped-dot `marker.sh`), whitespace-atom
+    form (GNU `\\s`, POSIX `[[:space:]]`), and grep flag ordering (`-q`,
+    `-Eq`, `-cE`, `-lE`) the detector claims to catch must actually be
+    flagged before relying on it as a regression guard across 40+ hook
+    files. A negative-control line (a tool token present but not
+    immediately followed by a whitespace-class atom) must stay unflagged,
+    proving atom-adjacency drives the match rather than token presence
+    alone.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text(
+        "#!/bin/bash\n"
+        "grep -q 'git\\s'\n"
+        "grep -Eq 'gh[[:space:]]'\n"
+        "grep -cE 'marker.sh\\s'\n"
+        "grep -lE 'marker\\.sh[[:space:]]'\n"
+        "grep -q 'git status'\n"
+    )
+    hits = _inline_command_matcher_hits(fixture)
+    assert len(hits) == 4, f"expected exactly the 4 positive fixture lines flagged, got {hits!r}"
+
+
 def _live_backslash_s_hits(hook: Path) -> list[str]:
     """Return non-comment lines containing a literal backslash-`s`, GNU
     grep's non-POSIX whitespace-class extension -- a POSIX-strict grep reads
@@ -634,6 +685,22 @@ def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
         f"{hook.name}: literal backslash-`s` outside a comment -- convert "
         f"to POSIX [[:space:]]:\n" + "\n".join(hits)
     )
+
+
+def test_backslash_s_detector_flags_code_not_comments(tmp_path: Path) -> None:
+    """Meta-test for _live_backslash_s_hits: a bare `\\s` in code is flagged,
+    and the same literal inside a full-line or same-line-trailing comment is
+    not, since all three Layer-1 detectors share _strip_comment.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text(
+        "#!/bin/bash\n"
+        "grep -qE '(^|\\s)--dry-run(\\s|$)'\n"
+        "# see docs/hooks.md: convert \\s to [[:space:]]\n"
+        "jq -n '{}' # note: don't use \\s here\n"
+    )
+    hits = _live_backslash_s_hits(fixture)
+    assert len(hits) == 1, f"expected exactly 1 fixture line flagged, got {hits!r}"
 
 
 @pytest.mark.parametrize("hook", ALL_HOOKS, ids=[h.name for h in ALL_HOOKS])
