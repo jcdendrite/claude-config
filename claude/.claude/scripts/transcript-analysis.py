@@ -1011,6 +1011,15 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
 
+# Non-reviewer subagent_types review-trace's "writer-spawn" event kind covers
+# -- the fix-writing dispatches a review round drives (_is_reviewer_subagent_type
+# excludes both, since reviewer-yield's own table is reviewer-only). Kept as
+# its own event kind rather than folded into _is_reviewer_subagent_type, so
+# every other consumer of that predicate (reviewer-yield's dispatch-outcome
+# join, cmd_review_trace's own "reviewer" timeline rows and reviewer-spawns
+# count) stays exactly as narrow as it is today.
+_WRITER_DISPATCH_SUBAGENT_TYPES: frozenset[str] = frozenset({"code-writer", "general-purpose"})
+
 # A plan-architect Agent/Task dispatch whose prompt's first line is anything
 # other than this literal is a consult. This re-expresses
 # log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
@@ -1543,9 +1552,10 @@ def _review_trace_session_events(
     branch_filter: set[str] | None,
     skill_filter: str | None = None,
     group_boundaries: frozenset[int] | None = None,
-) -> tuple[list[dict], dict[str, str], int]:
+) -> tuple[list[dict], dict[str, str], int, list[dict]]:
     """Detect cmd_review_trace's five per-session event kinds (skill, denial,
-    friction, reviewer-spawn, architect-consult) from one session's records.
+    friction, reviewer-spawn, architect-consult) from one session's records,
+    plus a separate writer-spawn list only --round-cost reads.
 
     Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather
@@ -1575,8 +1585,27 @@ def _review_trace_session_events(
     ("main" or "sidechain"): the main transcript's own 1-based file line for
     thread=main, a merged-stream offset indexing no file for thread=sidechain
     (see docs/design-decisions.md §58 for why).
+
+    `writer_spawn_events` (the fourth return value) holds Agent/Task spawns
+    whose `subagent_type` is in `_WRITER_DISPATCH_SUBAGENT_TYPES`
+    (`code-writer`, `general-purpose`).
+    It stays out of the main `events` list because every existing consumer
+    (`_compute_deny_summary_data`'s any_session_matched/corpus_min_ts/
+    corpus_max_ts, and cmd_review_trace's own default timeline's "any events
+    at all" gate and branches_seen/models_seen sets) treats that list
+    generically, by presence rather than by kind; folding a new kind into it
+    would wrongly count a writer-only session as having review activity.
+    It's computed in the same pass as `events` so --round-cost's join reuses
+    the same branch/model carry-forward and --since/--until date filtering,
+    rather than duplicating that logic in a second, drifting copy.
+
+    reviewer-spawn and architect-consult (both in `events`) and every
+    writer_spawn_events entry all carry a "tool_use_id" field (the spawning
+    Agent/Task block's own "id") so a caller can join any of them through
+    _index_subagent_dispatches.
     """
     events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
+    writer_spawn_events: list[dict] = []
     # Tracks tool_use_ids already emitted as a denial. A legacy denial
     # appears as both an attachment record and an is_error tool_result
     # sharing one tool_use_id; this set collapses the pair to one event.
@@ -1688,10 +1717,26 @@ def _review_trace_session_events(
                 elif block_name in ("Agent", "Task"):
                     tool_input = block.get("input") or {}
                     stype = tool_input.get("subagent_type") or ""
+                    spawn_tool_use_id = block.get("id") or ""
                     if _is_reviewer_subagent_type(stype):
                         events.append({
                             "kind": "reviewer-spawn",
                             "subagent_type": stype,
+                            "tool_use_id": spawn_tool_use_id,
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                            "thread": thread,
+                        })
+                    elif stype in _WRITER_DISPATCH_SUBAGENT_TYPES:
+                        # Kept out of `events` -- see this function's own
+                        # docstring for why a shared, kind-agnostic list is
+                        # the wrong home for this kind.
+                        writer_spawn_events.append({
+                            "kind": "writer-spawn",
+                            "subagent_type": stype,
+                            "tool_use_id": spawn_tool_use_id,
                             "ts": rec_ts_str,
                             "line_no": line_no,
                             "branch": evt_branch,
@@ -1705,6 +1750,7 @@ def _review_trace_session_events(
                         # the event dict, only this classification result.
                         events.append({
                             "kind": "architect-consult",
+                            "tool_use_id": spawn_tool_use_id,
                             "ts": rec_ts_str,
                             "line_no": line_no,
                             "branch": evt_branch,
@@ -1823,8 +1869,170 @@ def _review_trace_session_events(
     # distinct in-scope event.
     if branch_filter:
         events = [e for e in events if e["branch"] in branch_filter]
+        writer_spawn_events = [e for e in writer_spawn_events if e["branch"] in branch_filter]
 
-    return events, tool_use_commands, pre_regime_tool_result_count
+    return events, tool_use_commands, pre_regime_tool_result_count, writer_spawn_events
+
+
+def _review_round_bucket_index(skill_starts: list[float], ts: float) -> int | None:
+    """1-based round index containing `ts`, or None for the pre-loop bucket
+    (ts before the first skill_start, or skill_starts is empty).
+
+    skill_starts must already be sorted ascending. Round i's window is
+    [skill_starts[i-1], skill_starts[i]) for every i but the last, left-closed
+    at each boundary per the window-definition rule in
+    _review_round_cost_data's docstring — bisect_right(skill_starts, ts)
+    already returns exactly that 1-based index: a ts equal to a boundary
+    counts toward the round starting at that boundary, never the one before
+    it. The last round has no upper skill_start to close it, so any ts at or
+    past skill_starts[-1] resolves to round len(skill_starts), the same value
+    bisect_right returns there.
+    """
+    if not skill_starts or ts < skill_starts[0]:
+        return None
+    return bisect.bisect_right(skill_starts, ts)
+
+
+def _review_round_cost_data(
+    events: list[dict],
+    writer_spawn_events: list[dict],
+    records: list[dict],
+    dispatch_index: dict[str, tuple[Path, str | None]],
+    since_ts: float | None,
+    until_epoch: float | None,
+    today: date,
+) -> tuple[list[dict], dict, int, int, set[str]]:
+    """Per-review-round dollar attribution for one session's already-detected
+    events and writer_spawn_events (both _review_trace_session_events's
+    output) plus raw records, joining each reviewer-spawn/architect-consult/
+    writer-spawn event through dispatch_index (_index_subagent_dispatches'
+    output for this same session's jsonl).
+
+    Window definition: round i's window is [skill_start_i, skill_start_{i+1}),
+    left-closed at each boundary — review-trace emits only skill *start*
+    events, never a completion, so this is the only rule consistent with no
+    closing event existing. The last round extends to until_epoch (or is
+    unbounded when --until wasn't given), since there is no skill_start_{n+1}
+    to close it. A turn or dispatch timestamped before the first skill event
+    accumulates into the returned pre_loop dict instead of any round — there
+    is no round 0. A session with no skill event at all (e.g. one with only
+    reviewer-spawn/denial/friction activity) returns an empty rounds list and
+    a pre_loop dict covering every in-scope turn and dispatch.
+
+    Each round/pre_loop dict has "main_dollars" (main-thread window),
+    "dispatch_dollars" (sum of every dispatch resolved to it), and
+    "dispatch_count" (how many). A round dict additionally carries "index"
+    (1-based), "start_ts", and "end_ts" (None only for the last round when
+    until_epoch is also None).
+
+    Main-thread dollars price _dedup_turns_by_request_id's output via
+    _price_turn, bucketed by each deduped turn's own `run[0]` timestamp.
+    These records are deduped only here — the event-detection pass above is
+    block-counting, not dedup-aware — so pricing a raw per-content-block
+    record would double-count it. Sidechain records are excluded before
+    dedup — a round's main-thread figure is main-thread-only by
+    construction; subagent spend reaches a round only through the
+    dispatch-dollars path below. Branch is not read here: a round's window is
+    time-bounded, not branch-bounded, since the boundary skill events
+    themselves are already branch-filtered by the caller when --branches is
+    given.
+
+    Each dispatch's dollars are its own full-lifetime `actual_dollars` from
+    _dispatch_usage_summary — a dispatch is attributed to a round in full,
+    never sub-windowed by the round's own edges, which is a source of
+    round-attribution noise for a dispatch whose own work spans a round
+    boundary (its whole cost lands in the round its spawn event falls in,
+    none in the round its work actually continues into). A dangling dispatch
+    (unresolved, `observed is None`) contributes no dollars and no count,
+    matching subagent-mix's own runs/dangling distinction. A reviewer-spawn/
+    architect-consult/writer-spawn event whose tool_use_id has no entry in
+    dispatch_index at all (no meta.json ever matched it) is skipped entirely,
+    matching subagent-mix's identical exclusion.
+
+    Returns (rounds, pre_loop, unpriced_turns, unpriced_tokens, stale_models).
+    unpriced_turns/unpriced_tokens are a session-wide diagnostic (main-thread
+    plus every attributed dispatch's own unpriced turns/tokens), not broken
+    out per round, matching every other dollar-reporting surface in this
+    file's single trailing "(N unpriced turns / M tokens excluded)" line
+    convention. stale_models is the union of every priced model (main-thread
+    or dispatch) past its _MODEL_RATE_EXPIRES re-verify-by date, evaluated
+    against the caller-supplied today — mirrors cost's/subagent-mix's own
+    STALE PRICING check.
+    """
+    skill_starts: list[float] = sorted(
+        ts for evt in events if evt["kind"] == "skill" and (ts := _parse_ts(evt.get("ts"))) is not None
+    )
+    round_count = len(skill_starts)
+    rounds: list[dict] = [
+        {
+            "index": i + 1,
+            "start_ts": skill_starts[i],
+            "end_ts": skill_starts[i + 1] if i + 1 < round_count else until_epoch,
+            "main_dollars": 0.0,
+            "dispatch_dollars": 0.0,
+            "dispatch_count": 0,
+        }
+        for i in range(round_count)
+    ]
+    pre_loop: dict = {"main_dollars": 0.0, "dispatch_dollars": 0.0, "dispatch_count": 0}
+    unpriced_turns = 0
+    unpriced_tokens = 0
+    stale_models: set[str] = set()
+
+    main_thread_records = [r for r in records if not bool(r.get("isSidechain"))]
+    for rec in _dedup_turns_by_request_id(main_thread_records):
+        if rec.get("type") != "assistant":
+            continue
+        usage = (rec.get("message") or {}).get("usage")
+        if not usage:
+            continue
+        rec_ts = _parse_ts(rec.get("timestamp"))
+        if rec_ts is None:
+            continue
+        if since_ts is not None and rec_ts < since_ts:
+            continue
+        if until_epoch is not None and rec_ts >= until_epoch:
+            continue
+        model = (rec.get("message") or {}).get("model", "")
+        dollars_by_class, _ctx, turn_unpriced_tokens = _price_turn(model, usage)
+        if dollars_by_class is None:
+            unpriced_turns += 1
+            unpriced_tokens += turn_unpriced_tokens
+            continue
+        if today > _MODEL_RATE_EXPIRES[model]:
+            stale_models.add(model)
+        bucket_idx = _review_round_bucket_index(skill_starts, rec_ts)
+        bucket = pre_loop if bucket_idx is None else rounds[bucket_idx - 1]
+        bucket["main_dollars"] += sum(dollars_by_class.values())
+
+    dispatch_events = [e for e in events if e["kind"] in ("reviewer-spawn", "architect-consult")] + writer_spawn_events
+    for evt in dispatch_events:
+        paired = dispatch_index.get(evt.get("tool_use_id") or "")
+        if paired is None:
+            continue
+        paired_jsonl, _requested_model = paired
+        evt_ts = _parse_ts(evt.get("ts"))
+        if evt_ts is None:
+            continue
+        if since_ts is not None and evt_ts < since_ts:
+            continue
+        if until_epoch is not None and evt_ts >= until_epoch:
+            continue
+        (
+            observed, actual_dollars, _dollars_by_class, _cf_dollars,
+            dispatch_unpriced_turns, dispatch_unpriced_tokens, dispatch_stale_models,
+        ) = _dispatch_usage_summary(paired_jsonl, None, None, None, today)
+        unpriced_turns += dispatch_unpriced_turns
+        unpriced_tokens += dispatch_unpriced_tokens
+        stale_models |= dispatch_stale_models
+        if observed is None:
+            continue  # dangling dispatch -- no jsonl to price, matching subagent-mix's own Dangling bucket
+        bucket_idx = _review_round_bucket_index(skill_starts, evt_ts)
+        bucket = pre_loop if bucket_idx is None else rounds[bucket_idx - 1]
+        bucket["dispatch_dollars"] += actual_dollars
+        bucket["dispatch_count"] += 1
+
+    return rounds, pre_loop, unpriced_turns, unpriced_tokens, stale_models
 
 
 def _fresh_records_and_group_boundaries(
@@ -1889,7 +2097,7 @@ def _compute_deny_summary_data(
         records, group_boundaries = _fresh_records_and_group_boundaries(
             jsonl, records, include_subagents=True,
         )
-        events, tool_use_commands, session_pre_regime = _review_trace_session_events(
+        events, tool_use_commands, session_pre_regime, _writer_spawn_events = _review_trace_session_events(
             records, since_ts, until_ts, branch_filter, group_boundaries=group_boundaries
         )
         if not events:
@@ -1953,7 +2161,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
 
     Scans both the main thread and every dispatched subagent's own
     transcript file (include_subagents=True), merged into one chronological
-    stream by _review_trace_session_events. Five event types are detected
+    stream by _review_trace_session_events. Six event types are detected
     per session, on either thread:
     - skill: a Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
     - denial: a hook-blocking denial in either transcript shape — a legacy
@@ -1966,6 +2174,12 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       Deduped by tool_use_id in its own set, independent of denial dedup.
     - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
       _is_reviewer_subagent_type
+    - writer: Agent/Task spawn where subagent_type is in
+      _WRITER_DISPATCH_SUBAGENT_TYPES (code-writer, general-purpose) —
+      returned separately from the other five kinds
+      (_review_trace_session_events's own fourth return value), never mixed
+      into this timeline or --deny-summary's corpus-window/session-matched
+      accounting; only --round-cost (below) reads it.
     - architect-consult: Agent/Task spawn where subagent_type is
       plan-architect and the prompt's first line is not the literal
       MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
@@ -1995,15 +2209,163 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     _compute_deny_summary_data instead of running its own pass over
     session_iter, so the corpus-wide grouped-count report and cost-ledger's
     per-week denial count can never drift apart.
+
+    --round-cost replaces the timeline with _review_round_cost_data's
+    per-review-round dollar breakdown (see that function's own docstring for
+    the window-definition, pre-loop, and dispatch-attribution-noise rules),
+    joined per session through _index_subagent_dispatches. Mutually exclusive
+    with --deny-summary. --deny-only is accepted but has no effect in this
+    mode (a notice prints to stderr) — round-cost has no denial-selection
+    concept to apply it to. --skill also narrows what counts as a round
+    boundary here, not just which invocations the default timeline renders:
+    combined with --round-cost, a round boundary is only an invocation of
+    that one skill, so an intervening invocation of a different
+    REVIEW_TRACE_SKILLS member no longer opens a new round.
+
+    Under more than one root, _DO_NOT_PUBLISH_BANNER prints on stdout and
+    stderr, and each session's own "### <path>" header — printed by both the
+    default timeline and --round-cost — is redacted to an opaque
+    account-<K>/session-<N> label via _root_scoped_display_label instead of
+    the real per-session file path, since that path embeds the real project
+    directory name. Unlike this file's branch/subagent_type redaction, there
+    is no --this-repo disclosure carve-out here.
     """
     branch_filter = _branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
+    round_cost: bool = bool(getattr(args, "round_cost", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
+
+    if deny_summary and round_cost:
+        print("review-trace: --deny-summary and --round-cost are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
+
+    if deny_only and round_cost:
+        print(
+            "review-trace: --deny-only has no effect combined with --round-cost (ignored)",
+            file=sys.stderr,
+        )
+
     roots = _resolve_scan_roots(args)
+    multi_root = len(roots) > 1
     session_iter, scope_label = _resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
 
     since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
+
+    if multi_root:
+        print(_DO_NOT_PUBLISH_BANNER)
+        print(_DO_NOT_PUBLISH_BANNER, file=sys.stderr)
+
+    resolved_roots = [root.resolve() for root in roots] if multi_root else []
+    # Resolved-path-sorted, not _root_index_for_path's raw scan-order position
+    # -- same rationale as every other multi-root diagnostic in this file
+    # (subagent-mix, subagents): the same physical root must read as the same
+    # account-N regardless of which profile is currently active.
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(roots) if multi_root else {}
+    session_redact_map: dict[tuple[int, str], str] = {}
+
+    def _session_label(jsonl: Path) -> str:
+        """Text for one session's own "### <path>" header — the real path
+        under single-root scope, or an opaque account-<K>/session-<N> label
+        under multi-root, since the real path embeds the real project
+        directory name. No --this-repo disclosure carve-out, unlike this
+        file's branch/subagent_type redaction: this label prints
+        unconditionally whenever more than one root is in scope.
+        """
+        if not multi_root:
+            return str(jsonl)
+        root_idx = _root_index_for_path(jsonl, resolved_roots)
+        ordinal = redact_ordinals[resolved_roots[root_idx]]
+        return _root_scoped_display_label("session", ordinal, jsonl.stem, session_redact_map, disclose=False)
+
+    if round_cost:
+        _print_resolved_scope("review-trace", scope_label, roots)
+        today = datetime.now(UTC).date()
+        total_unpriced_turns = 0
+        total_unpriced_tokens = 0
+        total_meta_read_errors = 0
+        all_stale_models: set[str] = set()
+        emitted_any_session = False
+
+        def _fmt_round_boundary(ts: float | None) -> str:
+            return "session end" if ts is None else datetime.fromtimestamp(ts, tz=UTC).isoformat().replace(
+                "+00:00", "Z"
+            )
+
+        for jsonl, records in session_iter:
+            # session_iter is resolved with include_subagents=True above -- see
+            # _fresh_records_and_group_boundaries for why records and
+            # group_boundaries must come from one read at the same scope.
+            records, group_boundaries = _fresh_records_and_group_boundaries(
+                jsonl, records, include_subagents=True,
+            )
+            events, _tool_use_commands, _pre_regime, writer_spawn_events = _review_trace_session_events(
+                records, since_ts, until_epoch, branch_filter,
+                skill_filter=skill_filter, group_boundaries=group_boundaries,
+            )
+            if not any(e["kind"] == "skill" for e in events):
+                continue
+            dispatch_index, session_meta_read_errors = _index_subagent_dispatches(jsonl)
+            total_meta_read_errors += session_meta_read_errors
+            rounds, pre_loop, session_unpriced_turns, session_unpriced_tokens, session_stale_models = (
+                _review_round_cost_data(
+                    events, writer_spawn_events, records, dispatch_index, since_ts, until_epoch, today
+                )
+            )
+            total_unpriced_turns += session_unpriced_turns
+            total_unpriced_tokens += session_unpriced_tokens
+            all_stale_models |= session_stale_models
+            emitted_any_session = True
+
+            print(f"\n### {_session_label(jsonl)}")
+            pre_loop_end = rounds[0]["start_ts"] if rounds else until_epoch
+            # Pre-loop prints only when non-empty (the common case -- a
+            # session that opens straight into a review skill has nothing
+            # pre-loop to report) -- unlike a round, which always prints once
+            # its own skill event fired, since a round's mere existence (even
+            # at $0.00) is itself the fact worth showing.
+            if pre_loop["main_dollars"] or pre_loop["dispatch_dollars"]:
+                total = pre_loop["main_dollars"] + pre_loop["dispatch_dollars"]
+                print(
+                    f"  Pre-loop (unattributed) [.. {_fmt_round_boundary(pre_loop_end)})"
+                    f"  main={_fmt_usd(pre_loop['main_dollars'])}"
+                    f"  dispatches={_fmt_usd(pre_loop['dispatch_dollars'])} ({pre_loop['dispatch_count']})"
+                    f"  total={_fmt_usd(total)}"
+                )
+            for r in rounds:
+                total = r["main_dollars"] + r["dispatch_dollars"]
+                print(
+                    f"  Round {r['index']} [{_fmt_round_boundary(r['start_ts'])} .."
+                    f" {_fmt_round_boundary(r['end_ts'])})"
+                    f"  main={_fmt_usd(r['main_dollars'])}"
+                    f"  dispatches={_fmt_usd(r['dispatch_dollars'])} ({r['dispatch_count']})"
+                    f"  total={_fmt_usd(total)}"
+                )
+            if not rounds and not (pre_loop["main_dollars"] or pre_loop["dispatch_dollars"]):
+                print("  (no priced activity in scope)")
+
+        if total_unpriced_turns:
+            print(
+                f"\n  ({total_unpriced_turns:,} unpriced turns / {total_unpriced_tokens:,}"
+                " tokens excluded from priced spend)"
+            )
+        # Matches cost's/subagent-mix's own STALE PRICING banner
+        # (_MODEL_RATE_EXPIRES) -- this surface has no single "the figures
+        # below" table to point a successor-rate hint at, so the message
+        # names the models directly, same as subagent-mix's.
+        if all_stale_models:
+            print(
+                "STALE PRICING — today is past the re-verify-by date for: "
+                + ", ".join(sorted(all_stale_models))
+                + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing this table's dollar figures."
+            )
+        # Matches cmd_subagent_mix's identical diagnostic for the same
+        # underlying _index_subagent_dispatches join.
+        if total_meta_read_errors:
+            print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
+        if not emitted_any_session:
+            print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
+        return
 
     if deny_summary:
         # Ahead of the scan, matching the default arm below: a crash partway
@@ -2040,7 +2402,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         records, group_boundaries = _fresh_records_and_group_boundaries(
             jsonl, records, include_subagents=True,
         )
-        events, tool_use_commands, _pre_regime = _review_trace_session_events(
+        events, tool_use_commands, _pre_regime, _writer_spawn_events = _review_trace_session_events(
             records, since_ts, until_epoch, branch_filter,
             skill_filter=skill_filter, group_boundaries=group_boundaries,
         )
@@ -2060,7 +2422,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
 
         emitted_any_session = True
 
-        print(f"\n### {jsonl}")
+        print(f"\n### {_session_label(jsonl)}")
         print(
             f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
             f"  denials={denial_count}  reviewer-spawns={spawn_count}"
@@ -2515,6 +2877,11 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     --per-session is refused outright under multi-root, since it would
     otherwise join a foreign account's own session-id prefix to its branch
     name.
+    --per-dispatch replaces the model-mix table with one row per resolved
+    dispatch (dangling or not) instead of aggregating by agentType — the
+    same _dispatch_usage_summary call already made at this table's join
+    site, printed per row instead of summed into model_mix. Refused outright
+    under multi-root for the same reason as --per-session.
     Under --this-repo, every branch prints raw (account-<K>/<branch>) with
     no attestation gate: this function excludes isSidechain records before
     ever reading gitBranch, unlike cmd_subagents, so a subagent's own
@@ -2531,6 +2898,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     this_repo = args.this_repo
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
+    per_dispatch: bool = bool(getattr(args, "per_dispatch", False))
 
     if multi_root and per_session:
         print(
@@ -2538,6 +2906,17 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             " scope (--config-dir was given) — a per-session row would join a"
             " foreign account's own session-id prefix to its branch name; drop"
             " --per-session or scope to a single profile",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if multi_root and per_dispatch:
+        print(
+            "subagent-mix: --per-dispatch is refused when more than one root is in"
+            " scope (--config-dir was given) — a per-dispatch row would print a"
+            " foreign account's own dispatch-id (a session-id fragment) with no"
+            " per-account origin marker; drop --per-dispatch or scope to a single"
+            " profile",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -2624,6 +3003,11 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     })
     declared_pin_cache: dict[tuple[Path, str], str] = {}
     total_meta_read_errors = 0
+    # Only populated under --per-dispatch: one row per resolved dispatch
+    # (dangling or not), printed instead of model_mix's per-agentType
+    # aggregate -- multi_root already refuses --per-dispatch above, so these
+    # rows need no root-scoped redaction of their own.
+    dispatch_rows: list[dict] = []
 
     for jsonl, records in session_iter:
         root_idx = _root_index_for_path(jsonl, resolved_roots) if multi_root else None
@@ -2659,7 +3043,8 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                         # _declared_pin reads from the on-disk agent file, so it
                         # needs the real subagent_type (stype), never the
                         # (possibly-redacted) display label built at print time.
-                        row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
+                        declared_pin = _declared_pin(stype, agents_dir, declared_pin_cache)
+                        row["declared_seen"].add(declared_pin)
                         (
                             observed, actual_dollars, _dollars_by_class, counterfactual_dollars,
                             dispatch_unpriced_turns, dispatch_unpriced_tokens, dispatch_stale_models,
@@ -2678,6 +3063,17 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                             row["actual_dollars"] += actual_dollars
                             if reprice_as:
                                 row["counterfactual_dollars"] += counterfactual_dollars or 0.0
+                        if per_dispatch:
+                            dispatch_rows.append({
+                                "stype": stype,
+                                "dispatch_id": paired_jsonl.stem[:8],
+                                "dangling": observed is None,
+                                "declared": declared_pin,
+                                "requested": requested_model or _UNREQUESTED_MODEL_LABEL,
+                                "observed": observed,
+                                "actual_dollars": actual_dollars,
+                                "counterfactual_dollars": counterfactual_dollars,
+                            })
                 elif name == "Skill":
                     skill = inp.get("skill") or ""
                     if skill in REVIEW_SKILLS:
@@ -2734,7 +3130,48 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
             f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
         )
 
-    if model_mix:
+    if per_dispatch:
+        if dispatch_rows:
+            header = f"{'AgentType':<28} {'Dispatch':<10} {'Status':<9} {'Declared':<10} {'Actual$':>12}"
+            if reprice_as:
+                header += f" {'Counterfactual$':>18} {'Delta':>12}"
+            header += f" {'Requested':<12} Observed"
+            print(f"\n{header}")
+            print("-" * len(header))
+            # Sorted by (label, dispatch_id) rather than insertion order, so
+            # two same-agentType dispatches print as adjacent, deterministically
+            # ordered rows instead of whatever order session_iter happened to
+            # scan its files in.
+            for drow in sorted(
+                dispatch_rows, key=lambda d: (_stype_label((None, d["stype"])), d["dispatch_id"])
+            ):
+                stype_label = _stype_label((None, drow["stype"]))
+                status = "dangling" if drow["dangling"] else "run"
+                observed_str = drow["observed"] or "—"
+                line = (
+                    f"{stype_label:<28} {drow['dispatch_id']:<10} {status:<9} {drow['declared']:<10} "
+                    f"{_fmt_usd(drow['actual_dollars']):>12}"
+                )
+                if reprice_as:
+                    counterfactual = drow["counterfactual_dollars"] or 0.0
+                    delta = drow["actual_dollars"] - counterfactual
+                    line += f" {_fmt_usd(counterfactual):>18} {_fmt_usd(delta):>12}"
+                line += f" {drow['requested']:<12} {observed_str}"
+                print(line)
+            # Same two diagnostics as the aggregated table below -- see their
+            # comments there for what each means.
+            if total_unpriced_turns:
+                print(
+                    f"  ({total_unpriced_turns:,} unpriced turns / {total_unpriced_tokens:,}"
+                    " tokens excluded from priced spend)"
+                )
+            if all_stale_models:
+                print(
+                    "STALE PRICING — today is past the re-verify-by date for: "
+                    + ", ".join(sorted(all_stale_models))
+                    + f". Re-check rates at {_PRICING_SOURCE_URL} before publishing this table's dollar figures."
+                )
+    elif model_mix:
         header = f"{'AgentType':<28} {'Runs':>5} {'Dangling':>9}  {'Declared':<10} {'Actual$':>12}"
         if reprice_as:
             header += f" {'Counterfactual$':>18} {'Delta':>12}"
@@ -11007,6 +11444,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Break out by individual session instead of aggregating per branch. Refused under --config-dir.",
     )
     p_mix.add_argument(
+        "--per-dispatch",
+        action="store_true",
+        help=(
+            "Replace the model-mix table with one row per resolved dispatch (dangling or not)"
+            " instead of aggregating by agentType. Refused under --config-dir."
+        ),
+    )
+    p_mix.add_argument(
         "--since-date", metavar="DATE", type=_iso_date,
         help=(
             "Inclusive start date (YYYY-MM-DD) for the Actual $ / Counterfactual $ columns only,"
@@ -11153,6 +11598,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_trace.add_argument(
         "--skill", metavar="NAME", choices=sorted(REVIEW_TRACE_SKILLS),
         help="Restrict skill-invocation matching to one skill name.",
+    )
+    p_review_trace.add_argument(
+        "--round-cost", action="store_true",
+        help=(
+            "Replace the per-session event listing with a per-review-round dollar"
+            " breakdown: each round's own main-thread window (deduped, priced) plus"
+            " every reviewer/writer dispatch spawned inside it. A round's window is"
+            " [skill_start_i, skill_start_{i+1}), left-closed; the last round extends"
+            " to --until (or session end); a dispatch spawned before the first skill"
+            " event reports under an unattributed pre-loop total. Mutually exclusive"
+            " with --deny-summary."
+        ),
     )
     p_review_trace.set_defaults(func=cmd_review_trace)
 
