@@ -98,6 +98,21 @@ The always-loaded baseline is the largest measured lever and is explicitly not a
 
 ## Sources
 
+- **LSP 3.18 specification** — <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/>, `textDocument/documentSymbol` section. The response type is `DocumentSymbol[] | SymbolInformation[] | null`, where `DocumentSymbol` carries only `name`, `detail?`, `kind`, `tags?`, `deprecated?`, `range`, `selectionRange`, and `children?` — no field holds document text. The same pattern holds across `textDocument/definition` (`Location | Location[]`, a URI plus a range) and `textDocument/references` (`Location[]`): LSP responses are locations and structural metadata, never file content.
+- **vscode-languageserver-node, `DocumentSymbol` interface (Microsoft's reference TypeScript implementation of the LSP types)** — <https://github.com/microsoft/vscode-languageserver-node/blob/main/types/src/main.ts>. Verbatim:
+
+  ```typescript
+  name: string;
+  detail?: string;
+  kind: SymbolKind;
+  tags?: SymbolTag[];
+  deprecated?: boolean;
+  range: Range;
+  selectionRange: Range;
+  children?: DocumentSymbol[];
+  ```
+
+  Confirms the specification independently: every field is a name, an enum, a `Range` (line/character position), or nested `DocumentSymbol`s carrying the same fields — never text content.
 - `.claude/plans/markdown-context-ingestion-cost.md` — the plan, including the assumption ledger this case study cites by row number for every figure it did not re-derive itself.
 - `claude/.claude/scripts/transcript-analysis.py` — `read-scope`, the subcommand producing the revisit-trigger figures above.
 - `claude/.claude/hooks/check-claude-md-length.sh` — the commit-time 200-line cap.
