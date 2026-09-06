@@ -986,12 +986,126 @@ class TestSelectPytestTargets:
         assert _mod._is_py_source_under_claude_or_plugins(_mod.SKILL_EVALS_RUNNER) is False
 
 
+class TestResolveTargetPaths:
+    """resolve_target_paths turns a selection's target_paths into the
+    concrete argv pytest receives: globs expanded, then any path another
+    selected target already collects dropped. Output is sorted, matching
+    select_pytest_targets' own tuple(sorted(targets)) contract."""
+
+    def test_directory_absorbs_a_file_target_inside_it(self):
+        """Measured collision (ledger row 1): HOOKS_TESTS_DIR silently
+        drops to 623 collected tests instead of 5267 when
+        TICKET_REFERENCE_DISCIPLINE_TEST_PATH, a file inside it, is also
+        a selected target."""
+        resolved = _mod.resolve_target_paths(
+            [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH], repo_root=_REPO_ROOT,
+        )
+        assert resolved == [_mod.HOOKS_TESTS_DIR]
+
+    def test_directory_absorbs_a_globs_expansions(self):
+        """Measured collision (ledger row 1): SCRIPTS_TESTS_DIR silently
+        drops to 126 collected tests instead of 2718 when
+        TRANSCRIPT_ANALYSIS_TEST_GLOB expands to concrete files already
+        inside it."""
+        resolved = _mod.resolve_target_paths(
+            [_mod.SCRIPTS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB], repo_root=_REPO_ROOT,
+        )
+        assert resolved == [_mod.SCRIPTS_TESTS_DIR]
+
+    def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
+        """Structural, synthetic -- not an observed collision. The real
+        rule tables are one level deep (ledger row 15), so only a synthetic
+        fixture exercises the all-pairs-against-the-original-list behavior
+        a progressively-shrinking working list would miss."""
+        resolved = _mod.resolve_target_paths(["A", "A/B", "A/B/c.py"], repo_root=_REPO_ROOT)
+        assert resolved == ["A"]
+
+    def test_repeated_target_collapses_to_one_occurrence(self):
+        """Structural, synthetic -- not an observed collision.
+        select_pytest_targets' own `set` makes a literal repeat unreachable
+        in production, but _covers excludes equality by definition, so the
+        exact-duplicate filter needs a pin independent of containment."""
+        resolved = _mod.resolve_target_paths(["A", "A"], repo_root=_REPO_ROOT)
+        assert resolved == ["A"]
+
+    def test_trailing_slash_container_absorbs_a_directory_inside_it(self):
+        """Structural, synthetic: FULL_SUITE_TARGETS entries carry a
+        trailing slash, which _is_under's `directory + "/"` concatenation
+        would turn into a never-matching `claude/.claude//` prefix; _covers
+        normalizes the trailing slash away before delegating to _is_under."""
+        resolved = _mod.resolve_target_paths(
+            ["claude/.claude/", _mod.HOOKS_DIR], repo_root=_REPO_ROOT,
+        )
+        assert resolved == ["claude/.claude/"]
+
+    def test_two_sibling_directories_both_survive_in_sorted_order(self):
+        """Input is deliberately reverse-sorted so the assertion can fail
+        if resolve_target_paths stops sorting; feeding already-sorted
+        input would leave this test unable to detect that regression."""
+        resolved = _mod.resolve_target_paths(
+            [_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR], repo_root=_REPO_ROOT,
+        )
+        assert resolved == sorted([_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR])
+
+    def test_idempotent_on_its_own_output(self):
+        """main passes an already-resolved list into build_pytest_argv,
+        which resolves it again; this is the only test pinning that the
+        second pass is a no-op."""
+        first_pass = _mod.resolve_target_paths(
+            [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH], repo_root=_REPO_ROOT,
+        )
+        second_pass = _mod.resolve_target_paths(first_pass, repo_root=_REPO_ROOT)
+        assert second_pass == first_pass
+
+    def test_no_surviving_pair_in_the_real_rule_tables_satisfies_covers(self):
+        """Derived invariant, not a fixed fixture: every
+        DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
+        pair where one covers the other, so this self-updates when a row
+        gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
+        Including it collapses the check to two disjoint survivors
+        (claude/.claude/ and plugins/), making the assertion pass
+        regardless of whether _covers works -- and that combined universe
+        isn't a selection select_pytest_targets ever actually returns."""
+        universe: set[str] = set()
+        for _predicate, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
+            universe.update(targets)
+        assert not (set(_mod.FULL_SUITE_TARGETS) & universe)
+
+        resolved = _mod.resolve_target_paths(sorted(universe), repo_root=_REPO_ROOT)
+        violations = [
+            (container, candidate)
+            for container in resolved
+            for candidate in resolved
+            if _mod._covers(container, candidate)
+        ]
+        assert not violations, violations
+
+    def test_covers_is_correct_for_a_known_real_containing_and_non_containing_pair(self):
+        """Unit-level check on _covers directly, bypassing
+        resolve_target_paths. The test above only re-checks _covers against
+        resolve_target_paths' own survivor list, which a false-negative bug
+        in _covers would produce regardless -- this pins _covers' answer
+        for a real containing pair and a real non-containing pair from the
+        same rule-table universe."""
+        assert _mod._covers(_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH) is True
+        assert _mod._covers(_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR) is False
+
+    def test_empty_input_resolves_to_an_empty_list(self):
+        """resolve_target_paths runs unconditionally in main before the
+        full-suite/empty/domain branch is decided, so an empty domain
+        selection (e.g. .claude/plans/-only changes) reaches it with ()."""
+        assert _mod.resolve_target_paths([], repo_root=_REPO_ROOT) == []
+
+
 class TestBuildPytestArgv:
     def test_plain_directory_targets_pass_through_unchanged(self):
+        """Input is deliberately reverse-sorted so the assertion can fail
+        if resolve_target_paths stops sorting; feeding already-sorted
+        input would leave this test unable to detect that regression."""
         argv = _mod.build_pytest_argv(
-            [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR], [], repo_root=_REPO_ROOT,
+            [_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR], [], repo_root=_REPO_ROOT,
         )
-        assert argv == [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR]
+        assert argv == sorted([_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR])
 
     def test_glob_target_expands_to_concrete_sorted_files_on_disk(self):
         argv = _mod.build_pytest_argv([_mod.TRANSCRIPT_ANALYSIS_TEST_GLOB], [], repo_root=_REPO_ROOT)
@@ -1006,6 +1120,28 @@ class TestBuildPytestArgv:
             [_mod.SCRIPTS_TESTS_DIR], ["-k", "select_tests", "-v"], repo_root=_REPO_ROOT,
         )
         assert argv == [_mod.SCRIPTS_TESTS_DIR, "-k", "select_tests", "-v"]
+
+    def test_resolves_target_paths_before_appending_passthrough_args(self):
+        """A directory-plus-contained-file input must collapse to the
+        directory before passthrough args are appended, not after."""
+        argv = _mod.build_pytest_argv(
+            [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH],
+            ["-k", "foo"],
+            repo_root=_REPO_ROOT,
+        )
+        assert argv == [_mod.HOOKS_TESTS_DIR, "-k", "foo"]
+
+    def test_passthrough_path_still_shadows_a_selected_directory(self):
+        """Containment resolution covers target_paths only. A path passed on the
+        command line reaches pytest verbatim and does shadow a selected directory
+        there -- deliberate, because classifying passthrough tokens as paths means
+        parsing pytest's option grammar."""
+        argv = _mod.build_pytest_argv(
+            [_mod.HOOKS_TESTS_DIR],
+            [_mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH],
+            repo_root=_REPO_ROOT,
+        )
+        assert argv == [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH]
 
 
 class TestRunPytest:
@@ -1465,7 +1601,11 @@ class TestMainComposition:
         exit_code = _mod.main([])
 
         assert exit_code == 0
-        assert recorded["pytest_argv"] == list(_mod.FULL_SUITE_TARGETS)
+        # build_pytest_argv resolves its input through resolve_target_paths,
+        # which always sorts its output -- FULL_SUITE_TARGETS' declared order
+        # was never a contract, so the recorded argv is compared against the
+        # sorted form rather than the tuple's own literal order.
+        assert recorded["pytest_argv"] == sorted(_mod.FULL_SUITE_TARGETS)
         assert recorded["cwd"] == fake_repo_root
 
     def test_domain_selected_paths_are_passed_through_to_run_pytest(self, monkeypatch):
@@ -1588,3 +1728,53 @@ class TestMainComposition:
 
         stderr = capsys.readouterr().err
         assert "running the full suite (global-trigger: pyproject.toml)" in stderr
+
+    @pytest.mark.parametrize(
+        ("changed_paths", "expected_argv"),
+        [
+            pytest.param(
+                ["claude/.claude/hooks/__init__.py"],
+                sorted([
+                    _mod.HOOKS_TESTS_DIR,
+                    *_mod._expand_target(_mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, repo_root=_REPO_ROOT),
+                ]),
+                id="file-inside-directory",
+            ),
+            pytest.param(
+                [_mod.CODE_REVIEW_SKILL_MD],
+                # CODE_REVIEW_SKILL_MD also selects HOOKS_TESTS_DIR: it's a
+                # member of SKILL_FILES_READ_BY_HOOK_TESTS as well as its own
+                # standalone SCRIPTS_TESTS_DIR row. The glob's expansions are
+                # absorbed into SCRIPTS_TESTS_DIR either way.
+                sorted([_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR]),
+                id="directory-absorbs-globs-expansions",
+            ),
+        ],
+    )
+    def test_stderr_scope_matches_recorded_pytest_argv_across_containment_collisions(
+        self, monkeypatch, capsys, changed_paths, expected_argv,
+    ):
+        """Regression test for ledger row 4: the printed line and the
+        pytest argv used to come from two separately derived calls, so a
+        containment collision could go silently under-collected while
+        stderr still claimed the wider (unresolved) scope.
+        resolve_repo_root is monkeypatched to the real _REPO_ROOT, not a
+        fake one, because the first case's selection includes a glob
+        target that must really expand."""
+        recorded = {}
+
+        def fake_run_pytest(pytest_argv, *, cwd):
+            recorded["pytest_argv"] = pytest_argv
+            return 0
+
+        monkeypatch.setattr(_mod, "resolve_repo_root", lambda *, cwd: _REPO_ROOT)
+        monkeypatch.setattr(_mod, "compute_changed_paths", lambda repo_root: changed_paths)
+        monkeypatch.setattr(_mod, "run_pytest", fake_run_pytest)
+
+        exit_code = _mod.main([])
+
+        assert exit_code == 0
+        assert recorded["pytest_argv"] == expected_argv
+        assert _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH not in recorded["pytest_argv"]
+        stderr = capsys.readouterr().err
+        assert f"select-tests: running {', '.join(recorded['pytest_argv'])}" in stderr

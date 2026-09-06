@@ -366,6 +366,60 @@ class TestMultiArgCollectionSpansTestDomains:
         )
 
 
+class TestDirectoryPlusContainedFileCollectionPremise:
+    """Pins the pytest collection premise select-tests.py's
+    resolve_target_paths exists to route around: passing a directory and a
+    file inside it as two initial pytest arguments makes pytest collect
+    nothing from the directory, not merely less of it. Verified at pytest
+    8.4.2 in this project's venv (_pytest/main.py:964-976, :916). The file
+    argument's matching walk populates the shared collection cache for the
+    enclosing directory node, so genitems() later sees duplicate=True for
+    that directory and returns without yielding anything.
+
+    requirements-dev.txt pins pytest==8.*, not a patch version, so a fresh
+    install can land a different 8.x whose collection semantics differ from
+    what this test was written against — see the assertion message below
+    for how to read a red result here.
+    """
+
+    @staticmethod
+    def _collected_node_ids(tmp_path: Path, *extra_args: str) -> list[str]:
+        # No -n0 here: xdist's own pytest_configure() unconditionally skips
+        # itself on --collect-only regardless of -n (see
+        # TestNestedWorktreeExcludedFromCollection above).
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "pytest", str(tmp_path), *extra_args,
+                "--collect-only", "-q", "--rootdir", str(tmp_path),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"collection failed (exit {result.returncode}):\n{result.stdout}\n{result.stderr}"
+        )
+        return [line for line in result.stdout.splitlines() if "::" in line]
+
+    def test_directory_plus_contained_file_drops_the_directorys_other_tests(self, tmp_path: Path):
+        (tmp_path / "test_a.py").write_text("def test_a_case():\n    assert True\n")
+        (tmp_path / "test_b.py").write_text("def test_b_case():\n    assert True\n")
+
+        directory_only = self._collected_node_ids(tmp_path)
+        directory_plus_contained_file = self._collected_node_ids(tmp_path, str(tmp_path / "test_b.py"))
+
+        assert set(directory_only) == {"test_a.py::test_a_case", "test_b.py::test_b_case"}
+        assert set(directory_plus_contained_file) == {"test_b.py::test_b_case"}, (
+            "expected the directory argument to contribute zero tests once a file "
+            "inside it was also passed as an initial argument, with test_a.py's test "
+            "fully absent. A red result here means an upstream pytest release changed "
+            "this collection-cache behavior, not that resolve_target_paths' own dedup "
+            "(select-tests.py) broke. That function stays correct either way, since "
+            "it only decides what to drop, not what pytest does with what's left."
+        )
+
+
 class TestNoBareSameDirectorySiblingImports:
     """TestConftestModuleNamesAreUnique above only covers conftest.py's own
     module-naming collision. A test-local helper module like

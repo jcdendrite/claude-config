@@ -600,13 +600,67 @@ def _expand_target(target: str, *, repo_root: Path) -> list[str]:
     return sorted(str(match.relative_to(repo_root)) for match in repo_root.glob(target))
 
 
-def build_pytest_argv(
-    target_paths: Iterable[str], passthrough_args: Iterable[str], *, repo_root: Path,
-) -> list[str]:
+def _covers(container: str, candidate: str) -> bool:
+    """True when container's own pytest walk already collects candidate --
+    i.e. candidate sits strictly inside container. Reuses _is_under for the
+    prefix test rather than restating it.
+
+    FULL_SUITE_TARGETS entries end in "/", so container's trailing slash is
+    stripped first to avoid a never-matching `claude/.claude//` prefix in
+    _is_under's `directory + "/"` concatenation."""
+    normalized = container.rstrip("/")
+    return candidate != normalized and _is_under(candidate, normalized)
+
+
+def resolve_target_paths(target_paths: Iterable[str], *, repo_root: Path) -> list[str]:
+    """Turn a selection's target_paths into the concrete paths pytest
+    receives.
+
+    Pytest collects nothing from a directory argument when another
+    argument names a path inside it. To avoid that, every target is
+    expanded through _expand_target, then passed through two distinct
+    filters applied in order. First, exact duplicates are dropped, keeping
+    the first occurrence. Second, any path another entry in the expanded
+    list _covers is dropped. The duplicate filter can't fold into the
+    containment filter because _covers excludes equality by definition, so
+    containment alone never removes a repeat. Each candidate in the
+    containment filter is checked against the whole expanded list rather
+    than a progressively-shrinking one, so a multi-level chain (e.g. A,
+    A/B, A/B/c.py) collapses to its outermost container in one pass.
+
+    Output is sorted, matching select_pytest_targets' own
+    tuple(sorted(targets)) contract and the sortedness glob expansion
+    already carries. That's incidental for today's callers -- the
+    filtering above doesn't depend on argv order at all."""
     expanded: list[str] = []
     for target in target_paths:
         expanded.extend(_expand_target(target, repo_root=repo_root))
-    return [*expanded, *list(passthrough_args)]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for path in expanded:
+        if path not in seen:
+            deduped.append(path)
+            seen.add(path)
+
+    # Order-independent: pytest's Session.collect() runs the matching walk
+    # for every initial argument, mutating the shared collection cache,
+    # before genitems() runs on any of them, so the enclosing directory
+    # ends up cached whichever argument comes first.
+    survivors = [
+        path for path in deduped
+        if not any(_covers(other, path) for other in deduped if other != path)
+    ]
+    return sorted(survivors)
+
+
+def build_pytest_argv(
+    target_paths: Iterable[str], passthrough_args: Iterable[str], *, repo_root: Path,
+) -> list[str]:
+    """Only target_paths are containment-resolved; passthrough_args reach
+    pytest verbatim, so a path given on the command line can still shadow a
+    resolved target."""
+    return [*resolve_target_paths(target_paths, repo_root=repo_root), *list(passthrough_args)]
 
 
 def _resolve_pytest_executable() -> str:
@@ -637,6 +691,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         selection = select_pytest_targets(changed_paths)
 
+    resolved_targets = resolve_target_paths(selection.target_paths, repo_root=repo_root)
+
     if selection.is_full_suite:
         if selection.triggering_paths:
             paths = ", ".join(selection.triggering_paths)
@@ -647,9 +703,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"select-tests: nothing to run ({selection.reason})", file=sys.stderr)
         return 0
     else:
-        print(f"select-tests: running {', '.join(selection.target_paths)}", file=sys.stderr)
+        print(f"select-tests: running {', '.join(resolved_targets)}", file=sys.stderr)
 
-    pytest_argv = build_pytest_argv(selection.target_paths, passthrough_args, repo_root=repo_root)
+    # build_pytest_argv resolves resolved_targets again internally; safe
+    # because resolve_target_paths is idempotent on its own output, pinned
+    # by test_idempotent_on_its_own_output.
+    pytest_argv = build_pytest_argv(resolved_targets, passthrough_args, repo_root=repo_root)
     return run_pytest(pytest_argv, cwd=repo_root)
 
 
