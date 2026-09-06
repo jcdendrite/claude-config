@@ -1844,6 +1844,52 @@ def test_classify_registry_dead_after_boot_no_transcript_fully_covered_is_confir
     assert "No main transcript" in row.detail
 
 
+def test_classify_registry_dead_after_boot_fully_covered_cites_newest_record(tmp_path):
+    """Two dead, fully-covered entries whose matching SessionEndRecords have
+    distinct mtimes and reasons -- the detail must cite the later-mtime
+    record's reason, not the first-encountered one's. Guards against
+    `matched_records[0]` silently replacing the `max(..., key=mtime)`
+    selection."""
+    earlier_entry = _registry_entry(pid=100, mtime=1400.0, config_dir=tmp_path)
+    later_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    earlier_record = _session_end_record(pid=100, mtime=1600.0, reason="reason_early", config_dir=tmp_path)
+    later_record = _session_end_record(pid=101, mtime=1700.0, reason="reason_late", config_dir=tmp_path)
+    records = {
+        (tmp_path.resolve(), 100): earlier_record,
+        (tmp_path.resolve(), 101): later_record,
+    }
+    row = _mod._classify_session(
+        "s1", [earlier_entry, later_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "reason_late" in row.detail
+    assert "reason_early" not in row.detail
+
+
+def test_classify_registry_full_coverage_ignores_uncovered_lookup_entry_for_same_session(tmp_path):
+    """The registry branch's full-coverage promotion must rest on the
+    registry's own dead_after_boot list alone. `lookup_entries` here is
+    passed directly into `_classify_session` as a pre-built tuple, not read
+    via `_read_lookup_entries`, so its crash-evidence window plays no role in
+    this test -- the registry branch's own `_all_entries_explained` call only
+    ever consults `registry_entries` and `dead_after_boot`, never
+    `lookup_entries`. A dead, uncovered lookup entry for the same session
+    must not block registry-branch promotion."""
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, reason="prompt_input_exit", config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    uncovered_lookup = _lookup_entry(pid=999, session_id="s1", mtime=1.0, config_dir=tmp_path)
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(uncovered_lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "prompt_input_exit" in row.detail
+
+
 def test_classify_registry_dead_after_boot_partially_covered_stays_possible_crash_with_sentence(tmp_path):
     covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
     uncovered_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
@@ -1857,6 +1903,75 @@ def test_classify_registry_dead_after_boot_partially_covered_stays_possible_cras
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
     assert "at least one did not" in row.detail
+
+
+def test_classify_registry_dead_after_boot_indeterminate_sibling_not_promoted(tmp_path):
+    """Two registry entries for one session: pid 100 is dead-after-boot with
+    a fully-matching SessionEnd record, pid 101 is a live pid whose stored
+    proc_start is missing so its sameness can't be confirmed (indeterminate).
+    Full coverage of dead_after_boot alone must not promote to Confirmed
+    clean exit while a sibling entry's liveness is unresolved -- pid 101
+    could still be running or could have genuinely crashed."""
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    indeterminate_entry = _registry_entry(pid=101, mtime=1500.0, proc_start=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, indeterminate_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({101: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert (
+        "Every tracked dead_after_boot instance recorded a graceful SessionEnd, but another "
+        "registry entry for this session could not be confirmed dead or dated"
+    ) in row.detail
+
+
+def test_classify_registry_dead_after_boot_indeterminate_sibling_no_transcript_not_promoted(tmp_path):
+    """Same indeterminate-sibling shape as the test above, but with no main
+    transcript for this session -- the sibling-blocked-promotion sentence
+    must also appear in the no-transcript CLASS_UNKNOWN rendering, not just
+    the has-transcript CLASS_POSSIBLE_CRASH one."""
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    indeterminate_entry = _registry_entry(pid=101, mtime=1500.0, proc_start=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=False)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, indeterminate_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({101: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_UNKNOWN
+    assert (
+        "Every tracked dead_after_boot instance recorded a graceful SessionEnd, but another "
+        "registry entry for this session could not be confirmed dead or dated"
+    ) in row.detail
+
+
+def test_classify_registry_dead_after_boot_mtime_unknown_sibling_not_promoted(tmp_path):
+    """Two registry entries for one session: pid 100 is dead-after-boot with
+    a fully-matching SessionEnd record, pid 101 is dead but its mtime could
+    not be read. An unreadable mtime means this entry's own age relative to
+    boot can't be established, so full coverage of dead_after_boot alone
+    must not promote to Confirmed clean exit."""
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    mtime_unknown_entry = _registry_entry(pid=101, mtime=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, mtime_unknown_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert (
+        "Every tracked dead_after_boot instance recorded a graceful SessionEnd, but another "
+        "registry entry for this session could not be confirmed dead or dated"
+    ) in row.detail
 
 
 def test_classify_lookup_dead_pid_fully_covered_is_confirmed_clean_exit(tmp_path):
@@ -1913,6 +2028,24 @@ def test_classify_registry_dead_before_boot_fully_covered_stays_resumable(tmp_pa
     records = {(tmp_path.resolve(), entry.pid): record}
     row = _mod._classify_session(
         "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_RESUMABLE
+
+
+def test_classify_lock_dead_fully_covered_stays_resumable(tmp_path):
+    """The lock branch never threads session_end_records into
+    _graceful_end_coverage at all -- by design, since it only ever resolves
+    to CLASS_RESUMABLE or CLASS_CRASHED_NO_TRANSCRIPT, never
+    CLASS_POSSIBLE_CRASH. A dead lock entry plus a fully-covering
+    SessionEndRecord must stay CLASS_RESUMABLE, not be promoted to
+    CLASS_CONFIRMED_CLEAN_EXIT."""
+    lock = _lock_entry(pid=200, mtime=1500.0)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=200, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 200): record}
+    row = _mod._classify_session(
+        "s1", [], [lock], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
         session_end_records=records,
     )
     assert row.classification == _mod.CLASS_RESUMABLE

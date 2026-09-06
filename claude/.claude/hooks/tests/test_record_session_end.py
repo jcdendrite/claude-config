@@ -268,3 +268,49 @@ class TestRecordSessionEnd:
     def test_exit_status_is_zero_on_every_path(self, isolated_home, payload):
         result = self._run_capturing_stderr(payload)
         assert result.returncode == 0, f"payload {payload!r} produced exit {result.returncode}"
+
+    @pytest.mark.timing
+    def test_hung_jq_exits_within_timeout_and_writes_no_record(self, isolated_home, tmp_path):
+        """A wedged jq binary (sleeping past _lib_jq's 5s backstop) must not
+        hang this hook indefinitely -- every jq call site here goes through
+        _lib_jq, not bare jq, so the timeout cap applies to all three.
+        Invoked via `bash <path>` rather than direct exec, mirroring
+        test_lib.py's test_hung_jq_denied_within_timeout -- direct exec of a
+        freshly-written PATH shim measures wildly inflated, unstable wall
+        time on this suite's sandboxed runners for reasons unrelated to
+        _lib_jq's own cap."""
+        import shutil
+
+        timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
+        if not timeout_path:
+            pytest.skip("neither timeout(1) nor gtimeout(1) available")
+
+        stub_dir = tmp_path / "hung-jq-stub"
+        stub_dir.mkdir()
+        fake_jq = stub_dir / "jq"
+        fake_jq.write_text("#!/bin/bash\nsleep 10\n")
+        fake_jq.chmod(0o755)
+
+        env = {
+            **os.environ,
+            "HOME": str(isolated_home),
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+        }
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", str(RECORD_SESSION_END_HOOK)],
+            input=json.dumps({"session_id": "hung-jq-session"}),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0
+        assert self._records_files(isolated_home) == []
+        # The hook makes two sequential _lib_jq calls (session_id, reason)
+        # before it can act on either, so a working 5s cap bounds this at
+        # ~10s; 20s leaves headroom for scheduling jitter without masking an
+        # actually-uncapped bare-jq regression (2 x 10s sleep = 20s+).
+        assert elapsed < 20, f"hung-jq test took {elapsed:.1f}s — _lib_jq's cap did not engage"

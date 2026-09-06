@@ -95,6 +95,18 @@ Partial coverage is the resume case the pid keying exists for: one session
 id spans several process lifetimes, so a session that exited cleanly once
 and crashed on a later resume must stay in "Possible crash."
 
+**Full coverage of the dead-entry list alone is not sufficient for the
+registry branch's promotion.** `_all_entries_explained` additionally requires
+the dead-entry list's length to equal the registry branch's full
+`registry_entries` count, so a sibling registry entry for the same session
+with indeterminate liveness or an unreadable mtime blocks promotion even
+though every `dead_after_boot` instance matched a record. This is an
+intentional design decision, fixed during review, not an incidental gap: an
+unresolved sibling could still be a genuine crash instance, and pid-keying
+alone gives no other way to rule that out. A future simplification of
+`_all_entries_explained` back to a bare `covered == total` would silently
+reintroduce that false-promotion case.
+
 **Report bucket and the sibling rename.** New constant
 `CLASS_CONFIRMED_CLEAN_EXIT = "confirmed-clean-exit"`, rendered through the
 compact `other_groups` path (not `render_resume_section`) — the bucket exists
@@ -190,8 +202,9 @@ crash once the process is dead, so every dead-pid session lands in
   the payload, so the hook must resolve its own Claude-process pid.
 - `claude -p` skips `SessionEnd` entirely — the CLI decides which events
   fire in headless mode.
-- `SessionEnd` runs under a 1.5s default execution budget — the harness
-  imposes it.
+- `SessionEnd`'s execution budget is asserted by this design to be short
+  (~1.5s) but no primary source for that figure was found in Anthropic's
+  documentation — treated as a working assumption, not a verified fact.
 
 **Mechanisms:**
 - New `SessionEnd` hook writing a per-pid record — the only documented
@@ -469,6 +482,16 @@ Phase 2's manual check run against a record the real hook produced.
    minor or major version upgrade**, not only once at initial rollout —
    this is the plan's single load-bearing premise (ledger row 1) and
    nothing else re-verifies it on an ongoing basis.
+
+   This test's SIGKILL case is not actually where the risk concentrates:
+   SIGKILL and an OOM kill cannot fire any hook by construction, so that half
+   needs no empirical proof, and a reboot-terminated session is already
+   routed away via `dead_before_boot` boot-time dating regardless of whether
+   `SessionEnd` fired. The genuinely open question is a SIGTERM or SIGHUP
+   (terminal window closed, a plain `kill` with no `-9`) mid-session,
+   post-boot — if the CLI fires `SessionEnd` there, the session correctly
+   classifies as a deliberate clean exit, consistent with the plan's own
+   stated scope ("closing the CLI normally" is explicitly in-scope).
 5. **Partial-coverage check.** Start a session, exit cleanly, `claude
    --resume` it, then `kill -9` the resumed process. Confirm the row stays
    in "Possible crash" and its detail carries the "1 of 2 tracked process
