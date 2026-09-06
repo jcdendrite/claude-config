@@ -13,21 +13,24 @@ PreToolUse matcher group — asserts that same PreToolUse wiring for every
 hook-class: gate hook regardless of skill pairing, and pins standalone
 config-value invariants in settings.json unrelated to gate/skill pairing
 (e.g. the plan-mode-entry deny/defaultMode declarations). Three further
-static shape checks, scoped to claude/.claude/hooks/*.sh:
-- Every `jq` invocation goes through a `_lib_*` wrapper (bare `jq` outside
-  one reintroduces the per-hook duplicated timeout-handling this suite
-  exists to prevent).
-- Every `grep`-family command match resolves through the shared
-  subcommand-matching helpers rather than a hand-rolled literal pattern.
-  Bash's native `[[ ... =~ ... ]]` is a different, unswept mechanism for
-  the same hand-rolled-matcher shape (e.g. require-respond-pr.sh's
-  `PATTERN_*` family) -- out of scope for this check.
-- No hook regex uses GNU grep's `\\s` extension, which a POSIX-strict grep
-  reads as a literal `s`.
+static shape checks:
+- Every `jq` invocation in claude/.claude/hooks/*.sh goes through a
+  `_lib_*` wrapper (bare `jq` outside one reintroduces the per-hook
+  duplicated timeout-handling this suite exists to prevent).
+- Every `grep`-family command match in claude/.claude/hooks/*.sh resolves
+  through the shared subcommand-matching helpers rather than a
+  hand-rolled literal pattern. Bash's native `[[ ... =~ ... ]]` is a
+  different, unswept mechanism for the same hand-rolled-matcher shape
+  (e.g. require-respond-pr.sh's `PATTERN_*` family) -- out of scope for
+  this check.
+- No hook regex in claude/.claude/hooks/*.sh, plugins/*/hooks/*.sh, or
+  either directory's _lib.sh uses GNU grep's `\\s` extension, which a
+  POSIX-strict grep reads as a literal `s`.
 
 The first two carry a small, named exemption dict for a structural holdout
-that resisted conversion. The `\\s` check has none: no `\\s` occurrence
-remains in claude/.claude/hooks/*.sh, so no exemption is needed.
+that resisted conversion. The `\\s` check has none: no live `\\s`
+occurrence remains anywhere in its scope. See `_all_hook_files` for why
+only the `\\s` check also sweeps each directory's _lib.sh.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -57,16 +60,23 @@ _MAIN_HOOKS_DIR = _REPO_ROOT / "claude" / ".claude" / "hooks"
 _PLUGIN_HOOKS_DIRS = list((_REPO_ROOT / "plugins").glob("*/hooks"))
 
 
-def _all_hook_files() -> list[Path]:
-    """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/,
-    excluding _lib.sh files."""
+def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
+    """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/.
+
+    Excludes each directory's _lib.sh by default. Pass include_lib=True to
+    sweep those too -- used only by the backslash-s detector, which has no
+    self-reference risk against _lib.sh. The bare-jq and inline-matcher
+    detectors stay on the default (excluded) because each is defined
+    inside _lib.sh using the exact primitive it detects, so including it
+    there would be a guaranteed, meaningless self-match.
+    """
     hooks: list[Path] = []
     for sh in sorted(_MAIN_HOOKS_DIR.glob("*.sh")):
-        if sh.name != "_lib.sh":
+        if include_lib or sh.name != "_lib.sh":
             hooks.append(sh)
     for hooks_dir in _PLUGIN_HOOKS_DIRS:
         for sh in sorted(hooks_dir.glob("*.sh")):
-            if sh.name != "_lib.sh":
+            if include_lib or sh.name != "_lib.sh":
                 hooks.append(sh)
     return hooks
 
@@ -105,6 +115,7 @@ _EXPLICIT_GATES: frozenset[str] = frozenset(
 )
 
 ALL_HOOKS = _all_hook_files()
+ALL_HOOKS_AND_LIBS = _all_hook_files(include_lib=True)
 GATE_HOOKS = [h for h in ALL_HOOKS if _hook_class(h) == "gate"]
 
 # Hooks documented in docs/hooks.md only for the main hooks dir — that doc's
@@ -701,18 +712,29 @@ def _live_backslash_s_hits(hook: Path) -> list[str]:
     return hits
 
 
-@pytest.mark.parametrize("hook", ALL_HOOKS, ids=[h.name for h in ALL_HOOKS])
+@pytest.mark.parametrize(
+    "hook",
+    ALL_HOOKS_AND_LIBS,
+    ids=[str(h.relative_to(_REPO_ROOT)) for h in ALL_HOOKS_AND_LIBS],
+)
 def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
-    """No hook regex -- claude/.claude/hooks/*.sh or plugins/*/hooks/*.sh --
-    uses GNU grep's `\\s` extension -- not POSIX ERE, and a POSIX-strict grep
-    reads it as a literal `s`. Use `[[:space:]]` instead. Parametrized over
-    ALL_HOOKS, not _MAIN_HOOKS like the sibling matcher tests below: this
-    detector has zero plugins/*/hooks/*.sh hits and needs no allowlist,
-    unlike the bare-jq and inline-matcher checks, which each have unresolved
-    plugin-side hits requiring adjudication first. See _live_backslash_s_hits
-    for the detector's blind spot (a same-line trailing comment mentioning
-    `\\s` in prose would also be stripped before the scan, same as the two
-    detectors above).
+    """No hook regex -- claude/.claude/hooks/*.sh, plugins/*/hooks/*.sh, or
+    either directory's _lib.sh -- uses GNU grep's `\\s` extension -- not
+    POSIX ERE, and a POSIX-strict grep reads it as a literal `s`. Use
+    `[[:space:]]` instead.
+
+    Parametrized over ALL_HOOKS_AND_LIBS, not _MAIN_HOOKS like the sibling
+    matcher tests below, because this detector has zero
+    plugins/*/hooks/*.sh hits and needs no allowlist. The bare-jq and
+    inline-matcher checks stay on _MAIN_HOOKS because each has unresolved
+    plugin-side hits requiring adjudication first. See `_all_hook_files`
+    for why only this detector also sweeps each directory's _lib.sh. Ids
+    are repo-relative paths, not bare filenames, since every hooks
+    directory has a same-named _lib.sh.
+
+    See _live_backslash_s_hits for the detector's blind spot (a same-line
+    trailing comment mentioning `\\s` in prose would also be stripped
+    before the scan, same as the two detectors above).
     """
     hits = _live_backslash_s_hits(hook)
     assert not hits, (
@@ -735,6 +757,22 @@ def test_backslash_s_detector_flags_code_not_comments(tmp_path: Path) -> None:
     )
     hits = _live_backslash_s_hits(fixture)
     assert len(hits) == 1, f"expected exactly 1 fixture line flagged, got {hits!r}"
+
+
+def test_all_hooks_and_libs_includes_every_lib_sh() -> None:
+    """ALL_HOOKS_AND_LIBS must contain exactly one _lib.sh per hooks
+    directory, on top of every entry in ALL_HOOKS. Fails if a hooks
+    directory is added, renamed, or loses its _lib.sh, catching what
+    would otherwise be a silent drop in the backslash-s detector's
+    parametrized case count.
+    """
+    expected_lib_count = 1 + len(_PLUGIN_HOOKS_DIRS)  # main dir + each plugin
+    lib_files = [h for h in ALL_HOOKS_AND_LIBS if h.name == "_lib.sh"]
+    assert len(lib_files) == expected_lib_count, (
+        f"expected {expected_lib_count} _lib.sh files in ALL_HOOKS_AND_LIBS "
+        f"(one per hooks directory), found {len(lib_files)}: {lib_files!r}"
+    )
+    assert len(ALL_HOOKS_AND_LIBS) == len(ALL_HOOKS) + expected_lib_count
 
 
 @pytest.mark.parametrize("hook", ALL_HOOKS, ids=[h.name for h in ALL_HOOKS])

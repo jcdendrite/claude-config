@@ -253,19 +253,52 @@ a silent fail-open.
     parametrize over `ALL_HOOKS` instead if either returns zero — free
     coverage with no allowlist. `[verified: repo-wide jq grep across
     plugins/, run this session]` `anchors: row10`
-    **Resolved in cumulative-diff round 4 (`ciso-reviewer`):** the `\s`
-    grep returned 3 hits, not zero — `require-plugin-version-bump.sh:90`,
-    `require-npm-version-bump.sh:126`, and `require-skill-review.sh:83`
-    each gate `git commit` with the same GNU-only `\s` pattern this phase
-    converts elsewhere, undispositioned until this finding. Converted all
-    three to `[[:space:]]` in this PR (identical substitution, each
-    plugin's `version` bumped patch per `plugin-semver`), and
+    **Resolved:** the `\s` grep returned 3 hits, not zero:
+    `require-plugin-version-bump.sh:90`, `require-npm-version-bump.sh:126`,
+    and `require-skill-review.sh:83` each gate `git commit` with the same
+    GNU-only `\s` pattern this phase converts elsewhere. Converted all
+    three to `[[:space:]]` (identical substitution, each plugin's
+    `version` bumped patch per `plugin-semver`), and
     `test_no_gnu_backslash_s_regex_extension` now parametrizes over
-    `ALL_HOOKS`, per this row's own original condition. The inline-matcher
-    grep still returns non-zero for the same three files (the identical
+    `ALL_HOOKS_AND_LIBS`, per this row's own original condition plus the
+    `_lib.sh` coverage gap resolved below. The inline-matcher grep still
+    returns non-zero for the same three files (the identical
     `git`+whitespace-atom shape `require-ready-for-review.sh`'s own git arm
     already carries, exempted there) — that test stays on `_MAIN_HOOKS`,
     unadjudicated, per this row's original disposition.
+
+    **Resolved (`_lib.sh` coverage gap):** this detector inherited
+    `_all_hook_files()`'s `_lib.sh` exclusion from the sibling bare-jq and
+    inline-matcher checks, but that exclusion exists only to avoid a
+    guaranteed self-match against those two detectors' own helper
+    definitions inside `_lib.sh` — a reason that doesn't apply here, since
+    `_lib.sh` has no structural reason to carry a live `\s` regex. Left
+    unswept, a future `\s` regex added inside a shared `_lib.sh` helper
+    (sourced by every hook in its directory) would regress this phase's
+    own fail-open class, uncaught by any of the three Layer-1 detectors.
+    `_all_hook_files()` gained an `include_lib` keyword-only parameter,
+    default `False`, preserving `ALL_HOOKS`'s existing behavior.
+    `ALL_HOOKS_AND_LIBS = _all_hook_files(include_lib=True)` feeds only
+    this one detector. Its parametrize ids are repo-relative paths, not
+    bare filenames, since every hooks directory has a same-named
+    `_lib.sh`. The other two detectors stay on `ALL_HOOKS`, since their
+    exclusion is still load-bearing. A new
+    `test_all_hooks_and_libs_includes_every_lib_sh` meta-test pins
+    `ALL_HOOKS_AND_LIBS`'s expected cardinality, so a future hooks
+    directory losing its `_lib.sh` fails loudly instead of silently
+    shrinking the parametrized case count. `[verified: grepped all five
+    _lib.sh files for `\s` — one hit, a prose comment already excluded by
+    `_strip_comment`]`
+
+    **Deferred (not this PR):** `plugins/lovable-cloud/lib/token-path.sh`
+    is a shared helper sourced by every hook in that plugin, playing the
+    same shared-helper role `_lib.sh` plays elsewhere. It lives outside
+    any `hooks/` directory and isn't named `_lib.sh`, so neither
+    `ALL_HOOKS` nor `ALL_HOOKS_AND_LIBS` sweeps it. Currently clean (no
+    live `\s`, bare `jq`, or hand-rolled matcher). Closing this needs a
+    source-dependency-graph-aware detector, not a one-line addition to the
+    existing filename-keyed fixtures — filed as
+    [GH-904](https://github.com/jcdendrite/claude-config/issues/904).
 13. **GH-485's defect did not reproduce on any of four independent
     probes this session, including the real target platform.** (1) A
     first Docker/busybox attempt used a shell heredoc (`<<<`) as stdin,
@@ -408,18 +441,18 @@ named-constant-with-rationale idiom (`test_hook_alignment.py:45-107`,
   `ai-instruction-and-memory-files` at `/plan-review` and `/code-review`
   time, per this repo's own Domain: Claude Code config checklist.
 
-**Added in cumulative-diff round 4** (see row 12's resolution note above):
+**Additional critical files, resolving row 12's findings:**
 - `claude/.claude/hooks/require-respond-pr.sh` — one sentence added to the
   threat-model header noting its cooperative-only posture is deliberately
-  narrower than `require-ready-for-review.sh`'s adversarial one, since a
-  prior round's fix rewrote only the latter's header, leaving the two
-  hooks silently contradicting each other (`ciso-reviewer`).
+  narrower than `require-ready-for-review.sh`'s adversarial one, so the
+  two hooks' postures no longer read as contradictory.
 - `claude/.claude/hooks/tests/test_hook_alignment.py` — `_BARE_JQ_COMMAND_POSITION_RE`'s
   anchor set gains `)` (a `case` statement's pattern-close, e.g.
   `*) jq -n '{}' ;;`), with a matching fixture line in
   `test_bare_jq_detector_flags_known_anchor_shapes` (`staff-sdet`).
   `test_no_gnu_backslash_s_regex_extension` moves from `_MAIN_HOOKS` to
-  `ALL_HOOKS`.
+  `ALL_HOOKS`, then to `ALL_HOOKS_AND_LIBS` once each directory's
+  `_lib.sh` is added to close the coverage gap noted in row 12.
 - `plugins/plugin-semver/hooks/require-plugin-version-bump.sh`,
   `plugins/npm-semver/hooks/require-npm-version-bump.sh`,
   `plugins/skill-management/hooks/require-skill-review.sh` — the same
@@ -428,7 +461,8 @@ named-constant-with-rationale idiom (`test_hook_alignment.py:45-107`,
   `.claude-plugin/plugin.json` `version` bumped patch (backward-compatible
   bug fix, per `plugin-semver`).
 - `CLAUDE.md` — the "Hook regexes: POSIX ERE only" bullet's enforcement
-  citation updated to name `ALL_HOOKS`, matching the widened test scope.
+  citation updated to name `ALL_HOOKS_AND_LIBS`, matching the widened
+  test scope.
 
 No `docs/hooks.md` change: none of the three hook edits changes documented
 behavior, and a wrapper choice is an implementation caveat that belongs in
@@ -458,9 +492,9 @@ Beyond the scoped suite:
    changes only the cap. Any required edit means one of the two changed
    behavior.
 2. **Cap-engagement characterization test for the four newly-capped
-   `nudge-handoff-near-context-cap.sh` sites** (`staff-sdet`, this
-   round): an unedited pass of `test_nudge_handoff_near_context_cap.py`
-   proves the fast path is unchanged, but not that the 2-second budget
+   `nudge-handoff-near-context-cap.sh` sites:** an unedited pass of
+   `test_nudge_handoff_near_context_cap.py` proves the fast path is
+   unchanged, but not that the 2-second budget
    actually engages at these four sites rather than silently inheriting
    `_lib_jq`'s 5s default or running uncapped. The master plan's own
    Phase 2 verification bullet set this precedent for exactly this
