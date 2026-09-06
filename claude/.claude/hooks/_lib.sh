@@ -96,6 +96,46 @@ _lib_realpath_m() {
   done
 }
 
+# _lib_advance_offset_past_complete_lines TRANSCRIPT OFFSET CURRENT_SIZE
+# Prints the resume-from byte offset, stopping before any trailing
+# partially-written line — shared mid-write-safety helper for hooks that scan
+# a transcript incrementally from a stored byte offset instead of rescanning
+# it whole on every fire. Used by nudge-handoff-near-context-cap.sh (see
+# docs/handoff-nudge.md "What the hook does") and nudge-long-turn-subagent.sh.
+# Known limitation: on a scan timeout in the slow path below, this returns
+# OFFSET unchanged rather than partial progress. Total absence of `tail`
+# from PATH makes the fast path above silently and permanently freeze the
+# offset at CURRENT_SIZE, indistinguishable from the file genuinely ending
+# in a newline.
+_lib_advance_offset_past_complete_lines() {
+  local transcript_path="$1" offset="$2" current_size="$3"
+  if [ "$current_size" -le "$offset" ] 2>/dev/null; then
+    printf '%s' "$offset"
+    return
+  fi
+  # Fast path: the file's current last byte is a newline, so everything up
+  # to current_size is complete lines — one 1-byte read covers the common
+  # case (Claude Code writes each transcript record as a complete line).
+  local last_byte
+  last_byte=$(_lib_capped_for 2 tail -c 1 "$transcript_path" 2>/dev/null)
+  if [ -z "$last_byte" ]; then
+    printf '%s' "$current_size"
+    return
+  fi
+  # Slow path: the file currently ends mid-line (caught mid-write). Count
+  # complete lines in the unread slice, then measure exactly that many bytes
+  # with `head`/`wc -c` — avoids locale-sensitive string-length arithmetic on
+  # a captured shell variable.
+  local newline_count complete_bytes
+  newline_count=$(_lib_capped_for 2 tail -c +$((offset + 1)) "$transcript_path" 2>/dev/null \
+    | tr -cd '\n' | wc -c | tr -d '[:space:]')
+  case "$newline_count" in ''|*[!0-9]*|0) printf '%s' "$offset"; return ;; esac
+  complete_bytes=$(_lib_capped_for 2 tail -c +$((offset + 1)) "$transcript_path" 2>/dev/null \
+    | head -n "$newline_count" | wc -c | tr -d '[:space:]')
+  case "$complete_bytes" in ''|*[!0-9]*) printf '%s' "$offset"; return ;; esac
+  printf '%s' "$(( offset + complete_bytes ))"
+}
+
 # Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
 # (must be absolute — a relative value resolves differently per invocation
 # cwd, the same path-mismatch bug this function exists to fix), else
@@ -316,6 +356,9 @@ _lib_repo_root() {
 # path inherits the old path's markers. Harmless today (a stale marker still
 # has to match the content hash to authorize anything), but do not read this
 # hash as proof that two markers came from the same repository.
+# Separate known limitation, not computed by this function: a code-review
+# marker's content hash (`git diff --cached`, computed in marker.sh) covers
+# only the touched-file diff, not repo state outside those files.
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
   printf '%s' "$1" | sha256sum | awk '{print $1}'

@@ -437,6 +437,28 @@ class TestDenyPiiInCommits:
         (git_repo / "file.txt").write_text(f"first\nsecond\nSSN {SSN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit --all -m wip"), cwd=git_repo) == "deny"
 
+    def test_missing_awk_still_scans_worktree_for_pii(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """`_lib_commit_fragment_has_worktree_target`'s shared fail-safe
+        (missing awk/xargs reads as "target found") must still force the
+        `git diff HEAD` scan at this call site, not just deny outright the
+        way deny-invisible-commit-content.sh does at its own call site. A
+        plain `git commit -m wip` (no -a) would normally skip this scan --
+        see test_plain_commit_ignores_unstaged_worktree_pii -- so catching
+        this fixture with awk absent pins the fail-safe direction
+        specifically for this hook's own consequence (widen the scan), not
+        just the other consumer's (deny outright)."""
+        pii_patterns("# no user patterns\n")
+        (git_repo / "file.txt").write_text(f"first\nsecond\nSSN {SSN}\n")
+        farm_dir = tmp_path / "path-without-awk"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("awk", farm_dir)
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m wip"),
+            cwd=git_repo,
+            extra_env={"PATH": restricted_path},
+        ) == "deny"
+
     def test_all_flag_non_terminal_in_bundle_scans_worktree(self, isolated_home, git_repo, pii_patterns):
         """`-vam` carries `a` mid-bundle; detection must not require `a` last."""
         pii_patterns("# no user patterns\n")
