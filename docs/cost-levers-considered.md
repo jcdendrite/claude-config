@@ -362,9 +362,12 @@ source here, distinct from the generic Messages API doc cited above.
 Claude Code decides cache TTL **per request**, not per content type. A
 request's cached content is "the system prompt, your project context,
 every prior message and tool result" — so a `Read` result gets the same
-TTL `cacheTtl` sets. See the
-`reviewer-instance-continuation.md` section below for the corrected pricing
-this unlocks.
+TTL `cacheTtl` sets. This closes the row above's "not measured for
+subagents" gap only for reviewer re-dispatch gaps, via `review-trace`'s
+existing per-event timestamps — the row's broader claim, that a general
+subagent idle-gap figure needs a `cache-rebuild` main/sidechain split,
+stays open. See the `reviewer-instance-continuation.md` section below for
+the corrected pricing this unlocks.
 
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 
@@ -417,11 +420,19 @@ a warm-cache continuation fix.
 
 **2026-09-06 follow-up, the named `cacheTtl: 1h` lever, priced.** The
 plan's over-powered-primitive check asserted `cacheTtl` "never touches a
-`Read` result" — corrected above as false. Re-running this section's own
-gap measurement at the 1-hour boundary (`review-trace --this-repo --since
-2026-07-07`, rerun same day; 271 same-session repeats, up from 263 above)
-finds 86.7% fall under one hour. That clears gate criterion 1 decisively,
-the reverse of the 5-minute-boundary result.
+`Read` result" — corrected above as false. That correction only reopens
+the bundle the plan named: `cacheTtl: 1h` paired with the declined
+`SendMessage` continuation. `cacheTtl` alone cannot warm one dispatch's
+`Read` results for a different dispatch. Reviewer file reads land in
+`messages[]` after each dispatch's own divergent prompt, so nothing
+carries a `Read` result across two separate `Agent` calls without the
+continuation mechanism itself.
+
+Re-running this section's own gap measurement at the 1-hour boundary
+(`review-trace --this-repo --since 2026-07-07`, rerun same day; 271
+same-session repeats, up from 263 above) finds 86.7% fall under one hour.
+That clears gate criterion 1 decisively, the reverse of the
+5-minute-boundary result.
 
 Criterion 2 — the $50 floor — still fails. A one-off scan against
 `reviewer_yield.py`'s existing per-dispatch transcript resolution (not a
@@ -432,7 +443,9 @@ Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
 1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
 dispatch's own write) totals ≈$17.65 over the window. The avoided-rewrite
 benefit, reaching only the subset warm under the new boundary, totals
-≈$17.35. Net ≈ −$0.30 — break-even, nowhere near $50 either way.
+≈$17.35, a net of ≈−$0.30. Both terms are ≈$17, roughly $33 short of the
+$50 floor either way — a gap this size, not the precise net, is what
+should carry weight given both figures are one-off-scan estimates.
 
 **Verdict unchanged (decline).** The corrected mechanics flip criterion 1
 from failing to passing, but the roster-wide cost and the repeat-only
@@ -440,3 +453,10 @@ benefit are the same order of magnitude and cancel. A permanent `R`
 subcommand isn't warranted either: `reviewer_yield.py`'s per-dispatch
 resolution already supplies it via a throwaway script, and this plan treats
 `R` as magnitude-only, never sign-determining.
+
+This repricing doesn't reopen the `2026-09-01` "Pick the cache duration"
+row above, the register's canonical cache-duration entry. Its objection
+that `experimental.cacheTtl` sits in an unstable `experimental.` namespace
+is untouched by the cost side coming out a wash, and is now the
+load-bearing reason to decline, with the cost gap no longer doing that
+work on its own.
