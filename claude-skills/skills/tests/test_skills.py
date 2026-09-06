@@ -724,13 +724,9 @@ class TestSkillFidelityReviewerUndecidableDismissal:
 class TestSkillFidelityReviewerNameResolutionOrdering:
     """Pin Name resolution's Glob-then-filter-then-Read ordering.
 
-    The prior ordering read every label's whole body before the
-    out-of-scope and decidability filters ran, which is what let
-    code-review/SKILL.md -- a skill textually out of scope -- get read
-    whole regardless. Anchor order, not mere presence, is the contract
-    -- a regression that reintroduces a body Read ahead of the filters
-    would still contain all three anchor phrases, just in the wrong
-    order.
+    Anchor order, not mere presence, is the contract -- a regression
+    that reintroduces a body Read ahead of the filters would still
+    contain all three anchor phrases, just in the wrong order.
     """
 
     def _body(self):
