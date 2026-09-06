@@ -355,13 +355,14 @@ is what this register already does, so the method gets no row of its own.
 
 **2026-09-06 correction:** `reviewer-instance-continuation.md`'s
 over-powered-primitive check claims `experimental.cacheTtl` "warms only the
-small system-prompt prefix and never touches a `Read` result." Primary-source
-verification (Claude Code's own prompt-caching guide,
-`https://code.claude.com/docs/en/prompt-caching`, distinct from the generic
-Messages API doc cited above) shows this is wrong: Claude Code decides TTL
-**per request**, and a request's cached content is "the system prompt, your
-project context, every prior message and tool result" — `Read` results
-included, on the same TTL `cacheTtl` sets. See the
+small system-prompt prefix and never touches a `Read` result." Claude
+Code's own prompt-caching guide
+(`https://code.claude.com/docs/en/prompt-caching`) is the authoritative
+source here, distinct from the generic Messages API doc cited above.
+Claude Code decides cache TTL **per request**, not per content type. A
+request's cached content is "the system prompt, your project context,
+every prior message and tool result" — so a `Read` result gets the same
+TTL `cacheTtl` sets. See the
 `reviewer-instance-continuation.md` section below for the corrected pricing
 this unlocks.
 
