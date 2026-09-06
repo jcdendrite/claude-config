@@ -15,6 +15,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).parent.parent / "find-consumed-continuity-file.sh"
 
 
@@ -286,6 +288,40 @@ def test_day_file_replaced_by_symlink_is_skipped_but_remaining_sibling_still_rea
     symlinked_day_file.symlink_to(real_target)
 
     result = _run([], tmp_path)
+
+    assert result.returncode == 0
+    lines = result.stdout.rstrip("\n").splitlines()
+    assert [line.split("\t")[1] for line in lines] == [str(live_dest)]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+def test_unreadable_day_file_is_skipped_but_remaining_sibling_still_reads(tmp_path: Path) -> None:
+    """Deterministic stand-in for the race the script's own comment
+    documents: a concurrent sweep unlinking a day-file between glob
+    expansion and `done < "$f"` opening it makes that redirect fail, and
+    `|| continue` (not a bare failure under `set -e`) is what keeps the
+    reader moving on to the next day-file instead of aborting. Truncating a
+    day-file to zero bytes and revoking its read permission reproduces the
+    same "redirect open fails after the file was already counted as found"
+    shape without racing a real unlink."""
+    index_dir = _index_dir(tmp_path)
+    index_dir.mkdir(parents=True)
+    index_dir.chmod(0o700)
+    unreadable_day = _day_file(tmp_path, day="2026-01-01")
+    unreadable_day.write_text("")
+    unreadable_day.chmod(0o000)
+    try:
+        live_dest = tmp_path / "resume-context.live"
+        live_dest.write_text("still here\n")
+        _write_index(
+            tmp_path,
+            [("2026-01-02T00:00:00Z", str(live_dest), str(tmp_path / "live-handoff.md"))],
+            day="2026-01-02",
+        )
+
+        result = _run([], tmp_path)
+    finally:
+        unreadable_day.chmod(0o600)  # restore so tmp_path cleanup can remove it
 
     assert result.returncode == 0
     lines = result.stdout.rstrip("\n").splitlines()

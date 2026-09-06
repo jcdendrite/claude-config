@@ -895,6 +895,32 @@ class TestConsumedIndex:
         assert fresh_sibling.exists(), "a day-file within 30 days must survive the sweep"
         assert _day_file(tmp_path).exists(), "today's day-file must never be swept"
 
+    def test_day_file_at_exact_30_day_boundary_survives_the_sweep(self, tmp_path: Path) -> None:
+        """`find -mtime +30` truncates age to whole 24-hour periods and
+        matches only ages strictly greater than 30 of them, so a day-file
+        backdated to exactly 30*86400 seconds is not yet in the ">30" bucket
+        -- empirically confirmed (touch a file at exactly that offset, run
+        `find -mtime +30`: it is not matched). Survival at this exact
+        boundary is the intended contract this pins, not deletion; only a
+        file older than a full 31st day (test above) is swept."""
+        stub, _ = _install_recorder(tmp_path)
+        index_dir = _index_dir(tmp_path)
+        index_dir.mkdir(parents=True)
+        index_dir.chmod(0o700)
+        boundary = index_dir / "consumed.2020-01-02.tsv"
+        boundary.write_text("2020-01-02T00:00:00Z\t/tmp/boundary-dest\t/tmp/boundary-src\n")
+        _backdate(boundary, days_old=30)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert boundary.exists(), "a day-file at exactly the 30-day boundary must survive the sweep"
+
     def test_ten_sequential_consumes_produce_ten_well_formed_rows(self, tmp_path: Path) -> None:
         """Proves absence of corruption without concurrency -- not the
         no-lock design's actual claim, which the concurrent-writer test

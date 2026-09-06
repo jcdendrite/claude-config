@@ -2556,20 +2556,36 @@ _lib_resume_context_tmpdir_root() {
 # this closes can't be reproduced in single-uid CI -- see
 # TestLibResumeContextIndexDir's docstring in test_lib.py for the full
 # POSIX argument, recorded there rather than as an executable test.
+# Also returns 1 if the tmpdir root is other- or group-writable without the
+# sticky bit -- see the guard below for why.
 _lib_resume_context_index_dir() {
-  local dir
-  dir="$(_lib_resume_context_tmpdir_root)/resume-context-index-$EUID"
+  local dir tmpdir_root
+  tmpdir_root="$(_lib_resume_context_tmpdir_root)"
+  dir="$tmpdir_root/resume-context-index-$EUID"
+  # A world- or group-writable tmpdir root needs the sticky bit to stop
+  # another local user from unlinking/renaming our directory entry in the
+  # mkdir-to-chmod window below.
+  # This is verified here rather than assumed, since
+  # RESUME_CONTEXT_TMPDIR/TMPDIR can point anywhere, not only at a sticky
+  # production /tmp.
+  # A root writable by neither the "other" nor the "group" permission class
+  # has no other uid able to race this entry in the first place, sticky bit
+  # or not.
+  # That is also what keeps this guard from rejecting pytest's private
+  # tmp_path fixture, which is writable by neither class.
+  if [ -n "$(find "$tmpdir_root" -maxdepth 0 \( -perm -0002 -o -perm -0020 \) 2>/dev/null)" ] && [ ! -k "$tmpdir_root" ]; then
+    return 1
+  fi
   # EEXIST here is the expected steady state from the second call onward;
   # left unguarded by design — safe under `set -e` only because this
   # function always runs inside a command substitution (`$(...)`), never
   # called directly. A future direct call would need its own `|| true`.
   ( umask 077; mkdir -- "$dir" ) 2>/dev/null
   [ ! -L "$dir" ] && [ -d "$dir" ] && [ -O "$dir" ] || return 1
-  # The repair chmod below closes a check-then-act window only because
-  # $TMPDIR_ROOT is a sticky-bit (1777) directory in production: sticky bit
-  # is what stops a non-owner from unlinking/renaming this directory entry
-  # even with world-write on the parent. RESUME_CONTEXT_TMPDIR is
-  # documented test-only, so production always targets real /tmp.
+  # The repair chmod below closes a check-then-act window against another
+  # local user racing our directory entry, now that the guard above has
+  # confirmed $tmpdir_root is not other- or group-writable without the
+  # sticky bit.
   chmod 700 -- "$dir" 2>/dev/null
   printf '%s\n' "$dir"
 }
@@ -2589,28 +2605,49 @@ _lib_print_recovery_hint() {
 }
 
 # _lib_sanitize_for_terminal VALUE
-# Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) stripped,
-# mirroring post-crash-sessions.py's _sanitize_for_terminal strip-not-reject
-# semantics for the same threat. Tab (0x09) is excluded because it is a
-# legitimate field separator in at least one caller's format, not a byte
-# that caller needs guarding against. Shared by resume-context.sh and
-# find-consumed-continuity-file.sh. Both print an attacker/prompt-injection-
-# reachable path to a terminal and must not let a raw OSC/CSI escape
-# through unmodified.
+# Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) and the
+# Unicode bidi-override/isolate/zero-width code points (U+202A-U+202E,
+# U+2066-U+2069, U+200B, U+200C, U+200D, U+FEFF) stripped. Tab (0x09) is
+# preserved: it is a legitimate field separator in at least one caller's
+# format, not a byte that caller needs guarding against. See
+# docs/scripts.md's find-consumed-continuity-file.sh entry for the shared
+# callers, threat model, and full stripping rationale.
 # Pure-bash loop, not `tr -d`, so a PATH missing `tr` can't abort this
-# always-on-success-path sanitizer.
+# always-on-success-path sanitizer. Matches target code points by literal
+# UTF-8 byte sequence under a function-scoped `LC_ALL=C`, not by
+# locale-dependent `$'\uHHHH'` ranges (see
+# `test_lib_sanitize_for_terminal_strips_targets_and_preserves_ascii_under_non_utf8_locale`
+# in `test_lib.py` for why).
 # Out of scope -- see docs/scripts.md's find-consumed-continuity-file.sh
-# entry for the full rationale:
-#   - the C1 control range (0x80-0x9f)
-#   - Unicode bidi-override / zero-width spoofing
+# entry for the C1-scope rationale.
 _lib_sanitize_for_terminal() {
-  local value="$1" out="" i char
-  for (( i = 0; i < ${#value}; i++ )); do
+  local value="$1" out="" i len char next1 next2
+  local LC_ALL=C
+  len=${#value}
+  for (( i = 0; i < len; i++ )); do
     char="${value:i:1}"
     case "$char" in
-      [$'\x01'-$'\x08']|[$'\x0a'-$'\x1f']|$'\x7f') ;;
-      *) out+="$char" ;;
+      [$'\x01'-$'\x08']|[$'\x0a'-$'\x1f']|$'\x7f') continue ;;
+      $'\xe2')
+        next1="${value:i+1:1}"
+        next2="${value:i+2:1}"
+        case "$next1$next2" in
+          $'\x80'[$'\x8b'-$'\x8d']|$'\x80'[$'\xaa'-$'\xae']|$'\x81'[$'\xa6'-$'\xa9'])
+            (( i += 2 ))
+            continue
+            ;;
+        esac
+        ;;
+      $'\xef')
+        next1="${value:i+1:1}"
+        next2="${value:i+2:1}"
+        if [ "$next1$next2" = $'\xbb\xbf' ]; then
+          (( i += 2 ))
+          continue
+        fi
+        ;;
     esac
+    out+="$char"
   done
   printf '%s' "$out"
 }

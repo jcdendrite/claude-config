@@ -111,7 +111,10 @@ class TestConsumeDurableContinuityFileOnRead:
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, rel_path)
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        # Explicit 0o700, not the umask-dependent mkdir() default: a
+        # group-writable root (e.g. 0o775 under umask 0002) now trips
+        # _lib_resume_context_index_dir's sticky-bit guard.
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
@@ -140,7 +143,7 @@ class TestConsumeDurableContinuityFileOnRead:
         install_resume_context_script(isolated_home)
         fixture = _write_fixture(isolated_home, ".claude/handoffs/example-handoff.md")
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
@@ -173,7 +176,7 @@ class TestConsumeDurableContinuityFileOnRead:
         fixture = handoffs_dir / malicious_name
         fixture.write_text("fixture content\n")
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),
@@ -395,7 +398,7 @@ class TestConsumeDurableContinuityFileOnRead:
                 (shadow_bin / cmd).symlink_to(cmd_path)
 
         tmpdir_root = tmp_path / "resume-tmpdir"
-        tmpdir_root.mkdir()
+        tmpdir_root.mkdir(mode=0o700)
         result = _run_hook_raw(
             CONSUME_HOOK,
             read_input(str(fixture)),

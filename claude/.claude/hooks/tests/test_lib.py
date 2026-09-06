@@ -2843,6 +2843,47 @@ class TestLibResumeContextIndexDir:
         assert result.stdout.strip() == str(expected_dir)
         assert stat.S_IMODE(expected_dir.stat().st_mode) == 0o700
 
+    def test_returns_1_when_tmpdir_root_is_world_writable_without_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """A world-writable, non-sticky root breaks the mkdir-to-chmod
+        race-closure argument the guard rests on: another local user could
+        unlink/rename the directory entry in that window. See the guard's
+        own comment in _lib_resume_context_index_dir for the mechanism."""
+        tmp_path.chmod(0o777)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_succeeds_when_tmpdir_root_is_world_writable_with_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors production /tmp's 1777 mode -- the sticky bit is what
+        keeps a world-writable root safe for this guard."""
+        tmp_path.chmod(0o1777)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert result.stdout.strip() == str(expected_dir)
+
+    def test_returns_1_when_tmpdir_root_is_group_writable_without_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """A group-writable, non-sticky root presents the same
+        unlink/rename race to a same-group different-uid attacker as the
+        world-writable case above. See the guard's own comment in
+        _lib_resume_context_index_dir for the mechanism."""
+        tmp_path.chmod(0o770)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
     def test_returns_1_and_prints_nothing_when_directory_is_a_symlink(self, tmp_path: Path) -> None:
         real_dir = tmp_path / "elsewhere"
         real_dir.mkdir()
@@ -2922,6 +2963,113 @@ def test_lib_sanitize_for_terminal_strips_all_three_ranges_and_preserves_tab() -
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "abcdef\tg"
+
+
+# Pins the bidi-override/isolate/zero-width code points added to the strip
+# set: U+202A-U+202E (explicit directional embeddings/overrides), U+2066-
+# U+2069 (directional isolates), and U+200B/U+200C/U+200D/U+FEFF
+# (zero-width spacing/joiners). \u-escaped rather than embedded as literal
+# invisible characters, matching the adjacent C1 test's $'a\x9bb' style.
+# This keeps every code point visible in a diff instead of an inert
+# invisible byte sequence in the tracked source.
+def test_lib_sanitize_for_terminal_strips_bidi_isolate_and_zero_width_code_points() -> None:
+    result = _run_lib_call(
+        r"_lib_sanitize_for_terminal $'a\u202ab\u202ec\u2066d\u2069e\u200bf\u200cg\u200dh\ufeffi'",
+        env=dict(os.environ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "abcdefghi"
+
+
+# The strip loop must match these code points byte-wise under a
+# function-scoped LC_ALL=C, not via locale-dependent $'\uHHHH' character
+# ranges. The test above only exercises whatever locale the test runner
+# happens to have, since it passes env=dict(os.environ). This payload is
+# \x-escaped as raw UTF-8 bytes rather than \u-escaped: bash's $'\uHHHH'
+# quoting itself only expands under a UTF-8 locale, so a \u-escaped payload
+# could not construct the intended input bytes under the non-UTF-8 locales
+# this test targets.
+@pytest.mark.parametrize(
+    "locale_env",
+    [{"LC_ALL": "C"}, {}],
+    ids=["lc_all_c", "no_lang_or_lc_all_set"],
+)
+def test_lib_sanitize_for_terminal_strips_targets_and_preserves_ascii_under_non_utf8_locale(
+    locale_env: dict[str, str],
+) -> None:
+    env = {"PATH": os.environ["PATH"], **locale_env}
+    result = _run_lib_call(
+        r"_lib_sanitize_for_terminal "
+        r"$'/home/user/\xe2\x80\xaax\xe2\x80\xaey\xe2\x81\xa6z\xe2\x81\xa9"
+        r"\xe2\x80\x8ba\xe2\x80\x8cb\xe2\x80\x8dc\xef\xbb\xbfd/path'",
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "/home/user/xyzabcd/path"
+
+
+# An em-dash (U+2014, UTF-8 \xe2\x80\x94) shares its first two bytes
+# (\xe2\x80) with two of the three next1/next2 patterns matched for the
+# bidi/isolate/zero-width ranges above. Its third byte (\x94) falls outside
+# every one of those patterns. Pins that this near-miss byte sequence
+# survives, since a widened next2 range in a future edit would silently
+# swallow it. No other test in this file would catch that regression.
+#
+# The three code points below sit immediately adjacent to each hand-written
+# range's actual boundary, rather than merely sharing a lead byte: U+200A
+# (HAIR SPACE, \x8a) is one continuation byte below the zero-width range's
+# lower bound (\x8b); U+200E (LEFT-TO-RIGHT MARK, \x8e) is one above its
+# upper bound (\x8d); U+202F (NARROW NO-BREAK SPACE, \xaf) is one above the
+# bidi-override range's upper bound (\xae). A single-value boundary overshoot
+# in a future edit -- the most mechanically likely mistake on a hand-
+# maintained hex range -- would swallow one of these three and nothing else
+# in this file would catch it.
+@pytest.mark.parametrize(
+    "locale_env",
+    [{"LC_ALL": "C"}, {}],
+    ids=["lc_all_c", "no_lang_or_lc_all_set"],
+)
+@pytest.mark.parametrize(
+    "near_miss_bytes,near_miss_char",
+    [
+        (r"\xe2\x80\x94", "\u2014"),  # em-dash: shares first two bytes only
+        (r"\xe2\x80\x8a", "\u200a"),  # hair space: one below zero-width's lower bound
+        (r"\xe2\x80\x8e", "\u200e"),  # LRM: one above zero-width's upper bound
+        (r"\xe2\x80\xaf", "\u202f"),  # NNBSP: one above bidi-override's upper bound
+    ],
+    ids=["em_dash", "hair_space", "lrm", "nnbsp"],
+)
+def test_lib_sanitize_for_terminal_preserves_near_miss_multibyte_character_under_non_utf8_locale(
+    near_miss_bytes: str,
+    near_miss_char: str,
+    locale_env: dict[str, str],
+) -> None:
+    env = {"PATH": os.environ["PATH"], **locale_env}
+    result = _run_lib_call(
+        rf"_lib_sanitize_for_terminal $'a{near_miss_bytes}b'",
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"a{near_miss_char}b"
+
+
+# _lib_sanitize_for_terminal's C1 range (0x80-0x9f) pass-through is an
+# accepted residual, not an oversight -- see docs/scripts.md's
+# find-consumed-continuity-file.sh entry for the full rationale.
+# Pinned here so a future edit that starts (or stops) stripping it shows up
+# as a visible test diff instead of a silent behavior change.
+# A raw 0x9b byte is not valid standalone UTF-8, so this bypasses
+# _run_lib_call's text-mode decoding (which would raise UnicodeDecodeError
+# on it) and captures stdout as bytes instead.
+def test_lib_sanitize_for_terminal_does_not_strip_c1_bytes() -> None:
+    result = subprocess.run(
+        ["bash", "-c", rf". {_LIB_SH}; _lib_sanitize_for_terminal $'a\x9bb'"],
+        capture_output=True,
+        env=dict(os.environ),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == b"a\x9bb"
 
 
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its

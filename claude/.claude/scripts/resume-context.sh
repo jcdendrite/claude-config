@@ -35,6 +35,15 @@
 #                            auto mode.
 #   RESUME_CONTEXT_TMPDIR    temp-dir root instead of ${TMPDIR:-/tmp}. Tests
 #                            only — never touch the real shared /tmp otherwise.
+#                            Local-filesystem precondition: the lock-free
+#                            append in record_consumed_destination below
+#                            assumes O_APPEND is atomic under a single
+#                            write(2) -- true on local filesystems (strace-
+#                            verified) but not guaranteed on NFS, per the
+#                            Linux open(2) man page's O_APPEND section. A
+#                            network-backed override here risks interleaved or
+#                            corrupted index rows under concurrent appends,
+#                            not merely slower ones.
 #
 # Destination visibility:
 # - Launch mode prints the move and a reload hint to stderr before exec'ing
@@ -101,6 +110,13 @@
 #   and only if that step actually ran.
 #   Content exposure is still a strict improvement over the pre-fix
 #   /tmp/<slug>-handoff.md, which carried no permission hardening at all.
+# - The per-uid consumed-continuity index (the "third, durable-enough
+#   channel" below) does not extend the non-goal above across
+#   $CLAUDE_CONFIG_DIR accounts sharing one uid: its rows carry the
+#   original, descriptive source path, not the destination's opaque name,
+#   so one account can enumerate another's recently-consumed slugs in one
+#   find-consumed-continuity-file.sh call. Accepted, scoped tradeoff — see
+#   docs/design-decisions.md §56.
 # - A symlink at a glob-matching path inside the durable directory is
 #   rejected outright (see the check below), not moved-then-chmodded: `mv`
 #   preserves symlink-ness on a same-filesystem rename, and `chmod` (unlike
@@ -165,6 +181,10 @@ record_consumed_destination() {                 # invoked as `... || true`
   # read-modify-write, so concurrent sweeps cannot lose a row. Runs after
   # the append so a `find` failure never costs the row, and tolerates a
   # racing sweep that already unlinked the same file.
+  # `-mtime +30` truncates age to whole 24-hour periods, so a day-file
+  # backdated to exactly 30 days is not yet matched. Survival at that exact
+  # boundary is the intended contract, not an off-by-one. Only a file past a
+  # full 31st day is swept.
   find "$dir" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
   return 0
 }

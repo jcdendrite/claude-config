@@ -1172,3 +1172,23 @@ The rule prescribes `<venv>/bin/pip install -r requirements.txt`, not `<venv>/bi
 `deny-network-installs.sh` also has a second, more severe gap: it has zero detection for the `poetry`/`pipenv` manager families at all. `grep -n "poetry\|pipenv" claude/.claude/hooks/deny-network-installs.sh` returns no matches. Piping `poetry add <pkg>` or `pipenv install <pkg>` through the hook returns allow for both, confirmed empirically. Unlike the `-m pip` gap above, this gap is fail-open rather than fail-safe. GH-850 and GH-868 both over-block a command that should be allowed. This gap, by contrast, silently permits a network fetch the hook exists to catch. The new rule this section documents only prescribes the safe, no-argument restore verbs (`poetry install`, `pipenv install`), never the fetch-new-package verbs, so following the rule as written doesn't reach the ungated shape. A deviation does, though — the same "hit an ImportError, recall an install command" pattern this whole feature exists to correct for pip/npm/uv lands on a manager family with no hook backstop at all. Filed as GH-872 rather than fixed here, per the same bundling-avoidance precedent as GH-850/GH-868.
 
 **What would flip this.** If the harness ever exposed the resolved interpreter or an active `VIRTUAL_ENV`/`CONDA_PREFIX` in the `PreToolUse` payload, the CI-runner and direnv/conda false-positive shapes above would stop applying, and a gate would become viable — worth revisiting then, not before.
+
+## 56. Per-uid consumed-continuity index enumerates recently-consumed slugs across `$CLAUDE_CONFIG_DIR` accounts sharing one uid (2026-09-05)
+
+`_lib_resume_context_index_dir` (`claude/.claude/hooks/_lib.sh`) keys the consumed-continuity index by `$EUID` only, with no `$CLAUDE_CONFIG_DIR` (account) dimension folded into the path. This repo's multi-account setup runs several `CLAUDE_CONFIG_DIR`-scoped accounts under one OS user — `docs/hooks.md`'s `pr-cost-disclosure` and `output-preferences` entries each scope their own state to `$CLAUDE_CONFIG_DIR` specifically so "one account's opt-in" doesn't "activate... under another." This index does not follow that convention: every account sharing a uid writes into, and reads from, the same day-files, and `find-consumed-continuity-file.sh` with no argument prints every account's still-live rows in one call.
+
+The destination filename is already fixed and non-descriptive, independent of this index: `resume-context.sh` uses a fixed, non-descriptive `mktemp` prefix specifically so `/tmp` doesn't leak a continuity file's slug via `ls`, and every account writes into the same uid-scoped tmp root. This index's `$src` field is the original, descriptive `<config-dir>/handoffs/<slug>-handoff.md` (or `briefs/`) path, readable across accounts in one command rather than requiring a content grep of every `resume-context.*` file in `/tmp`.
+
+Accepted as a scoped tradeoff, not an oversight. The threat model this feature targets is a different-uid adversary on a shared box — the same boundary `/tmp`'s own sticky bit and this index's ownership/symlink guards already draw. A different-account, same-uid reader was never in scope, and closing it would need its own stated goal — folding `$CLAUDE_CONFIG_DIR` into the index path and into every reader's lookup — which is a materially larger design than a lookup convenience for a single account's own recently-consumed files.
+
+**Revisit** if any of:
+
+- Account-level isolation on one uid becomes a stated goal elsewhere in this repo, not just an assumption this index happens to rely on.
+- A concrete report surfaces of one account's handoff/brief slug being read from a different account's session via this index.
+
+### Sources
+
+- `.claude/plans/handoff-consume-tmp-index.md` — Assumption ledger row 20, and the "Out of scope" section's cross-account framing.
+- `claude/.claude/scripts/resume-context.sh` — the destination-filename non-goal this index's `$src` field newly extends past, and its own header note pointing here.
+- `docs/scripts.md`'s `find-consumed-continuity-file.sh` entry — the reader-side cross-reference to this entry.
+- `docs/hooks.md`'s `pr-cost-disclosure` and `output-preferences` entries — the existing `$CLAUDE_CONFIG_DIR`-scoping convention this index departs from.
