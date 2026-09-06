@@ -176,7 +176,11 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
 # ------------------------------------------------------------------ #
 
 _SKILLS_DIR = _REPO_ROOT / "claude-skills" / "skills"
+# _SETTINGS_PATH means the stow-source file here, the opposite of what
+# `SETTINGS_PATH` means in test_claude_md_excludes.py (repo-root) — don't
+# assume the two modules share a convention.
 _SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
+_REPO_LOCAL_SETTINGS_PATH = _REPO_ROOT / ".claude" / "settings.json"
 
 
 def _pretooluse_entries_for(hook: Path) -> list[dict]:
@@ -330,6 +334,65 @@ def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
         f"reopens the same escalation state the EnterPlanMode deny closes, "
         f"via a config write rather than a tool call"
     )
+
+
+def test_attribution_sessionurl_stays_false_in_stow_source_settings() -> None:
+    """The declared config-value backing the session-URL trailer suppression.
+
+    This proves the *declared* config state — `attribution.sessionUrl` is
+    `false` in the stow-source settings file — not that the harness actually
+    suppresses the trailer at runtime. That live-session verification lives
+    outside pytest (see docs/design-decisions.md §60); this test only pins
+    the declaration so a future edit can't drop it silently.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    assert settings.get("attribution", {}).get("sessionUrl") is False, (
+        f"attribution.sessionUrl is not `false` in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — the Claude-Session URL "
+        f"trailer is no longer suppressed on this machine's commits"
+    )
+
+
+def test_attribution_sessionurl_stays_false_in_repo_local_settings() -> None:
+    """The repo-local sibling of
+    `test_attribution_sessionurl_stays_false_in_stow_source_settings`.
+
+    This proves the *declared* config state only, in the repo-root
+    `.claude/settings.json` that a non-stow clone or cloud container also
+    sees. Whether project scope actually honors `attribution` there is
+    unverified (docs/design-decisions.md §60); this test only pins the
+    declaration.
+    """
+    settings = json.loads(_REPO_LOCAL_SETTINGS_PATH.read_text())
+    assert settings.get("attribution", {}).get("sessionUrl") is False, (
+        f"attribution.sessionUrl is not `false` in "
+        f"{_REPO_LOCAL_SETTINGS_PATH.relative_to(_REPO_ROOT)} — "
+        f"the Claude-Session URL trailer is no longer suppressed for clones "
+        f"without the stow package"
+    )
+
+
+def test_attribution_commit_and_pr_stay_unset_in_both_settings() -> None:
+    """Guards against reintroducing the falsy-empty-string trap §60 names.
+
+    `attribution.commit: ""` is not a no-op: an empty string is falsy, so
+    the harness treats it the same as unset and the session trailer ships
+    as the *sole* trailer instead of being suppressed — the exact
+    regression the anthropics/claude-code#77830 reporter hit. Pinning that
+    `commit`/`pr` stay absent from `attribution` in both settings files
+    catches a well-intentioned future edit that adds one, believing it
+    also suppresses a trailer.
+    """
+    for path in (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH):
+        settings = json.loads(path.read_text())
+        attribution_keys = set(settings.get("attribution", {}))
+        assert attribution_keys <= {"sessionUrl"}, (
+            f"attribution has key(s) {attribution_keys - {'sessionUrl'}} "
+            f"beyond `sessionUrl` in {path.relative_to(_REPO_ROOT)} — "
+            f"`commit`/`pr` must stay unset, since an empty `commit` makes "
+            f"the session trailer the sole trailer instead of suppressing "
+            f"it (docs/design-decisions.md §60)"
+        )
 
 
 def test_schedulewakeup_stays_denied_in_settings() -> None:
