@@ -5857,6 +5857,12 @@ _CACHE_REBUILD_CAUSES: tuple[str, ...] = (
 # have hit, and model switch/unexplained are not gap-driven.
 _CACHE_REBUILD_IDLE_GAP_CAUSES: tuple[str, ...] = (_CAUSE_IDLE_5M_1H, _CAUSE_IDLE_OVER_1H)
 
+# Origin labels for the main/subagent split -- classified per record via
+# isSidechain, never by which source file (group) a record came from, so
+# this reconciles against cache-efficiency's own sidechain row and survives
+# a subagent-file layout change (see _cache_rebuild_report's docstring).
+_CACHE_REBUILD_ORIGINS: tuple[str, ...] = ("main", "subagent")
+
 
 def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> float | None:
     """Seconds since the previous call in this transcript's own turn
@@ -5921,6 +5927,63 @@ def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None
     return write_dollars - warm_read_dollars, 0
 
 
+def _cache_rebuild_switch_delta_dollars(
+    model: str, usage: dict, *, is_idle_5m_1h_cause: bool
+) -> tuple[float | None, int]:
+    """One call's signed contribution to the pooled 5m-tier-to-1h-tier
+    cacheTtl switch delta (see .claude/plans/subagent-idle-gap-cache-rebuild-split.md's
+    Approach section for the derivation): 0.75x this call's own 5m-tier
+    write tokens, priced at base rate -- the extra a switch would charge on
+    every warm incremental write, not only rebuilds -- minus (2 - r)x those
+    same tokens when the call's own cause is "idle 5m-1h", where r is this
+    call's own model's cache-read multiplier (resolved via _model_rates, so
+    a claude-fable-5-1 call's reduced 0.025x multiplier is never mispriced
+    against the default-rate 0.1x). (2 - r) is computed here as
+    cache_write_1h - cache_read against the SAME per-call rates table
+    _cache_rebuild_excess_dollars already resolves -- never hardcoded as 1.9,
+    since a corpus mixing model rates needs the true per-call coefficient.
+
+    Positive is switch-cost-positive, mirroring _cache_rebuild_excess_dollars'
+    own sign convention: the report negates the accumulated sum before
+    printing it as a savings-positive "net" dollar figure. A wholly
+    idle-5m-1h-cause call's own switch delta is exactly the negation of that
+    same call's _cache_rebuild_excess_dollars value -- the excess it already
+    paid for a rebuild that a 1-hour cache would have avoided.
+
+    Returns (None, unpriced_tokens) for a model absent from
+    _MODEL_BASE_INPUT_RATES, matching _price_turn's own unpriced-model
+    contract -- callers must not treat a None delta as a silent $0.
+    """
+    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
+    if dollars_by_class is None:
+        return None, unpriced_tokens
+    rates = _model_rates(model)
+    _eph_1h, eph_5m = _cache_write_split(usage)
+    switch_cost_per_token = rates["cache_write_1h"] - rates["cache_write_5m"]
+    delta_dollars = eph_5m / 1_000_000 * switch_cost_per_token
+    if is_idle_5m_1h_cause:
+        rescue_per_token = rates["cache_write_1h"] - rates["cache_read"]
+        delta_dollars -= eph_5m / 1_000_000 * rescue_per_token
+    # Mirrors _price_turn's own fast/geo multiplier application -- neither
+    # leg above goes through _price_turn's own dollars_by_class, so both
+    # need the same multiplier applied here instead.
+    if usage.get("speed") == "fast":
+        delta_dollars *= _FAST_MODE_RATE_MULTIPLIER
+    if usage.get("inference_geo") == "us":
+        delta_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
+    return delta_dollars, 0
+
+
+def _negate_switch_delta_for_display(accumulated_delta: float) -> float:
+    """Savings-positive negation of an accumulated switch-delta sum, cents-
+    rounded. Two per-call contributions that cancel exactly at the rational
+    level (a group's own W5m/X sitting exactly at the break-even ratio) can
+    leave a +-1e-16 residual after floating-point summation; left
+    un-rounded, its sign bit would print as the misleading "-0.00" instead
+    of "0.00" once negated."""
+    return round(0.0 - accumulated_delta, 2) + 0.0
+
+
 def cmd_cache_rebuild(args: argparse.Namespace) -> None:
     """CLI entry point for the cache-rebuild subcommand.
 
@@ -5943,12 +6006,24 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     (timestamp, transcript) index. is_first_call/gap_seconds/model_changed
     reset at every group boundary -- a group is its own context, so a delta
     taken across a boundary would compare two unrelated conversations (see
-    _read_session_file_partitioned's own docstring). Binary-searches one
-    pre-sorted global (timestamp, transcript) index per idle-gap call
-    instead of re-scanning per gap -- O(n log n) total, not O(gaps x calls).
+    _read_session_file_partitioned's own docstring). Within one group, that
+    same reset is further keyed per origin (main vs. subagent, via each
+    record's own isSidechain flag): an inline sidechain record living inside
+    the main transcript file must never be classified against whichever
+    record precedes it in file order when that record is the other origin.
+    Binary-searches one pre-sorted global (timestamp, transcript) index per
+    idle-gap call instead of re-scanning per gap -- O(n log n) total, not
+    O(gaps x calls).
 
     `--since` only gates whether a call is *counted*, never whether it can
     see its own prior turn (same contract as _cost_report's since_ts).
+
+    Also splits idle-gap rebuilds and the 5m-tier cache-write-token volume
+    by origin (main vs. subagent), and prices the dollar delta a 5m-to-1h
+    cacheTtl switch would make to subagent traffic -- see
+    .claude/plans/subagent-idle-gap-cache-rebuild-split.md's Approach
+    section for why that delta is not simply the subagent share of the
+    priced excess above.
 
     roots is None only for this module's own tests exercising the report
     body directly; --this-repo/--config-dir CLI validation happens once in
@@ -6011,6 +6086,38 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     per_account_rebuilds: dict[int, int] = dict.fromkeys(redact_ordinals.values(), 0) if multi_root else {}
     per_account_excess: dict[int, float] = dict.fromkeys(redact_ordinals.values(), 0.0) if multi_root else {}
 
+    # Origin split (main vs. subagent, per-record via isSidechain -- see
+    # this function's own docstring). Always seeded with both keys, unlike
+    # the per-account dicts above, since the origin split prints
+    # unconditionally rather than only under a multi-root scope -- a corpus
+    # with no sidechain records at all must still render a zero subagent
+    # row rather than vanishing.
+    origin_rebuilds: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
+    origin_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
+    # W5m/X/switch-delta (Approach section) -- accumulated threshold-
+    # independently (every in-scope 5m-tier write, not only tail calls),
+    # since the 2x uplift a cacheTtl switch would charge applies to warm
+    # incremental writes too, not just rebuilds.
+    w5m_by_origin: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
+    x_by_origin: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
+    switch_delta_by_origin: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
+    unpriced_switch_delta_turns = 0
+    unpriced_switch_delta_tokens = 0
+    # One entry per subagent-file group (one dispatch's own conversation),
+    # for the ex-post per-dispatch dispersion figures -- kept separate from
+    # w5m_by_origin/x_by_origin above, which pool every subagent-origin
+    # record regardless of which group (or, for an inline sidechain record,
+    # which file) it came from.
+    per_group_dispersion: list[dict] = []
+    # Priced subagent-origin W5m tokens that actually landed inside a
+    # subagent-file group -- a strict subset of w5m_by_origin["subagent"]
+    # above. The gap between the two (printed as the dispersion block's own
+    # coverage disclosure) is an unpriced subagent-origin call (never enters
+    # any group, priced or not) plus an inline sidechain record living
+    # inside the main transcript file (group_index == 0, so is_subagent_group
+    # is False even though its own origin is "subagent").
+    subagent_origin_w5m_in_groups = 0
+
     for jsonl, _flat_records in session_iter:
         session_key = str(jsonl.resolve())
 
@@ -6034,12 +6141,30 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         # file-level across every group, though -- a subagent's own calls are
         # still this session's activity for the concurrency check below, not
         # another session's.
-        for group in _read_session_file_partitioned(jsonl, include_subagents=True):
+        for group_index, group in enumerate(_read_session_file_partitioned(jsonl, include_subagents=True)):
             group_records = _dedup_turns_by_request_id(group)
 
-            i = 0
-            prev_ts: float | None = None
-            prev_model: str | None = None
+            # A subagent-file group is one dispatch's own conversation --
+            # group_index 0 is always the main transcript (see
+            # _read_session_file_partitioned's own docstring). This is used
+            # only for the per-dispatch dispersion figures below, never for
+            # origin classification itself: an inline sidechain record can
+            # still appear inside group_index 0, and is classified as
+            # subagent origin regardless via its own isSidechain flag.
+            is_subagent_group = group_index > 0
+            group_w5m_tokens = 0
+            group_x_tokens = 0
+            group_delta_dollars = 0.0
+
+            # Sequential classification state, keyed per origin (mirroring
+            # _scan_cache_efficiency_group's own chain_key = (session_key,
+            # thread) pattern) rather than shared across the whole group --
+            # an inline sidechain record interleaved with main-thread
+            # records must never be classified against the other origin's
+            # own prior call.
+            chain_state: dict[str, dict] = {
+                origin: {"i": 0, "prev_ts": None, "prev_model": None} for origin in _CACHE_REBUILD_ORIGINS
+            }
 
             for rec in group_records:
                 if rec.get("type") != "assistant":
@@ -6052,10 +6177,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 if model == "<synthetic>":
                     continue
 
+                origin = "subagent" if bool(rec.get("isSidechain")) else "main"
+                chain = chain_state[origin]
+
                 cur_ts = _parse_ts(rec.get("timestamp"))
-                is_first_call = i == 0
-                gap_seconds = None if is_first_call else _cache_rebuild_gap_seconds(prev_ts, cur_ts)
-                model_changed = not is_first_call and model != prev_model
+                is_first_call = chain["i"] == 0
+                gap_seconds = None if is_first_call else _cache_rebuild_gap_seconds(chain["prev_ts"], cur_ts)
+                model_changed = not is_first_call and model != chain["prev_model"]
                 eph_1h, eph_5m = _cache_write_split(usage)
                 pure_1h_tier_write = eph_1h > 0 and eph_5m == 0
                 cause = _classify_cache_rebuild_cause(is_first_call, gap_seconds, model_changed, pure_1h_tier_write)
@@ -6069,6 +6197,31 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 in_scope = since_ts is None or (cur_ts is not None and cur_ts >= since_ts)
                 if in_scope:
                     total_calls_in_scope += 1
+
+                # Threshold-independent: W5m/X accumulate over every
+                # in-scope 5m-tier write, not only tail (>= threshold)
+                # calls -- the 2x uplift a cacheTtl switch would charge
+                # applies to warm incremental writes too, not only rebuilds.
+                if in_scope and eph_5m > 0:
+                    w5m_by_origin[origin] += eph_5m
+                    is_idle_5m_1h_cause = cause == _CAUSE_IDLE_5M_1H
+                    if is_idle_5m_1h_cause:
+                        x_by_origin[origin] += eph_5m
+                    delta_dollars, turn_unpriced_tokens = _cache_rebuild_switch_delta_dollars(
+                        model, usage, is_idle_5m_1h_cause=is_idle_5m_1h_cause
+                    )
+                    if delta_dollars is None:
+                        unpriced_switch_delta_turns += 1
+                        unpriced_switch_delta_tokens += turn_unpriced_tokens
+                    else:
+                        switch_delta_by_origin[origin] += delta_dollars
+                        if is_subagent_group:
+                            group_w5m_tokens += eph_5m
+                            if is_idle_5m_1h_cause:
+                                group_x_tokens += eph_5m
+                            group_delta_dollars += delta_dollars
+                            if origin == "subagent":
+                                subagent_origin_w5m_in_groups += eph_5m
 
                 write_tokens = eph_1h + eph_5m
                 in_tail = write_tokens >= threshold
@@ -6085,15 +6238,23 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         else:
                             idle_gap_candidates.append({
                                 "session_key": session_key,
-                                "gap_start_ts": prev_ts,
+                                "gap_start_ts": chain["prev_ts"],
                                 "gap_end_ts": cur_ts,
                                 "excess_dollars": excess_dollars,
                                 "account_ordinal": account_ordinal,
+                                "origin": origin,
                             })
 
-                prev_ts = cur_ts if cur_ts is not None else prev_ts
-                prev_model = model
-                i += 1
+                chain["prev_ts"] = cur_ts if cur_ts is not None else chain["prev_ts"]
+                chain["prev_model"] = model
+                chain["i"] += 1
+
+            if is_subagent_group:
+                per_group_dispersion.append({
+                    "w5m": group_w5m_tokens,
+                    "x": group_x_tokens,
+                    "delta_dollars": group_delta_dollars,
+                })
 
     # One sort, once, over the whole corpus -- every idle-gap candidate below
     # binary-searches this same index rather than re-scanning per gap.
@@ -6130,6 +6291,8 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         if multi_root and cand["account_ordinal"] is not None:
             per_account_rebuilds[cand["account_ordinal"]] += 1
             per_account_excess[cand["account_ordinal"]] += cand["excess_dollars"]
+        origin_rebuilds[cand["origin"]] += 1
+        origin_excess[cand["origin"]] += cand["excess_dollars"]
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Cache-rebuild report ({title_since}, threshold >= {threshold:,} cache-write tokens)\n")
@@ -6180,6 +6343,80 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             f"\n  ({unpriced_idle_gap_turns:,} idle-gap tail calls / {unpriced_idle_gap_tokens:,} tokens"
             " excluded from priced excess -- model has no price-table entry)"
         )
+
+    print("\n## Idle-gap rebuilds by origin\n")
+    print(f"{'Origin':<10} {'Rebuilds':>9} {'Excess $':>12}")
+    for origin in _CACHE_REBUILD_ORIGINS:
+        print(f"{origin:<10} {origin_rebuilds[origin]:>9,} {origin_excess[origin]:>12,.2f}")
+
+    print(
+        "\n## Cache-write tier switch delta (5m -> 1h), threshold-independent\n\n"
+        "W5m/X below accumulate over every in-scope call regardless of the\n"
+        "--threshold value above -- this is a different denominator than the\n"
+        "tail-only cause breakdown, and must not be divided into those figures.\n"
+        "X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold\n"
+        "past 3600s, so those rebuilds happen under either tier. Net$ is\n"
+        "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
+        "if negative) against this origin's own traffic. The main row's Net$ has\n"
+        "no corresponding lever in this plan's scope -- experimental.cacheTtl is\n"
+        "set in subagent frontmatter and cannot reach main-conversation traffic;\n"
+        "read it as reconciliation context only.\n"
+    )
+    print(f"{'Origin':<10} {'W5m':>14} {'X':>14} {'Ratio':>8} {'Net$':>10}")
+    for origin in _CACHE_REBUILD_ORIGINS:
+        w5m = w5m_by_origin[origin]
+        x_tokens = x_by_origin[origin]
+        net_dollars = _negate_switch_delta_for_display(switch_delta_by_origin[origin])
+        print(f"{origin:<10} {w5m:>14,} {x_tokens:>14,} {_pct_of(x_tokens, w5m):>8} {net_dollars:>10,.2f}")
+
+    if unpriced_switch_delta_turns:
+        print(
+            f"\n  ({unpriced_switch_delta_turns:,} 5m-tier write calls / {unpriced_switch_delta_tokens:,} tokens"
+            " excluded from the switch-delta figures above -- model has no price-table entry)"
+        )
+
+    # Ex-post oracle bound: a group with w5m==0 has an undefined ratio and
+    # is excluded from every figure below, though its (zero) delta still
+    # contributes nothing to clearing_net. "Clears" uses the cents-rounded
+    # sign, not the raw float, for the same reason
+    # _negate_switch_delta_for_display rounds before printing -- a
+    # dispatch built at the exact break-even boundary can leave a +-1e-16
+    # residual that a raw `< 0` comparison would misclassify.
+    eligible_groups = [g for g in per_group_dispersion if g["w5m"] > 0]
+    clearing_groups = [g for g in eligible_groups if round(g["delta_dollars"], 2) < 0]
+    total_subagent_group_w5m = sum(g["w5m"] for g in per_group_dispersion)
+    clearing_w5m = sum(g["w5m"] for g in clearing_groups)
+    # Sum the raw (un-rounded) per-group deltas first, then negate/round the
+    # sum once -- rounding each group to cents before summing can drift a
+    # many-group total by up to $0.005 per group against the raw sum, the
+    # same reason the pooled origin-row Net$ figures above round only once.
+    clearing_net = _negate_switch_delta_for_display(sum(g["delta_dollars"] for g in clearing_groups))
+    # Priced subagent-origin W5m tokens that landed in no dispatch group at
+    # all (see subagent_origin_w5m_in_groups' own comment above) -- a
+    # non-zero figure means the oracle bound below is missing coverage in
+    # the exclusion direction (undercounts what a selective policy could
+    # find), not the inclusion direction.
+    uncovered_subagent_w5m = w5m_by_origin["subagent"] - subagent_origin_w5m_in_groups
+
+    print(
+        "\n## Subagent per-dispatch dispersion (ex-post oracle bound)\n\n"
+        "Dispatches selected by their own realized ratio, which a policy fixed\n"
+        "before the dispatch cannot do -- a one-sided test for whether a\n"
+        "selective lever is excluded, never a validation that one would work.\n"
+    )
+    print(f"Subagent dispatches (dispatches with any 5m-tier write): {len(eligible_groups):,}")
+    print(f"Dispatches individually clearing their own break-even ratio: {len(clearing_groups):,}")
+    print(
+        "Their share of per-dispatch subagent W5m (not the pooled row above):"
+        f" {_pct_of(clearing_w5m, total_subagent_group_w5m)}"
+    )
+    print(f"Net $ restricted to clearing dispatches: {clearing_net:,.2f}")
+    print(
+        f"\n  ({uncovered_subagent_w5m:,} of {w5m_by_origin['subagent']:,} pooled subagent W5m tokens landed in no"
+        " dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main"
+        " transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound"
+        " above has exact W5m coverage, not merely assumed)"
+    )
 
 
 # --- cost-ledger: local per-week cost/efficiency ledger read/append -------
