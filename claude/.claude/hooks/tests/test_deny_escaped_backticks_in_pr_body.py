@@ -82,7 +82,7 @@ class TestDenyEscapedBackticksInPrBody:
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     # ------------------------------------------------------------------ #
-    # GH-783 Phase 2: quote-split and fail-closed status-2 regression      #
+    # Quote-split and fail-closed status-2 regression                     #
     # ------------------------------------------------------------------ #
 
     def test_quoted_command_word_reaches_same_verdict_as_bare_form(self):

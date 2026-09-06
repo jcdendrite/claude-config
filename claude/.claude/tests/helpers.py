@@ -20,7 +20,7 @@ CLAUDE_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = CLAUDE_DIR.parent.parent
 
 HOOKS_DIR = CLAUDE_DIR / "hooks"
-SKILLS_DIR = CLAUDE_DIR / "skills"
+SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
@@ -460,12 +460,15 @@ def bash_input(
     command: str,
     session_id: str | None = None,
     agent_type: str | None = None,
+    cwd: str | None = None,
 ) -> dict:
     payload: dict = {"tool_name": "Bash", "tool_input": {"command": command}}
     if session_id is not None:
         payload["session_id"] = session_id
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
@@ -494,7 +497,10 @@ def edit_input(
 
 
 def write_input(
-    file_path: str, agent_type: str | None = None, cwd: str | None = None, content: str = "x"
+    file_path: str,
+    agent_type: str | None = None,
+    cwd: str | None = None,
+    content: str = "x",
 ) -> dict:
     """`content` defaults to the prior hardcoded placeholder — existing call
     sites that don't care about content keep the same payload."""
@@ -578,13 +584,31 @@ def read_input(file_path: str, session_id: str | None = None) -> dict:
     return payload
 
 
-def agent_input(session_id: str | None = None) -> dict:
-    payload: dict = {
-        "tool_name": "Agent",
-        "tool_input": {"description": "test", "prompt": "test"},
-    }
+def agent_input(
+    session_id: str | None = None,
+    subagent_type: str | None = None,
+    prompt: str | None = None,
+    tool_name: str = "Agent",
+    cwd: str | None = None,
+) -> dict:
+    """Build an Agent (or Task) dispatch payload.
+
+    `tool_name` defaults to "Agent" (the harness's confirmed subagent-dispatch
+    tool name), overridable to "Task" for hooks registered on the Agent|Task
+    matcher union (require-architect-consult.sh, log-reviewer-round.sh).
+    `subagent_type` is omitted from tool_input when None, matching a
+    dispatch with no reviewer-persona target. `prompt` defaults to the
+    literal string "test" when None, preserving every pre-existing caller's
+    payload shape.
+    """
+    tool_input: dict = {"description": "test", "prompt": prompt if prompt is not None else "test"}
+    if subagent_type is not None:
+        tool_input["subagent_type"] = subagent_type
+    payload: dict = {"tool_name": tool_name, "tool_input": tool_input}
     if session_id is not None:
         payload["session_id"] = session_id
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
@@ -828,9 +852,9 @@ def write_skill_review_marker(
             "diff",
             "--cached",
             "--",
-            "claude/.claude/skills/**/SKILL.md",
+            "claude-skills/skills/**/SKILL.md",
             "plugins/*/skills/**/SKILL.md",
-            "claude/.claude/skills/plan-review/ROUTING.md",
+            "claude-skills/skills/plan-review/ROUTING.md",
         ],
         capture_output=True,
         check=True,
@@ -875,6 +899,65 @@ def write_plan_review_routing_read_marker(home: Path, session_id: str) -> Path:
 
 def plan_review_pending_read_marker_path(home: Path, session_id: str) -> Path:
     return home / ".claude" / ".plan-review-pending-read.d" / session_id
+
+
+def reviewer_round_state_key(repo: Path) -> str:
+    """Shell out to the real _lib_reviewer_round_state_key against `repo`,
+    so a test's seeded state file lands at the exact path
+    require-architect-consult.sh/log-reviewer-round.sh will look under.
+
+    Uses git_toplevel(repo), not str(repo): the hooks resolve REPO_ROOT via
+    `git -C "$CWD" rev-parse --show-toplevel` before hashing it, which
+    normalizes a symlinked tmp prefix (e.g. macOS /tmp -> /private/tmp) that
+    the raw tmp_path string would not — passing the unnormalized path here
+    would key a test's seeded file under a different repo-hash than the
+    hook computes at runtime.
+
+    Returns "" (not raising) when the repo has no branch to key on (e.g.
+    detached HEAD), mirroring the function's own fail-open contract.
+    """
+    result = subprocess.run(
+        ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_key "$1"',
+         "_", git_toplevel(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def reviewer_round_state_value(repo: Path) -> str:
+    """Shell out to the real _lib_reviewer_round_state_value against `repo`
+    — see reviewer_round_state_key's docstring for the git_toplevel
+    normalization rationale, which applies identically here. Returns ""
+    (not raising) when HEAD is unresolvable (no commits yet)."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_value "$1"',
+         "_", git_toplevel(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def reviewer_round_state_path(config_dir: Path, repo: Path) -> Path:
+    return config_dir / ".reviewer-round-state.d" / reviewer_round_state_key(repo)
+
+
+def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
+    return config_dir / ".architect-consult-latch.d" / reviewer_round_state_key(repo)
+
+
+def write_reviewer_round_state(config_dir: Path, repo: Path, values: list[str]) -> Path:
+    """Seed the round-state file directly with `values` (each already a
+    "<head-sha> <staged-diff-sha256>" line), bypassing log-reviewer-round.sh
+    entirely — for tests that need a precondition (e.g. "at cap") set up
+    without exercising the recorder itself."""
+    state_file = reviewer_round_state_path(config_dir, repo)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text("".join(f"{v}\n" for v in values))
+    return state_file
 
 
 def _symlink_if_absent(link: Path, target: Path) -> Path:
@@ -1055,3 +1138,23 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# (first_line, expect_consult, id) rows behind plan-architect consult
+# classification, reused by test_log_reviewer_round.py's bash-latch test and
+# test_transcript_analysis.py's Python-classifier test. Proves the two
+# runtimes agree on classification behaviorally, not that their source text
+# matches byte-for-byte -- a byte-equality assertion across the literal sites
+# would still pass with the Python `!=` comparison inverted to `==`. No
+# pytest import here (see module docstring), so each test file wraps these
+# rows in pytest.param(...) at its own @pytest.mark.parametrize call site.
+CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
+    ("MODE=consult", True, "mode_consult"),
+    ("MODE=plan-sections", False, "mode_plan_sections"),
+    ("", True, "empty_first_line"),
+    ("MODE=plna-sections", True, "typo_mode_value"),
+    ("Just look at the plan and tell me if it's sound.", True, "no_mode_line"),
+    ("MODE=plan-sections ", True, "mode_plan_sections_trailing_space"),
+    ("Some preamble.\nMODE=plan-sections", True, "mode_plan_sections_not_first_line"),
+    ("MODE=plan-sections\r\n## Section A", True, "mode_plan_sections_crlf"),
+]

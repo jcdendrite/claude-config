@@ -15,7 +15,14 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
+from helpers import (
+    CONSULT_CLASSIFICATION_TABLE,
+    HOOKS_DIR,
+    SKILLS_DIR,
+    bash_input,
+    build_path_without,
+    run_hook_reason,
+)
 
 from .conftest import (
     _agent_use,
@@ -77,6 +84,28 @@ def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_p
         total += int(ln.split()[col_idx])
     assert matched_any, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
     return total
+
+
+def _column_values_for_matching_rows(
+    out: str, *, header_contains: str, label: str, row_prefix: str
+) -> list[str]:
+    """Sibling to _sum_column_across_rows for a caller that needs each
+    matched row's own column value -- e.g. asserting several rows stayed
+    distinct rather than merging into a sum. Same header-token-anchored
+    column lookup, not a bare line.split()[N] index."""
+    lines = out.splitlines()
+    headers = [ln for ln in lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header_idx = lines.index(headers[0])
+    col_idx = headers[0].split().index(label)
+    values = []
+    for ln in lines[header_idx + 1:]:
+        if ln == "":
+            break
+        if ln.startswith(row_prefix):
+            values.append(ln.split()[col_idx])
+    assert values, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
+    return values
 
 
 def _extract_arm_dollars(out: str, arm_label: str) -> float:
@@ -892,6 +921,43 @@ class TestSubagentMix:
         out = capsys.readouterr().out
         assert "No data found." in out
 
+    def test_single_root_output_strips_control_characters_from_branch_and_subagent_type(
+        self, fake_projects, capsys
+    ):
+        """gitBranch and subagent_type are both transcript-sourced, not
+        validated, before this table prints them -- same invariant as
+        cmd_subagents' single-root branch sanitization, extended here to
+        subagent_type since this table has its own second raw-value column."""
+        branch_payload = "\x1b]0;PWNED-BRANCH\x07"
+        stype_payload = "\x1b[31mPWNED-TYPE\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch=branch_payload, content=[_agent_use("a1", stype_payload)]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-BRANCH" in out
+        assert "[31mPWNED-TYPE[0m(1)" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
+    def test_control_byte_differing_branches_do_not_merge_into_one_row(self, fake_projects, capsys):
+        """Two raw gitBranch values that differ only in a stripped control
+        byte sanitize to the same display label but must stay distinct
+        rows -- aggregating on the sanitized label instead of the raw value
+        would silently sum their session/spawn counts into one row."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="feat\x01", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        sess_values = _column_values_for_matching_rows(
+            out, header_contains="Sess", label="Sess", row_prefix="feat "
+        )
+        assert sess_values == ["1", "1"], f"expected two distinct 'feat' rows, each Sess=1: {sess_values}"
+
 
 def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str) -> None:
     """Write a minimal on-disk agent file with a `model:` frontmatter pin,
@@ -902,8 +968,9 @@ def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str)
 
 
 class TestSubagentMixModelMix:
-    """cmd_subagent_mix's second table: one case per method term from the
-    plan's requested/observed/declared/run/dangling definitions."""
+    """cmd_subagent_mix's second table: one test per column
+    (Runs/Dangling/Declared/Requested/Observed) in cmd_subagent_mix's own
+    docstring."""
 
     def test_declared_pin_violation_reports_opus_fraction_of_runs(self, fake_projects, tmp_path, capsys):
         """3 staff-sdet dispatches, declared pin sonnet: 2 observed opus (a
@@ -1085,6 +1152,38 @@ class TestSubagentMixModelMix:
         _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
         out = capsys.readouterr().out
         assert "(1 meta.json files failed to parse, excluded)" in out
+
+    def test_control_byte_differing_subagent_types_do_not_merge_model_mix_rows(
+        self, fake_projects, capsys
+    ):
+        """Two raw subagent_type values that differ only in a stripped
+        control byte sanitize to the same AgentType label but must stay
+        distinct model-mix rows -- aggregating on the sanitized label
+        instead of the raw value would silently sum their Runs and dollar
+        figures into one row."""
+        session_id = "sess-collide"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet\x01"),
+                _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet\x01",
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        runs_values = _column_values_for_matching_rows(
+            out, header_contains="Runs", label="Runs", row_prefix="staff-sdet "
+        )
+        assert runs_values == ["1", "1"], f"expected two distinct 'staff-sdet' rows, each Runs=1: {runs_values}"
 
 
 class TestSubagentMixDollars:
@@ -1436,8 +1535,211 @@ class TestSubagentMixSince:
         assert "No data found." in out
 
 
+class TestRootScopedDisplayLabel:
+    """Direct unit coverage of redaction._root_scoped_display_label --
+    cmd_subagents/cmd_subagent_mix exercise it only through their own
+    redacted/disclosed output, so this class pins the disclosed path and its
+    never-writes-into-redact_map invariant on their own."""
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_disclosed_label_is_account_prefixed_raw_value_and_leaves_map_empty(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
+        assert label == "account-1/feat-x"
+        assert redact_map == {}
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_non_disclosed_label_delegates_to_assign_root_scoped_redact_label(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
+        assert label == _mod.redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
+        assert redact_map == {(1, "feat-x"): label}
+
+    def test_disclosed_call_interleaved_between_redacted_calls_does_not_shift_counter(self):
+        """The direct proof of the "never writes into redact_map" invariant
+        -- no integration test pins this unconditionally, since a real
+        multi-root corpus can't isolate the counter position from the data
+        it's built from."""
+        redact_map: dict[tuple[int, str], str] = {}
+        first = _mod.redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
+        _mod.redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
+        second = _mod.redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
+        assert first == "account-1/branch-1"
+        assert second == "account-1/branch-2"
+
+    def test_disclosed_and_redacted_labels_share_the_account_prefix_format(self):
+        """Format-drift pin: a future change to either function's namespace
+        string must fail here, substituting for extracting the format
+        string into a third shared helper."""
+        redact_map: dict[tuple[int, str], str] = {}
+        disclosed = _mod.redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
+        redacted = _mod.redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
+        assert disclosed.split("/", 1)[0] == redacted.split("/", 1)[0] == "account-3"
+
+    def test_disclosed_label_strips_control_characters(self):
+        """A gitBranch value is transcript-sourced, not git-validated -- an
+        OSC-injection payload (the same fixture shape used for
+        _format_cost_ledger_row's own control-character test) must not reach
+        the disclosed label raw."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(
+            "branch", 1, "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m", redact_map, disclose=True
+        )
+        assert label == "account-1/]0;PWNED[2J[H[31mFAKE-ROW[0m"
+        assert not re.search(r"[\x00-\x1f\x7f]", label)
+
+    def test_disclosed_branch_value_containing_slash_stays_unambiguous(self):
+        """Git branch names legitimately contain "/" (e.g. feature/foo) --
+        the disclosed format itself uses "/" as the account-<K>/<value>
+        separator, so this pins that a "/"-bearing value composes without
+        truncation or reinterpretation."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
+        assert label == "account-1/feature/foo"
+        assert label.split("/", 1) == ["account-1", "feature/foo"]
+
+
+class TestRepoTrackedAgentTypeNames:
+    """_repo_tracked_agent_type_names -- the --this-repo subagent_type
+    disclosure allowlist accessor."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """lru_cache(maxsize=1) is process-global; cleared before and after
+        every test in this class so a monkeypatched _REPO_AGENT_DEFINITIONS_DIR
+        from one test can never leak a stale cached result into the next,
+        including the real-directory regression test below."""
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def _init_agents_repo(self, tmp_path: Path, *, tracked: list[str], untracked: list[str] = ()) -> Path:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        for name in tracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        if tracked:
+            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
+        for name in untracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        return agents_dir
+
+    def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+
+    def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "my-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_untracked_md_file_in_same_directory_is_not_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "tracked-agent" in names
+        assert "scratch-agent" not in names
+
+    def test_differently_cased_query_against_tracked_stem_is_excluded(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["code-writer"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "code-writer" in names
+        assert "Code-Writer" not in names
+
+    def test_directory_outside_any_git_repo_yields_built_ins_alone(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "not-a-repo"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    @pytest.mark.parametrize("agents_dir_kind", ["tracked", "untracked", "not_a_repo"])
+    def test_built_ins_present_in_every_case(self, tmp_path, monkeypatch, agents_dir_kind):
+        if agents_dir_kind == "not_a_repo":
+            agents_dir = tmp_path / "not-a-repo"
+            agents_dir.mkdir()
+        elif agents_dir_kind == "tracked":
+            agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"])
+        else:
+            agents_dir = self._init_agents_repo(tmp_path, tracked=[], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names().issuperset(_mod._BUILT_IN_AGENT_TYPES)
+
+    def test_git_binary_missing_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        """Matches TestRepoScopedProjectSlugsGuard's own FileNotFoundError
+        precedent for _repo_scoped_project_slugs, diverging in outcome: this
+        accessor deliberately fails closed to the built-ins frozenset rather
+        than sys.exit, since failing closed here means more redaction, and
+        an operator's report should not die because git is unavailable."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_git_call_timeout_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise subprocess.TimeoutExpired(cmd, 10)
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_nested_tracked_agent_file_is_not_allowlisted(self, tmp_path, monkeypatch):
+        """_repo_tracked_agent_type_names matches top-level entries only
+        (no "/" in the path), matching _declared_pin's own flat
+        agents_dir / f"{agent_type}.md" resolution -- a nested tracked file
+        over-redacts, the safe direction."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["top-level-agent"])
+        nested_dir = agents_dir / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "nested-agent.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "nested/nested-agent.md"], cwd=agents_dir, check=True)
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "top-level-agent" in names
+        assert "nested-agent" not in names
+
+    def test_non_ascii_tracked_filename_is_allowlisted(self, tmp_path, monkeypatch):
+        """Pins the docstring's -z rationale: without -z, git quotes and
+        escapes unusual path names, corrupting the stem."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["café-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "café-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_real_agents_directory_allowlists_code_writer(self):
+        """The ticket's own motivating scenario, against the real,
+        unmonkeypatched agents/ directory -- deriving the name dynamically
+        (next(dir.glob('*.md')).stem) would make both this test's intent
+        and its failure message unreadable, so the name is hardcoded; the
+        unit tests above already carry the "real derivation works" fact."""
+        assert "code-writer" in _mod._repo_tracked_agent_type_names()
+
+
 class TestSubagentMixMultiRoot:
     """Repeatable --config-dir on subagent-mix, and its disclosure controls."""
+
+    @pytest.fixture
+    def _isolated_staff_sdet_allowlist(self, tmp_path, monkeypatch):
+        """Points _REPO_AGENT_DEFINITIONS_DIR at a throwaway git-tracked
+        agents/ directory tracking staff-sdet.md, decoupling the two
+        --this-repo subagent_type disclosure tests below from this repo's
+        own real agents/ tree -- the same isolation TestRepoTrackedAgentTypeNames
+        applies to its own unit tests, via monkeypatch + cache_clear()."""
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
 
     def test_two_roots_yield_strictly_more_spawns_than_either_alone(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -1622,6 +1924,153 @@ class TestSubagentMixMultiRoot:
         # root's row.
         assert account_1["Spawns"] == "2"
         assert account_2["Spawns"] == "1"
+
+    def test_this_repo_with_explicit_config_dir_discloses_branch_and_allowlisted_agent_type(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """--this-repo plus subagent-mix's own repeatable --config-dir (not
+        only the declared-roots file) discloses a raw branch name and an
+        allowlisted subagent_type in both tables -- pins that the two flags
+        are not mutually exclusive. Both roots write identical branch and
+        subagent_type values, so the two disclosed labels are the same
+        regardless of which physical root resolves to account-1 vs. account-2."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)  # no SystemExit
+        out = capsys.readouterr().out
+        # Substring-on-combined-stdout, not a per-table _table_cols extract:
+        # _mix_branch_label/_stype_label are idempotent per (root_idx, value)
+        # key, so both tables render the same label for the same key even
+        # though each computes it independently at its own print time -- a
+        # future change breaking that idempotence would need this test
+        # tightened to catch a per-table divergence.
+        assert "account-1/feat" in out
+        assert "account-2/feat" in out
+        assert "account-1/staff-sdet" in out
+        assert "account-2/staff-sdet" in out
+
+    def test_this_repo_non_allowlisted_agent_type_counter_starts_at_one_despite_allowlisted_seen_first(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """A non-allowlisted subagent_type still renders as
+        account-<K>/agent-type-1, with its counter starting at 1 despite an
+        allowlisted type being seen first in the same session -- proves the
+        disclosed path never writes into subagent_type_redact_map, matching
+        TestRootScopedDisplayLabel's own unit-level pin at the integration
+        layer."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "staff-sdet"),  # allowlisted, dispatched first
+                _agent_use("a2", "acme-corp-internal-tool"),  # not allowlisted
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/staff-sdet", out)
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert "acme-corp-internal-tool" not in out
+
+    def test_this_repo_case_varied_spelling_of_allowlisted_type_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """Pin against a later .lower()-style "robustness" change disclosing
+        a private type that collides case-insensitively with a real
+        allowlisted name. Asserts both directions in the same run: the
+        mixed-case collision stays opaque, and the exact-case allowlisted
+        form still discloses -- without the positive control, an
+        accidentally-empty allowlist would pass this test for the wrong
+        reason."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "Staff-Sdet"),  # mixed-case collision, not allowlisted verbatim
+                _agent_use("a2", "staff-sdet"),  # exact-case allowlisted form -- positive control
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "Staff-Sdet" not in out
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert re.search(r"account-\d+/staff-sdet\b", out)
+
+    def test_this_repo_colliding_branch_names_across_accounts_stay_on_separate_rows(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Two accounts' identically-named "main" branch must not collapse
+        into one row under --this-repo disclosure either -- the table this
+        measurement actually reads."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/main" in out
+        assert "account-2/main" in out
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_per_session_still_refused_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)], per_session=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_subagent_mix(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--per-session" in err
+
+    def test_this_repo_single_root_prints_raw_branch_and_raw_non_allowlisted_type_with_no_account_prefix(
+        self, fake_projects, capsys
+    ):
+        """Single-root path (no --config-dir, no declared roots): root_idx
+        is always None, so both fields print raw with no account-<K>/
+        prefix regardless of --this-repo or the allowlist. The
+        non-allowlisted type is the load-bearing half: it proves the
+        allowlist gate is never consulted at single root, catching a future
+        reordering that checks `disclose` before `root_idx is not None`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "acme-corp-internal-tool")]),
+        ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "acme-corp-internal-tool" in out
+        assert "account-" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -2538,6 +2987,181 @@ class TestReviewTrace:
         reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
         assert reviewer_types == {"comment-discipline-reviewer", "skill-fidelity-reviewer"}
 
+    # -----------------------------------------------------------------------
+    # architect-consult classification
+    # -----------------------------------------------------------------------
+
+    def test_architect_consult_mode_consult_first_line_emits_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=consult emits an architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nSome question.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_mode_plan_sections_first_line_emits_no_consult_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=plan-sections emits no architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=plan-sections\n## Context")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert not any(e["kind"] == "architect-consult" for e in events)
+
+    def test_architect_consult_empty_prompt_emits_event_fail_safe(self):
+        """An empty-string prompt is not the MODE=plan-sections literal, so
+        the fail-safe direction classifies it as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_consult_missing_prompt_key_emits_event_fail_safe(self):
+        """A block whose `input` dict lacks the `prompt` key entirely also
+        classifies as a consult -- `_agent_use` always populates `prompt` and
+        can't build this shape, so this constructs the raw dict literal."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[{
+                      "type": "tool_use", "id": "a1", "name": "Agent",
+                      "input": {"subagent_type": "plan-architect", "description": "x"},
+                  }]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    @pytest.mark.parametrize(
+        "first_line,expect_consult",
+        [pytest.param(fl, ec, id=tid) for fl, ec, tid in CONSULT_CLASSIFICATION_TABLE],
+    )
+    def test_classification_matches_table(self, first_line, expect_consult):
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt=first_line)]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        emitted_consult = any(e["kind"] == "architect-consult" for e in events)
+        assert emitted_consult is expect_consult
+
+    def test_sidechain_architect_consult_excluded(self):
+        """A plan-architect consult dispatch inside a sidechain record must
+        not produce an architect-consult event -- review-trace's session_iter
+        never requests subagent records, so a consult dispatched from inside
+        a subagent is structurally invisible here."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  sidechain=True,
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
+
+    def test_non_plan_architect_dispatch_never_misclassified_as_consult(self):
+        """A staff-backend-engineer dispatch with no MODE=plan-sections first
+        line still emits zero architect-consult events and exactly one
+        reviewer-spawn -- guards against the `stype ==` gate being dropped,
+        which would reclassify every ordinary reviewer dispatch as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer", prompt="Review this diff.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 0
+        assert sum(1 for e in events if e["kind"] == "reviewer-spawn") == 1
+
+    def test_architect_consult_event_attributed_to_own_branch_not_session_first_branch(self):
+        """Mirrors test_events_attributed_to_own_branch_not_session_first_branch
+        for the architect-consult kind: a session opening on one branch, then
+        moving to another before the consult dispatch, attributes the event
+        to its own (later) branch and model."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0]["branch"] == "feature-x"
+        assert consult_events[0]["model"] == "opus"
+
+    def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
+        """The blindness property pinned at the layer it is defined: the
+        event dict itself carries only the classification result plus the
+        metadata every event kind carries, never a prompt-derived field."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt="MODE=consult\nSecret rationale nobody should see.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model"}
+
+    def test_architect_consult_prompt_body_never_reaches_review_trace_output(self, fake_projects, capsys):
+        """The prompt string is never stored on the event dict, so it can
+        never leak into printed output -- a distinctive rationale substring
+        embedded in the prompt must not appear anywhere in review-trace's
+        stdout."""
+        secret_rationale = "UNIQUE_RATIONALE_MARKER_892"
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt=f"MODE=consult\n{secret_rationale}")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert secret_rationale not in out
+        assert "consult-session.jsonl" in out
+
+    def test_architect_consults_header_count_renders(self, fake_projects, capsys):
+        """The per-session header line's architect-consults=<N> count reflects
+        the number of architect-consult events emitted for that session."""
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+
+    def test_session_holding_only_consult_event_emits_session_block(self, fake_projects, capsys):
+        """A session whose only review-relevant event is an architect-consult
+        dispatch still emits a session block -- consult-only sessions aren't
+        silently dropped like a session with zero events."""
+        _write_jsonl(fake_projects / "consult-only.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "consult-only.jsonl" in out
+        assert "consult      " in out
+
     def test_sidechain_skill_invocation_excluded(self):
         """A code-review Skill call inside a sidechain record must not produce a skill event."""
         records = [
@@ -2759,15 +3383,26 @@ class TestReviewTrace:
         assert "denial-session.jsonl" in out
         assert "skill-only-session.jsonl" not in out
 
+    def test_default_timeline_denial_line_carries_cause_field(self, fake_projects, capsys):
+        """The plain (non-deny-summary) timeline's denial line prints
+        cause=<kind> classified from the denial's own message, alongside
+        the existing hook= field."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh."),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "cause=lib-source" in out
+
     # -----------------------------------------------------------------------
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
 
-    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self):
+    def test_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
-        branch_filter must select by that per-event value, not the session's first
-        record's branch (the 53-session class from row 4 of the GH-482 plan)."""
+        branch_filter must select by that per-event value, not the session's
+        first record's branch."""
         records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
@@ -3353,6 +3988,23 @@ class TestReviewTrace:
         assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
         assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
 
+    def test_deny_summary_corpus_window_widened_by_consult_event_outside_denial_range(self):
+        """The corpus min/max window reads every event kind, not just denial.
+        An architect-consult event timestamped outside the range the
+        corpus's own denial events establish must move the window -- proving
+        the widening is real, not merely that the session registers."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _asst("claude-opus-4-7", branch="main", ts="2026-07-20T09:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-20T09:00:00.000Z")
+
     def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before
         toolDenialKind's 2026-07-20 introduction structurally cannot carry
@@ -3431,6 +4083,52 @@ class TestReviewTrace:
         assert data["hook_shape_counts"][("code-review", "git checkout")] == 1
         assert data["hook_shape_counts"][("worktree-enforcement", "git commit")] == 1
         assert data["hook_shape_counts"][("worktree-enforcement", "git checkout")] == 2
+
+    def test_deny_summary_cause_cross_tab_shows_joint_counts_not_just_marginals(self):
+        """Two hooks each produce a mix of behavioral and lib-source denials
+        with symmetric marginals (code-review: 2 behavioral + 1 lib-source;
+        worktree-enforcement: 1 behavioral + 2 lib-source) — the cause
+        marginal alone can't say which hook hit which failure family.
+        hook_cause_counts must carry the true joint counts."""
+        records = [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b2"),
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b3"),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook: 'git commit' is not on the read-only allowlist.",
+                tool_id="b4",
+            ),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+                tool_id="b5",
+            ),
+            _hook_deny_current(
+                "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh.",
+                tool_id="b6",
+            ),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["hook_cause_counts"][("code-review", "behavioral")] == 2
+        assert data["hook_cause_counts"][("code-review", "lib-source")] == 1
+        assert data["hook_cause_counts"][("worktree-enforcement", "behavioral")] == 1
+        assert data["hook_cause_counts"][("worktree-enforcement", "lib-source")] == 2
+
+    def test_deny_summary_cause_table_prints_header_and_correct_cross_tab_cell(
+        self, fake_projects, capsys
+    ):
+        """--deny-summary's printed output carries the hook/gate x cause table
+        header and a joint count in the right column — not just the
+        marginal hook/gate and friction tables that predate this axis."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+            _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b2"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(deny_summary=True))
+        out = capsys.readouterr().out
+        assert "## Denials by hook/gate x cause" in out
+        cols = _table_cols(out, header_contains="behavioral", row_contains="code-review")
+        assert cols["behavioral"] == "1"
+        assert cols["lib-source"] == "1"
 
     def test_deny_summary_real_corpus_shapes_all_classify_no_other_or_unmatched(self):
         """A fixture drawn from real transcript-analysis.py corpus denials —
@@ -4114,6 +4812,58 @@ class TestPriceTurnSpeedGeoMultipliers:
         dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
+
+
+class TestReportableUnpricedModelIds:
+    """Direct unit tests for pricing._reportable_unpriced_model_ids, the
+    shared predicate TestExcludedSpendBanner's _cost_report fixtures also
+    exercise -- these pin its branches by direct call so a bug in the
+    predicate itself is distinguishable from a print-wording bug in the
+    banner that consumes it."""
+
+    def test_empty_dict_reports_nothing(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({}) == []
+
+    def test_priced_looking_key_with_nonzero_tokens_is_reportable(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
+
+    def test_synthetic_at_zero_tokens_is_not_reportable(self):
+        """A corpus with no synthetic records at all still seeds this key at
+        0 in some callers -- a $0 entry is not spend excluded from anything."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 0}) == []
+
+    def test_synthetic_at_nonzero_tokens_is_reportable(self):
+        """Forward-looking guard, not a case observed in a real corpus (see
+        the production docstring) -- pins that a naive `!= _SYNTHETIC_MODEL_ID`
+        filter, which would silently drop this branch, is rejected."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 100}) == [
+            _mod.pricing._SYNTHETIC_MODEL_ID
+        ]
+
+    def test_multiple_unpriced_ids_all_reported(self):
+        result = _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
+        assert sorted(result) == ["claude-example-10", "claude-example-9"]
+
+
+class TestFormatDriftDetected:
+    """Direct unit tests for pricing._format_drift_detected, the OR of the
+    two module-level drift flags TestPricingIntegrityBanner's _cost_report
+    fixtures also exercise through the full report."""
+
+    def test_false_when_neither_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is False
+
+    def test_true_when_only_usage_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is True
+
+    def test_true_when_only_subagent_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", True)
+        assert _mod.pricing._format_drift_detected() is True
 
 
 class TestDedupTurnsByRequestId:
@@ -6888,6 +7638,23 @@ class TestCacheRebuildExcessPricing:
         excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-unknown-model", usage)
         assert excess is None
         assert unpriced_tokens > 0
+
+    def test_fable_5_1_warm_read_leg_uses_reduced_cache_read_multiplier(self):
+        """This function re-derives rates["cache_read"] via its own
+        _model_rates(model) call, independent of _price_turn -- cache-
+        rebuild's entire thesis is a cache-read-vs-cache-write delta, the
+        exact axis Fable 5.1's reduced cache-read multiplier deviates on, so
+        this is the site most exposed to the Fable pricing change. Like
+        test_transcript_cost.py::TestFablePricing, this validates rate
+        arithmetic only -- it never confirms "claude-fable-5-1" is the exact
+        string Claude Code writes to message.model."""
+        usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
+        excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
+        # write: 1,000,000/1e6 * 10.00*1.25 = 12.50; warm read uses the
+        # 0.025x reduced multiplier, not the standard 0.1x: 1,000,000/1e6 *
+        # 10.00*0.025 = 0.25; excess = 12.25.
+        assert excess == pytest.approx(12.25)
+        assert unpriced_tokens == 0
 
 
 class TestCacheRebuildClassification:
@@ -11797,6 +12564,19 @@ class TestSubagents:
         main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
 
+    def test_single_root_branch_output_strips_control_characters(self, fake_projects, capsys):
+        """gitBranch is transcript-sourced, not git-validated -- an
+        OSC-injection payload must not reach the single-root (no
+        --config-dir) table row raw, the same invariant
+        _root_scoped_display_label's disclose path enforces under multi-root."""
+        payload = "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch=payload)])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED[2J[H[31mFAKE-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
 
 class TestSubagentsToolResultBytes:
     """cmd_subagents' tool-result byte-count dimension: main vs. sidechain,
@@ -11947,6 +12727,24 @@ class TestSubagentsByteGroupingByTool:
         _mod.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "unknown" in out
+
+    def test_tool_name_output_strips_control_characters(self, fake_projects, capsys):
+        """tool_use.name is transcript-sourced, not validated -- an
+        OSC-injection payload must not reach the byte-by-tool table's Tool
+        column raw, the same invariant cmd_subagents' branch column already
+        enforces (test_single_root_branch_output_strips_control_characters)."""
+        payload = "\x1b]0;PWNED-TOOL\x07\x1b[31mFAKE-TOOL-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                {"type": "tool_use", "id": "t1", "name": payload, "input": {}},
+            ]),
+            _user_msg([_tool_result("t1", "z" * 16)], branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-TOOL[31mFAKE-TOOL-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
 
 
 class TestSubagentsSince:
@@ -13490,7 +14288,13 @@ class TestDenialHookLabelEnumeration:
 # reliably fails that source line, driving this exact wording for real
 # rather than hand-typing it — one entry per _DENIAL_HOOK_LABELS member
 # reachable through this shared path.
-_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+# These 24 rows must land unedited: an edit here would mean the bootstrap
+# stub's emitted bytes changed where they should not have. Kept as an
+# independently-typed copy — never referenced by _BOOTSTRAP_FALLBACK_HOOKS's
+# own definition below — so test_original_24_bootstrap_fallback_rows_are_unedited
+# compares two separately-authored literals rather than a tuple against a
+# slice of its own construction, which would pass regardless of content.
+_BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24: tuple[tuple[str, str], ...] = (
     ("block-gh-pr-merge.sh", "gh-pr-merge"),
     ("check-claude-md-length.sh", "CLAUDE.md length"),
     ("check-skill-length.sh", "skill length"),
@@ -13516,6 +14320,65 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-worktree-for-file-writes.sh", "worktree-enforcement"),
     ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
 )
+
+# require-architect-consult.sh and deny-invisible-commit-content.sh already
+# emitted this exact wording; they were simply unenumerated in
+# _DENIAL_HOOK_LABELS until now. Written as its own flat tuple, not built by
+# concatenating _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24 — see that tuple's own
+# comment for why the two are kept independent.
+_BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "gh-pr-merge"),
+    ("check-claude-md-length.sh", "CLAUDE.md length"),
+    ("check-skill-length.sh", "skill length"),
+    ("deny-credential-bash-reads.sh", "credential-path Bash"),
+    ("deny-credential-file-reads.sh", "credential-file read"),
+    ("deny-data-file-reads.sh", "data-file read"),
+    ("deny-env-reads.sh", "env-read"),
+    ("deny-escaped-backticks-in-pr-body.sh", "backtick-escape"),
+    ("deny-network-installs.sh", "network-install"),
+    ("deny-pii-in-commits.sh", "PII commit"),
+    ("deny-private-project-refs.sh", "redaction"),
+    ("deny-repo-relocation.sh", "repo-relocation"),
+    ("deny-reviewer-tree-mutation.sh", "reviewer-tree-mutation"),
+    ("enforce-marker-script-shape.sh", "marker-script-shape"),
+    ("guard-settings-session-keys.sh", "settings session-keys"),
+    ("require-code-review.sh", "code-review"),
+    ("require-memory-skill.sh", "memory-skill"),
+    ("require-plan-review.sh", "plan-review"),
+    ("require-routing-read.sh", "routing-read"),
+    ("require-ready-for-review.sh", "ready-for-review"),
+    ("require-respond-pr.sh", "respond-pr"),
+    ("require-stow-reminder.sh", "stow-reminder"),
+    ("require-worktree-for-file-writes.sh", "worktree-enforcement"),
+    ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
+    ("require-architect-consult.sh", "architect-consult"),
+    ("deny-invisible-commit-content.sh", "invisible-commit-content"),
+)
+
+
+def test_original_24_bootstrap_fallback_rows_are_unedited():
+    """The 24 pre-existing _BOOTSTRAP_FALLBACK_HOOKS rows stay exactly as
+    they were before the two rows above were added — a genuine check, since
+    _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24 is a separately-typed literal, not
+    read by _BOOTSTRAP_FALLBACK_HOOKS's own definition."""
+    assert _BOOTSTRAP_FALLBACK_HOOKS[:24] == _BOOTSTRAP_FALLBACK_HOOKS_ORIGINAL_24
+
+
+def test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label():
+    """Completeness guard: a future gate hook that declares its own
+    DENY_GATE_LABEL but is never added here would silently get zero
+    TestDenyGateLabelConformance coverage — the same "forgotten declaration"
+    failure mode that class exists to catch, one layer up."""
+    on_disk = {
+        path.name
+        for path in HOOKS_DIR.glob("*.sh")
+        if _DENY_GATE_LABEL_DECLARATION_RE.search(path.read_text())
+    }
+    enumerated = {name for name, _label in _BOOTSTRAP_FALLBACK_HOOKS}
+    assert on_disk == enumerated, (
+        f"hooks declaring DENY_GATE_LABEL but missing from _BOOTSTRAP_FALLBACK_HOOKS: "
+        f"{on_disk - enumerated}; enumerated but not on disk: {enumerated - on_disk}"
+    )
 
 
 def _isolated_hook_copy(tmp_path: Path, hook_name: str) -> Path:
@@ -13569,24 +14432,33 @@ class TestDenialHookLabelEnumerationRealHooks:
             f"{hook_name}'s real bootstrap-failure wording {message!r} produced "
             f"{got!r}, expected the enumerated label {expected_label!r}"
         )
+        # Same real stderr, second axis: this is the strongest available
+        # evidence that the bootstrap-failure wording classifies lib-source.
+        assert _mod._denial_cause_kind(message) == "lib-source"
 
     def test_marker_sh_path_traversal_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's own path-traversal deny path —
         distinct real wording from the bootstrap-failure case above, which
-        shares the same 'marker.sh' label."""
+        shares the same 'marker-script-shape' label. The message now leads
+        with 'Blocked by marker-script-shape gate:', so _DENIAL_HOOK_NAME_RE
+        wins the label-extraction cascade ahead of the legacy
+        'marker.sh invocation denied' pattern."""
         cmd = "../../.claude/scripts/marker.sh write code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_hook_label("", message) == "marker-script-shape"
+        assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_marker_sh_unknown_subcommand_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's general 'invocation denied'
         wording for an unenumerated subcommand — distinct real wording from
-        the path-traversal case above, which shares the same 'marker.sh' label."""
+        the path-traversal case above, which shares the same
+        'marker-script-shape' label."""
         cmd = "~/.claude/scripts/marker.sh forge code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "marker.sh"
+        assert _mod._denial_hook_label("", message) == "marker-script-shape"
+        assert _mod._denial_cause_kind(message) == "behavioral"
 
     def test_agents_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-claude-md-length.sh's real 'grew past the 200-line limit'
@@ -13607,20 +14479,20 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-claude-md-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+        assert _mod._denial_hook_label("", message) == "CLAUDE.md length"
 
     def test_skill_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-skill-length.sh's real 'grew past their per-skill limit' deny
         path, mirroring test_check_skill_length.py's own git-repo fixture
         pattern."""
         repo = tmp_path / "repo"
-        skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+        skill_dir = repo / "claude-skills" / "skills" / "my-skill"
         skill_dir.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
         skill_md = skill_dir / "SKILL.md"
-        skill_path = "claude/.claude/skills/my-skill/SKILL.md"
+        skill_path = "claude-skills/skills/my-skill/SKILL.md"
         skill_md.write_text("\n".join(f"line {i}" for i in range(190)) + "\n")
         subprocess.run(["git", "add", skill_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -13630,7 +14502,759 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-skill-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod._denial_hook_label("", message) == "Skill length"
+        assert _mod._denial_hook_label("", message) == "skill length"
+
+    def test_claude_md_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-claude-md-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) goes through the shared
+        _lib_staged_length_gate, whose deny is prefixed by
+        check-claude-md-length.sh's own DENY_GATE_LABEL, "CLAUDE.md length" —
+        pinning that classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-claude-md-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "CLAUDE.md length"
+
+    def test_skill_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-skill-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) goes through the shared
+        _lib_staged_length_gate, whose deny is prefixed by
+        check-skill-length.sh's own DENY_GATE_LABEL, "skill length" —
+        pinning that classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-skill-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "skill length"
+
+
+# ---------------------------------------------------------------------------
+# DENY_GATE_LABEL conformance test — converts a forgotten or unenumerated
+# declaration from a silent fall-through-to-unmatched into a CI failure.
+# Reads DENY_GATE_LABEL and every deny-message literal straight off each of
+# the 26 gate hooks' own source, rather than trusting _DENIAL_HOOK_LABELS or
+# _DENIAL_CAUSE_MARKERS to have kept up on their own.
+# ---------------------------------------------------------------------------
+
+_DENY_GATE_LABEL_DECLARATION_RE = re.compile(r'^DENY_GATE_LABEL="([^"]*)"', re.MULTILINE)
+
+# Bounds a declared label the same way _DENIAL_HOOK_NAME_MAX_CHARS bounds an
+# extracted one (clause (c)) — independent of any "blocked by ... gate"
+# framing, since this checks the raw declared value.
+_DENIAL_HOOK_NAME_SHAPE_RE = re.compile(r"[\w .-]+")
+
+# Call shapes that carry a deny-message literal: emit_deny, its
+# emit_deny_folding_fresh_lock_context wrapper
+# (require-worktree-for-git-writes.sh), and _lib_parse_tool_input_or_deny's
+# own argument. _lib_staged_length_gate's second (message) argument is
+# reached via its distinct two-argument call shape, since its first argument
+# is a single-quoted grep -E pattern rather than a deny literal.
+_DENY_LITERAL_CALL_START_RE = re.compile(
+    r"(?<![\w])(?:emit_deny|emit_deny_folding_fresh_lock_context|_lib_parse_tool_input_or_deny)\s+\""
+    r"|_lib_staged_length_gate\s+'[^']*'\s+\""
+)
+
+
+def _read_balanced_dquoted(text: str, quote_index: int) -> tuple[str, int]:
+    """Return (literal_content, index_after_closing_quote) for the bash
+    double-quoted string literal whose opening quote is text[quote_index].
+
+    A closing quote is only recognized when it isn't itself
+    backslash-escaped, so a literal carrying an embedded \\" (e.g.
+    block-gh-pr-merge.sh's self-merge-block message) is read whole rather
+    than truncated at the first inner quote. Bash double-quoted strings may
+    also span multiple physical lines (several enforce-marker-script-shape.sh
+    and require-plan-review.sh literals do), so this scans past newlines
+    rather than stopping at end-of-line.
+    """
+    assert text[quote_index] == '"'
+    i = quote_index + 1
+    start = i
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if ch == '"':
+            return text[start:i], i + 1
+        i += 1
+    raise ValueError(f"unterminated double-quoted literal starting at index {quote_index}")
+
+
+def _deny_literals_from_text(text: str) -> list[str]:
+    """Every deny-message literal in one hook's source text. Skips a
+    literal that is a bare $VAR reference (e.g.
+    require-worktree-for-git-writes.sh's wrapper-internal emit_deny "$reason") —
+    its real text is the wrapper's own callers' literals, enumerated
+    separately as their own call sites."""
+    literals = []
+    for m in _DENY_LITERAL_CALL_START_RE.finditer(text):
+        literal, _end = _read_balanced_dquoted(text, m.end() - 1)
+        if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", literal):
+            continue
+        literals.append(literal)
+    return literals
+
+
+def _deny_literals(hook_name: str) -> list[str]:
+    return _deny_literals_from_text((HOOKS_DIR / hook_name).read_text())
+
+
+def _deny_gate_label_declarations(hook_name: str) -> list[str]:
+    text = (HOOKS_DIR / hook_name).read_text()
+    return _DENY_GATE_LABEL_DECLARATION_RE.findall(text)
+
+
+def _declared_deny_gate_label(hook_name: str) -> str:
+    declarations = _deny_gate_label_declarations(hook_name)
+    assert len(declarations) == 1, (
+        f"{hook_name}: expected exactly one DENY_GATE_LABEL declaration, found {len(declarations)}"
+    )
+    return declarations[0]
+
+
+def _marker_kinds_present(text: str) -> list[str]:
+    """Every _DENIAL_CAUSE_MARKERS family whose literal marker substring
+    appears in `text`, case-insensitively, in cascade-precedence order."""
+    lowered = text.lower()
+    return [kind for marker, kind in _mod._DENIAL_CAUSE_MARKERS if marker in lowered]
+
+
+class TestDenyGateLabelConformance:
+    """Five clauses (a)-(e), driven against every one of the 26 gate hooks
+    named in _BOOTSTRAP_FALLBACK_HOOKS. Clauses (b), (d), and (e) each get
+    their own permanent negative-case test below, built by
+    deliberately breaking a scratch copy of a real hook — a one-time
+    demonstration during authoring would leave nothing guarding the check's
+    detection power against a later edit that quietly weakens it."""
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_a_every_gate_hook_declares_exactly_one_label(self, hook_name, _expected_label):
+        declarations = _deny_gate_label_declarations(hook_name)
+        assert len(declarations) == 1, (
+            f"{hook_name} declares {len(declarations)} DENY_GATE_LABEL values, expected exactly one"
+        )
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_b_every_declared_label_is_an_enumerated_member(self, hook_name, _expected_label):
+        label = _declared_deny_gate_label(hook_name)
+        assert label in _mod._DENIAL_HOOK_LABELS, (
+            f"{hook_name} declares DENY_GATE_LABEL={label!r}, which is not a _DENIAL_HOOK_LABELS "
+            f"member — either the label is a typo or the set is stale"
+        )
+
+    def test_clause_b_negative_unenumerated_label_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
+        whose DENY_GATE_LABEL isn't a _DENIAL_HOOK_LABELS member must be
+        flagged, matching what clause (b)'s own check above would report."""
+        original = (HOOKS_DIR / "block-gh-pr-merge.sh").read_text()
+        mutated = original.replace(
+            'DENY_GATE_LABEL="gh-pr-merge"', 'DENY_GATE_LABEL="not-a-real-enumerated-label"', 1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — block-gh-pr-merge.sh's DENY_GATE_LABEL declaration wording drifted"
+        )
+        scratch = tmp_path / "block-gh-pr-merge.sh"
+        scratch.write_text(mutated)
+        declarations = _DENY_GATE_LABEL_DECLARATION_RE.findall(scratch.read_text())
+        assert declarations == ["not-a-real-enumerated-label"]
+        assert declarations[0] not in _mod._DENIAL_HOOK_LABELS
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_c_every_declared_label_matches_the_name_shape(self, hook_name, _expected_label):
+        label = _declared_deny_gate_label(hook_name)
+        assert _DENIAL_HOOK_NAME_SHAPE_RE.fullmatch(label), (
+            f"{hook_name}'s DENY_GATE_LABEL {label!r} doesn't match the name-shaped [\\w .-]+ class"
+        )
+        assert len(label) <= _mod._DENIAL_HOOK_NAME_MAX_CHARS, (
+            f"{hook_name}'s DENY_GATE_LABEL {label!r} exceeds _DENIAL_HOOK_NAME_MAX_CHARS"
+        )
+
+    def test_deny_literal_extraction_is_non_empty_for_every_gate_hook(self):
+        """Vacuity self-check mirroring test_lib.py's builds_path_re
+        precedent: a hook yielding zero literals means the extraction regex
+        has drifted from that hook's call shape, not that the hook has no
+        deny literals — and clause (d) would be silently vacuous for it."""
+        for hook_name, _label in _BOOTSTRAP_FALLBACK_HOOKS:
+            literals = _deny_literals(hook_name)
+            assert literals, (
+                f"{hook_name}: no deny literals extracted — the extraction regex has drifted "
+                f"from this hook's call shape"
+            )
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_d_every_marker_carrying_literal_carries_exactly_one_marker(self, hook_name, _expected_label):
+        for literal in _deny_literals(hook_name):
+            present = _marker_kinds_present(literal)
+            assert len(present) <= 1, (
+                f"{hook_name}'s deny literal {literal!r} carries markers for causes {present}, "
+                f"which defeats _denial_cause_kind's substring cascade"
+            )
+            if present:
+                assert _mod._denial_cause_kind(literal) == present[0]
+
+    def test_clause_d_negative_marker_collision_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
+        whose parse-failure literal carries both the input-parse and
+        helper-proc markers must be flagged by the exactly-one-marker rule —
+        a marker collision is the only construction that defeats
+        _denial_cause_kind's first-match-wins substring cascade, which is
+        exactly why clause (d) forbids it."""
+        original = (HOOKS_DIR / "block-gh-pr-merge.sh").read_text()
+        collision_literal = (
+            "could not parse tool-input JSON, failing closed rather than acting on an unscanned command."
+        )
+        mutated = original.replace(
+            '_lib_parse_tool_input_or_deny "could not parse tool-input JSON."',
+            f'_lib_parse_tool_input_or_deny "{collision_literal}"',
+            1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — block-gh-pr-merge.sh's parse-failure call site wording drifted"
+        )
+        scratch = tmp_path / "block-gh-pr-merge.sh"
+        scratch.write_text(mutated)
+        literals = _deny_literals_from_text(scratch.read_text())
+        assert collision_literal in literals
+        present = _marker_kinds_present(collision_literal)
+        assert present == ["input-parse", "helper-proc"], present
+        assert len(present) > 1
+        # The cascade's first-match-wins order silently masks the literal's
+        # own "failing closed" marker — the exact miscategorization clause
+        # (d) exists to keep out of a real hook's source.
+        assert _mod._denial_cause_kind(collision_literal) == "input-parse"
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_e_no_deny_literal_reintroduces_a_hand_written_blocked_by_prefix(
+        self, hook_name, _expected_label,
+    ):
+        for literal in _deny_literals(hook_name):
+            assert "blocked by" not in literal.lower(), (
+                f"{hook_name}'s deny literal {literal!r} contains a hand-written "
+                f"'Blocked by ... gate:' phrase — DENY_GATE_LABEL already supplies "
+                f"this prefix via _lib_emit_deny, so a literal carrying its own "
+                f"copy renders doubled"
+            )
+
+    def test_clause_e_negative_reintroduced_prefix_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of check-skill-length.sh
+        whose _lib_staged_length_gate message literal has a hand-written
+        "Blocked by ... gate:" phrase spliced back in — the exact reversion
+        shape a copy-paste-from-history edit would produce — must be flagged
+        by clause (e)."""
+        original = (HOOKS_DIR / "check-skill-length.sh").read_text()
+        original_message = "one or more SKILL.md files grew past their per-skill limit."
+        mutated = original.replace(
+            f'"{original_message}"',
+            f'"Blocked by skill length gate: {original_message}"',
+            1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — check-skill-length.sh's over-limit message wording drifted"
+        )
+        scratch = tmp_path / "check-skill-length.sh"
+        scratch.write_text(mutated)
+        literals = _deny_literals_from_text(scratch.read_text())
+        collision_literal = next(literal for literal in literals if original_message in literal)
+        assert "blocked by" in collision_literal.lower()
+
+
+# ---------------------------------------------------------------------------
+# _denial_cause_kind — pins the denial-cause axis against every gate hook's
+# current wording. Every fixture literal below is copied from the working
+# tree as it stands at authoring time — never re-derived via git show/git
+# merge-base, which would resolve to a later rewrite's text. A historical
+# transcript keeps its original wording forever, so a fixture reflecting
+# only newer wording would prove nothing about the corpus these tests exist
+# to classify correctly.
+# ---------------------------------------------------------------------------
+
+
+# Bootstrap source-failure wording, one row per gate hook (all 26) — the same
+# "could not source _lib.sh" idiom TestDenialHookLabelEnumeration's fixture
+# rows above already carry for 24 of them, plus the two hooks whose labels
+# (architect-consult, invisible-commit-content) aren't yet _DENIAL_HOOK_LABELS
+# members.
+_LIB_SOURCE_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not source _lib.sh."),
+    ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not source _lib.sh."),
+    ("check-skill-length.sh", "Blocked by skill length gate: could not source _lib.sh."),
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not source _lib.sh."),
+    ("deny-credential-file-reads.sh",
+     "Blocked by credential-file read gate: could not source _lib.sh."),
+    ("deny-data-file-reads.sh", "Blocked by data-file read gate: could not source _lib.sh."),
+    ("deny-env-reads.sh", "Blocked by env-read gate: could not source _lib.sh."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not source _lib.sh."),
+    ("deny-network-installs.sh", "Blocked by network-install gate: could not source _lib.sh."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: could not source _lib.sh — hook cannot evaluate the commit safely."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not source _lib.sh — hook cannot evaluate command "
+     "detection safely."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not source _lib.sh — hook cannot evaluate "
+     "relocation discipline safely."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not source _lib.sh — hook cannot evaluate "
+     "reviewer discipline safely."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not source _lib.sh."),
+    ("guard-settings-session-keys.sh",
+     "Blocked by settings session-keys gate: could not source _lib.sh."),
+    ("require-code-review.sh", "Blocked by code-review gate: could not source _lib.sh."),
+    ("require-memory-skill.sh", "Blocked by memory-skill gate: could not source _lib.sh."),
+    ("require-plan-review.sh", "Blocked by plan-review gate: could not source _lib.sh."),
+    ("require-routing-read.sh", "Blocked by routing-read gate: could not source _lib.sh."),
+    ("require-ready-for-review.sh", "Blocked by ready-for-review gate: could not source _lib.sh."),
+    ("require-respond-pr.sh", "Blocked by respond-pr gate: could not source _lib.sh."),
+    ("require-stow-reminder.sh", "Blocked by stow-reminder gate: could not source _lib.sh."),
+    ("require-worktree-for-file-writes.sh",
+     "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh."),
+    ("require-worktree-for-git-writes.sh",
+     "Blocked by worktree-enforcement hook: could not source _lib.sh — hook cannot evaluate "
+     "git discipline safely."),
+    ("require-architect-consult.sh", "Blocked by architect-consult gate: could not source _lib.sh."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not source _lib.sh."),
+)
+
+# Tool-input parse-failure wording, one row per gate hook (all 26) — each
+# hook's own _lib_parse_tool_input_or_deny argument.
+_INPUT_PARSE_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked: could not parse tool-input JSON for gh-pr-merge gate."),
+    ("deny-data-file-reads.sh",
+     "Blocked by data-file read gate: could not parse tool-input JSON. Refusing to evaluate "
+     "the Read under malformed input."),
+    ("check-claude-md-length.sh", "Blocked by CLAUDE.md length gate: could not parse tool-input JSON."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not parse tool-input JSON. Refusing to evaluate "
+     "relocation discipline under malformed input."),
+    ("deny-credential-file-reads.sh",
+     "Blocked by credential-file read gate: could not parse tool-input JSON. Refusing to "
+     "evaluate the Read under malformed input."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not parse tool-input JSON. Refusing to evaluate "
+     "PR body under malformed input."),
+    ("deny-env-reads.sh", "Blocked: could not parse tool-input JSON for env-read gate."),
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not parse tool-input JSON. Refusing to "
+     "evaluate the command under malformed input."),
+    ("require-code-review.sh", "Blocked by code-review gate: could not parse tool-input JSON."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not parse tool-input JSON. Refusing to evaluate "
+     "the command under malformed input."),
+    ("enforce-marker-script-shape.sh", "Blocked: could not parse tool-input JSON."),
+    ("require-worktree-for-file-writes.sh",
+     "Blocked by worktree-enforcement hook (file-writes): could not parse tool-input JSON. "
+     "Refusing to evaluate worktree discipline under malformed input."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: could not parse tool-input JSON. Refusing to evaluate the "
+     "commit under malformed input."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not parse tool-input JSON. Refusing to evaluate "
+     "redaction under malformed input."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not parse tool-input JSON. Refusing to "
+     "evaluate reviewer discipline under malformed input."),
+    ("check-skill-length.sh", "Blocked by skill length gate: could not parse tool-input JSON."),
+    ("require-architect-consult.sh", "Blocked by architect-consult gate: could not parse tool-input JSON."),
+    ("require-routing-read.sh", "Blocked by routing-read gate: could not parse tool-input JSON."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not parse tool-input JSON."),
+    ("require-stow-reminder.sh",
+     "Blocked by stow-reminder gate: could not parse tool-input JSON. Refusing to evaluate "
+     "under malformed input."),
+    ("require-plan-review.sh", "Blocked by plan-review gate: could not parse tool-input JSON."),
+    ("require-memory-skill.sh", "Blocked by memory-skill gate: could not parse tool-input JSON."),
+    ("guard-settings-session-keys.sh",
+     "Blocked by settings session-keys gate: could not parse tool-input JSON."),
+    ("require-ready-for-review.sh", "Blocked by ready-for-review gate: could not parse tool-input JSON."),
+    ("require-worktree-for-git-writes.sh",
+     "Blocked by worktree-enforcement hook: could not parse tool-input JSON. Refusing to "
+     "evaluate git discipline under malformed input."),
+    ("require-respond-pr.sh", "Blocked by respond-pr gate: could not parse tool-input JSON."),
+)
+
+# Helper-process ("failing closed") wording — every distinct call site found
+# by a total enumeration of "failing closed"/"Failing closed" across
+# claude/.claude/hooks/*.sh, covering all thirteen gate hooks that carry one
+# (roughly thirty call sites; the shared _lib.sh call site used by
+# check-claude-md-length.sh/check-skill-length.sh via _lib_staged_length_gate
+# has its wording exercised separately by those hooks' own commit-detection
+# fail-closed tests, which assert the reason text but not this module's
+# cause classification, and isn't duplicated here). ${...} shell
+# interpolations are filled with a plausible concrete value; the classifier
+# only needs the literal "failing closed" substring, not the exact exit
+# code or command text.
+_HELPER_PROC_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("deny-credential-bash-reads.sh",
+     "Blocked by credential-path Bash gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command with no bypass valve."),
+    ("block-gh-pr-merge.sh",
+     "Blocked: could not determine whether 'gh pr merge 123' invokes gh pr merge (status 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed per this gate's documented "
+     "fail-closed posture rather than letting an unscanned command bypass the self-merge block."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command with no bypass valve."),
+    ("deny-network-installs.sh",
+     "Blocked by network-install gate: could not split the command into fragments (exit 2) — "
+     "sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command with no bypass valve."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not quote-strip the command text "
+     "(exit 2) — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "allowing an unscanned git commit."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not determine whether this command "
+     "invokes git commit (status 2) — sed/tr may be missing, killed, or errored. Failing "
+     "closed rather than silently allowing an unscanned git commit."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not mask quoted command text (exit 2) — "
+     "awk may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "git commit chain."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not split the masked command into "
+     "fragments (exit 2). Failing closed rather than allowing an unscanned git commit chain."),
+    ("deny-invisible-commit-content.sh",
+     "Blocked by invisible-commit-content gate: could not split the command into fragments "
+     "(exit 2). Failing closed rather than allowing an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not quote-strip a command fragment "
+     "(exit 2) — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "allowing an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Commit blocked by PII/credential guard: could not quote-strip the scan target (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than scanning with "
+     "degraded quote-split coverage."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned mv/rsync."),
+    ("deny-repo-relocation.sh",
+     "Blocked by repo-relocation hook: could not split the command into fragments (exit 2) — "
+     "sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "relocation command."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not quote-strip the command text (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned command for a review-only agent."),
+    ("deny-reviewer-tree-mutation.sh",
+     "Blocked by reviewer-tree-mutation hook: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned command for a review-only agent."),
+    ("require-code-review.sh",
+     "Blocked by code-review gate: could not determine whether this command invokes git "
+     "commit (status 2) — sed/tr may be missing, killed, or errored. Failing closed rather "
+     "than letting an unscanned git commit bypass the review gate."),
+    ("require-ready-for-review.sh",
+     "Blocked by ready-for-review gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git push/gh pr command."),
+    ("require-ready-for-review.sh",
+     "Blocked by ready-for-review gate: could not split the command into fragments (exit 2) "
+     "— sed may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git push/gh pr command."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not quote-strip the command text (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned Bash write that could reach marker state."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned Bash write that could reach marker state."),
+    ("enforce-marker-script-shape.sh",
+     "Blocked by marker-script-shape gate: could not determine whether 'marker.sh write "
+     "code-review' invokes marker.sh write/activate (sed/tr may be missing, killed, or "
+     "errored) — failing closed per this gate's documented fail-closed posture rather than "
+     "letting an unscanned command bypass gate-release authority."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not quote-strip the command text (exit 2) — sed/tr "
+     "may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not split the command into fragments (exit 2) — sed "
+     "may be missing, killed, or errored. Failing closed rather than allowing an unscanned "
+     "command."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: could not quote-strip the scanned content (exit 2) — sed/tr "
+     "may be missing, killed, or errored. Failing closed rather than scanning with degraded "
+     "quote-split coverage."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the 'tracker-id' detector failed to scan the gated content "
+     "(grep exit 2) — failing closed. Unscanned content is exactly the leak vector this hook "
+     "guards against."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the structural-detector fast-path pre-check matched, but no "
+     "individual detector in the follow-up loop confirmed which one — failing closed on this "
+     "pattern-composition mismatch between the combined and per-detector regexes."),
+    ("deny-private-project-refs.sh",
+     "Blocked by redaction gate: the structural-detector fast-path pre-check failed to scan "
+     "the gated content (grep exit 2) — failing closed. Unscanned content is exactly the leak "
+     "vector this hook guards against."),
+    ("require-respond-pr.sh",
+     "Blocked by respond-pr gate: could not flatten the command text (exit 2) — awk may be "
+     "missing, killed, or errored. Failing closed rather than evaluating an unflattened "
+     "command that could hide a gated pattern across a line break."),
+    ("deny-escaped-backticks-in-pr-body.sh",
+     "Blocked by backtick-escape gate: could not determine whether this command invokes gh "
+     "pr create/edit — sed/tr may be missing, killed, or errored. Failing closed rather than "
+     "letting an unscanned PR body bypass the backtick-escape scan."),
+)
+
+# The single deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
+# wrapping a parse-failure reason to prove deny-encode's cascade precedence
+# over an input-parse fragment embedded in the same message.
+_DENY_ENCODE_FIXTURE = (
+    "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
+    "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
+    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
+    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
+    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
+    "reason follows.\nBlocked: could not parse tool-input JSON.\n"
+)
+
+# The genuinely-behavioral subset of TestDenialHookLabelEnumeration's fixture
+# rows above (duplicated here per this repo's DAMP-test-code convention,
+# rather than threaded through a shared constant) — every other row in that
+# class's parametrization is bootstrap or parse-failure wording, already
+# covered by _LIB_SOURCE_FIXTURES/_INPUT_PARSE_FIXTURES above.
+_BEHAVIORAL_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("require-memory-skill.sh:125",
+     "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to "
+     "MEMORY.md, which is part of Claude Code's auto-memory file system."),
+    ("require-plan-review.sh:239",
+     "Plan presentation blocked by the plan-review gate: an uncommitted or modified "
+     "plan file exists in .claude/plans/ but no plan-review marker covering the "
+     "current plan set was found."),
+    ("require-routing-read.sh:68",
+     "Agent spawn blocked by plan-review routing gate: Read the plan-review skill's "
+     "ROUTING.md before spawning any specialist agent."),
+    ("enforce-marker-script-shape.sh:277",
+     "marker.sh invocation denied (path traversal '..' detected). Command "
+     "(truncated): ~/.claude/scripts/marker.sh write foo"),
+    ("enforce-marker-script-shape.sh:353",
+     "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus"),
+    ("check-claude-md-length.sh:85",
+     "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
+     "Reduce to the limit or fewer lines before committing."),
+    ("check-skill-length.sh:87",
+     "Skill length gate: one or more SKILL.md files grew past their per-skill limit. "
+     "Reduce to the limit or fewer lines before committing."),
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures pinning today's actual on-disk wording, added alongside — never
+# replacing — the frozen fixtures above copied from an earlier rewrite. Both
+# eras must classify identically. lib-source needs no separate fixture set
+# here: TestDenialHookLabelEnumerationRealHooks's
+# test_bootstrap_lib_sh_failure_produces_enumerated_label already drives all
+# 26 gate hooks' real, on-disk bootstrap wording through a subprocess and
+# asserts lib-source, which is stronger proof of current wording than a
+# hand-transcribed string. Only _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES
+# below is itself subprocess-verified (via run_hook_reason); the
+# helper-proc and deny-encode groups are hand-transcribed snapshots with no
+# tripwire against a later body-text edit that leaves the
+# classification-relevant substring untouched.
+# ---------------------------------------------------------------------------
+
+# block-gh-pr-merge.sh and deny-env-reads.sh are the sharpest cases: each
+# hook's own message rewrite deleted a "for <gate> gate" clause from its
+# parse-failure sentence, so a test that only checked the input-parse
+# fragment would miss a corrected sentence that dropped a clause.
+_INPUT_PARSE_CURRENT_WORDING_SHARP_CASES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh", "Blocked by gh-pr-merge gate: could not parse tool-input JSON."),
+    ("deny-env-reads.sh", "Blocked by env-read gate: could not parse tool-input JSON."),
+)
+
+# deny-pii-in-commits.sh's action-carrying lead-in folded into the body:
+# "Commit blocked by PII/credential guard:" became "Blocked by PII commit
+# gate: Commit — ", moving the action into the body rather than deleting it
+# a second time. block-gh-pr-merge.sh's helper-proc site is the plain-strip
+# case: it carried no gate name at all before the rewrite ("Blocked: ..."),
+# so it gained one rather than losing a clause.
+_HELPER_PROC_CURRENT_WORDING_FIXTURES: tuple[tuple[str, str], ...] = (
+    ("block-gh-pr-merge.sh",
+     "Blocked by gh-pr-merge gate: could not determine whether 'gh pr merge 123' invokes gh "
+     "pr merge (status 2) — sed/tr may be missing, killed, or errored. Failing closed per "
+     "this gate's documented fail-closed posture rather than letting an unscanned command "
+     "bypass the self-merge block."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not split the command into fragments "
+     "(exit 2) — sed may be missing, killed, or errored. Failing closed rather than allowing "
+     "an unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not quote-strip a command fragment (exit 2) "
+     "— sed/tr may be missing, killed, or errored. Failing closed rather than allowing an "
+     "unscanned git commit."),
+    ("deny-pii-in-commits.sh",
+     "Blocked by PII commit gate: Commit — could not quote-strip the scan target (exit 2) — "
+     "sed/tr may be missing, killed, or errored. Failing closed rather than scanning with "
+     "degraded quote-split coverage."),
+)
+
+# deny-encode's shared preamble wraps whatever underlying reason the caller
+# passed; this pins the cascade's precedence still holding when that
+# underlying reason is today's on-disk wording rather than the older
+# "Blocked: ..." shape _DENY_ENCODE_FIXTURE above wraps.
+_DENY_ENCODE_CURRENT_WORDING_FIXTURE = (
+    "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
+    "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
+    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
+    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
+    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
+    "reason follows.\nBlocked by code-review gate: could not parse tool-input JSON.\n"
+)
+
+# _lib.sh's own field-shift deny is a deliberate 0x1f-injection bypass
+# attempt, pinned to classify behavioral rather than input-parse — the
+# strongest available signal that the agent tripped a gate rather than
+# encountering harness noise. Duplicated from test_lib.py's
+# _FIELD_SHIFT_DENY_MESSAGE per this repo's DAMP-test-code convention.
+_FIELD_SHIFT_DENY_MESSAGE = (
+    "a tool-input field contained a Unit Separator (U+001F) byte, which would shift "
+    "extracted-field boundaries — refusing rather than acting on values that may not be the "
+    "ones the harness sent."
+)
+
+
+class TestDenialCauseKind:
+    """Pins _denial_cause_kind's four infra markers plus its behavioral
+    fallback against real and hand-transcribed denial wording. No test here
+    may call git show/git merge-base — every fixture literal is the hook's
+    current wording, copied once from the working tree, so a green run
+    here is evidence about today's text specifically."""
+
+    @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
+    def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "lib-source", (
+            f"{hook_name}'s bootstrap wording {message!r} did not classify lib-source"
+        )
+
+    @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_FIXTURES)
+    def test_parse_failure_wording_classifies_input_parse(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "input-parse", (
+            f"{hook_name}'s parse-failure wording {message!r} did not classify input-parse"
+        )
+
+    @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES)
+    def test_real_subprocess_parse_failure_matches_corrected_wording(self, hook_name, message):
+        """The sharpest wording-regression case: each hook's own message
+        rewrite deleted the "for <gate> gate" clause from
+        block-gh-pr-merge.sh's and deny-env-reads.sh's parse-failure
+        sentences, so this drives the real hook and asserts the exact
+        corrected message — not merely that the input-parse fragment still
+        matches somewhere."""
+        got = run_hook_reason(HOOKS_DIR / hook_name, {"tool_name": "Bash", "tool_input": "a string"})
+        assert got == message
+        assert _mod._denial_cause_kind(got) == "input-parse"
+
+    @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_FIXTURES)
+    def test_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "helper-proc", (
+            f"{hook_name}'s failing-closed wording {message!r} did not classify helper-proc"
+        )
+
+    def test_helper_proc_fixtures_cover_all_thirteen_census_hooks(self):
+        """Thirteen gate hooks carry at least one helper-proc ("failing
+        closed") deny; a fixture list that silently dropped one would still
+        pass the parametrized test above, so this pins the coverage itself."""
+        covered = {hook_name for hook_name, _message in _HELPER_PROC_FIXTURES}
+        assert covered == {
+            "deny-credential-bash-reads.sh", "block-gh-pr-merge.sh", "deny-network-installs.sh",
+            "deny-invisible-commit-content.sh", "deny-pii-in-commits.sh", "deny-repo-relocation.sh",
+            "deny-reviewer-tree-mutation.sh", "require-code-review.sh", "require-ready-for-review.sh",
+            "enforce-marker-script-shape.sh", "deny-private-project-refs.sh", "require-respond-pr.sh",
+            "deny-escaped-backticks-in-pr-body.sh",
+        }
+
+    @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_CURRENT_WORDING_FIXTURES)
+    def test_current_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
+        assert _mod._denial_cause_kind(message) == "helper-proc", (
+            f"{hook_name}'s current failing-closed wording {message!r} did not classify helper-proc"
+        )
+
+    def test_deny_encode_preamble_classifies_deny_encode(self):
+        assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_deny_encode_precedes_input_parse_when_both_markers_present(self):
+        """The deny-encode preamble wraps the underlying reason verbatim, so
+        a jq outage during a parse-failure deny carries both markers in one
+        message; deny-encode must win because the outage that broke jq's
+        deny-envelope encoding is also what broke the input parse."""
+        assert "could not parse tool-input json" in _DENY_ENCODE_FIXTURE.lower()
+        assert _mod._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+
+    def test_current_deny_encode_preamble_classifies_deny_encode(self):
+        """The deny-encode preamble's cascade precedence holds when the
+        underlying wrapped reason is today's on-disk wording too, not only
+        the older shape _DENY_ENCODE_FIXTURE wraps."""
+        assert "could not parse tool-input json" in _DENY_ENCODE_CURRENT_WORDING_FIXTURE.lower()
+        assert _mod._denial_cause_kind(_DENY_ENCODE_CURRENT_WORDING_FIXTURE) == "deny-encode"
+
+    def test_real_subprocess_input_parse_classifies_input_parse(self):
+        """A real .tool_input-is-a-string payload, which _lib.sh's own
+        comment documents as the structural-type-error trigger that fails
+        the shared jq call before any hook-specific logic runs."""
+        message = run_hook_reason(
+            HOOKS_DIR / "require-code-review.sh",
+            {"tool_name": "Bash", "tool_input": "a string"},
+        )
+        assert message is not None
+        assert _mod._denial_cause_kind(message) == "input-parse"
+
+    @pytest.mark.parametrize("hook_file,message", _BEHAVIORAL_FIXTURES)
+    def test_behavioral_wording_classifies_behavioral(self, hook_file, message):
+        assert _mod._denial_cause_kind(message) == "behavioral", (
+            f"{hook_file}'s wording {message!r} did not classify behavioral"
+        )
+
+    def test_field_shift_deny_classifies_behavioral(self):
+        """_lib.sh's own field-shift deny is a deliberate 0x1f-injection
+        bypass attempt and must classify behavioral, not input-parse — the
+        strongest available signal that the agent tripped a gate rather
+        than encountering harness noise. Guards against a later edit
+        accidentally giving it an infra marker."""
+        assert _mod._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
+
+    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self):
+        """Recorded limitation, adversarial case: an agent-controlled Read
+        path containing a cause-marker substring reclassifies a genuinely
+        behavioral env-read denial as helper-proc in this derived aggregate.
+        The gate still denies in real time and the raw record is unchanged;
+        review-trace's own cause= line recovers the individual event."""
+        file_path = "/tmp/failing closed.env"
+        message = (
+            f"Read of '{file_path}' denied by env-read gate. Dotenv files commonly hold "
+            "secrets; reading pulls them into Claude's conversation context. If this is a "
+            "non-secret template, rename it to .env.example, .env.template, or .env.sample. "
+            f"Otherwise inspect it with a shell command (e.g. `! cat {file_path}`) instead of "
+            "the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+        )
+        assert _mod._denial_cause_kind(message) == "helper-proc"
 
 
 # ---------------------------------------------------------------------------
@@ -14386,6 +16010,173 @@ class TestSubagentsDeclaredRootsMultiRoot:
         assert "account-1/branch-1" in captured.out
         assert "account-2/branch-1" in captured.out
 
+    def test_this_repo_via_declared_roots_discloses_branch_raw(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed"),
+            ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_subagent_mix_this_repo_via_declared_roots_discloses_branch_raw(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """cmd_subagent_mix's own --this-repo x declared-roots-file
+        coverage, mirroring test_this_repo_via_declared_roots_discloses_branch_raw
+        above for cmd_subagents -- closes the asymmetry where only
+        cmd_subagents' declared-roots path (as opposed to explicit
+        --config-dir, already covered by TestSubagentMixMultiRoot) had this
+        coverage."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed", content=[_agent_use(f"a{idx}", "staff-sdet")]),
+            ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_this_repo_discloses_attested_main_thread_branch_but_not_sidechain_only_branch(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """One session's main-thread record attests branch 'alpha'; its own
+        sidechain record carries a different branch 'beta' with no
+        main-thread attestation anywhere in scope -- alpha discloses raw
+        and beta prints as account-<K>/branch-<N>, in the same run. Both
+        halves asserted together so the contrast is what fails."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="alpha"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="beta", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/alpha\b", out)
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "beta" not in out
+
+    def test_this_repo_attestation_is_corpus_wide_not_since_window_scoped(
+        self, fake_projects, fake_config_dir_factory, capsys, monkeypatch
+    ):
+        """main_thread_branches attestation runs before the --since filter
+        and is never narrowed by it -- a branch attested by a main-thread
+        record outside the --since window still discloses raw for an
+        in-window sidechain record on that same branch. Pins this as
+        intentional: the attestation question is whether a real
+        main-thread session ever used this branch, not whether the
+        attesting record itself appears in the displayed table."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        old_ts = datetime.fromtimestamp(fixed_now - 10 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        recent_ts = datetime.fromtimestamp(fixed_now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest-window"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="gamma", ts=old_ts),  # main-thread, outside --since 1d
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="gamma", sidechain=True, ts=recent_ts),  # in-window
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)], since="1d")
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/gamma\b", out)
+
+    def test_this_repo_branch_attestation_collision_residual_folds_unattested_sidechain_into_disclosed_row(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Accepted residual: attestation is keyed on (root_idx, branch) --
+        a same-account, same-string check, not a same-repo check. A
+        sidechain record that happens to carry the SAME branch name as a
+        genuine main-thread record in the same account -- e.g. a subagent
+        dispatched to a different repo whose own gitBranch coincidentally
+        also reads "main" -- still folds into that disclosed row. Pinned
+        here as a deliberate, tested tradeoff, not a silent consequence."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-collision"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)  # only one branch total, and it's disclosed
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "1"  # the coincidental sidechain's own data reached the disclosed row
+
+    def test_this_repo_cross_account_attestation_independence(self, tmp_path, monkeypatch, capsys):
+        """main_thread_branches keyed on (root_idx, branch), not a flat
+        set[str] -- account A's own main-thread attestation of a generic
+        branch name must not leak disclosure to account B's own unattested
+        (sidechain-only) copy of the same branch name."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        proj_a = roots[0] / this_repo_slug
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        proj_b = roots[1] / this_repo_slug
+        proj_b.mkdir(parents=True)
+        session_id_b = "sess-b"
+        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
+            _asst("claude-opus-4-7", branch="other"),  # keeps proj_b's own top-level file non-empty
+        ])
+        _write_subagent_jsonl(proj_b, session_id_b, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)  # account A's attested row
+        assert re.search(r"account-\d+/branch-\d+", out)  # account B's unattested row stays opaque
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_single_root_prints_raw_branch_with_no_account_prefix(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch="feat")])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "account-" not in out
+
 
 class TestResolveScanRoots:
     """_resolve_scan_roots as a directly callable, unit-testable function --
@@ -14803,7 +16594,7 @@ class TestHookObservableBoundaries:
 
 
 class TestRampCurveFromCorpus:
-    def test_turn_index_bucket_edges_match_pr605_bands_including_the_gap(self):
+    def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
         """PR #605's own table never labeled turn index 10-19 (its bands jump
         from "5-10" to "20-40"); the cascading less-than lookup this reuses
         from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range

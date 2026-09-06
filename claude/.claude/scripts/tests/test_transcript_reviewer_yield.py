@@ -78,6 +78,14 @@ class TestIsReviewerSubagentType:
         assert _mod._is_reviewer_subagent_type("skill-fidelity-reviewer")
         assert not _mod._is_reviewer_subagent_type("general-purpose")
 
+    def test_plan_architect_excluded(self):
+        """plan-architect is deliberately never added to _REVIEWER_EXACT_NAMES:
+        that frozenset also gates reviewer-yield's verdict tables and
+        subagent-mix's per-agentType rows, and it can't distinguish a
+        MODE=plan-sections dispatch from a MODE=consult one, so every
+        /plan-it Step 5 dispatch would register as a reviewer round."""
+        assert not _mod._is_reviewer_subagent_type("plan-architect")
+
 
 class TestReviewerYield:
     def test_comment_discipline_reviewer_joins_and_classifies_zero_finding(self, fake_projects, capsys):

@@ -25,15 +25,21 @@
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
 # git calls below uncapped, so a stalled git (locked index, network mount)
 # hangs this gate rather than degrading gracefully.
+#
+# The commit-detection, repo-root, growth-comparison, and deny-message logic
+# is shared with check-skill-length.sh via _lib_staged_length_gate in
+# _lib.sh — this file supplies only the staged-path pattern and limit_for.
 
 set -uo pipefail
+
+DENY_GATE_LABEL="CLAUDE.md length"
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -44,33 +50,16 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by CLAUDE.md length gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by CLAUDE.md length gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Only gate Bash tool calls.
 if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
-
-# Only gate git commit commands. Checked and fail-closed, matching this
-# gate's documented fail-closed posture: an undetermined match (sed/tr
-# missing, killed, or erroring inside the helper) must not silently skip
-# the length check.
-_lib_command_invokes_git_subcmd "$COMMAND" commit
-GIT_COMMIT_MATCH_STATUS=$?
-if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
-  exit 0
-fi
-if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
-  emit_deny "Blocked by CLAUDE.md length gate: could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
-  exit 0
-fi
-
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-[ -z "$REPO_ROOT" ] && exit 0
 
 # Per-file limit override. Listed paths are repo-root-relative.
 limit_for() {
@@ -80,22 +69,8 @@ limit_for() {
   esac
 }
 
-FAIL=0
-MESSAGES=""
-while IFS= read -r f; do
-  new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
-  old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
-  limit=$(limit_for "$f")
-  if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
-    MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit $limit)\n"
-    FAIL=1
-  fi
-# Matches CLAUDE.md and AGENTS.md at the repo root, inside any .claude/ directory,
-# or at any depth inside a .claude/ directory. Does NOT match files in arbitrary
-# subdirectories (e.g. foo/CLAUDE.md) — only root-level and .claude/-scoped files.
-done < <(git diff --cached --name-only 2>/dev/null | grep -E '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$')
-
-if [ "$FAIL" -eq 1 ]; then
-  REASON=$(printf 'CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")
-  emit_deny "$REASON"
-fi
+# Matches CLAUDE.md and AGENTS.md at the repo root, inside any .claude/
+# directory, or at any depth inside a .claude/ directory. Does NOT match
+# files in arbitrary subdirectories (e.g. foo/CLAUDE.md) — only root-level
+# and .claude/-scoped files.
+_lib_staged_length_gate '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$' "one or more files grew past the 200-line limit."

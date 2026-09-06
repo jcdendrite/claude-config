@@ -15,17 +15,19 @@ from helpers import (
     run_hook_reason,
 )
 
+from .conftest import assert_cap_engaged
+
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
-SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
+SKILL_PATH = "claude-skills/skills/my-skill/SKILL.md"
 
 
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
-    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
-    count, `git` for the _lib_capped-wrapped show calls), omitting both
-    timeout(1) and gtimeout(1). Mirrors
+    (GH-783), `grep` for the path-filter match, `awk` for the line
+    count, `git` for the _lib_capped-wrapped show and diff --cached
+    --name-only calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
     shape; skips (does not silently under-symlink) when a needed real
     binary is itself absent from the test machine."""
@@ -51,7 +53,7 @@ def make_repo_with_skill(tmp_path: Path, head_lines: int) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
     skill_dir.mkdir(parents=True)
     (repo / SKILL_PATH).write_text(make_skill_content(head_lines))
     subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
@@ -76,7 +78,7 @@ def new_skill_repo(tmp_path):
     (repo / "README.md").write_text("hello\n")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    (repo / "claude" / ".claude" / "skills" / "my-skill").mkdir(parents=True)
+    (repo / "claude-skills" / "skills" / "my-skill").mkdir(parents=True)
     return repo
 
 
@@ -146,8 +148,8 @@ class TestCheckSkillLength:
         )
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
-        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
-        reach the same deny verdict as the unquoted form."""
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form."""
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
         assert (
@@ -272,8 +274,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        cr_path = "claude/.claude/skills/code-review/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "code-review").mkdir(parents=True)
+        cr_path = "claude-skills/skills/code-review/SKILL.md"
+        (repo / "claude-skills" / "skills" / "code-review").mkdir(parents=True)
         (repo / cr_path).write_text(make_skill_content(290))
         subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -295,8 +297,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        cr_path = "claude/.claude/skills/code-review/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "code-review").mkdir(parents=True)
+        cr_path = "claude-skills/skills/code-review/SKILL.md"
+        (repo / "claude-skills" / "skills" / "code-review").mkdir(parents=True)
         (repo / cr_path).write_text(make_skill_content(490))
         subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -318,8 +320,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        pr_path = "claude/.claude/skills/plan-review/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        pr_path = "claude-skills/skills/plan-review/SKILL.md"
+        (repo / "claude-skills" / "skills" / "plan-review").mkdir(parents=True)
         (repo / pr_path).write_text(make_skill_content(290))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -341,8 +343,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        routing_path = "claude/.claude/skills/plan-review/ROUTING.md"
-        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        routing_path = "claude-skills/skills/plan-review/ROUTING.md"
+        (repo / "claude-skills" / "skills" / "plan-review").mkdir(parents=True)
         (repo / routing_path).write_text(make_skill_content(290))
         subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -364,8 +366,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        routing_path = "claude/.claude/skills/plan-review/ROUTING.md"
-        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        routing_path = "claude-skills/skills/plan-review/ROUTING.md"
+        (repo / "claude-skills" / "skills" / "plan-review").mkdir(parents=True)
         (repo / routing_path).write_text(make_skill_content(490))
         subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -389,8 +391,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        pr_path = "claude/.claude/skills/pr-description/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "pr-description").mkdir(parents=True)
+        pr_path = "claude-skills/skills/pr-description/SKILL.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
         (repo / pr_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -412,8 +414,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        pr_path = "claude/.claude/skills/pr-description/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "pr-description").mkdir(parents=True)
+        pr_path = "claude-skills/skills/pr-description/SKILL.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
         (repo / pr_path).write_text(make_skill_content(205))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -428,48 +430,30 @@ class TestCheckSkillLength:
             == "deny"
         )
 
-    def test_memory_files_skill_over_default_under_override_allows(
-        self, isolated_home, tmp_path
-    ):
-        """ai-instruction-and-memory-files/SKILL.md gets a 215-line cap; 210 lines (over 200, under 215) → allow."""
+    def test_memory_files_skill_falls_to_default_limit(self, isolated_home, tmp_path):
+        """ai-instruction-and-memory-files/SKILL.md gets no per-skill override.
+
+        Regression test: guards against a future `limit_for()` edit re-adding
+        any override above the 200-line default for this path. 195 (init)
+        sits under the default; 201 (restage) is the minimal over-default,
+        growing value, so it denies here. A re-added override anywhere above
+        200 would put 201 back under that override's own ceiling and allow
+        instead, so 195/201 pins the default with no gap between the two
+        behaviors.
+        """
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
+        memory_path = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
+        (repo / "claude-skills" / "skills" / "ai-instruction-and-memory-files").mkdir(
             parents=True
         )
         (repo / memory_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / memory_path).write_text(make_skill_content(210))
-        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_memory_files_skill_over_override_denies(self, isolated_home, tmp_path):
-        """ai-instruction-and-memory-files/SKILL.md over the 215-line override and growing → deny."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
-            parents=True
-        )
-        (repo / memory_path).write_text(make_skill_content(210))
-        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        (repo / memory_path).write_text(make_skill_content(216))
+        (repo / memory_path).write_text(make_skill_content(201))
         subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
         assert (
             run_hook(
@@ -494,7 +478,7 @@ class TestCheckSkillLength:
         """
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        subdir = skill_repo / "claude"
+        subdir = skill_repo / "claude-skills"
         assert (
             run_hook(
                 CHECK_SKILL_LENGTH_HOOK,
@@ -544,3 +528,54 @@ class TestCheckSkillLength:
             )
             == "allow"
         )
+
+    # --- Newly-capped `git diff --cached --name-only` and `git rev-parse
+    # --is-inside-work-tree` (_lib_staged_length_gate) ---
+
+    @pytest.mark.timing
+    def test_staged_diff_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git diff --cached --name-only`'s _lib_capped wrap (added to
+        _lib_staged_length_gate alongside the shared driver) must actually
+        engage its 5s cap rather than hang, mirroring the `git show` calls'
+        pre-existing _lib_capped wrap. A capped, empty file list means no
+        staged SKILL.md is scanned, so the gate degrades to allow rather
+        than hanging — same degrade-not-hang shape the header comment
+        documents for a machine lacking timeout(1)/gtimeout(1) entirely."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$1" = "diff" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_repo_detection_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git rev-parse --is-inside-work-tree`'s _lib_capped wrap (added to
+        _lib_staged_length_gate alongside the shared driver) must actually
+        engage its 5s cap rather than hang, mirroring the `git diff` cap
+        coverage immediately above it. A capped, empty result isn't the
+        literal string "true", so the gate degrades to allow rather than
+        hanging — same degrade-not-hang shape. One instance here suffices
+        for both check-skill-length.sh and check-claude-md-length.sh: the
+        capped call is caller-invariant, running identically for both hooks
+        before either caller's own logic."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$1" = "rev-parse" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"

@@ -41,12 +41,14 @@
 # env vars which git itself reads and which a committed config can pre-set.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
+DENY_GATE_LABEL="worktree-enforcement"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -57,13 +59,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by worktree-enforcement hook (file-writes): could not source _lib.sh."
+  emit_deny "file-writes arm. could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by worktree-enforcement hook (file-writes): could not parse tool-input JSON. Refusing to evaluate worktree discipline under malformed input."
-
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+_lib_parse_tool_input_or_deny "file-writes arm. could not parse tool-input JSON. Refusing to evaluate worktree discipline under malformed input."
 
 # Only applies to file-writing tools; other tools pass through immediately.
 case "$TOOL_NAME" in
@@ -145,7 +145,7 @@ GIT_COMMON_DIR=$(git -C "$lookup_dir" rev-parse --path-format=absolute --git-com
 # Untestable deterministically without simulating a race between the two
 # rev-parse calls above, so no regression test pins this boundary.
 if [ -z "$GIT_DIR_ABS" ] || [ -z "$GIT_COMMON_DIR" ]; then
-  emit_deny "Blocked by worktree-enforcement hook (file-writes): could not determine git state for '$FILE_PATH'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or spawn an agent with isolation: worktree."
+  emit_deny "file-writes arm. could not determine git state for '$FILE_PATH'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run $TOOL_NAME from inside a linked worktree — cd into an existing worktree under .claude/worktrees/."
   exit 0
 fi
 
@@ -157,7 +157,7 @@ if [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ]; then
   WAS_UNLOCKED=false
   _lib_worktree_lock_absent "$GIT_DIR_ABS" && WAS_UNLOCKED=true
   COLLISION_REASON=$(_lib_worktree_collision_guard "$lookup_dir" "$GIT_COMMON_DIR") || {
-    emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+    emit_deny "file-writes arm. $TOOL_NAME targets '$FILE_PATH' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
     exit 0
   }
   if $WAS_UNLOCKED; then
@@ -168,5 +168,5 @@ fi
 
 # In the main working tree: deny.
 REL_PATH="${FILE_PATH#"$REPO_ROOT"/}"
-emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH — or spawn an agent with isolation: worktree.$(_lib_stray_marker_hint "$REPO_ROOT")"
+emit_deny "file-writes arm. $TOOL_NAME targets '$FILE_PATH' which is in the main working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Write the file at its worktree path instead — e.g. .claude/worktrees/<branch>/$REL_PATH.$(_lib_stray_marker_hint "$REPO_ROOT")"
 exit 0

@@ -16,12 +16,21 @@ path's contents), plus the invoking Bash command's own text — the last of
 these only when the staged diff is non-empty. For `gh pr create`/`gh pr edit`
 and a mutating `gh api` call, the target is the command's own text plus any
 referenced-file contents: `--body-file`/`--template` (or `-F`/`-T`) for
-`gh pr`, `--input` or a `-f`/`-F key=@path` field value for `gh api`.
-Because the command's own
+`gh pr`, `--input` or a `-f`/`-F key=@path` field value for `gh api`. For
+`gh issue create`/`gh issue comment`/`gh issue edit`, the target is the
+command's own text plus any `--body-file` (or `-F`) referenced-file
+contents — the same extractor `gh pr` uses, since `gh issue` shares that
+flag shape but has no `--template`/`-T` flag. Because the command's own
 text is in scope, a `cd`-into-a-home-rooted-path prefix chained into the same
 Bash call as the gated command self-matches the home-rooted-path detector
 below even when the diff and message are clean — run the `cd` as its own
 earlier call and issue the gated command alone.
+
+`gh pr`/`gh issue` surface detection resolves positional words through gh's
+own cobra-based subcommand grammar, so a flag interposed before the
+subcommand cannot separate a surface word from it; see
+`deny-private-project-refs.sh`'s own `fragment_gh_gated_surface` header
+comment for that grammar's one residual rather than restating it here.
 
 `deny-private-project-refs.sh` runs three scans, in order:
 
@@ -55,16 +64,21 @@ definitions.
 | Home-rooted path | a path rooted at `/Users/<username>/` or `/home/<username>/` | a relative or repo-rooted path |
 | Long hex identifier | a 32+ character contiguous hex run, or a UUID-shaped four-hyphen-group hex sequence | a shorter hex run (e.g. a short git SHA) |
 | Internal hostname | a hostname ending in `.internal`, `.corp`, `.local`, `.lan`, `.intranet`, or `.private` — for `.internal`/`.corp`/`.lan`/`.intranet`/`.private`, also an FQDN shape like `host[.]corp[.]example[.]com` where the TLD word is a subdomain label, not the string end | a hostname on any other TLD, or a filename convention like `settings.local.json` (only `.local`'s boundary excludes a following dot-segment — `.local` doubles as a common per-machine-override filename convention, e.g. `[.]env[.]local`, that the other five words don't) |
-| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word (also matches a markdown anchor link sharing the same shape, deliberately — see below) | a plain GitHub issue reference like `#421` (all-digit, excluded so this scan doesn't collide with ordinary issue cross-references) |
+| Slack-channel shape | a `#`-prefixed lowercase-hyphenated word written outside markdown link syntax | a plain GitHub issue reference like `#421` (all-digit runs are excluded). A markdown anchor link's fragment inside `[text](destination#<anchor-name>)` is exempted too — see below |
 
 Every example above is deliberately non-matching — e.g. the `<username>`
 placeholder uses `<`, which falls outside the detector's `[A-Za-z0-9_.-]`
 charset — so committing this table doesn't trip its own detectors.
 
-The Slack-channel detector intentionally also matches markdown anchor links
-(e.g. `docs/skills.md#<heading-slug>`), which share the same
-lowercase-hyphenated shape as a real channel name; rephrase around a false
-positive rather than loosen the charset.
+The Slack-channel detector still matches a bare anchor fragment like
+`docs/skills.md#<heading-slug>`, since it shares the real-channel-name
+shape. Rephrase around that false positive rather than loosening the
+charset. An anchor fragment inside a real link's destination —
+`[text](other-file.md#<anchor-name>)` — is exempted instead, so a
+functional cross-file anchor link doesn't need rewording. That exemption is
+purely syntactic: it doesn't check that the destination resolves to a real
+file. See `_LIB_SLACK_CHANNEL_SHAPE_REGEX`'s comment in `_lib.sh` for the
+exemption's matching mechanics.
 
 ## Why the blocklist can't be armed by default
 
@@ -202,14 +216,10 @@ measurement time, which the wide ranges below partly reflect):
 | 500 KB | 894ms | 837–1,017ms |
 
 This still exceeds this repo's stated hook performance budget (<100ms per
-fire), but is a real reduction from the six-separate-spawns baseline
-previously recorded here (835ms/908ms/1,802ms medians): collapsing the six
-structural detectors' unconditional per-fire spawns into one combined-pattern
-fast-path spawn (falling through to the original six only when it matches)
-cut the 5 KB and 50 KB medians by roughly 23%, and the 500 KB median by
-roughly 50% — the larger body size sees the bigger win because each spawn
-saved also means one fewer large here-string bash materializes to a temp
-file before exec. Subprocess-spawn overhead still dominates over
+fire). The six structural detectors run as one combined-pattern fast-path
+spawn, falling through to the original six only when it matches, so a
+here-string bash materializes to a temp file before exec at most once per
+fire instead of up to six times. Subprocess-spawn overhead still dominates over
 byte-scanning cost — the fast path itself, plus the pre-existing tracker-ID
 and blocklist scans' own subprocess calls, remain unchanged — which is why
 cost still does not scale cleanly with body size. At commit/PR-authoring
@@ -218,15 +228,6 @@ absolute terms but is still a measured budget overrun, not a clean pass — a
 future revision that needs more headroom should look at collapsing the
 remaining tracker-ID and blocklist `grep` spawns into the same fast-path
 treatment.
-
-## Known gaps
-
-`gh issue create` and `gh issue comment` publish content the same way
-`gh pr create` and `gh api` do, but the hook's dispatch logic has no branch
-recognizing `gh issue` at all — content posted that way is never scanned by
-any of the three scans above. Closing this is separate work: `gh issue`
-takes its body via `--body` inline text, not the `-f`/`-F` field-value-file
-flags the `gh api` scan already resolves.
 
 ## For fork contributors
 

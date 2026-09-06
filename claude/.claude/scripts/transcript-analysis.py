@@ -27,6 +27,7 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from _config_dir import config_dir
@@ -95,6 +96,7 @@ from transcript_analysis.redaction import (
     _redact_proj_label,
     _redact_session_id,
     _RedactMapKey,
+    _root_scoped_display_label,
 )
 from transcript_analysis.render import (
     _RECENT_LOOKBACK_N,
@@ -793,18 +795,35 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     row — an MCP server name is a per-account integration identifier.
 
     --since limits both tables to records with a timestamp on or after the
-    window start; the corpus-wide spawn and sidechain-turn counters feeding
+    window start. The corpus-wide spawn and sidechain-turn counters feeding
     _warn_if_subagent_format_drift are read before this filter and are never
     narrowed by it, so a narrow --since window cannot manufacture a false
-    format-drift warning. --config-dir (repeatable) scans additional Claude
-    Code config directories the same way cost does; under more than one root,
-    branch names are redacted (via _assign_root_scoped_redact_label, account-<K>/
-    branch-<N>) since a raw branch slug from a foreign account would
-    otherwise be printed, and _DO_NOT_PUBLISH_BANNER is stamped on stdout
-    and stderr.
+    format-drift warning.
+
+    --config-dir (repeatable) scans additional Claude Code config
+    directories the same way cost does.
+    Under more than one root, branch names are redacted (via
+    _root_scoped_display_label, account-<K>/branch-<N>) since a raw branch
+    slug from a foreign account would otherwise be printed.
+    _DO_NOT_PUBLISH_BANNER is stamped on stdout and stderr under multi-root.
+    Under --this-repo, a branch prints raw (account-<K>/<branch>) only when
+    a non-sidechain record attested that same (root, branch) pair anywhere
+    in the corpus -- a branch seen only on a sidechain record stays opaque,
+    since a subagent's own gitBranch can silently name a different repo than
+    its parent session's. This attestation is corpus-wide, not narrowed by
+    --since: a branch used by a real main-thread session outside the
+    current --since window still discloses, since the question being
+    answered is "did this repo ever use this branch," not "does this
+    exact record appear in the displayed table." The same is true of
+    --branches -- attestation is recorded before that filter too, though
+    only the --since case carries a dedicated regression test.
+    --this-repo's disclosure is repo-agnostic: it applies to whichever repo
+    --this-repo resolves to for the invoking CWD, not specifically to
+    claude-config.
     """
     roots = _resolve_cost_roots(args, "subagents")
     multi_root = len(roots) > 1
+    this_repo = args.this_repo
     branch_filter = _branch_filter(args)
     since_ts, _since_raw = _parse_since_nd_arg(args, "subagents")
 
@@ -841,6 +860,11 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     branch_tool_bytes: dict[tuple[int | None, str], dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
+    # (root_index_or_None, raw gitBranch) pairs a non-sidechain record attested.
+    # --this-repo discloses a branch raw only when it's a member of this set,
+    # since a sidechain record's own gitBranch can silently name a different
+    # repo than its parent session's.
+    main_thread_branches: set[tuple[int | None, str]] = set()
     corpus_spawns = 0
     corpus_sidechain_turns = 0
 
@@ -868,6 +892,8 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                     if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
                         tool_use_names[block["id"]] = block.get("name") or "unknown"
                 branch = rec.get("gitBranch") or ""
+                if branch and not bool(rec.get("isSidechain")):
+                    main_thread_branches.add((root_idx, branch))
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
                 if since_ts is not None:
@@ -879,6 +905,8 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                 branch_data[(root_idx, branch)][thread][fam] += 1
             elif rec_type == "user":
                 branch = rec.get("gitBranch") or ""
+                if branch and not bool(rec.get("isSidechain")):
+                    main_thread_branches.add((root_idx, branch))
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
                 if since_ts is not None:
@@ -909,11 +937,12 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     def _branch_label(key: tuple[int | None, str]) -> str:
         root_idx, branch = key
         return (
-            _assign_root_scoped_redact_label(
-                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map
+            _root_scoped_display_label(
+                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map,
+                disclose=this_repo and key in main_thread_branches,
             )
             if root_idx is not None
-            else branch
+            else _sanitize_table_cell(branch)
         )
 
     print(
@@ -953,7 +982,7 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                         continue
                     row_label = label if first else ""
                     first = False
-                    print(f"{row_label:<40} {thread:<10} {tool_name:<20} {nbytes:>18,}")
+                    print(f"{row_label:<40} {thread:<10} {_sanitize_table_cell(tool_name):<20} {nbytes:>18,}")
 
 
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
@@ -971,6 +1000,13 @@ _UNREQUESTED_MODEL_LABEL = "(none)"
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
+
+# A plan-architect Agent/Task dispatch whose prompt's first line is anything
+# other than this literal is a consult. This re-expresses
+# log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
+# see docs/design-decisions.md §48 for the cross-runtime duplication rationale.
+_ARCHITECT_CONSULT_SUBAGENT_TYPE = "plan-architect"
+_ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
 
 # Shared by review-trace's two zero-match termini (default timeline and
 # --deny-summary) so both read identically under the scope header.
@@ -1084,52 +1120,52 @@ _DENIAL_HOOK_NAME_COLON_RE = re.compile(
     rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate):", re.IGNORECASE
 )
 
-# The hand-maintained set of prose labels hooks/*.sh actually emits — sourced
-# by grepping every hook's emit_deny call, not from hooks/*.sh basenames
-# (which match none of these; see the module-level docstring for why). A
-# captured name is trusted only if it's a member of this set; anything else
-# (a coincidental match, an unanticipated wording, an unbounded interpolated
-# value that happened to survive the character-class bound) falls to
-# _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim. Regression
-# coverage: TestDenialHookLabelEnumeration in test_transcript_analysis.py
-# drives each hook's real deny-path wording and asserts the label it
-# produces is a member here, so a hook's wording change or a new hook shows
-# up as a test failure rather than a silently stale set.
+# The hand-maintained set of prose labels hooks/*.sh actually emits. Every
+# gate hook declares its label once as DENY_GATE_LABEL, read by both the
+# bootstrap emit_deny stub and _lib_emit_deny; this set mirrors that
+# declaration. A captured name is trusted only if it's a member of this set;
+# anything else falls to _DENY_SUMMARY_UNMATCHED_HOOK rather than being
+# echoed verbatim. Examples of "anything else": a coincidental match, an
+# unanticipated wording, an unbounded interpolated value that survived the
+# character-class bound. Regression coverage: TestDenialHookLabelEnumeration
+# in test_transcript_analysis.py drives each hook's real deny-path wording
+# and asserts the label it produces is a member here, so a hook's wording
+# change or a new hook shows up as a test failure rather than a silently
+# stale set.
 _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
-    # "blocked by <name> hook/gate" — one entry per hooks/*.sh label.
-    "gh-pr-merge",  # block-gh-pr-merge.sh:49
-    "CLAUDE.md length",  # check-claude-md-length.sh:42
-    "skill length",  # check-skill-length.sh:41
-    "credential-path Bash",  # deny-credential-bash-reads.sh:27
-    "credential-file read",  # deny-credential-file-reads.sh:27
-    "data-file read",  # deny-data-file-reads.sh:65
-    "env-read",  # deny-env-reads.sh:47
-    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh:46
-    "network-install",  # deny-network-installs.sh:40
-    "PII commit",  # deny-pii-in-commits.sh:127
-    "redaction",  # deny-private-project-refs.sh:180
-    "repo-relocation",  # deny-repo-relocation.sh:63
-    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh:146
-    "marker-script-shape",  # enforce-marker-script-shape.sh:68
-    "settings session-keys",  # guard-settings-session-keys.sh:49
-    "code-review",  # require-code-review.sh:48
-    "memory-skill",  # require-memory-skill.sh:59
-    "ai-instruction-and-memory-files",  # require-memory-skill.sh:125
-    "plan-review",  # require-plan-review.sh:66
-    "plan-review routing",  # require-routing-read.sh:68
-    "ready-for-review",  # require-ready-for-review.sh:80
-    "respond-pr",  # require-respond-pr.sh:69
-    "routing-read",  # require-routing-read.sh:27
-    "stow-reminder",  # require-stow-reminder.sh:71
-    "worktree-enforcement",  # require-worktree-for-file-writes.sh:50, require-worktree-for-git-writes.sh:91
-    # "<name> invocation denied" (_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE).
-    "marker.sh",  # enforce-marker-script-shape.sh:277,353
-    # "<name> gate:"/"<name> hook:" (_DENIAL_HOOK_NAME_COLON_RE) — a hook
-    # stating its own label as the message's own prefix. check-claude-md-length.sh:85's
-    # message reads "CLAUDE.md/AGENTS.md length gate: ..."; '/' isn't in the
-    # name-shaped class, so only the AGENTS.md half of the label survives.
-    "AGENTS.md length",  # check-claude-md-length.sh:85
-    "Skill length",  # check-skill-length.sh:87
+    # "blocked by <name> hook/gate" — one entry per hooks/*.sh DENY_GATE_LABEL.
+    "gh-pr-merge",  # block-gh-pr-merge.sh
+    "CLAUDE.md length",  # check-claude-md-length.sh
+    "skill length",  # check-skill-length.sh
+    "credential-path Bash",  # deny-credential-bash-reads.sh
+    "credential-file read",  # deny-credential-file-reads.sh
+    "data-file read",  # deny-data-file-reads.sh
+    "env-read",  # deny-env-reads.sh
+    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh
+    "network-install",  # deny-network-installs.sh
+    "PII commit",  # deny-pii-in-commits.sh
+    "redaction",  # deny-private-project-refs.sh
+    "repo-relocation",  # deny-repo-relocation.sh
+    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh
+    "marker-script-shape",  # enforce-marker-script-shape.sh
+    "settings session-keys",  # guard-settings-session-keys.sh
+    "code-review",  # require-code-review.sh
+    "memory-skill",  # require-memory-skill.sh
+    "plan-review",  # require-plan-review.sh
+    "ready-for-review",  # require-ready-for-review.sh
+    "respond-pr",  # require-respond-pr.sh
+    "routing-read",  # require-routing-read.sh
+    "stow-reminder",  # require-stow-reminder.sh
+    "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
+    "architect-consult",  # require-architect-consult.sh
+    "invisible-commit-content",  # deny-invisible-commit-content.sh
+    # Legacy-only: no active hook emits this wording. Each member is kept
+    # permanently so an older recorded transcript still classifies.
+    "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
+    "AGENTS.md length",  # check-claude-md-length.sh's "CLAUDE.md/AGENTS.md length gate:" wording, kept for legacy transcripts
+    "Skill length",  # check-skill-length.sh's "Skill length gate:" wording, kept for legacy transcripts
+    "ai-instruction-and-memory-files",  # require-memory-skill.sh's behavioral-deny wording, kept for legacy transcripts
+    "plan-review routing",  # require-routing-read.sh's behavioral-deny wording, kept for legacy transcripts
 })
 
 # --deny-summary's unmatched-hook-name bucket: a denial matched by
@@ -1249,6 +1285,25 @@ def _denial_hook_label(hook_name: str, message: str) -> str:
     return _DENY_SUMMARY_UNMATCHED_HOOK
 
 
+def _denial_cause_kind(message: str) -> str:
+    """Return one denial's infra-failure family, or the behavioral fallback.
+
+    Sibling of _denial_hook_label: same substring-cascade mechanism over the
+    message text only, never given hook_name. The cause axis is orthogonal
+    to the hook axis, so a denial carries exactly one value from each.
+    Classification matches a body fragment rather than a full sentence,
+    because the surrounding wording differs per hook. A hook that echoes
+    agent-controlled command or path text into its deny body can produce a
+    false infra classification, so counts are approximate in the same sense
+    _HOOK_DENIAL_SIGNATURE already documents.
+    """
+    lowered = message.lower()
+    for marker, kind in _DENIAL_CAUSE_MARKERS:
+        if marker in lowered:
+            return kind
+    return _DENIAL_CAUSE_BEHAVIORAL
+
+
 def _denial_command_shape(command: str) -> str:
     """Classify a denied Bash command's shape for --deny-summary.
 
@@ -1332,10 +1387,30 @@ def _friction_kind_label(tool_denial_kind: str) -> str:
     return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
 
 
+# --deny-summary's/review-trace's denial-cause vocabulary — closed, the same
+# shape as _FRICTION_KINDS above. Its tuple order fixes _print_deny_summary's
+# printed column order for the hook/gate x cause table.
+_DENIAL_CAUSE_BEHAVIORAL = "behavioral"
+_DENIAL_CAUSE_KINDS: tuple[str, ...] = (
+    _DENIAL_CAUSE_BEHAVIORAL, "lib-source", "input-parse", "helper-proc", "deny-encode",
+)
+
+# Ordered (marker, kind) cascade tried against the message in turn; the
+# first match wins. deny-encode is checked first because a jq outage also
+# fails the input parse and would otherwise be reported as the wrong cause.
+_DENIAL_CAUSE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("could not encode its deny reason", "deny-encode"),
+    ("could not source _lib.sh", "lib-source"),
+    ("could not parse tool-input json", "input-parse"),
+    ("failing closed", "helper-proc"),
+)
+
+
 def _print_deny_summary(
     hook_counts: dict[str, int],
     command_shape_counts: dict[str, int],
     hook_shape_counts: Counter[tuple[str, str]],
+    hook_cause_counts: Counter[tuple[str, str]],
     friction_counts: dict[str, int],
     pre_regime_tool_result_count: int,
     corpus_min_ts: float | None,
@@ -1346,6 +1421,8 @@ def _print_deny_summary(
     hook_shape_counts cross-tabs the hook/gate axis against the command-shape
     axis — the two marginal tables alone can't say which hook denied which
     command shape, which is the whole point of the census this feeds.
+    hook_cause_counts cross-tabs the same hook/gate axis against the
+    orthogonal denial-cause axis (_DENIAL_CAUSE_KINDS).
     """
     if corpus_min_ts is not None and corpus_max_ts is not None:
         print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
@@ -1388,6 +1465,24 @@ def _print_deny_summary(
             )
             print(row)
 
+    # Column set is the fixed _DENIAL_CAUSE_KINDS enumeration rather than
+    # sorted-observed — a zero in the lib-source column is itself the
+    # signal, so a fixed column set keeps two runs comparable. Row order
+    # matches the hook/gate marginal table above.
+    if hook_counts:
+        cause_col_width = max((len(k) for k in _DENIAL_CAUSE_KINDS), default=5) + 2
+        print(f"\n## Denials by hook/gate x cause ({total} total)\n")
+        header = f"  {'Hook':<40}" + "".join(
+            f"{_sanitize_table_cell(kind):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
+        )
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for hook, _count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
+                f"{hook_cause_counts.get((hook, kind), 0):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
+            )
+            print(row)
+
     friction_total = sum(friction_counts.values())
     print(f"\n## Friction events by kind ({friction_total} total)\n")
     print(f"{'Kind':<24} {'Count':>6}")
@@ -1402,6 +1497,17 @@ def _print_deny_summary(
     )
 
 
+def _is_architect_consult_dispatch(tool_input: dict) -> bool:
+    """True for a plan-architect Agent/Task dispatch whose prompt is a
+    consult rather than a MODE=plan-sections call — fail-safe toward
+    consult, so a missing `prompt` key or an empty first line both classify
+    as a consult. See docs/design-decisions.md §48 for why this duplicates
+    log-reviewer-round.sh's _maybe_write_consult_latch instead of sharing it."""
+    prompt = tool_input.get("prompt") or ""
+    first_line = prompt.split("\n", 1)[0]
+    return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
+
+
 def _review_trace_session_events(
     records: list[dict],
     since_ts: float | None,
@@ -1409,8 +1515,8 @@ def _review_trace_session_events(
     branch_filter: set[str] | None,
     skill_filter: str | None = None,
 ) -> tuple[list[dict], dict[str, str], int]:
-    """Detect cmd_review_trace's four per-session event kinds (skill, denial,
-    friction, reviewer-spawn) from one session's records.
+    """Detect cmd_review_trace's five per-session event kinds (skill, denial,
+    friction, reviewer-spawn, architect-consult) from one session's records.
 
     Shared by cmd_review_trace's timeline printer and _compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather
@@ -1504,17 +1610,29 @@ def _review_trace_session_events(
                         "model": evt_model,
                     })
                 elif block_name in ("Agent", "Task"):
-                    stype = (block.get("input") or {}).get("subagent_type") or ""
-                    if not _is_reviewer_subagent_type(stype):
-                        continue
-                    events.append({
-                        "kind": "reviewer-spawn",
-                        "subagent_type": stype,
-                        "ts": rec_ts_str,
-                        "line_no": line_no,
-                        "branch": evt_branch,
-                        "model": evt_model,
-                    })
+                    tool_input = block.get("input") or {}
+                    stype = tool_input.get("subagent_type") or ""
+                    if _is_reviewer_subagent_type(stype):
+                        events.append({
+                            "kind": "reviewer-spawn",
+                            "subagent_type": stype,
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                        })
+                    elif stype == _ARCHITECT_CONSULT_SUBAGENT_TYPE and _is_architect_consult_dispatch(tool_input):
+                        # A consult dispatch was initiated -- no dependence on
+                        # a tool_result, unlike log-reviewer-round.sh's
+                        # PostToolUse latch. The prompt itself never lands on
+                        # the event dict, only this classification result.
+                        events.append({
+                            "kind": "architect-consult",
+                            "ts": rec_ts_str,
+                            "line_no": line_no,
+                            "branch": evt_branch,
+                            "model": evt_model,
+                        })
 
         # --- Signal 2a: hook denials, legacy shape (attachment record) ---
         if rec_type == "attachment":
@@ -1647,6 +1765,10 @@ def _compute_deny_summary_data(
     hook_counts: dict[str, int] = defaultdict(int)
     command_shape_counts: dict[str, int] = defaultdict(int)
     hook_shape_counts: Counter[tuple[str, str]] = Counter()
+    # No separate corpus-wide cause accumulator — the per-cause total is a
+    # column sum of this cross-tab, and _DENIAL_CAUSE_KINDS is closed so
+    # every column always prints.
+    hook_cause_counts: Counter[tuple[str, str]] = Counter()
     friction_counts: dict[str, int] = defaultdict(int)
     corpus_min_ts: float | None = None
     corpus_max_ts: float | None = None
@@ -1694,14 +1816,17 @@ def _compute_deny_summary_data(
             hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
             command = tool_use_commands.get(evt["tool_use_id"], "")
             command_shape = _denial_command_shape(command)
+            cause_kind = _denial_cause_kind(evt["message"])
             hook_counts[hook_label] += 1
             command_shape_counts[command_shape] += 1
             hook_shape_counts[(hook_label, command_shape)] += 1
+            hook_cause_counts[(hook_label, cause_kind)] += 1
 
     return {
         "hook_counts": hook_counts,
         "command_shape_counts": command_shape_counts,
         "hook_shape_counts": hook_shape_counts,
+        "hook_cause_counts": hook_cause_counts,
         "friction_counts": friction_counts,
         "corpus_min_ts": corpus_min_ts,
         "corpus_max_ts": corpus_max_ts,
@@ -1713,7 +1838,7 @@ def _compute_deny_summary_data(
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
-    Four event types are detected per session:
+    Five event types are detected per session:
     - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
     - denial: a hook-blocking denial in either transcript shape — a legacy
       `attachment` record (type==hook_blocking_error) or a current-format
@@ -1725,6 +1850,10 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
       Deduped by tool_use_id in its own set, independent of denial dedup.
     - reviewer: Agent/Task spawn where subagent_type is a reviewer type per
       _is_reviewer_subagent_type
+    - architect-consult: Agent/Task spawn where subagent_type is
+      plan-architect and the prompt's first line is not the literal
+      MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
+      consult dispatch was initiated, not that it completed.
 
     denial and friction are deliberately separate event kinds: has_denial,
     denials=N, and --deny-only's session-selection all stay denial-kind-only,
@@ -1765,7 +1894,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
             _print_deny_summary(
                 data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
-                data["friction_counts"], data["pre_regime_tool_result_count"],
+                data["hook_cause_counts"], data["friction_counts"], data["pre_regime_tool_result_count"],
                 data["corpus_min_ts"], data["corpus_max_ts"],
             )
         elif data["any_session_matched"]:
@@ -1796,6 +1925,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         skill_count = sum(1 for e in events if e["kind"] == "skill")
         denial_count = sum(1 for e in events if e["kind"] == "denial")
         spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
+        consult_count = sum(1 for e in events if e["kind"] == "architect-consult")
         branches_seen = ",".join(sorted({e["branch"] for e in events}))
         models_seen = ",".join(sorted({e["model"] for e in events}))
 
@@ -1805,6 +1935,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         print(
             f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
             f"  denials={denial_count}  reviewer-spawns={spawn_count}"
+            f"  architect-consults={consult_count}"
         )
         for evt in events:
             ts_label = evt.get("ts") or "?"
@@ -1817,7 +1948,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 hook = evt['hook_name']
                 uid = evt['tool_use_id']
                 msg = evt['message']
-                print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}{suffix}")
+                cause = _denial_cause_kind(msg)
+                print(
+                    f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
+                    f"  id={uid}  msg={msg!r}{suffix}"
+                )
             elif kind == "friction":
                 fkind = _friction_kind_label(evt['friction_kind'])
                 uid = evt['tool_use_id']
@@ -1825,6 +1960,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
                 print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
+            elif kind == "architect-consult":
+                print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
 
     if not emitted_any_session:
         print(f"\n{_REVIEW_TRACE_NO_SESSIONS_MSG}")
@@ -2229,18 +2366,34 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     alternate model ID (validated against _MODEL_BASE_INPUT_RATES's keys),
     adding the Counterfactual $ and Delta (Actual − Counterfactual) columns.
     --config-dir (repeatable) scans additional Claude Code config
-    directories the same way cost does; under more than one root, both
-    branch names and subagent_type values are redacted
-    (_assign_root_scoped_redact_label) — subagent_type can name a
+    directories the same way cost does.
+    Under more than one root, both branch names and subagent_type values
+    are redacted (_root_scoped_display_label) — subagent_type can name a
     project-scoped custom agent definition, the same disclosure risk
-    gitBranch carries — and the model-mix table is keyed on the redacted
-    (root, subagent_type) pair so two accounts' same-named agentType never
-    merge into one row. --per-session is refused outright under multi-root,
-    since it would otherwise join a foreign account's own session-id prefix
-    to its branch name.
+    gitBranch carries.
+    Both tables aggregate on the raw (root, branch) / (root, subagent_type)
+    pair, not the printed label — the redacted or disclosed label is
+    computed lazily at print time (idempotently, so a value requested by
+    both tables renders the same label each time), so two accounts'
+    same-named agentType (or two raw values differing only in stripped
+    control bytes) never merge into one row.
+    --per-session is refused outright under multi-root, since it would
+    otherwise join a foreign account's own session-id prefix to its branch
+    name.
+    Under --this-repo, every branch prints raw (account-<K>/<branch>) with
+    no attestation gate: this function excludes isSidechain records before
+    ever reading gitBranch, unlike cmd_subagents, so a subagent's own
+    gitBranch never reaches this table.
+    A subagent_type prints raw only when it is tracked in this repo's own
+    agents/ directory or is a Claude Code built-in
+    (_repo_tracked_agent_type_names); every other value stays opaque.
+    --this-repo's disclosure is repo-agnostic: it applies to whichever repo
+    --this-repo resolves to for the invoking CWD, not specifically to
+    claude-config.
     """
     roots = _resolve_cost_roots(args, "subagent-mix")
     multi_root = len(roots) > 1
+    this_repo = args.this_repo
     branch_filter = _branch_filter(args)
     per_session: bool = bool(getattr(args, "per_session", False))
 
@@ -2306,17 +2459,26 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     # matching root_idx's None-under-single-root convention below.
     agent_dirs = [root.parent / "agents" for root in roots]
 
-    data: dict[str, dict] = defaultdict(
+    # Keyed on (root_index_or_None, raw gitBranch, session_suffix_or_None) —
+    # raw, never the (possibly-sanitized) display label, so two raw branch
+    # values that differ only in stripped control bytes stay distinct rows
+    # instead of silently merging their spawn/session counts. session_suffix
+    # is jsonl.stem[:8] under --per-session (always root_idx=None, since
+    # multi-root refuses --per-session), and None when sessions on the same
+    # branch aggregate into one row. The printed label (_mix_branch_label,
+    # below) translates root_idx through redact_ordinals only at print time.
+    data: dict[tuple[int | None, str, str | None], dict] = defaultdict(
         lambda: {"sessions": 0, "spawns": defaultdict(int), "skills": defaultdict(int)}
     )
-    # (possibly redacted) agentType label -> model-mix row. Only created for
-    # a type that has at least one meta.json match (even a dangling one) —
-    # a dispatch with no matching meta.json at all is excluded entirely,
-    # matching cmd_reviewer_yield's own precedent for the same join. Under
-    # multi-root, keying on the redacted label (rather than the raw
-    # subagent_type) also root-scopes this table: two accounts' same-named
-    # agentType get distinct labels and never merge into one row.
-    model_mix: dict[str, dict] = defaultdict(lambda: {
+    # (root_index_or_None, raw subagent_type) -> model-mix row. Only created
+    # for a type that has at least one meta.json match (even a dangling
+    # one) — a dispatch with no matching meta.json at all is excluded
+    # entirely, matching cmd_reviewer_yield's own precedent for the same
+    # join. Keyed on the raw tuple (not the display label) for the same
+    # reason as `data` above: root_idx alone already root-scopes two
+    # accounts' same-named agentType apart, with no dependency on the label
+    # string encoding that uniqueness.
+    model_mix: dict[tuple[int | None, str], dict] = defaultdict(lambda: {
         "runs": 0,
         "dangling": 0,
         "requested": defaultdict(int),
@@ -2353,23 +2515,15 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
                     stype = inp.get("subagent_type") or "unknown"
-                    stype_label = (
-                        _assign_root_scoped_redact_label(
-                            "agent-type", redact_ordinals[resolved_roots[root_idx]],
-                            stype, subagent_type_redact_map
-                        )
-                        if root_idx is not None
-                        else stype
-                    )
-                    session_data[branch]["spawns"][stype_label] += 1
+                    session_data[branch]["spawns"][stype] += 1
 
                     paired = dispatch_index.get(block.get("id") or "")
                     if paired is not None:
                         paired_jsonl, requested_model = paired
-                        row = model_mix[stype_label]
+                        row = model_mix[(root_idx, stype)]
                         # _declared_pin reads from the on-disk agent file, so it
                         # needs the real subagent_type (stype), never the
-                        # redacted display label (stype_label).
+                        # (possibly-redacted) display label built at print time.
                         row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
                         (
                             observed, actual_dollars, _dollars_by_class, counterfactual_dollars,
@@ -2395,14 +2549,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                         session_data[branch]["skills"][skill] += 1
 
         for branch, sd in session_data.items():
-            branch_label = (
-                _assign_root_scoped_redact_label(
-                    "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map
-                )
-                if root_idx is not None
-                else branch
-            )
-            key = f"{branch_label} [{jsonl.stem[:8]}]" if per_session else branch_label
+            key = (root_idx, branch, jsonl.stem[:8] if per_session else None)
             d = data[key]
             d["sessions"] += 1
             for stype, cnt in sd["spawns"].items():
@@ -2414,15 +2561,40 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print("No data found.")
         return
 
+    def _mix_branch_label(key: tuple[int | None, str, str | None]) -> str:
+        root_idx, branch, session_suffix = key
+        label = (
+            _root_scoped_display_label(
+                "branch", redact_ordinals[resolved_roots[root_idx]], branch, branch_redact_map,
+                disclose=this_repo,
+            )
+            if root_idx is not None
+            else _sanitize_table_cell(branch)
+        )
+        return f"{label} [{session_suffix}]" if session_suffix is not None else label
+
+    def _stype_label(key: tuple[int | None, str]) -> str:
+        root_idx, stype = key
+        return (
+            _root_scoped_display_label(
+                "agent-type", redact_ordinals[resolved_roots[root_idx]], stype, subagent_type_redact_map,
+                disclose=this_repo and stype in _repo_tracked_agent_type_names(),
+            )
+            if root_idx is not None
+            else _sanitize_table_cell(stype)
+        )
+
     print(f"{'Branch':<45} {'Sess':>5} {'Spawns':>7} {'CR':>3} {'PR':>3} {'RR':>3}  Top subagent types")
     print("-" * 120)
     for key in sorted(data):
         d = data[key]
+        root_idx = key[0]
+        branch_label = _mix_branch_label(key)
         spawns_total = sum(d["spawns"].values())
         top = sorted(d["spawns"].items(), key=lambda kv: (-kv[1], kv[0]))
-        top_str = ", ".join(f"{t}({n})" for t, n in top[:5]) or "—"
+        top_str = ", ".join(f"{_stype_label((root_idx, t))}({n})" for t, n in top[:5]) or "—"
         print(
-            f"{key:<45} {d['sessions']:>5} {spawns_total:>7} "
+            f"{branch_label:<45} {d['sessions']:>5} {spawns_total:>7} "
             f"{d['skills'].get('code-review', 0):>3} {d['skills'].get('plan-review', 0):>3} "
             f"{d['skills'].get('ready-for-review', 0):>3}  {top_str}"
         )
@@ -2434,8 +2606,9 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         header += f" {'Requested':<30} Observed"
         print(f"\n{header}")
         print("-" * len(header))
-        for stype_label in sorted(model_mix):
-            row = model_mix[stype_label]
+        for mix_key in sorted(model_mix):
+            row = model_mix[mix_key]
+            stype_label = _stype_label(mix_key)
             declared = "/".join(sorted(row["declared_seen"])) or _DECLARED_PIN_BUILT_IN
             requested_str = ", ".join(
                 f"{k}({v})" for k, v in sorted(row["requested"].items(), key=lambda kv: (-kv[1], kv[0]))
@@ -2498,6 +2671,12 @@ def _agent_frontmatter_model(agent_file_text: str) -> str | None:
 
 _DECLARED_PIN_BUILT_IN = "built-in"
 
+# Built-in Claude Code subagent_type values -- present in every install, so
+# they can't identify a project. Always allowlisted for --this-repo
+# subagent_type disclosure, regardless of whether this repo's own agents/
+# tree tracks a same-named file.
+_BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
+
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
 # "general-purpose") -- never containing "/" or "..". _declared_pin enforces
 # this shape before building a filesystem path from one, since under
@@ -2515,8 +2694,8 @@ def _declared_pin(
     --config-dir a dispatch's declared pin must be read from the account it
     actually came from. Cached per (agents_dir, agent_type), since the same
     agent_type name can resolve to a different on-disk file under a
-    different root. "built-in" when no on-disk agent file exists
-    (general-purpose, claude-code-guide, Plan carry none), the file has no
+    different root. "built-in" when no on-disk agent file exists (see
+    _BUILT_IN_AGENT_TYPES — none of those three carry one), the file has no
     `model:` frontmatter — Claude Code's own default, not a pin this repo
     can assert on — or agent_type fails the on-disk agent-file naming
     allowlist (agent_type is transcript-sourced data; without this guard, an
@@ -2538,6 +2717,56 @@ def _declared_pin(
             pin = _agent_frontmatter_model(text) or _DECLARED_PIN_BUILT_IN
     declared_pin_cache[key] = pin
     return pin
+
+
+# .resolve() is load-bearing: unresolved, a stow-symlinked invocation would
+# land on the invoking account's own <config-dir>/agents/ instead of this
+# repo's tracked tree.
+_REPO_AGENT_DEFINITIONS_DIR = Path(__file__).resolve().parent.parent / "agents"
+
+
+@lru_cache(maxsize=1)
+def _repo_tracked_agent_type_names() -> frozenset[str]:
+    """Stems of every top-level *.md file this repo's own agents/ directory
+    git-tracks, plus _BUILT_IN_AGENT_TYPES -- the --this-repo subagent_type
+    disclosure allowlist.
+
+    - Tracked state, not on-disk presence (`git ls-files` reads the index)
+      -- an untracked scratch or WIP agent file in the invoking checkout's
+      agents/ directory never allowlists its own name, since every worktree
+      of this repo is a distinct physical checkout that can hold one.
+    - `-z` avoids git's path quoting/escaping corrupting the stem for
+      unusual filenames.
+    - `check=True` makes CalledProcessError reachable at all for a non-git
+      directory -- without it, a non-zero exit leaves stdout empty and the
+      failure silently looks like "zero tracked files" instead of raising
+      into the fallback path below.
+    - Top-level entries only (no "/" in the path), matching _declared_pin's
+      own flat agents_dir / f"{agent_type}.md" resolution -- a nested
+      tracked file over-redacts, the safe direction.
+    - _REPO_AGENT_DEFINITIONS_DIR is read fresh on every call (not captured
+      as a default argument) so a test can monkeypatch the module attribute
+      and call .cache_clear() to force a re-read.
+    - Same exception set and timeout as scope._repo_scoped_project_slugs
+      (scope.py:70-77's rationale: a hung local git must not block the
+      whole CLI with no exit), diverging in one way, deliberately: failure
+      here returns the built-ins alone rather than exiting, since failing
+      closed means more redaction, and an operator's report should not die
+      because git is unavailable.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(_REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return _BUILT_IN_AGENT_TYPES
+    tracked = {
+        entry[: -len(".md")]
+        for entry in proc.stdout.split("\0")
+        if entry and "/" not in entry and entry.endswith(".md")
+    }
+    return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
 
 
 def _dispatch_usage_summary(
@@ -3454,12 +3683,12 @@ _EDIT_KNOWN_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 # This repo's own governance-hook/harness denial wordings that can deny an
-# edit-family call, matched case-insensitively — a *different*, narrower
-# purpose than _denial_hook_label's general "blocked by <name> hook/gate"
-# extraction above: three of these six (path-spelling, permissions,
-# worktree-isolation) are harness-native denial text, never a hook's own
-# "blocked by ... hook/gate" wording, so _denial_hook_label's enumerated
-# label set does not cover them.
+# edit-family call, matched case-insensitively.
+# Serves a narrower purpose than _denial_hook_label's general "blocked by
+# <name> hook/gate" extraction above. Three of these six (path-spelling,
+# permissions, worktree-isolation) are harness-native denial text rather
+# than a hook's own wording, so they fall outside _denial_hook_label's
+# enumerated label set.
 _EDIT_GOVERNANCE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("blocked by plan-review gate", "plan-review"),
     ("reviewer-tree-mutation", "reviewer-tree"),
@@ -9329,7 +9558,7 @@ _REARM_BACKTEST_DEFAULT_SPACINGS: tuple[int, ...] = (40_000, 80_000, 120_000)
 # "schema-drift" are written by nudge-handoff-near-context-cap.sh itself
 # (docs/handoff-nudge.md's "Log location" table); "handoff" is appended by
 # the handoff skill's own conversion-signal step
-# (claude/.claude/skills/handoff/SKILL.md, "After writing: record the
+# (claude-skills/skills/handoff/SKILL.md, "After writing: record the
 # conversion signal").
 _NUDGE_LOG_LINE_KINDS = ("nudged", "schema-drift", "handoff")
 
@@ -10369,7 +10598,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo. Branch names are"
+            " subdirectory, or it is rejected. Branch names are"
             " redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than one root is in scope."
         ),
     )
@@ -10393,7 +10622,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Additional Claude Code config directory to scan (repeatable). The default resolved"
             " config dir is always scanned first. Each supplied directory must contain a projects/"
-            " subdirectory, or it is rejected. Refused together with --this-repo or --per-session."
+            " subdirectory, or it is rejected. Refused together with --per-session."
             " Branch names are redacted and _DO_NOT_PUBLISH_BANNER is printed whenever more than"
             " one root is in scope."
         ),

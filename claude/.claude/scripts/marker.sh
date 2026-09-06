@@ -9,6 +9,11 @@
 
 set -u
 
+# Sibling script, same directory as marker.sh itself -- used by the `status`
+# arm below via _lib_cumulative_diff_hash. The `write cumulative-review` arm
+# reads a recorded subject instead of calling this script directly.
+PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
+
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
@@ -19,13 +24,14 @@ Subcommands:
   deactivate Remove the active-bypass marker for the given skill
   clear-stale [--dry-run]
              Evict active-bypass markers whose originating session is no
-             longer alive. --dry-run reports without removing.
+             longer alive, or whose mtime has aged past the 60-minute idle
+             window. --dry-run reports without removing.
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.
   status     Report every completion marker (code-review, skill-review,
-             plan-review, ready-for-review) for this repo and every
-             active-bypass marker (plan-review, ready-for-review,
+             plan-review, ready-for-review, cumulative-review) for this repo
+             and every active-bypass marker (plan-review, ready-for-review,
              respond-pr, memory-skill, handoff) for this session, each as
              live, historical, or absent. Takes no skill argument. Evicts a
              stale (dead-PID) active-bypass marker for this session as a
@@ -36,7 +42,7 @@ Subcommands:
              doesn't.
 
 Valid (subcommand, skill) combinations:
-  write       code-review | skill-review | plan-review | ready-for-review
+  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review
   activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
   check       code-review
@@ -119,15 +125,15 @@ _refuse_main_tree_under_enforcement() {
 }
 
 _resolve_repo_root() {
-  # tr -d '\n' is load-bearing: git rev-parse appends a trailing newline.
-  # require-* hooks compute the hash via printf '%s' "$REPO_ROOT" (no newline),
-  # so both sides must strip it to produce the same sha256 and matching paths.
+  # _lib_repo_root is the raw resolution recipe, shared with
+  # pr-diff-against-base.sh --record so both sides resolve a given tree to
+  # the identical REPO_ROOT string. require-* hooks compute the hash via
+  # printf '%s' "$REPO_ROOT" (no newline), so every side must agree exactly.
   local root
-  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
-  if [ -z "$root" ]; then
+  root=$(_lib_repo_root) || {
     printf 'marker.sh: not inside a git repository\n' >&2
     return 2
-  fi
+  }
   _refuse_main_tree_under_enforcement "$root" || return 2
   printf '%s' "$root"
 }
@@ -236,8 +242,12 @@ _status_reconciliation_flag() {
 # _status_report_active_bypass LABEL DIR_NAME SESSION_ID
 # Prints "  LABEL: live|stale|absent (...)" for `status`. Existence is
 # captured BEFORE calling _lib_active_bypass_marker_live, which evicts a
-# stale (dead-PID) marker as a side effect -- otherwise "stale" and "absent"
-# would be indistinguishable after the call evicts the file out from under us.
+# stale marker as a side effect (see that function's own docstring for its
+# two eviction triggers) -- otherwise "stale" and "absent" would be
+# indistinguishable after the call evicts the file out from under us. This
+# is a status-only read: it calls the unrefreshing predicate directly,
+# never _lib_active_bypass_marker_live_and_touch, so enumerating status
+# here can never itself extend a marker's life.
 _status_report_active_bypass() {
   local label="$1" dir_name="$2" session_id="$3"
   local marker_path="$CONFIG_DIR/$dir_name/$session_id"
@@ -246,7 +256,7 @@ _status_report_active_bypass() {
   if _lib_active_bypass_marker_live "$dir_name" "$session_id"; then
     printf '  %s: live (bypass marker present for this session)\n' "$label"
   elif [ "$existed_before" -eq 1 ]; then
-    printf '  %s: stale (dead-PID marker evicted)\n' "$label"
+    printf '  %s: stale (marker evicted: dead PID or idle timeout)\n' "$label"
   else
     printf '  %s: absent (no bypass marker for this session)\n' "$label"
   fi
@@ -398,11 +408,11 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md'
+        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md'
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (both stowed
         # and plugin locations) plus plan-review/ROUTING.md, matching what
         # require-skill-review.sh checks at commit time.
-        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md') || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
+        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md') || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID"
@@ -457,8 +467,59 @@ case "$SUBCOMMAND" in
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/ready-for-review-markers/$REPO_HASH.$SESSION_ID"
         ;;
+      cumulative-review)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # No _guard_staged_vs_unstaged call: this marker covers the
+        # committed PR-vs-base diff, not the staged diff, so that guard's
+        # staged-vs-unstaged question does not apply here.
+        #
+        # Reads the subject `pr-diff-against-base.sh --record` captured at
+        # step 3 entry rather than recomputing (design-decisions.md §50).
+        # Emptiness is checked on the canonicalized text below, not the raw
+        # file's byte count, to use one definition of "recorded" throughout.
+        SUBJECT_FILE="$CONFIG_DIR/cumulative-review-subject-markers/$REPO_HASH.$SESSION_ID"
+        if [ ! -e "$SUBJECT_FILE" ]; then
+          # shellcheck disable=SC2016 # single-quoted for literal display text (the
+          # backtick-quoted command is markdown-style formatting, not command
+          # substitution); %s below is the only intended expansion.
+          printf 'marker.sh: no recorded cumulative-review subject for %s. Run `~/.claude/scripts/pr-diff-against-base.sh --record` (step 3 already runs this) before writing this marker. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          exit 2
+        fi
+        # Command substitution strips trailing newlines the same way
+        # _lib_cumulative_diff_hash's own diff_output capture does, so the
+        # two hashing paths agree byte-for-byte on the same underlying text.
+        if ! SUBJECT_TEXT=$(cat "$SUBJECT_FILE" 2>/dev/null); then
+          # shellcheck disable=SC2016 # same literal-display-text reasoning as above.
+          printf 'marker.sh: could not read the recorded cumulative-review subject at %s (permission denied or similar). Run `~/.claude/scripts/pr-diff-against-base.sh --record` before writing this marker. Abort without writing a marker.\n' "$SUBJECT_FILE" >&2
+          exit 2
+        fi
+        if [ -z "$SUBJECT_TEXT" ]; then
+          # shellcheck disable=SC2016 # same literal-display-text reasoning as above.
+          printf 'marker.sh: the recorded cumulative-review subject for %s is empty. Run `~/.claude/scripts/pr-diff-against-base.sh --record` (step 3 already runs this) before writing this marker. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          exit 2
+        fi
+        # Compute before redirecting -- same shape as every other write arm
+        # above: `>` truncates the marker before the pipeline runs, so a
+        # failed hash would destroy a valid marker and silently force a
+        # re-review.
+        MARKER_VALUE=$(_lib_hash_diff_text "$SUBJECT_TEXT") || {
+          printf 'marker.sh: could not hash the recorded cumulative-review subject. Abort without writing a marker.\n' >&2
+          exit 2
+        }
+        # Consumed on success: bounds a recorded-but-unreviewed subject to
+        # authorizing at most one write. Chained via && rather than an `if`
+        # so a failed mkdir/printf leaves the subject for a retry. The &&
+        # chain also propagates that failure as the script's own exit
+        # status, matching every other write arm's unguarded last command.
+        mkdir -p "$CONFIG_DIR/cumulative-review-markers" \
+          && printf '%s\n' "$MARKER_VALUE" \
+            > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID" \
+          && rm -f "$SUBJECT_FILE"
+        ;;
       *)
-        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review\n" "$SKILL" >&2
+        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -523,6 +584,17 @@ case "$SUBCOMMAND" in
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
+        # Best-effort: bounds this session's own recorded-but-unwritten
+        # cumulative-review subject to this gate run. Session-suffixed so
+        # this only ever removes this session's subject, never another
+        # session's still-pending one. Repo-root resolution is unrelated to
+        # the session-scoped removal above, so a failure here must not abort
+        # it -- skip the subject cleanup instead.
+        if REPO_ROOT=$(_resolve_repo_root 2>/dev/null); then
+          rm -f "$CONFIG_DIR/cumulative-review-subject-markers/$(_marker_lib_repo_hash "$REPO_ROOT").$SESSION_ID"
+        else
+          printf 'marker.sh: could not resolve repo root; skipping cumulative-review subject cleanup.\n' >&2
+        fi
         ;;
       respond-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -560,16 +632,28 @@ case "$SUBCOMMAND" in
         esac
         stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
         entry_name=$(basename "$entry")
-        if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null; then
+        # Same two-part staleness definition _lib_active_bypass_marker_live
+        # uses: PID alive AND mtime within the 60-minute idle window. Kept
+        # as its own loop rather than delegating to that predicate, which
+        # has no dry-run mode and doesn't report which of the two triggers
+        # fired.
+        pid_alive=0
+        [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null && pid_alive=1
+        if [ "$pid_alive" -eq 1 ] && [ -n "$(find "$entry" -mmin -60 2>/dev/null)" ]; then
           KEPT=$((KEPT + 1))
           [ "$DRY_RUN" -eq 1 ] && printf '  keep: %s/%s (PID %s alive)\n' "$dir_name" "$entry_name" "$stored_pid"
         else
           EVICTED=$((EVICTED + 1))
+          if [ "$pid_alive" -eq 1 ]; then
+            reason="idle timeout, PID ${stored_pid} alive"
+          else
+            reason="PID ${stored_pid:-empty} dead"
+          fi
           if [ "$DRY_RUN" -eq 0 ]; then
             rm -f "$entry"
-            printf '  evict: %s/%s (PID %s dead)\n' "$dir_name" "$entry_name" "${stored_pid:-empty}"
+            printf '  evict: %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
           else
-            printf '  evict (dry-run): %s/%s (PID %s dead)\n' "$dir_name" "$entry_name" "${stored_pid:-empty}"
+            printf '  evict (dry-run): %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
           fi
         fi
       done
@@ -604,7 +688,7 @@ case "$SUBCOMMAND" in
 
     # skill-review: same recipe as the `write skill-review` arm above,
     # scoped to the SKILL.md/ROUTING.md pathspecs.
-    SKILL_REVIEW_PATHSPECS=('claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md')
+    SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
     SKILL_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"
@@ -629,6 +713,27 @@ case "$SUBCOMMAND" in
     # report as absent rather than error on.
     READY_FOR_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
     _status_report_completion_marker ready-for-review "$CONFIG_DIR/ready-for-review-markers" "$REPO_HASH_PREFIX" "$READY_FOR_REVIEW_VALUE"
+
+    # cumulative-review: same recipe as the `write cumulative-review` arm
+    # above, via the shared _lib_cumulative_diff_hash. Makes a network round
+    # trip (gh pr view) unlike every other line in this report, which are
+    # all local/offline. A hash that can't be computed (gh/network failure,
+    # no resolvable merge-base, or the 15s cap firing) is treated as empty
+    # here rather than aborting -- `status` is a report, not a write. No
+    # reconciliation flag: that check is documented (_status_reconciliation_flag
+    # above) as applying only to pathspec-hash markers, and the cumulative
+    # diff is not staged/unstaged tree state.
+    CUMULATIVE_DIFF_HASH_FAILED=0
+    CUMULATIVE_REVIEW_VALUE=$(_lib_cumulative_diff_hash "$REPO_ROOT" "$PR_DIFF_SCRIPT") || { CUMULATIVE_REVIEW_VALUE=""; CUMULATIVE_DIFF_HASH_FAILED=1; }
+    _status_report_completion_marker cumulative-review "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX" "$CUMULATIVE_REVIEW_VALUE"
+    # A failed computation with a marker on disk would otherwise print as
+    # "historical (hash does not match)" -- a confirmed-mismatch claim this
+    # code never actually made. Flag that distinction without changing the
+    # line above, so a reader can tell "could not verify" apart from
+    # "confirmed stale".
+    if [ "$CUMULATIVE_DIFF_HASH_FAILED" -eq 1 ] && _status_glob_has_match "$CONFIG_DIR/cumulative-review-markers" "$REPO_HASH_PREFIX"; then
+      printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, produced no output, or timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
+    fi
 
     printf '\nActive-bypass markers (this session):\n'
     _status_report_active_bypass plan-review ".plan-review-active.d" "$SESSION_ID"

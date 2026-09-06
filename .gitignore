@@ -3,7 +3,7 @@ __pycache__/
 .venv/
 
 # macOS Finder metadata. Unanchored so one line covers every directory it can
-# appear in (repo root, claude/.claude/, claude/.claude/skills/, ...).
+# appear in (repo root, claude/.claude/, claude-skills/skills/, ...).
 .DS_Store
 
 # Per-machine and per-session Claude Code state at repo root.
@@ -34,11 +34,10 @@ claude/.claude/plans/
 
 # Per-session findings written by /code-review specialist subagents. This
 # entry is belt-and-suspenders for this repo. The general-repo mechanism is
-# code-review/SKILL.md's idempotent append to
-# $(git rev-parse --git-path info/exclude) plus deny-reviewer-tree-mutation.sh
-# confirming with `git check-ignore` at write time — a denied write falls back
-# to inline output automatically, so no repo depends on this line being
-# committed.
+# findings-path-suffix.sh's duplicate-tolerant append to the repo's ignore list.
+# deny-reviewer-tree-mutation.sh confirms with `git check-ignore` at write
+# time that the directory is actually ignored. A denied write falls back to
+# inline output automatically. No repo depends on this line being committed.
 agent-reviews/
 
 # Belt-and-suspenders: the user-local private-projects blocklist read by
@@ -141,6 +140,7 @@ claude/.claude/briefs/
 claude/.claude/cache/
 claude/.claude/error-mode-reports/
 claude/.claude/handoffs/
+claude/.claude/issue-triage/
 
 # Per-machine exclusive-lock file cost-ledger --record holds for its
 # read-check-write window (never the ledger file itself, since renaming it

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -376,6 +377,22 @@ class TestRequireMemorySkill:
         memory_md = str(memory_tree / "MEMORY.md")
         payload = _memory_input(edit_input(memory_md), sid)
         assert run_hook(HOOK_PATH, payload) == "allow"
+
+    def test_active_marker_hit_advances_mtime(self, isolated_home, memory_tree):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently."""
+        sid = "sess-active-touch"
+        marker = _write_active_marker(isolated_home, sid)
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        memory_md = str(memory_tree / "MEMORY.md")
+        payload = _memory_input(edit_input(memory_md), sid)
+        assert run_hook(HOOK_PATH, payload) == "allow"
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
+        )
 
     def test_dead_pid_active_marker_evicts_and_denies(self, isolated_home, memory_tree):
         """Orphaned marker with a dead PID is evicted and the gate denies."""

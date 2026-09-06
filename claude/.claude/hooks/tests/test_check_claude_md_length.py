@@ -31,7 +31,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
-    (GH-783 Phase 2), `grep` for the path-filter match, `awk` for the line
+    (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show calls), omitting both
     timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
@@ -139,8 +139,8 @@ class TestCheckClaudeMdLength:
         )
 
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, tmp_path):
-        """GH-783 Phase 2: a quote-adjacent split (`"git" commit -m x`) must
-        reach the same deny verdict as the unquoted form."""
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
@@ -606,15 +606,13 @@ class TestCheckClaudeMdLength:
         """Chained `git add ... && git commit` is caught by the internal
         _lib_command_invokes_git_subcmd check.
 
-        Note: this session's live commit probes established that the
-        `if: "Bash(git commit *)"` predicate in settings.json DOES match
+        The `if: "Bash(git commit *)"` predicate in settings.json matches
         chained and prefixed commands (a `true && git commit ...` with a
         real unreviewed staged diff got a genuine deny from
-        require-code-review.sh) — correcting an earlier, disproven claim
-        here that the glob required the command to start with "git commit".
-        This test invokes the hook binary directly regardless, since the
-        internal check is the authoritative gate either way — consistent
-        with the hook header's note that the `if` field is a hint only.
+        require-code-review.sh). This test invokes the hook binary directly
+        regardless, since the internal check is the authoritative gate
+        either way — consistent with the hook header's note that the `if`
+        field is a hint only.
         """
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))

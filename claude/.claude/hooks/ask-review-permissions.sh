@@ -10,14 +10,20 @@
 # are rare enough that the "ask" mode is tolerable.
 
 INPUT=$(cat)
-TOOL=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  echo "[ask-review-permissions] could not source _lib.sh; settings.json edits will silently proceed without the ask decision" >&2
+  exit 0
+fi
+
+TOOL=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty' 2>/dev/null)
 
 case "$TOOL" in
   Edit|Write|MultiEdit) ;;
   *) exit 0 ;;
 esac
 
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
+FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null)
 
 # Match .claude/settings*.json paths: settings.json, settings.local.json, etc.
 if ! printf '%s\n' "$FILE_PATH" | grep -qE '\.claude/settings[^/]*\.json$'; then

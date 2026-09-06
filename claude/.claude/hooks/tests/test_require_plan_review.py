@@ -582,6 +582,33 @@ class TestRequirePlanReview:
             == "allow"
         )
 
+    def test_active_marker_hit_advances_mtime(self, plan_review_repo, plan_review_home):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently."""
+        sid = "session-active-touch"
+        marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                REQUIRE_PLAN_REVIEW_HOOK,
+                # In-repo target, unlike the /tmp/foo.py shape other allow tests in
+                # this file use -- an out-of-repo target disarms the gate before it
+                # ever reaches the marker check, allowing without touching the marker.
+                {**write_input(str(plan_review_repo / "src" / "foo.py")), "session_id": sid},
+                cwd=plan_review_repo,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
+        )
+
     def test_fresh_active_marker_allows_edit(self, plan_review_repo, plan_review_home):
         sid = "session-active-edit"
         marker_dir = plan_review_home / ".claude" / ".plan-review-active.d"
@@ -2297,6 +2324,60 @@ class TestRequirePlanReviewPlanMode:
         assert elapsed < 9.5, (
             f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if it "
             f"does not), took {elapsed:.1f}s"
+        )
+
+    @pytest.mark.timing
+    def test_planfilepath_hung_jq_denies_within_timeout(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """The planFilePath extraction at line ~109 uses _lib_jq, not bare jq
+        (GH-489's uncapped-secondary-jq defect class) — a hung jq binary must
+        deny within the 5s _lib_jq backstop rather than blocking ExitPlanMode
+        indefinitely. Deny is the correct outcome here (unlike the analogous
+        require-architect-consult.sh case): an empty PLAN_MODE_FILE_PATH
+        falls through to this class's baseline armed-gate logic, which
+        denies with no file_path present (see this class's own docstring).
+
+        The hook's first jq call (_lib_parse_tool_input_or_deny's six-field
+        extraction) is already _lib_jq-wrapped and would itself deny within
+        budget on an always-hung jq, which would pass this test even if the
+        second call (planFilePath, this test's actual target) were still
+        bare jq. Matching narrowly on the planFilePath filter string (rather
+        than a call counter) isolates that specific call: a call-counter
+        stub would also hang _lib_emit_deny's own reason-encoding jq call
+        on the deny path this test exercises (a third, unrelated call),
+        adding a second 5s timeout cycle and roughly doubling elapsed time —
+        not a defect in the fix, just a test artifact this design avoids."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "jq"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            '  *planFilePath*) sleep 10 ;;\n'
+            f'  *) exec "{real_jq}" "$@" ;;\n'
+            "esac\n"
+        )
+        stub.chmod(0o755)
+
+        sid = "session-planmode-hung-jq"
+        start = time.monotonic()
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(plan_file_path="/tmp/whatever-plan.md"), "session_id": sid},
+            cwd=plan_review_repo,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+        assert result == "deny"
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_jq timeout to fire on the second (planFilePath) "
+            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
         )
 
 

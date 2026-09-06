@@ -17,6 +17,21 @@ Source for `claude/.claude/rules/sql-ddl-conventions.md`.
 - Schema-shape conventions distilled and specialist-verified from this repo's
   `staff-data-engineer.md` / `staff-analytics-engineer.md` review agents.
 
+## CLAUDE.md and AGENTS.md conventions
+
+Source for `claude/.claude/rules/claude-md-conventions.md`. Fetched
+2026-09-03 against `code.claude.com/docs/en/memory`.
+
+- [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
+  — CLAUDE.md-loaded-not-AGENTS.md and the `@AGENTS.md` import pattern.
+
+  > "Claude Code reads CLAUDE.md, not AGENTS.md. If your repository already uses
+  > AGENTS.md for other coding agents, create a CLAUDE.md that imports it so both
+  > tools read the same instructions without duplicating them."
+
+  Independently corroborated: zero AGENTS.md entries in the Claude Code
+  changelog, and Claude Code is absent from agents.md's supported-tools list.
+
 ## GitHub Actions workflow conventions
 
 Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
@@ -141,3 +156,164 @@ Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
   Grounds the rule file's claim that a versioned OS-label pin
   (`ubuntu-24.04`) reduces drift but is not a full immutable pin the way an
   action SHA is.
+
+- **Composite action (`action.yml`) schema — no `permissions:`,
+  `concurrency:`, `runs-on:`, or `timeout-minutes` key** —
+  `docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax`,
+  fetched 2026-09-03. The documented `runs.steps[*]` key set for a composite
+  step is `name`, `id`, `if`, `uses`, `run`, `shell`, `env`,
+  `working-directory`, `with`, `continue-on-error`. None of `permissions`,
+  `concurrency`, `runs-on`, or `timeout-minutes` appears in that key set.
+  `runs.steps[*].uses` and `runs.steps[*].with` are documented and behave
+  like their workflow-file counterparts, grounding the "transfers directly"
+  guidance in the rule body for SHA-pinned nested `uses:` and
+  `actions/checkout`'s `persist-credentials: false` `with:` input.
+
+- **Composite-action context availability — `secrets` is the one
+  documented inputs-only context; `github.event.*` carries no documented
+  restriction** — `docs.github.com/en/actions/learn-github-actions/contexts`,
+  "Context availability" and `github`-context-properties sections, fetched
+  2026-09-03.
+
+  The `secrets` context is the one documented restriction: "The secrets
+  context is not available for composite actions due to security reasons.
+  If you want to pass a secret to a composite action, you need to do it
+  explicitly as an input."
+
+  That page's "Context availability" table is keyed to workflow-file YAML
+  locations (`run-name`, `concurrency`, `jobs.<job_id>.steps.run`, and
+  similar). The string "composite" does not appear in that table, so it is
+  silent on composite actions rather than an affirmative listing of
+  `github` as available there. The claim instead rests on the `secrets`
+  carve-out above being the only composite-action restriction GitHub
+  documents: no equivalent carve-out names `github.event.*`.
+
+  GitHub's metadata-syntax page (above) separately shows a canonical
+  `runs.steps[*].run` example using `${{ github.action_path }}` directly,
+  with no `env:` indirection — consistent with, though not proof of,
+  `github.event.*` behaving the same way.
+
+  The **contexts page** (not the metadata-syntax page) documents one
+  exception to direct `run:` availability: `github.action_ref` and
+  `github.action_repository` must not be used directly in a composite
+  step's `run:` and require `env:` indirection instead.
+
+  The "Context-dependent, not authorable in `action.yml`" bullet's
+  `pull_request_target`/`workflow_run`-privilege and OIDC-subject-pinning
+  claims, as applied to composite actions, restate the existing
+  workflow-level citations above unchanged. A composite step runs inline
+  within the calling job, inheriting the caller's trigger context and OIDC
+  trust policy rather than having its own. No separate composite-action
+  citation applies.
+
+## `paths:` glob-dialect conventions
+
+Source for `claude/.claude/rules/rule-authoring-conventions.md`. Verified
+against `code.claude.com/docs/en/memory` §"Path-specific rules", fetched
+2026-09-03. Single-sourced deliberately, not by omission: the `paths:`
+glob dialect is Claude Code's own closed-source, single-vendor behavior,
+with no second independent first-tier origin (spec, standards body, or
+competing implementation) to triangulate against.
+
+- **Brace expansion** — "You can specify multiple patterns and use brace
+  expansion to match multiple extensions in one pattern"; `src/*.{ts,tsx}`
+  expands to two patterns.
+- **Brace-expansion budget** — a rule's whole `paths` list shares a budget
+  of 1,000 expanded patterns and 4 MiB: "Claude Code uses any pattern that
+  would exceed the budget unexpanded, and its literal braces match no
+  files."
+- **Malformed bracket expression** — "A pattern with a `[` that can't be
+  read as a bracket expression, such as `photos [2024/**`, is invalid: it
+  matches nothing, and the rule's other patterns keep working."
+- **No `paths:` key** — the rule loads unconditionally at launch, "with the
+  same priority as `.claude/CLAUDE.md`."
+- **Zero-segment `**/` match — established by measurement, not by this
+  source.** A `**/`-led pattern also matches a root-level file. Confirmed
+  in `-p` sessions by five hook-instrumented trials, and in one
+  interactive session by the harness's own load notice. See
+  `docs/case-studies/claude-md-glob-zero-segment.md` for the full trial
+  record.
+- **`?` support, leading-`/` anchoring, and trailing-`/` semantics are not
+  stated at this source** — recorded as `[unverified]` in the rule body
+  (`rule-authoring-conventions.md`) rather than restated or inferred here.
+- **One intermediate segment is still unmeasured.** The trials above cover
+  zero and three intermediate segments, so whether `**/CLAUDE.md` subsumes
+  `**/.claude/CLAUDE.md` is open. `claude-md-conventions.md` keeps both
+  forms for that reason, not by oversight. A depth-1 trial on the same
+  instrument would settle it.
+
+## Python environment conventions
+
+Source for `claude/.claude/rules/python-environment-conventions.md`. PEP
+668 and the CPython `venv` reference fetched 2026-09-04 against
+`peps.python.org` and `docs.python.org`; re-verify by 2026-12-04.
+Triangulated against a second, independent first-tier origin per
+`verify-sources`: PEP 668 (spec), CPython's `venv`/`ensurepip` docs
+(implementation docs), and the PyPA Python Packaging User Guide.
+
+- **`EXTERNALLY-MANAGED` marker and error condition** —
+  [PEP 668](https://peps.python.org/pep-0668/):
+  > Before a Python-specific package installer (that is, a tool such as pip
+  > - not an external tool such as apt) installs a package into a certain
+  > Python context, it should make the following checks by default:
+  > 1. Is it running outside of a virtual environment? It can determine
+  > this by whether `sys.prefix == sys.base_prefix` (but see Backwards
+  > Compatibility).
+  > 2. Is there an `EXTERNALLY-MANAGED` file in the directory identified by
+  > `sysconfig.get_path("stdlib", sysconfig.get_default_scheme())`?
+  >
+  > If both of these conditions are true, the installer should exit with
+  > an error message indicating that package installation into this Python
+  > interpreter's directory are disabled outside of a virtual environment.
+
+- **`--break-system-packages` is an intentionally risky override, not the
+  fix** — [PEP 668](https://peps.python.org/pep-0668/):
+  > The installer should have a way for the user to override these rules,
+  > such as a command-line flag `--break-system-packages`. This option
+  > should not be enabled by default and should carry some connotation
+  > that its use is risky.
+
+- **`python -m venv` usage** —
+  [CPython `venv` reference](https://docs.python.org/3/library/venv.html):
+  > Virtual environments are created by executing the `venv` module:
+  > `python -m venv /path/to/new/virtual/environment` ... It also creates
+  > a `bin` (or `Scripts` on Windows) subdirectory containing a copy or
+  > symlink of the Python executable ...
+
+- **`ensurepip` bootstraps pip into the venv** —
+  [CPython `venv` reference](https://docs.python.org/3/library/venv.html):
+  > Unless the `--without-pip` option is given, `ensurepip` will be
+  > invoked to bootstrap `pip` into the virtual environment.
+
+- **`ensurepip` can be absent — general fact only, not the exit-0-no-pip
+  mechanic.** CPython's docs establish that `ensurepip` is optional and
+  can be missing —
+  [`ensurepip` reference](https://docs.python.org/3/library/ensurepip.html):
+  > This is an optional module. If it is missing from your copy of
+  > CPython, look for documentation from your distributor...
+  They do not state, in these terms, that `python3 -m venv` can exit 0 and
+  produce no pip on a distro that splits `python3-venv`/`ensurepip` into a
+  separate package — the rule body grounds that specific mechanic in this
+  repo's own working guard, `install-dev.sh:44-75`, not in these docs.
+
+- **Recommends a virtual environment over a system-wide install** — [PyPA
+  Python Packaging User Guide, "Installing packages using pip and virtual
+  environments"](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/):
+  > It is recommended to use a virtual environment when working with third
+  > party packages. ... venv (for Python 3) allows you to manage separate
+  > package installations for different projects.
+  The same page uses `python3 -m pip install --upgrade pip` with no
+  explicit rationale stated for the `-m` form there.
+
+- **`python -m pip`'s own stated rationale is interpreter-pinning for a
+  PATH-ambiguous `pip`, which doesn't apply to `<venv>/bin/pip`** — [pip
+  user guide, "Running pip"](https://pip.pypa.io/en/stable/user_guide/),
+  fetched 2026-09-04:
+  > `python -m pip` executes pip using the Python interpreter you
+  > specified as python. So `/usr/bin/python3.7 -m pip` means you are
+  > executing pip for your interpreter located at `/usr/bin/python3.7`.
+  An explicit `<venv>/bin/pip` path is already a venv-local executable,
+  not a PATH-resolved `pip` — it is unambiguously interpreter-pinned by
+  construction, so the ambiguity this quote solves doesn't apply there.
+  This reasoning about `<venv>/bin/pip` is the rule body's own, not
+  attributed to PyPA or pip's docs.

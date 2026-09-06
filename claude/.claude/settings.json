@@ -5,6 +5,7 @@
       "Bash(~/.claude/scripts/marker.sh write skill-review)",
       "Bash(~/.claude/scripts/marker.sh write plan-review)",
       "Bash(~/.claude/scripts/marker.sh write ready-for-review)",
+      "Bash(~/.claude/scripts/marker.sh write cumulative-review)",
       "Bash(~/.claude/scripts/marker.sh activate plan-review)",
       "Bash(~/.claude/scripts/marker.sh activate ready-for-review)",
       "Bash(~/.claude/scripts/marker.sh activate respond-pr)",
@@ -18,6 +19,7 @@
       "Bash(~/.claude/scripts/marker.sh resolve-session-id)",
       "Bash(~/.claude/scripts/marker.sh status)",
       "Bash(~/.claude/scripts/marker.sh check code-review)",
+      "Bash(~/.claude/scripts/findings-path-suffix.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
@@ -64,7 +66,8 @@
       "Bash(dnf install *)",
       "Bash(apk add *)",
       "Bash(zypper install *)",
-      "EnterPlanMode"
+      "EnterPlanMode",
+      "ScheduleWakeup"
     ]
   },
   "model": "sonnet",
@@ -87,6 +90,7 @@
     "agent-review": "name-only",
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",
+    "measure-check-output": "name-only",
     "loop": "name-only",
     "simplify": "name-only",
     "claude-api": "off",
@@ -368,6 +372,16 @@
         ]
       },
       {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-architect-consult.sh",
+            "statusMessage": "Checking architect-consult gate..."
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
@@ -408,6 +422,15 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/redact-credential-values.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/log-reviewer-round.sh"
           }
         ]
       },

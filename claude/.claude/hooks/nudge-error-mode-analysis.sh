@@ -52,6 +52,14 @@
 
 INPUT=$(cat 2>/dev/null)
 
+# 1. Source _lib.sh and resolve the active config directory before any
+# ~/.claude-rooted path is built. Fail-open per this hook's own contract
+# (see header): an unresolvable config dir just leaves the nudge dormant.
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+CONFIG_DIR=$(_lib_config_dir) || exit 0
+
 # Extract all four fields in a single jq pass to avoid four separate subshell
 # spawns. Sequential reads from the jq output: each field on its own line
 # handles empty values and paths with spaces correctly. Pre-initialize to ""
@@ -69,17 +77,9 @@ TRANSCRIPT_PATH=""
   IFS= read -r TRANSCRIPT_PATH
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // "")' \
+    | _lib_jq -r '(.session_id // ""),(.agent_type // ""),(.permission_mode // ""),(.transcript_path // "")' \
     2>/dev/null
 ) 2>/dev/null || true
-
-# 1. Source _lib.sh and resolve the active config directory before any
-# ~/.claude-rooted path is built. Fail-open per this hook's own contract
-# (see header): an unresolvable config dir just leaves the nudge dormant.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
-CONFIG_DIR=$(_lib_config_dir) || exit 0
 
 # 2. Opt-in gate: dormant unless the contributor has explicitly armed the
 # hook. Absent this file, every invocation exits here before doing any
@@ -177,7 +177,7 @@ find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 printf 'nudged session=%s friction=%s\n' "$SESSION_ID" "$FRICTION_COUNT" >> "$NUDGE_LOG" 2>/dev/null || true
 touch "$FIRED_MARKER" 2>/dev/null || true
 
-jq -n '{
+_lib_jq -n '{
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
     additionalContext: "This session has accumulated a number of mechanical friction signals (hook denials, failed test runs, user corrections). If the current body of work is close to delivered, suggest running /error-mode-analysis to the user — it buckets what went wrong by which pipeline layer caught it, so the lessons carry forward. If the session is still mid-task, ignore this and continue."

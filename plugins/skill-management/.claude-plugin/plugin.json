@@ -1,7 +1,7 @@
 {
   "name": "skill-management",
   "description": "Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via /skill-review. Install at project scope in repos that author SKILL.md files.",
-  "version": "3.3.0",
+  "version": "3.4.1",
   "author": {
     "name": "Cordova Strategy"
   },

@@ -70,16 +70,18 @@ set -uo pipefail
 # stale divergence advisory (its own failure mode) is harmless to re-emit.
 
 INPUT=$(cat 2>/dev/null)
-SOURCE=$(printf '%s' "$INPUT" | jq -r '.source // empty' 2>/dev/null)
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r '.source // empty' 2>/dev/null)
 [[ "$SOURCE" == "startup" ]] || exit 0
 
 # --- machine-global kill switch ------------------------------------------
 
 # An unresolvable config dir leaves no kill-switch location to check, so
 # this hook fails open (today's auto-titler behavior) rather than guess.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 [ -f "$CONFIG_DIR/.session-title-disabled" ] && exit 0
 
@@ -88,7 +90,7 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # session whose payload .cwd differs from process cwd must title from the
 # worktree's branch.
 
-PAYLOAD_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
+PAYLOAD_CWD=$(printf '%s' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$PAYLOAD_CWD" ] && exit 0
 
 # Known limitation: unlike check-branch-divergence.sh's one true network
@@ -159,6 +161,7 @@ printf '%s' "$BRANCH_COMPONENT" | LC_ALL=C grep -Eq "$ALLOWLIST_RE" || exit 0
 BRANCH_COMPONENT="${BRANCH_COMPONENT:0:32}"
 
 TITLE="${REPO_COMPONENT}/${BRANCH_COMPONENT}"
-jq -n --arg title "$TITLE" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $title is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg title "$TITLE" \
   '{hookSpecificOutput: {hookEventName: "SessionStart", sessionTitle: $title}}' || true
 exit 0

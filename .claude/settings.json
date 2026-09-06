@@ -2,7 +2,8 @@
   "enabledPlugins": {
     "skill-management@claude-config": true,
     "claude-hook-review@claude-config": true,
-    "plugin-semver@claude-config": true
+    "plugin-semver@claude-config": true,
+    "issue-triage@claude-config": true
   },
   "permissions": {
     "allow": [
@@ -13,6 +14,7 @@
     ]
   },
   "claudeMdExcludes": [
-    "**/claude/.claude/CLAUDE.md"
+    "**/claude/.claude/CLAUDE.md",
+    "**/.claude/worktrees/**/claude/.claude/rules/**"
   ]
 }

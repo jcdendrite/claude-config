@@ -33,6 +33,7 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh write skill-review",
     "~/.claude/scripts/marker.sh write plan-review",
     "~/.claude/scripts/marker.sh write ready-for-review",
+    "~/.claude/scripts/marker.sh write cumulative-review",
     "~/.claude/scripts/marker.sh activate plan-review",
     "~/.claude/scripts/marker.sh activate ready-for-review",
     "~/.claude/scripts/marker.sh activate respond-pr",
@@ -672,7 +673,8 @@ class TestGateReleaseAuthority:
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
-        "skill", ["code-review", "skill-review", "plan-review", "ready-for-review"]
+        "skill",
+        ["code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review"],
     )
     def test_write_denied_for_no_release_agents(self, agent_type, skill):
         assert (
@@ -924,6 +926,145 @@ class TestGateReleaseAuthority:
             )
             == "deny"
         )
+
+    def test_bash_c_wrapper_denied_via_raw_text_arm(self):
+        """A `bash -c "marker.sh write ..."` wrapper-hole invocation from a
+        no-gate-release agent denies via the raw-text substring check.
+        The command-word check alone cannot catch this: it walks past
+        known runners via _lib_fragment_command_word, whose runner list
+        excludes bash/sh/zsh/dash/ksh entirely, so it never sees past the
+        `bash -c` wrapper to the marker.sh invocation inside the quoted
+        string. Pins that the raw-text arm stays unconditionally OR'd with
+        the command-word check rather than being gated behind detecting a
+        specific shell name."""
+        cmd = 'bash -c "marker.sh write code-review"'
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "op,target",
+        [("write", "code-review"), ("activate", "plan-review")],
+        ids=["write", "activate"],
+    )
+    def test_quote_split_denied_via_command_word_arm(self, op, target):
+        """A quote-split top-level invocation (`"marker.sh" write ...`)
+        defeats the raw-text substring check: the quote character sits
+        between `marker.sh` and the op keyword, breaking the
+        `marker\\.sh[[:space:]]+(write|activate)` adjacency the raw-text
+        check requires. This is the command-word arm's actual purpose —
+        _lib_command_invokes_tool_subcmd resolves the fragment's command
+        word after quote-stripping and still matches, independent of the
+        raw-text arm."""
+        cmd = f'"marker.sh" {op} {target}'
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
+    def test_quote_split_write_allowed_for_full_tool_set_agents(self, agent_type):
+        """The command-word arm gates on agent authority, not just command
+        shape: the same quote-split write that denies for a no-gate-release
+        agent above must not deny here. (This command's overall verdict is
+        "allow" for two independent reasons — the gate-release-authority
+        block never runs for this agent type, and Stage 2's anchor, which
+        reads raw unstripped $COMMAND, never recognizes a quote-split
+        `"marker.sh"` prefix as a marker.sh invocation shape at all — but
+        the agent-authority scoping is what this test pins.)"""
+        cmd = '"marker.sh" write code-review'
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    def test_sed_absent_from_path_denies(self, tmp_path):
+        """Status-2 propagation, fail-closed: with sed/tr unavailable, a
+        no-gate-release agent's marker.sh write attempt still denies.
+
+        The observed deny is reached via this hook's earlier, unconditional
+        MARKER_WRITE_COMMAND_UNQUOTED quote-strip check (runs before Stage
+        1, for every Bash call, not only marker.sh-shaped ones) rather than
+        via the gate-release-authority arm's own
+        _lib_command_invokes_tool_subcmd status-2 branch in isolation —
+        confirmed by inspecting the deny reason below. Both checks consume
+        the same $COMMAND through the same _lib_strip_shell_quotes call, so
+        the earlier one always denies first when sed is absent entirely.
+        See test_gate_release_authority_arm_own_status2_denied below for
+        the new arm's own status-2 branch isolated via a shaped sed shim
+        rather than total sed absence. Asserting on the fork-failure
+        reason text, not just the verdict, distinguishes this from an
+        ordinary raw-text-match deny (which would also fire for this
+        command, but for an unrelated reason and without depending on sed
+        at all)."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{MARKER} write code-review", agent_type="code-writer"),
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "sed/tr" in reason
+
+    def test_gate_release_authority_arm_own_status2_denied(self, tmp_path):
+        """Isolates the gate-release-authority arm's OWN status-2 branch
+        (_lib_command_invokes_tool_subcmd could not determine a match),
+        distinct from the sed-absent test above, which is caught first by
+        this hook's earlier, unconditional MARKER_WRITE_COMMAND_UNQUOTED
+        quote-strip check and so never actually isolates this arm.
+
+        The command here is quote-split (`"marker.sh" write ...`), which
+        makes the raw-text detector NOT match, and contains no `.claude`
+        substring, which skips the pre-Stage-1 redirect-candidate scan (it
+        requires a literal `.claude` to run at all). A sed shim that
+        succeeds only for _lib_strip_shell_quotes's own `-e`-flagged
+        invocation shape and fails for _lib_split_fragments's differently-
+        shaped call (the same technique test_fragments_split_sed_failure_
+        denied in test_deny_private_project_refs.py and
+        test_redirect_candidates_split_sed_failure_denied above both use)
+        lets MARKER_WRITE_COMMAND_UNQUOTED's own `-e`-shaped strip succeed
+        via the real sed while _lib_command_invokes_tool_subcmd's internal
+        _lib_split_fragments call fails on its own, reaching this arm's
+        status-2 branch in isolation. Asserted via the arm's own distinct
+        deny-reason text ("could not determine whether ... invokes
+        marker.sh write/activate"), not the shared "sed/tr" substring both
+        this deny and the sed-absent test's deny contain — a bare
+        "sed/tr" assertion cannot tell which check actually fired."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input('"marker.sh" write code-review', agent_type="code-writer"),
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None
+        assert "could not determine whether" in reason
+        assert "invokes marker.sh write/activate" in reason
 
 
 class TestGateReleaseAuthorityBashRedirectAndUtility:
