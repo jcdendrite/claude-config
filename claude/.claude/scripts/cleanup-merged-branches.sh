@@ -92,6 +92,8 @@ set -euo pipefail
 # (resolve_worktree_for_branch) are shared with cleanup-idle-open-pr-worktrees.sh.
 # shellcheck source=_worktree-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -286,15 +288,18 @@ fi
 # Default branch resolution
 # ---------------------------------------------------------------------------
 
-DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
-if [ -z "$DEFAULT_BRANCH" ]; then
-  git remote set-head origin --auto &>/dev/null || true
-  DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
-fi
-DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
-if [ -z "$DEFAULT_BRANCH" ]; then
-  echo "WARNING: could not resolve default branch from origin/HEAD; falling back to 'main'." >&2
-  DEFAULT_BRANCH="main"
+# No fallback branch name: an unresolved default would fail to exclude the
+# repo's real default branch from the deletion candidates below.
+if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$REPO_ROOT"); then
+  SET_HEAD_ERR=$(_lib_capped git remote set-head origin --auto 2>&1 >/dev/null) || true
+  if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$REPO_ROOT"); then
+    ERR_MSG="cleanup-merged-branches.sh: could not resolve origin/HEAD, and 'git remote set-head origin --auto' did not repair it -- check that 'origin' exists and is reachable, then set the default branch manually with 'git remote set-head origin <branch>'"
+    if [ -n "$SET_HEAD_ERR" ]; then
+      ERR_MSG="$ERR_MSG (${SET_HEAD_ERR%%$'\n'*})"
+    fi
+    echo "$ERR_MSG" >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------

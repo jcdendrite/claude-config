@@ -661,9 +661,124 @@ class TestOriginHeadUnset:
         env = fake_gh({"feat/no-head": {"number": 90, "mergedAt": "2026-05-01"}})
         result = _run_script(local, env)
 
-        # Script should succeed (set-head auto re-populates or falls back to main)
+        # Script should succeed: 'git remote set-head origin --auto' re-populates
+        # origin/HEAD from the still-reachable remote, and the retry resolves it.
         assert result.returncode == 0
         assert "feat/no-head" in result.stdout
+
+
+class TestUnresolvableDefaultBranchAborts:
+    """row8: when origin/HEAD is unresolvable and 'git remote set-head
+    origin --auto' cannot repair it either, the script aborts rather than
+    falling back to a guessed branch name -- on every invocation mode,
+    since a --dry-run preview computed against a guessed default would
+    report a candidate list the real run would not produce."""
+
+    @pytest.mark.parametrize("extra_args", [[], ["--dry-run"]])
+    def test_aborts_and_names_the_repair(self, tmp_path, fake_gh, extra_args):
+        local, _bare = _make_repo_with_remote(tmp_path, default_branch="develop")
+        subprocess.run(["git", "remote", "set-head", "origin", "--delete"], cwd=local, check=True)
+        # Repointing origin at a nonexistent path makes 'git remote set-head
+        # origin --auto' fail the same way an unreachable remote would.
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", str(tmp_path / "nonexistent.git")],
+            cwd=local, check=True,
+        )
+
+        env = fake_gh({})
+        result = _run_script(local, env, args=extra_args)
+
+        assert result.returncode != 0
+        assert "git remote set-head origin <branch>" in result.stderr
+        develop_branches = subprocess.run(
+            ["git", "branch", "--list", "develop"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "develop" in develop_branches
+
+
+class TestResolvedNonMainDefaultExcludedFromClassification:
+    """The invariant GH-879 exists to close: a correctly-resolved non-'main'
+    default branch is excluded from the deletion candidates rather than
+    swept in as an ordinary candidate. TestUnresolvableDefaultBranchAborts
+    alone would pass vacuously here -- the script aborts before the
+    classification loop ever runs -- so this test resolves 'develop'
+    successfully instead and proves it is never classified. The fixture's
+    merged PR record with a headRefOid matching develop's own tip is not
+    exercised here: the candidate loop's name-check excludes 'develop'
+    before any 'gh pr list' call, so this test proves develop never reaches
+    classify_branch() at all, not that Tier-A precedence is respected."""
+
+    def test_default_branch_never_classified(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path, default_branch="develop")
+        develop_tip = _rev_parse(local, "develop")
+        _make_feature_branch(local, "feat/merged", return_to="develop")
+        subprocess.run(["git", "branch", "-D", "feat/merged"], cwd=bare, check=True)
+
+        # Neither develop nor feat/merged is the checked-out branch, so
+        # exclusion of develop from classification can only come from the
+        # default-branch check, not incidentally from the current-head check.
+        subprocess.run(["git", "checkout", "-q", "-b", "unrelated-current"], cwd=local, check=True)
+
+        env = fake_gh({
+            "develop": {"number": 1, "mergedAt": "2026-05-01", "headRefOid": develop_tip},
+            "feat/merged": {"number": 2, "mergedAt": "2026-05-02"},
+        })
+        # A real run, not --dry-run: this also proves develop is never
+        # actually deleted, not just absent from a preview.
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "feat/merged" in result.stdout
+        for line in result.stdout.splitlines():
+            assert not re.search(r"\bdevelop\b", line), f"develop must never be classified: {line!r}"
+        develop_branches = subprocess.run(
+            ["git", "branch", "--list", "develop"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "develop" in develop_branches
+
+
+class TestRetrySucceedsWithNonMainDefault:
+    """The middle tier between TestUnresolvableDefaultBranchAborts
+    (both attempts fail) and TestResolvedNonMainDefaultExcludedFromClassification
+    (resolves on the first attempt): the first
+    _lib_default_branch_from_origin_head call fails because origin/HEAD is
+    unset, 'git remote set-head origin --auto' repairs it against a
+    still-reachable origin, and the retry resolves a non-'main' default.
+    This is the exact shape GH-879 fixes: a hardcoded 'main' fallback here
+    would have misclassified 'develop' as an ordinary deletion candidate."""
+
+    def test_default_branch_excluded_after_repair_resolves_non_main(self, tmp_path, fake_gh):
+        local, bare = _make_repo_with_remote(tmp_path, default_branch="develop")
+        _make_feature_branch(local, "feat/merged", return_to="develop")
+        subprocess.run(["git", "branch", "-D", "feat/merged"], cwd=bare, check=True)
+
+        # Neither develop nor feat/merged is the checked-out branch, so
+        # exclusion of develop from classification can only come from the
+        # default-branch check, not incidentally from the current-head check.
+        subprocess.run(["git", "checkout", "-q", "-b", "unrelated-current"], cwd=local, check=True)
+
+        # Remove origin/HEAD so the first resolution attempt fails; origin
+        # itself stays reachable, so 'git remote set-head origin --auto'
+        # repairs it and the retry re-derives 'develop'.
+        subprocess.run(
+            ["git", "remote", "set-head", "origin", "--delete"],
+            cwd=local, check=False,  # OK if already unset
+        )
+
+        env = fake_gh({"feat/merged": {"number": 1, "mergedAt": "2026-05-01"}})
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "feat/merged" in result.stdout
+        for line in result.stdout.splitlines():
+            assert not re.search(r"\bdevelop\b", line), f"develop must never be classified: {line!r}"
+        develop_branches = subprocess.run(
+            ["git", "branch", "--list", "develop"],
+            cwd=local, capture_output=True, text=True,
+        ).stdout
+        assert "develop" in develop_branches
 
 
 class TestIdempotentRerun:
