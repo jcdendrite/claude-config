@@ -668,23 +668,17 @@ _lib_staged_diff_state() {
   # Capped via the shared 5s _lib_capped -- a local git operation, not the
   # 15s network-bound exception _lib_cumulative_diff_hash documents for
   # itself above.
-  # Captured as `probe_status=0; ... || probe_status=$?`, never a bare `$?`:
-  # marker.sh sources this file under `set -u` only, but other callers source
-  # it under `set -euo pipefail`, and a bare `probe_status=$?` after a plain
-  # nonzero-returning statement would trip errexit before the assignment ever
-  # ran.
+  # Captured as `probe_status=0; ... || probe_status=$?`, never a bare `$?`.
+  # marker.sh sources this file under `set -u` only. Other callers source it
+  # under `set -euo pipefail`.
+  # Under the latter, a bare `probe_status=$?` after a nonzero-returning
+  # statement would trip errexit before the assignment ever ran.
   _lib_capped git -C "$repo_root" diff --cached --quiet -- "$@" || probe_status=$?
   # Exit 0 (no differences) -> "empty"; exit 1 (differences) -> "content";
   # anything else, including a _lib_capped kill, -> "unknown".
-  # `--quiet` exiting 1 does not universally guarantee a non-empty
-  # `git diff --cached` byte stream for a caller hashing the same pathspec
-  # afterward: a GIT_EXTERNAL_DIFF or diff.external tool that exits 0 without
-  # writing to stdout makes this probe still report "content" (`--quiet`
-  # never invokes the external diff driver) while the caller's own hashed
-  # `git diff --cached` output is zero bytes. That collision is not
-  # introduced by this helper -- it already exists, unconditionally, on every
-  # site that pipes `git diff --cached` into sha256sum, with or without this
-  # probe in front of it.
+  # A no-op GIT_EXTERNAL_DIFF/diff.external driver makes `--quiet` report
+  # "content" for a hashed diff that is actually zero bytes -- pre-existing
+  # on every `git diff --cached | sha256sum` site, not introduced here.
   case "$probe_status" in
     0) printf 'empty' ;;
     1) printf 'content' ;;
@@ -2494,6 +2488,11 @@ _lib_reviewer_round_state_key() {
 # An empty staged diff is a legitimate round state here (unlike marker.sh's
 # write-arm callers), so it hashes through like content -- only "unknown" is
 # rejected.
+# Three sequential _lib_capped git calls back this function (rev-parse
+# --verify -q HEAD, then the _lib_staged_diff_state probe, then the diff
+# hash), so the worst-case ceiling compounds linearly -- roughly 5s per
+# call -- and a future fourth capped call here would push that ceiling
+# higher still.
 #
 # Determinism contract (read side and write side must agree byte-for-byte):
 # both halves are captured and tested for emptiness rather than trusted as a

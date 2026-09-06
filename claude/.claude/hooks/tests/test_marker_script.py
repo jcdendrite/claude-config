@@ -787,16 +787,15 @@ class TestMarkerScriptEmptyStagedGuard:
 
 class TestMarkerScriptStagedDiffStateClassification:
     """_lib_staged_diff_state's "unknown" outcome (probe timeout) and the
-    status arm's degradation to absent/historical, exercised through
-    marker.sh's write and status arms. The content/empty/unknown
-    classification itself -- including the non-empty-diff categories
-    (mode-only change, rename, binary file, a no-op GIT_EXTERNAL_DIFF) -- is
+    status arm's degradation to absent/historical are exercised here
+    through marker.sh's write and status arms. The content/empty/unknown
+    classification itself, including the four non-empty-diff categories
+    (mode-only change, rename, binary file, a no-op GIT_EXTERNAL_DIFF), is
     covered directly against _lib_staged_diff_state's own stdout by
-    test_lib.py's TestLibStagedDiffState; test_write_code_review_creates_marker
-    in TestMarkerScriptHappyPath above already confirms marker.sh's write arm
-    wires an ordinary "content" classification through to a written marker,
-    so no separate wiring check is kept here for the other content-yielding
-    diff shapes."""
+    test_lib.py's TestLibStagedDiffState. test_write_code_review_creates_marker
+    in TestMarkerScriptHappyPath already confirms the write arm wires a
+    "content" classification through to a written marker. No separate
+    wiring check for the other content-yielding shapes is kept here."""
 
     SID = "test-session-diff-state"
 
@@ -900,12 +899,17 @@ class TestMarkerScriptStagedDiffStateClassification:
 
     @pytest.mark.timing
     def test_status_code_review_falls_through_to_absent_when_diff_state_is_unknown(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
     ):
         """status has no _guard_staged_vs_unstaged call, so its own
         _lib_staged_diff_state probe is the only matching invocation for
         the whole-repo (no-pathspec, 6-arg) shape -- unlike the write-arm
-        tests above, no invocation counter is needed."""
+        tests above, no invocation counter is needed.
+
+        status also computes a cumulative-review line via
+        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
+        gh_timeout_shim stub keeps that call off the real, network- and
+        auth-dependent `gh`."""
         if not shutil.which("timeout"):
             pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
@@ -922,29 +926,33 @@ class TestMarkerScriptStagedDiffStateClassification:
         stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
-        start = time.monotonic()
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
         )
-        elapsed = time.monotonic() - start
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
 
         assert result.returncode == 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s "
-            f"if it does not), took {elapsed:.1f}s"
-        )
         assert "code-review: absent" in result.stdout
 
     @pytest.mark.timing
     def test_status_skill_review_falls_through_to_absent_when_diff_state_is_unknown(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
     ):
         """Same as the code-review case above, but matches the
         skill-review line's 3-pathspec (9-arg) probe shape specifically, so
-        it doesn't also stall the code-review line's own probe call."""
+        it doesn't also stall the code-review line's own probe call.
+
+        status also computes a cumulative-review line via
+        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
+        gh_timeout_shim stub keeps that call off the real, network- and
+        auth-dependent `gh`."""
         if not shutil.which("timeout"):
             pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
         real_git = shutil.which("git")
@@ -961,20 +969,19 @@ class TestMarkerScriptStagedDiffStateClassification:
         stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
-        start = time.monotonic()
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
         )
-        elapsed = time.monotonic() - start
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
 
         assert result.returncode == 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s "
-            f"if it does not), took {elapsed:.1f}s"
-        )
         assert "skill-review: absent" in result.stdout
 
     # ── a stray empty-digest marker must not read live ──────────────────
@@ -1950,20 +1957,15 @@ class TestMarkerScriptStatusCompletionMarkers:
         stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
-        start = time.monotonic()
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
         assert "code-review: absent" in result.stdout
 
     # ── skill-review ───────────────────────────────────────────────────

@@ -303,13 +303,23 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
     exercises all four.
 
     Each arm's minimal setup is chosen so that, absent the refusal, the write
-    would otherwise succeed: `_stage_a_change` gives code-review a staged
-    diff and ready-for-review a resolvable HEAD; skill-review additionally
-    stages a real SKILL.md-matching path via `_stage_a_skill_md_change`, so
-    "would otherwise succeed" keeps meaning "writes a marker" rather than
-    merely exiting 0 via the empty-diff no-marker branch; plan-review hashes
-    cleanly with no `.claude/plans/` at all (empty hash, still a successful
-    write). That is what makes returncode 2 attributable to the refusal
+    would otherwise succeed -- meaning "writes a marker", not merely "exits
+    0" via some other branch:
+
+    - code-review: `_stage_a_change` stages a real diff, so the write arm
+      hashes non-empty content instead of taking the empty-diff no-marker
+      branch.
+    - ready-for-review: `_stage_a_change` gives it a resolvable HEAD, so the
+      write arm clears HEAD resolution and reaches the marker write.
+    - skill-review: `_stage_a_change` plus `_stage_a_skill_md_change` stages
+      a real SKILL.md-matching path, so the skill-review-specific
+      precondition is satisfied and the write reaches the marker rather than
+      the empty-diff no-marker branch.
+    - plan-review: with no `.claude/plans/` at all, the hash computes
+      cleanly over an empty plan set, which is itself a successful write,
+      not a failure exit.
+
+    That is what makes returncode 2 attributable to the refusal
     specifically, not to some other precondition failing.
     """
 
