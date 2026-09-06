@@ -753,11 +753,11 @@ class TestRequireReadyForReview:
     def test_live_marker_allows_despite_fragment_split_sed_failure(
         self, isolated_home, repo_on_feature_branch, tmp_path
     ):
-        """The active-marker check runs before the fragment-split fail-closed
-        deny, so a session holding a live marker allows through a sed shim
-        that fails only on _lib_split_fragments's invocation shape. Shares
-        its PATH-shim technique with test_fragments_split_sed_failure_denied;
-        differs only in holding a live marker."""
+        """GH-869: the active-marker check runs before the fragment-split
+        fail-closed deny, so a session holding a live marker allows through a
+        sed shim that fails only on _lib_split_fragments's invocation shape.
+        Shares its PATH-shim technique with test_fragments_split_sed_failure_denied
+        (GH-783); differs only in holding a live marker."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
 
@@ -791,9 +791,10 @@ class TestRequireReadyForReview:
     def test_live_marker_still_denied_by_total_sed_absence(
         self, isolated_home, tmp_path
     ):
-        """The relocated active-marker check runs after _lib_strip_shell_quotes,
-        so a live marker does not rescue a total sed absence: that deny still
-        fires, and the marker is left untouched."""
+        """GH-869: the active-marker check runs before the fragment-split
+        fail-closed deny but after _lib_strip_shell_quotes's own deny, so a
+        live marker does not rescue a total sed absence: that earlier deny
+        still fires, and the marker is left untouched."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -817,9 +818,10 @@ class TestRequireReadyForReview:
     def test_dead_pid_active_marker_evicts_on_non_gated_command(
         self, isolated_home, repo_on_feature_branch
     ):
-        """The relocation widens eviction the same way it widens refresh: a
-        non-gated command now also evicts an orphaned dead-PID marker, even
-        though the command itself allows (it never reaches a gated shape)."""
+        """The active-marker check runs before the command-shape filter, so
+        a non-gated command also evicts an orphaned dead-PID marker even
+        though the command itself is allowed (it never reaches a gated
+        shape)."""
         sid = "session-dead-pid-non-gated"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
@@ -835,13 +837,13 @@ class TestRequireReadyForReview:
         )
         assert not marker.exists(), "hook must evict the orphan marker on dead PID"
 
-    def test_marker_refresh_is_not_scoped_to_calling_directory(
+    def test_gated_command_from_non_repo_cwd_still_refreshes_live_marker(
         self, isolated_home, tmp_path
     ):
-        """The active marker carries no repo hash, so a Bash call issued from
-        a directory unrelated to the marker's own session still refreshes
-        it."""
-        sid = "session-cross-cwd"
+        """GH-869: the active-marker check runs before REPO_ROOT resolution,
+        so a live marker still refreshes even when the gated command's cwd
+        is not a git repo (REPO_ROOT resolves empty)."""
+        sid = "session-gated-non-repo-cwd"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
         marker = marker_dir / sid
@@ -849,18 +851,19 @@ class TestRequireReadyForReview:
         old_time = time.time() - 300
         os.utime(marker, (old_time, old_time))
 
-        other_dir = tmp_path / "unrelated-tree"
-        other_dir.mkdir()
+        non_repo_dir = tmp_path / "not-a-repo"
+        non_repo_dir.mkdir()
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
-                bash_input("pytest -q", session_id=sid),
-                cwd=other_dir,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=non_repo_dir,
             )
             == "allow"
         )
         assert marker.stat().st_mtime > old_time + 1, (
-            "marker refresh must not depend on which tree the Bash call runs in"
+            "a live marker must refresh even when the gated command's cwd "
+            "is not a git repo"
         )
 
     # -- Completion-marker check ------------------------------------------

@@ -33,9 +33,9 @@
 #   session_id) a gate run it already completed at the same HEAD.
 #
 # Bypass cases (allow without checking marker):
-# - The skill is currently running (active marker live for this session) —
-#   evaluated before the command-shape, repo-resolution, and default-branch
-#   checks below, so it applies regardless of what those checks would decide.
+# - The skill is currently running (active marker live for this session).
+#   Checked before the command-shape, repo-resolution, and default-branch
+#   checks, so it fires regardless of what they would decide.
 # - Not Bash tool, or not git push / gh pr ready / gh pr create.
 # - The next three are judged per git-push fragment, so a bypassable push
 #   chained ahead of a gated fragment does not exempt it:
