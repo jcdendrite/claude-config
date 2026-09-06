@@ -407,29 +407,32 @@ CLASSIFICATION SUMMARY
 - `--deny-only` — restrict to sessions containing at least one hook denial
 - `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
 - `--skill NAME` — restrict skill-invocation matching to one skill name
+- Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
+
+`line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
 
 **Sample output.**
 ```
 REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 
 ### <config-dir>/projects/my-project/abc123.jsonl
-branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=4  architect-consults=1
+branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
   [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=main model=opus)
   [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=main model=opus)
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
+  [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
   [2026-05-20T10:45:00.000Z] line  120  denial       hook=  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
-The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch.
+The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
 
-**When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has three limits:
+**When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has two limits:
 
 - It reports only that a plan-architect consult dispatch occurred on that branch, never which prescription site required it.
-- It is invisible for a consult dispatched from inside a subagent, since `review-trace` never loads subagent records.
 - It means the dispatch was initiated, not that it completed.
 
 ### `--deny-summary`

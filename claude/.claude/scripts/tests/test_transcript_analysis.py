@@ -3058,11 +3058,9 @@ class TestReviewTrace:
         emitted_consult = any(e["kind"] == "architect-consult" for e in events)
         assert emitted_consult is expect_consult
 
-    def test_sidechain_architect_consult_excluded(self):
-        """A plan-architect consult dispatch inside a sidechain record must
-        not produce an architect-consult event -- review-trace's session_iter
-        never requests subagent records, so a consult dispatched from inside
-        a subagent is structurally invisible here."""
+    def test_sidechain_architect_consult_now_detected(self):
+        """A plan-architect consult dispatch inside a sidechain record
+        produces an architect-consult event, tagged thread=sidechain."""
         records = [
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   sidechain=True,
@@ -3071,7 +3069,9 @@ class TestReviewTrace:
         events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
             records, None, None, None,
         )
-        assert events == []
+        assert len(events) == 1
+        assert events[0]["kind"] == "architect-consult"
+        assert events[0]["thread"] == "sidechain"
 
     def test_non_plan_architect_dispatch_never_misclassified_as_consult(self):
         """A staff-backend-engineer dispatch with no MODE=plan-sections first
@@ -3109,7 +3109,10 @@ class TestReviewTrace:
     def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
         """The blindness property pinned at the layer it is defined: the
         event dict itself carries only the classification result plus the
-        metadata every event kind carries, never a prompt-derived field."""
+        metadata every event kind carries, never a prompt-derived field.
+        thread is record-structural -- derived from the record's own
+        isSidechain flag, never from the prompt -- so its presence here
+        does not weaken the pin."""
         records = [
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect",
@@ -3120,7 +3123,7 @@ class TestReviewTrace:
         )
         consult_events = [e for e in events if e["kind"] == "architect-consult"]
         assert len(consult_events) == 1
-        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model"}
+        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model", "thread"}
 
     def test_architect_consult_prompt_body_never_reaches_review_trace_output(self, fake_projects, capsys):
         """The prompt string is never stored on the event dict, so it can
@@ -3162,8 +3165,9 @@ class TestReviewTrace:
         assert "consult-only.jsonl" in out
         assert "consult      " in out
 
-    def test_sidechain_skill_invocation_excluded(self):
-        """A code-review Skill call inside a sidechain record must not produce a skill event."""
+    def test_sidechain_skill_invocation_now_detected(self):
+        """A code-review Skill call inside a sidechain record produces a
+        skill event, tagged thread=sidechain."""
         records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
@@ -3173,7 +3177,220 @@ class TestReviewTrace:
         events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
             records, None, None, None,
         )
-        assert events == []
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+        assert events[0]["thread"] == "sidechain"
+
+    # -----------------------------------------------------------------------
+    # GH-896: merge/sort of main and subagent records
+    # -----------------------------------------------------------------------
+
+    def test_review_trace_end_to_end_detects_consult_dispatched_from_subagent_file(
+        self, fake_projects, capsys
+    ):
+        """End to end through cmd_review_trace's own scope resolution (not
+        just the direct _review_trace_session_events call the other tests in
+        this class use): a plan-architect consult dispatched from inside a
+        subagent's own <session_id>/subagents/*.jsonl file is detected now
+        that include_subagents=True is the default, and its timeline row
+        prints thread=sidechain with its line number suppressed as n/a,
+        since a sidechain event's line_no indexes no real file."""
+        session_id = "sess-subagent-consult"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:05:00.000Z",
+                  content=[_agent_use("a2", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+        assert "thread=sidechain" in out
+        assert "line   n/a" in out
+
+    def test_merged_stream_interleaves_main_and_sidechain_chronologically(self):
+        """Main and subagent records are merged into one chronological
+        stream before detection, not left in main-then-subagent
+        concatenation order: a subagent record timestamped between two
+        main-thread records lands between their events in the emitted
+        timeline."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s3", "ready-for-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "ready-for-review", "plan-review"]
+        assert [e["thread"] for e in events] == ["main", "sidechain", "main"]
+
+    def test_line_no_still_resolves_to_main_file_line_after_sort(self):
+        """A thread=main event's line_no still equals its position in the
+        main transcript after the merge sort reorders it relative to a
+        later-positioned but earlier-timestamped subagent record."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),  # main file line 1, later ts
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T09:00:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),  # subagent record, earlier ts
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events[0]["thread"] == "sidechain"
+        assert events[1]["thread"] == "main"
+        assert events[1]["line_no"] == 1
+
+    def test_interior_unparseable_timestamp_forward_fills_and_stays_adjacent(self):
+        """An interior record whose timestamp fails to parse forward-fills
+        the immediately preceding record's effective_ts, so it sorts
+        adjacent to that neighbour rather than raising TypeError or
+        drifting elsewhere in the stream."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="not-a-timestamp",
+                  content=[_skill_use("s2", "plan-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s3", "ready-for-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "plan-review", "ready-for-review"]
+
+    def test_leading_unparseable_timestamp_sorts_to_head_not_typeerror(self):
+        """A leading record whose timestamp fails to parse has no preceding
+        record to forward-fill from -- it falls back to float("-inf") and
+        sorts to the head of the stream instead of raising TypeError
+        against its neighbour's float key, a distinct case from an interior
+        unparseable timestamp above."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="not-a-timestamp",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "plan-review"]
+
+    def test_same_timestamp_main_sidechain_tie_break_main_first(self):
+        """Two records sharing one timestamp, one main and one sidechain,
+        place the main event first -- the tie-break is a stated choice
+        (cause before effect), not inherited from the records' own list
+        position, which here has the sidechain record listed ahead of the
+        main one."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s2", "plan-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["thread"] for e in events] == ["main", "sidechain"]
+        assert [e["skill"] for e in events] == ["plan-review", "code-review"]
+
+    def test_sidechain_event_inherits_main_threads_branch_not_its_own(self):
+        """A sidechain event's branch is the carried-forward value from the
+        preceding main-thread record, never the sidechain record's own
+        gitBranch -- the isSidechain guard on the carry-forward trackers
+        (docs/design-decisions.md §58) is load-bearing specifically because
+        lifting it would attribute a sidechain event to its own record's
+        branch instead of the dispatching main thread's. Every other
+        sidechain fixture in this file sets the sidechain record's own
+        branch equal to the preceding main record's, so only a fixture with
+        a genuinely differing sidechain gitBranch can catch a regression
+        that reads it directly."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="A", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="B", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["branch"] == "A"
+
+    def test_denial_dedup_by_tool_use_id_survives_sort_reorder(self):
+        """A denial recorded as both a sidechain attachment record and its
+        earlier-timestamped main-thread current-format twin still collapses
+        to one event once the merge sort reorders them ahead of their
+        original list position -- dedup runs against the sorted stream, not
+        the pre-sort one."""
+        attach = _hook_deny("worktree", ts="2026-05-19T10:05:00.000Z")  # toolUseID == toolu_worktree
+        attach["isSidechain"] = True
+        twin = _hook_deny_current(
+            "Blocked by worktree-enforcement hook: 'git add' not allowed.",
+            tool_id="toolu_worktree", ts="2026-05-19T10:00:00.000Z",
+        )
+        # attach (sidechain, later ts) is listed first; twin (main, earlier
+        # ts) is listed second -- pre-sort order is the reverse of
+        # chronological order, so this exercises the merge sort as well as
+        # dedup.
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, twin], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        # hook_name=="" (rather than "worktree") proves the sort actually ran
+        # twin (main, earlier ts) ahead of attach before dedup, not merely
+        # that dedup collapsed whichever one happened to be processed first.
+        assert events[0]["hook_name"] == ""
+        assert events[0]["thread"] == "main"
+
+    def test_forward_fill_does_not_cross_subagent_file_boundary(self, fake_projects, capsys):
+        """An unparseable-timestamp record that is the first record of its
+        own subagent file resets to the earliest sort position instead of
+        forward-filling from a different subagent file's last record --
+        filename-sorted subagent files carry no chronological relationship
+        to each other, so a global (rather than per-source-group)
+        forward-fill would wrongly inherit agent-1's late timestamp into
+        agent-2's own first record. Exercised end to end through
+        cmd_review_trace, since the per-file group boundary this needs only
+        exists once records are read via real subagent files, not via a
+        hand-built flat records list."""
+        session_id = "sess-cross-file-forward-fill"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T15:00:00.000Z",
+                  content=[_skill_use("s-main", "skill-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T20:00:00.000Z",
+                  content=[_skill_use("s-a1", "code-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-2", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="not-a-timestamp",
+                  content=[_skill_use("s-a2-bad", "plan-review")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s-a2-good", "ready-for-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        # agent-2's own unparseable-ts record (plan-review) must sort ahead
+        # of agent-2's own later, real-ts record (ready-for-review), and
+        # both ahead of main (skill-review, 15:00) and agent-1 (code-review,
+        # 20:00, the last record of the *other*, filename-earlier-sorted
+        # subagent file) -- not fall back to agent-1's 20:00 timestamp,
+        # which would instead sort plan-review last.
+        assert (
+            out.index("plan-review") < out.index("ready-for-review")
+            < out.index("skill-review") < out.index("code-review")
+        )
 
     def test_since_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --since is included."""
@@ -4259,6 +4476,33 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
         assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+
+
+class TestComputeDenySummaryDataGroupBoundaryFreshRead:
+    """_compute_deny_summary_data must derive group_boundaries from the same
+    read that produces its records, not from session_iter's own records
+    paired with an independent, later _read_session_file_partitioned call --
+    the two reads can observe a growing transcript file differently."""
+
+    def test_stale_session_iter_records_are_replaced_by_the_fresh_disk_read(self, fake_projects):
+        """session_iter hands in a deliberately empty records list for this
+        session -- simulating a read taken before the main and subagent
+        files carried their denials -- while the real on-disk files already
+        have one denial each. Both denials must still surface, proving
+        detection runs against a fresh read of the files, not the stale,
+        empty tuple session_iter provided."""
+        session_id = "sess-toctou"
+        jsonl = fake_projects / f"{session_id}.jsonl"
+        _write_jsonl(jsonl, [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="b2"),
+        ])
+
+        data = _mod._compute_deny_summary_data([(jsonl, [])])
+
+        assert dict(data["hook_counts"]) == {"code-review": 1, "ready-for-review": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -8347,7 +8591,16 @@ class TestCostLedgerRecordParity:
         """--record's row values equal what _compute_cost_trend_data,
         _compute_deny_summary_data, and _compute_reviewer_yield_data compute
         independently for the same week — the parity check that catches
-        drift between the recorder and the report subcommands it reuses."""
+        drift between the recorder and the report subcommands it reuses.
+
+        The fixture carries one main-thread denial and one subagent-sourced
+        denial. The two use different hook names because _hook_deny derives
+        its toolUseID from the hook name, and a same-named second denial
+        would collapse under dedup. The deny oracle below is widened to
+        include_subagents=True to match its two cost/reviewer siblings. That
+        widening is what exercises agreement between the recorder's denials
+        column and the oracle's own subagent-inclusive count, rather than
+        only the main-thread-only count both would otherwise report."""
         proj = fake_projects
         session_id = "sess-parity"
         records = [
@@ -8374,6 +8627,10 @@ class TestCostLedgerRecordParity:
         records.append(_asst("claude-opus-4-7", ts="2026-06-01T10:15:00.000Z",
                               content=[_edit_use("ez-final", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        subagent_denial = _hook_deny("worktree", ts="2026-06-02T11:00:00.000Z")
+        subagent_denial["isSidechain"] = True
+        _write_subagent_jsonl(proj, session_id, "denial-agent", [subagent_denial])
 
         _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
         capsys.readouterr()
@@ -8404,10 +8661,10 @@ class TestCostLedgerRecordParity:
 
         week_start = _mod.datetime(2026, 6, 1, tzinfo=_mod.UTC).timestamp()
         week_end = week_start + 7 * 86400
-        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         deny_data = _mod._compute_deny_summary_data(deny_iter, since_ts=week_start, until_ts=week_end)
         assert row["denials"] == sum(deny_data["hook_counts"].values())
-        assert row["denials"] == 1
+        assert row["denials"] == 2
 
         reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
