@@ -79,6 +79,7 @@ if ! mkdir -p "$RECORDS_DIR" 2>/dev/null; then
   exit 0
 fi
 
+# shellcheck disable=SC2016 # single-quoted on purpose: $sid/$reason are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them.
 RECORD_JSON=$(_lib_jq -n --arg sid "$SESSION_ID" --arg reason "$REASON" \
   '{sessionId: $sid, reason: (if $reason == "" then null else $reason end)}' 2>/dev/null)
 if [ -z "$RECORD_JSON" ]; then
