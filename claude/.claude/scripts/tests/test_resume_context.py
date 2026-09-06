@@ -119,6 +119,26 @@ class TestLaunchMode:
         assert "\x1b" not in result.stderr
         assert not recorder.exists()
 
+    def test_missing_source_hint_channel_preserves_bidi_override_as_accepted_residual(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the accepted residual from docs/design-decisions.md §57: a
+        bidi-override character in a requested (never-written) path is not
+        stripped, since this branch echoes the raw argument before any file
+        is read or needs to exist -- unlike the OSC/CSI strip above, this is
+        not a stripping guarantee. A future change narrowing or widening
+        this residual should show up as a visible diff here."""
+        stub, recorder = _install_recorder(tmp_path)
+        missing = str(tmp_path / "evil") + chr(0x202E) + "live-handoff.md" + chr(0x202C)
+        result = _run(
+            [missing],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert chr(0x202E) in result.stderr
+        assert chr(0x202C) in result.stderr
+        assert not recorder.exists()
+
     def test_moved_announcement_channel_carries_no_raw_escape_byte(self, tmp_path: Path) -> None:
         """Channel-level guard: the launch-mode 'moved' announcement must
         never print a raw control byte from $SRC verbatim into the invoking
@@ -353,6 +373,29 @@ class TestCwdFlag:
         assert result.returncode != 0
         assert "\x1b" not in result.stdout
         assert "\x1b" not in result.stderr
+        assert src.exists(), "source must not be moved when --cwd fails validation"
+        assert not recorder.exists()
+
+    def test_cwd_flag_not_a_directory_channel_preserves_bidi_override_as_accepted_residual(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the accepted residual from docs/design-decisions.md §57: a
+        bidi-override character in a hostile --cwd value is not stripped,
+        since this branch echoes the raw argument before any file is read
+        or needs to exist -- unlike the OSC/CSI strip above, this is not a
+        stripping guarantee. A future change narrowing or widening this
+        residual should show up as a visible diff here."""
+        stub, recorder = _install_recorder(tmp_path)
+        hostile_cwd = str(tmp_path / "evil") + chr(0x202E) + "FAKE" + chr(0x202C)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", hostile_cwd, str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert chr(0x202E) in result.stderr
+        assert chr(0x202C) in result.stderr
         assert src.exists(), "source must not be moved when --cwd fails validation"
         assert not recorder.exists()
 

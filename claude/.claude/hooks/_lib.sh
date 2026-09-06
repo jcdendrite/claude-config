@@ -2605,47 +2605,26 @@ _lib_print_recovery_hint() {
 }
 
 # _lib_sanitize_for_terminal VALUE
-# Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) and the
-# Unicode bidi-override/isolate/zero-width code points (U+202A-U+202E,
-# U+2066-U+2069, U+200B, U+200C, U+200D, U+FEFF) stripped. Tab (0x09) is
-# preserved: it is a legitimate field separator in at least one caller's
-# format, not a byte that caller needs guarding against. See
+# Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) stripped.
+# Tab (0x09) is preserved: it is a legitimate field separator in at least
+# one caller's format, not a byte that caller needs guarding against. See
 # docs/scripts.md's find-consumed-continuity-file.sh entry for the shared
-# callers, threat model, and full stripping rationale.
+# callers, threat model, and the C1/bidi/zero-width residual-scope
+# rationale.
 # Pure-bash loop, not `tr -d`, so a PATH missing `tr` can't abort this
-# always-on-success-path sanitizer. Matches target code points by literal
-# UTF-8 byte sequence under a function-scoped `LC_ALL=C`, not by
-# locale-dependent `$'\uHHHH'` ranges (see
-# `test_lib_sanitize_for_terminal_strips_targets_and_preserves_ascii_under_non_utf8_locale`
-# in `test_lib.py` for why).
-# Out of scope -- see docs/scripts.md's find-consumed-continuity-file.sh
-# entry for the C1-scope rationale.
+# always-on-success-path sanitizer.
+# `local LC_ALL=C` forces byte-wise indexing (`${value:i:1}`, `${#value}`)
+# over VALUE, which need not be valid UTF-8: every UTF-8 continuation and
+# lead byte is >=0x80, so this byte-wise indexing never splits a multi-byte
+# sequence at a strip point.
 _lib_sanitize_for_terminal() {
-  local value="$1" out="" i len char next1 next2
+  local value="$1" out="" i len char
   local LC_ALL=C
   len=${#value}
   for (( i = 0; i < len; i++ )); do
     char="${value:i:1}"
     case "$char" in
       [$'\x01'-$'\x08']|[$'\x0a'-$'\x1f']|$'\x7f') continue ;;
-      $'\xe2')
-        next1="${value:i+1:1}"
-        next2="${value:i+2:1}"
-        case "$next1$next2" in
-          $'\x80'[$'\x8b'-$'\x8d']|$'\x80'[$'\xaa'-$'\xae']|$'\x81'[$'\xa6'-$'\xa9'])
-            (( i += 2 ))
-            continue
-            ;;
-        esac
-        ;;
-      $'\xef')
-        next1="${value:i+1:1}"
-        next2="${value:i+2:1}"
-        if [ "$next1$next2" = $'\xbb\xbf' ]; then
-          (( i += 2 ))
-          continue
-        fi
-        ;;
     esac
     out+="$char"
   done

@@ -2965,92 +2965,18 @@ def test_lib_sanitize_for_terminal_strips_all_three_ranges_and_preserves_tab() -
     assert result.stdout == "abcdef\tg"
 
 
-# Pins the bidi-override/isolate/zero-width code points added to the strip
-# set: U+202A-U+202E (explicit directional embeddings/overrides), U+2066-
-# U+2069 (directional isolates), and U+200B/U+200C/U+200D/U+FEFF
-# (zero-width spacing/joiners). \u-escaped rather than embedded as literal
-# invisible characters, matching the adjacent C1 test's $'a\x9bb' style.
-# This keeps every code point visible in a diff instead of an inert
-# invisible byte sequence in the tracked source.
-def test_lib_sanitize_for_terminal_strips_bidi_isolate_and_zero_width_code_points() -> None:
+# Multi-byte UTF-8 must pass through unchanged -- the property that makes
+# the byte-wise C0/DEL strip safe on a filesystem path that isn't
+# guaranteed to be valid UTF-8. See _lib_sanitize_for_terminal's own header
+# comment for why `local LC_ALL=C` byte-wise indexing never splits a
+# multi-byte sequence at a strip point.
+def test_lib_sanitize_for_terminal_passes_through_multibyte_utf8() -> None:
     result = _run_lib_call(
-        r"_lib_sanitize_for_terminal $'a\u202ab\u202ec\u2066d\u2069e\u200bf\u200cg\u200dh\ufeffi'",
+        "_lib_sanitize_for_terminal 'café-handoff.md'",
         env=dict(os.environ),
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "abcdefghi"
-
-
-# The strip loop must match these code points byte-wise under a
-# function-scoped LC_ALL=C, not via locale-dependent $'\uHHHH' character
-# ranges. The test above only exercises whatever locale the test runner
-# happens to have, since it passes env=dict(os.environ). This payload is
-# \x-escaped as raw UTF-8 bytes rather than \u-escaped: bash's $'\uHHHH'
-# quoting itself only expands under a UTF-8 locale, so a \u-escaped payload
-# could not construct the intended input bytes under the non-UTF-8 locales
-# this test targets.
-@pytest.mark.parametrize(
-    "locale_env",
-    [{"LC_ALL": "C"}, {}],
-    ids=["lc_all_c", "no_lang_or_lc_all_set"],
-)
-def test_lib_sanitize_for_terminal_strips_targets_and_preserves_ascii_under_non_utf8_locale(
-    locale_env: dict[str, str],
-) -> None:
-    env = {"PATH": os.environ["PATH"], **locale_env}
-    result = _run_lib_call(
-        r"_lib_sanitize_for_terminal "
-        r"$'/home/user/\xe2\x80\xaax\xe2\x80\xaey\xe2\x81\xa6z\xe2\x81\xa9"
-        r"\xe2\x80\x8ba\xe2\x80\x8cb\xe2\x80\x8dc\xef\xbb\xbfd/path'",
-        env=env,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "/home/user/xyzabcd/path"
-
-
-# An em-dash (U+2014, UTF-8 \xe2\x80\x94) shares its first two bytes
-# (\xe2\x80) with two of the three next1/next2 patterns matched for the
-# bidi/isolate/zero-width ranges above. Its third byte (\x94) falls outside
-# every one of those patterns. Pins that this near-miss byte sequence
-# survives, since a widened next2 range in a future edit would silently
-# swallow it. No other test in this file would catch that regression.
-#
-# The three code points below sit immediately adjacent to each hand-written
-# range's actual boundary, rather than merely sharing a lead byte: U+200A
-# (HAIR SPACE, \x8a) is one continuation byte below the zero-width range's
-# lower bound (\x8b); U+200E (LEFT-TO-RIGHT MARK, \x8e) is one above its
-# upper bound (\x8d); U+202F (NARROW NO-BREAK SPACE, \xaf) is one above the
-# bidi-override range's upper bound (\xae). A single-value boundary overshoot
-# in a future edit -- the most mechanically likely mistake on a hand-
-# maintained hex range -- would swallow one of these three and nothing else
-# in this file would catch it.
-@pytest.mark.parametrize(
-    "locale_env",
-    [{"LC_ALL": "C"}, {}],
-    ids=["lc_all_c", "no_lang_or_lc_all_set"],
-)
-@pytest.mark.parametrize(
-    "near_miss_bytes,near_miss_char",
-    [
-        (r"\xe2\x80\x94", "\u2014"),  # em-dash: shares first two bytes only
-        (r"\xe2\x80\x8a", "\u200a"),  # hair space: one below zero-width's lower bound
-        (r"\xe2\x80\x8e", "\u200e"),  # LRM: one above zero-width's upper bound
-        (r"\xe2\x80\xaf", "\u202f"),  # NNBSP: one above bidi-override's upper bound
-    ],
-    ids=["em_dash", "hair_space", "lrm", "nnbsp"],
-)
-def test_lib_sanitize_for_terminal_preserves_near_miss_multibyte_character_under_non_utf8_locale(
-    near_miss_bytes: str,
-    near_miss_char: str,
-    locale_env: dict[str, str],
-) -> None:
-    env = {"PATH": os.environ["PATH"], **locale_env}
-    result = _run_lib_call(
-        rf"_lib_sanitize_for_terminal $'a{near_miss_bytes}b'",
-        env=env,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"a{near_miss_char}b"
+    assert result.stdout == "café-handoff.md"
 
 
 # _lib_sanitize_for_terminal's C1 range (0x80-0x9f) pass-through is an

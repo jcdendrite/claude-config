@@ -1186,9 +1186,28 @@ Accepted as a scoped tradeoff, not an oversight. The threat model this feature t
 - Account-level isolation on one uid becomes a stated goal elsewhere in this repo, not just an assumption this index happens to rely on.
 - A concrete report surfaces of one account's handoff/brief slug being read from a different account's session via this index.
 
+The cross-account `$src` exposure accepted here also carries §57's bidi/zero-width residual: a reading account renders a different, co-resident account's crafted `$src` without ever loading that account's file content into its own system prompt, so §57's dominance argument (real content already loaded) doesn't transfer across the account boundary this entry accepts. This entry predates §57's collapse and didn't have that factor in view; it's folded in here rather than reopening the tradeoff above.
+
 ### Sources
 
 - `.claude/plans/handoff-consume-tmp-index.md` — Assumption ledger row 20, and the "Out of scope" section's cross-account framing.
 - `claude/.claude/scripts/resume-context.sh` — the destination-filename non-goal this index's `$src` field newly extends past, and its own header note pointing here.
 - `docs/scripts.md`'s `find-consumed-continuity-file.sh` entry — the reader-side cross-reference to this entry.
 - `docs/hooks.md`'s `pr-cost-disclosure` and `output-preferences` entries — the existing `$CLAUDE_CONFIG_DIR`-scoping convention this index departs from.
+
+## 57. `_lib_sanitize_for_terminal` drops its bidi/zero-width-code-point stripping layer, keeping only the C0/DEL strip (2026-09-05)
+
+The bidi-override/isolate/zero-width stripping arms in `_lib_sanitize_for_terminal` (`claude/.claude/hooks/_lib.sh`) were added reactively during code review on this branch — never part of the original plan — after a reviewer raised display-reordering as a theoretical extension of the OSC/CSI-injection threat the function already covered. That addition became the source of its own BLOCKER: the `$'\uHHHH'`-range implementation stripped none of its 13 target code points and corrupted unrelated ASCII/UTF-8 content in the same string whenever the invoking process ran under a non-UTF-8 locale (`LC_ALL=C` or unset `LANG`/`LC_ALL`). The fix — a hand-maintained, byte-wise three-range UTF-8 continuation-byte table matched under a function-scoped `LC_ALL=C` — closed the locale bug but kept producing new boundary-coverage findings across further review rounds: a follow-up round found the fix's own near-miss regression test used a probe character far from every range's actual boundary, so a single-hex-digit boundary overshoot on any of the three ranges (the most mechanically likely edit mistake on a hand-maintained hex table with no source-level cross-reference to the Unicode ranges it encodes) would silently start swallowing adjacent legitimate characters — U+200E (LEFT-TO-RIGHT MARK), U+202F (NARROW NO-BREAK SPACE) — with no test in any round's diff catching it.
+
+Collapsed to the provably-correct C0/DEL-only strip instead of continuing to patch the table. Bytes `0x01-0x1f` (excluding tab) and `0x7f` cannot occur inside any UTF-8 multi-byte sequence, since every UTF-8 continuation and lead byte is `≥0x80` — this range needs no UTF-8-aware matching and has no boundary to get wrong. The engineer ratified dropping the bidi/zero-width layer rather than continuing to harden it: an attacker able to write into `<config-dir>/handoffs/` or `<config-dir>/briefs/` already controls the content fed to `claude --append-system-prompt-file` wholesale, which strictly dominates the residual risk of a misleading rendered path from display-reordering alone — but only once a real, attacker-authored file has actually been loaded. That dominance argument does not reach `resume-context.sh`'s source-not-found branch or its `--cwd` not-a-directory branch: both sanitize and echo a raw CLI argument to stderr before any file is read or needs to exist, so there is no loaded file content for the wholesale-control argument to dominate. The narrower residual on those two branches — a crafted, nonexistent path or `--cwd` value rendering with bidi/zero-width characters intact — is accepted separately, for a narrower reason: closing it would need the same UTF-8-validity-aware matching this collapse removed for lacking a provably-correct byte-wise construction, and the raw value never reaches a filesystem operation (`mv`, `cd`, `[ -f ]` all use the unsanitized argument), so the exposure is limited to a human misreading the rendered text.
+
+**Revisit** if any of:
+
+- A concrete report surfaces of bidi-override or zero-width characters in a continuity-file path causing a real misleading-rendering incident, independent of the dominant OSC/CSI vector this function still covers.
+- The function gains a UTF-8-decoding dependency for an unrelated reason, at which point a validity-aware bidi/zero-width strip would no longer need its own hand-maintained byte table.
+
+### Sources
+
+- `agent-reviews/ciso-reviewer-1788658357-handoff-consume-tmp-.md` — the round-1 BLOCKER: the bidi/zero-width strip stripped nothing and corrupted unrelated ASCII/UTF-8 under a non-UTF-8 locale.
+- `agent-reviews/staff-sdet-1788662442-handoff-consume-tmp-.md` — the round-3 boundary-coverage-gap finding: the near-miss regression test wasn't boundary-adjacent, so a single-value overshoot on any of the three hand-written ranges would swallow adjacent legitimate characters undetected.
+- `docs/scripts.md`'s `find-consumed-continuity-file.sh` entry — the residual-scope rationale this collapse folds bidi/zero-width into, alongside the pre-existing C1 residual.
