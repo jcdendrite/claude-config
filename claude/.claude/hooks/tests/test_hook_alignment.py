@@ -64,11 +64,13 @@ def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/.
 
     Excludes each directory's _lib.sh by default. Pass include_lib=True to
-    sweep those too -- used only by the backslash-s detector, which has no
-    self-reference risk against _lib.sh. The bare-jq and inline-matcher
-    detectors stay on the default (excluded) because each is defined
-    inside _lib.sh using the exact primitive it detects, so including it
-    there would be a guaranteed, meaningless self-match.
+    sweep those too. Each detector's default follows from its own
+    self-match risk against _lib.sh:
+    - `include_lib=True` (used only by the `\\s` detector) -- that detector
+      is safe against _lib.sh because it isn't defined there.
+    - The bare-jq and inline-matcher detectors stay excluded because each
+      is itself defined inside _lib.sh using the exact primitive it
+      detects -- including it would be a guaranteed self-match.
     """
     hooks: list[Path] = []
     for sh in sorted(_MAIN_HOOKS_DIR.glob("*.sh")):
@@ -604,6 +606,20 @@ def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
     assert len(hits) == 13, f"expected exactly the 13 positive fixture lines flagged, got {hits!r}"
 
 
+def test_bare_jq_xargs_and_command_forms_are_known_blind_spots(tmp_path: Path) -> None:
+    """Pins _bare_jq_hits's documented blind spot as executable: `xargs jq`
+    and `command jq` are indistinguishable from a properly wrapped call to
+    the anchor-based regex, so both stay silently unflagged.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text(
+        "#!/bin/bash\n"
+        "find . -name '*.json' | xargs jq '.'\n"
+        "command jq -n '{}'\n"
+    )
+    assert _bare_jq_hits(fixture) == []
+
+
 # grep-family invocation: -q/-c/-l among the flags, broad enough to catch
 # `-qE`, `-Eq`, `-cE`, etc.
 _GREP_FAMILY_RE = re.compile(r"grep\s+-[a-zA-Z]*[qcl][a-zA-Z]*\b")
@@ -696,6 +712,22 @@ def test_inline_command_matcher_detector_flags_known_variants(tmp_path: Path) ->
     )
     hits = _inline_command_matcher_hits(fixture)
     assert len(hits) == 4, f"expected exactly the 4 positive fixture lines flagged, got {hits!r}"
+
+
+def test_inline_command_matcher_variable_hoisted_pattern_is_a_known_blind_spot(tmp_path: Path) -> None:
+    """Pins _inline_command_matcher_hits's documented blind spot as
+    executable: a tool-token pattern hoisted into a variable before being
+    passed to grep is indistinguishable from an unrelated pattern
+    argument on the grep call's own source line, so it stays silently
+    unflagged.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text(
+        "#!/bin/bash\n"
+        "pattern='git\\s'\n"
+        'grep -q "$pattern"\n'
+    )
+    assert _inline_command_matcher_hits(fixture) == []
 
 
 def _live_backslash_s_hits(hook: Path) -> list[str]:

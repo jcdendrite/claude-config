@@ -72,10 +72,8 @@ never leaks to the public repo.
 name and matcher; do not rely solely on settings.json `if` conditions.
 
 **Hook regexes: POSIX ERE only.** Use `[[:space:]]`, not GNU grep's `\s`
-extension — `\s` isn't POSIX ERE and isn't guaranteed portable.
-`claude/.claude/hooks/tests/test_hook_alignment.py` enforces this across
-every hook and each directory's `_lib.sh` (`ALL_HOOKS_AND_LIBS`), not
-just `claude/.claude/hooks/*.sh`.
+extension, since `\s` isn't portable ERE — enforced repo-wide by
+`test_hook_alignment.py`.
 
 **Should this be a hook?** When the user asks for automated/recurring
 behavior ("from now on when X…", "whenever X…", "each time X…",

@@ -771,10 +771,11 @@ class TestNudgeHandoffNearContextCap:
         # "cached_*": a real (fast) first call bootstraps the scan-state
         # file, then a larger usage record is appended so the incremental
         # scan has genuinely new usage to find. The appended estimate sits
-        # past the rearm-spacing threshold so a *successful* slow jq (the
-        # 5s-regression case) produces an observable fire, while a
-        # correctly-2s-killed call falls back to the first call's cached,
-        # not-yet-rearmed estimate and stays silent either way.
+        # past the rearm-spacing threshold, so the two outcomes diverge:
+        # - A successful slow jq (the 5s-regression case) produces an
+        #   observable fire.
+        # - A correctly-2s-killed call falls back to the first call's
+        #   cached, not-yet-rearmed estimate and stays silent.
         _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
         first = _run_hook(_base_payload(transcript), tmp_path)
         assert first.stdout.strip() != ""
