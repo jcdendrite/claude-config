@@ -3683,12 +3683,12 @@ _EDIT_KNOWN_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 # This repo's own governance-hook/harness denial wordings that can deny an
-# edit-family call, matched case-insensitively — a *different*, narrower
-# purpose than _denial_hook_label's general "blocked by <name> hook/gate"
-# extraction above: three of these six (path-spelling, permissions,
-# worktree-isolation) are harness-native denial text, never a hook's own
-# "blocked by ... hook/gate" wording, so _denial_hook_label's enumerated
-# label set does not cover them.
+# edit-family call, matched case-insensitively.
+# Serves a narrower purpose than _denial_hook_label's general "blocked by
+# <name> hook/gate" extraction above. Three of these six (path-spelling,
+# permissions, worktree-isolation) are harness-native denial text rather
+# than a hook's own wording, so they fall outside _denial_hook_label's
+# enumerated label set.
 _EDIT_GOVERNANCE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("blocked by plan-review gate", "plan-review"),
     ("reviewer-tree-mutation", "reviewer-tree"),

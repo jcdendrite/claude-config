@@ -122,7 +122,8 @@ else
 fi
 
 if [ -n "$DEST" ] && command -v jq >/dev/null 2>&1; then
-  jq -n --arg dest "$DEST" \
+  # shellcheck disable=SC2016 # single-quoted on purpose: $dest is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+  _lib_jq -n --arg dest "$DEST" \
     '{
       systemMessage: ("Continuity file moved to " + $dest + ". Reload with: claude --append-system-prompt-file " + $dest),
       hookSpecificOutput: {

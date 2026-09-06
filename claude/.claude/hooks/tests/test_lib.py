@@ -195,6 +195,28 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
     assert fields["agent_type"] == "main"
 
 
+@pytest.mark.parametrize(
+    "agent_type_value,expected",
+    [
+        (123, "123"),
+        ({"nested": "x"}, '{"nested":"x"}'),
+        ([1, 2], "[1,2]"),
+    ],
+)
+def test_non_string_agent_type_stringifies_rather_than_erroring(agent_type_value, expected) -> None:
+    """Pins _lib.sh's own comment claim: a non-string .agent_type silently
+    stringifies via jq's \\(...) interpolation instead of raising a
+    structural-type error, so the six-field extraction still exits 0. Safe
+    for AGENT_TYPE specifically because both of its consumers
+    (_lib_is_review_only_agent, _lib_is_no_gate_release_agent) are
+    exact-match denylists that simply fail to match a garbled value."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_type": agent_type_value})
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["agent_type"] == expected
+
+
 def test_multiline_command_round_trips_byte_for_byte() -> None:
     """A default-delimiter `read` truncates COMMAND at its first embedded
     newline; `-d ''` with 0x1f as IFS must preserve one exactly, since a

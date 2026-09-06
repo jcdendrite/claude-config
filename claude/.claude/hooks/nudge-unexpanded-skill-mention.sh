@@ -207,6 +207,7 @@ if [ "$PERMISSION_MODE" = "plan" ]; then
   ADDITIONAL_CONTEXT="$ADDITIONAL_CONTEXT"$'\n'"Since this session is in plan mode: if the engineer confirms, that skill's own workflow governs over the generic plan-mode phases."
 fi
 
-jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $ctx is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
   '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}' || true
 exit 0

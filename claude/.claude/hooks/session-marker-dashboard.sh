@@ -122,6 +122,7 @@ else
   ADDITIONAL_CONTEXT="$LEDGER_SUMMARY"
 fi
 
-jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $ctx is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
   '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}' || true
 exit 0

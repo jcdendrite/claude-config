@@ -14636,9 +14636,9 @@ def _marker_kinds_present(text: str) -> list[str]:
 
 
 class TestDenyGateLabelConformance:
-    """Four clauses (a)-(d), driven against every one of the 26 gate hooks
-    named in _BOOTSTRAP_FALLBACK_HOOKS. Clauses (b) and (d) each get their
-    own permanent negative-case test below, built by
+    """Five clauses (a)-(e), driven against every one of the 26 gate hooks
+    named in _BOOTSTRAP_FALLBACK_HOOKS. Clauses (b), (d), and (e) each get
+    their own permanent negative-case test below, built by
     deliberately breaking a scratch copy of a real hook — a one-time
     demonstration during authoring would leave nothing guarding the check's
     detection power against a later edit that quietly weakens it."""
@@ -14738,6 +14738,40 @@ class TestDenyGateLabelConformance:
         # own "failing closed" marker — the exact miscategorization clause
         # (d) exists to keep out of a real hook's source.
         assert _mod._denial_cause_kind(collision_literal) == "input-parse"
+
+    @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
+    def test_clause_e_no_deny_literal_reintroduces_a_hand_written_blocked_by_prefix(
+        self, hook_name, _expected_label,
+    ):
+        for literal in _deny_literals(hook_name):
+            assert "blocked by" not in literal.lower(), (
+                f"{hook_name}'s deny literal {literal!r} contains a hand-written "
+                f"'Blocked by ... gate:' phrase — DENY_GATE_LABEL already supplies "
+                f"this prefix via _lib_emit_deny, so a literal carrying its own "
+                f"copy renders doubled"
+            )
+
+    def test_clause_e_negative_reintroduced_prefix_is_detected(self, tmp_path):
+        """Permanent negative case: a scratch copy of check-skill-length.sh
+        whose _lib_staged_length_gate message literal has a hand-written
+        "Blocked by ... gate:" phrase spliced back in — the exact reversion
+        shape a copy-paste-from-history edit would produce — must be flagged
+        by clause (e)."""
+        original = (HOOKS_DIR / "check-skill-length.sh").read_text()
+        original_message = "one or more SKILL.md files grew past their per-skill limit."
+        mutated = original.replace(
+            f'"{original_message}"',
+            f'"Blocked by skill length gate: {original_message}"',
+            1,
+        )
+        assert mutated != original, (
+            "substitution didn't match — check-skill-length.sh's over-limit message wording drifted"
+        )
+        scratch = tmp_path / "check-skill-length.sh"
+        scratch.write_text(mutated)
+        literals = _deny_literals_from_text(scratch.read_text())
+        collision_literal = next(literal for literal in literals if original_message in literal)
+        assert "blocked by" in collision_literal.lower()
 
 
 # ---------------------------------------------------------------------------

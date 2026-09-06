@@ -177,7 +177,7 @@ find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 printf 'nudged session=%s friction=%s\n' "$SESSION_ID" "$FRICTION_COUNT" >> "$NUDGE_LOG" 2>/dev/null || true
 touch "$FIRED_MARKER" 2>/dev/null || true
 
-jq -n '{
+_lib_jq -n '{
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
     additionalContext: "This session has accumulated a number of mechanical friction signals (hook denials, failed test runs, user corrections). If the current body of work is close to delivered, suggest running /error-mode-analysis to the user — it buckets what went wrong by which pipeline layer caught it, so the lessons carry forward. If the session is still mid-task, ignore this and continue."

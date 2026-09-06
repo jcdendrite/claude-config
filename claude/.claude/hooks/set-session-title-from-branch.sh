@@ -161,6 +161,7 @@ printf '%s' "$BRANCH_COMPONENT" | LC_ALL=C grep -Eq "$ALLOWLIST_RE" || exit 0
 BRANCH_COMPONENT="${BRANCH_COMPONENT:0:32}"
 
 TITLE="${REPO_COMPONENT}/${BRANCH_COMPONENT}"
-jq -n --arg title "$TITLE" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $title is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg title "$TITLE" \
   '{hookSpecificOutput: {hookEventName: "SessionStart", sessionTitle: $title}}' || true
 exit 0
