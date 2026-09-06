@@ -87,8 +87,19 @@ Placing the rule in `subagent-delegation/SKILL.md` was also declined. That skill
 - Whole-file reads of 2,000+ tokens exceed **90%** of whole-file-read tokens, against today's 87.2% — the mass concentrating further into the addressable tail.
 - The locate step's mean cost exceeds **500 tokens/call**, against today's 191, which would erode the gross-to-net gap the ceiling depends on.
 
+### Revisit trigger resolution — 2026-09-05
+
+The third trigger fired: whole-file reads of 2,000+ tokens grew from 87.2% to 90.6% of whole-file-read tokens, crossing the 90% threshold. See [`markdown-context-ingestion.md`](markdown-context-ingestion.md) for that measurement and its confirmed-trigger-fire verdict. The two numbers are not re-derived here.
+
+A follow-up root-cause pass asked which side of the main-thread/subagent boundary drove the growth. Two independent `read-scope` runs at wide (default, all-accounts) scope agreed: subagent share of all whole-file-read tokens grew from 77.1% (the 2026-08-10 baseline cited above) to **80.3%**. Within the 2,000+-token buckets specifically — the ones producing the 90.6% figure — **81.7%** of tokens are subagent-resident against **18.3%** main-thread-resident. That 81.7% sits above the 80.3% overall subagent share, so the large-bucket concentration is not disproportionately a main-thread phenomenon. Main's share of the large-bucket tokens (18.3%) is in fact below main's overall share of whole-file tokens (19.7%). Absolute main-thread whole-file token count did not move between the two runs, taken minutes apart.
+
+**Conclusion.** The trigger fire is best explained by growing subagent-side whole-file-read volume, not by erosion of the main-thread read-discipline instruction. Both grounds for declining the `PostToolUse` hook in the "Decision" section above are properties of the hook itself, not claims about which side of the main/subagent boundary drives the number, so neither weakens now that the growth is known to be subagent-side. There is accordingly no main-thread-specific case for revisiting the hook-vs-instruction call either. **Decision: unchanged** — one line of guidance, no hook.
+
+**Left open.** Growing subagent whole-file-read volume is not zero-cost just because that context is discarded on return rather than re-billed to the rest of the session — it is still real, list-price compute spend at dispatch time. This root-cause finding rules out "the instruction is failing on the main thread." Whether this repo is dispatching more full-file-reading subagents than the work requires is a separate, open question this case study does not resolve.
+
 ## Sources
 
 - `claude/.claude/scripts/transcript-analysis.py` — `read-scope`, the subcommand producing every figure above.
 - `claude/.claude/scripts/tests/test_transcript_analysis.py` — `TestReadScope`, `TestScanReadScopeSession`.
 - `.claude/plans/targeted-read-discipline.md` — the plan, including the assumption ledger and the four review rounds that corrected it.
+- [`docs/case-studies/markdown-context-ingestion.md`](markdown-context-ingestion.md) — the 87.2%→90.6% measurement and confirmed-trigger-fire verdict the resolution above cites.

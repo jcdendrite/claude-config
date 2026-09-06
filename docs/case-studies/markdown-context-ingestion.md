@@ -11,7 +11,7 @@
 1. `Grep '^#{1,6} '` on the target file, then `Read` with `offset`/`limit` around the returned line range.
 2. `Read` with `offset`/`limit` directly against a cited `§N`, when the citation already names the target.
 
-Both are already covered by the global `CLAUDE.md` rule "Locate before a whole-file read," adopted in `targeted-read-discipline.md`. The largest measured item — the always-loaded `CLAUDE.md` baseline — is a real cost, but it is not a retrieval problem; it is capped by an existing commit-time line-length hook and owned by a separate trimming effort. The revisit triggers have not crossed their thresholds in a directly comparable run, with one exception flagged below for a wider rerun rather than treated as fired.
+Both are already covered by the global `CLAUDE.md` rule "Locate before a whole-file read," adopted in `targeted-read-discipline.md`. The largest measured item — the always-loaded `CLAUDE.md` baseline — is a real cost, but it is not a retrieval problem; it is capped by an existing commit-time line-length hook and owned by a separate trimming effort. Three of the four pre-registered revisit triggers have not crossed their thresholds in a directly comparable run. The fourth is a confirmed fire at wide scope, detailed below.
 
 ## How this was measured
 
@@ -59,10 +59,10 @@ These differ from the figures quoted in the plan's own Context section (42,141 /
 |---|---|---|---|---|
 | Targeted-read share of `Read` calls | 45.6% | 55.6% (2,988 / 5,371 calls) | falls below 40% | No — direction reassuring |
 | `Read`-result tokens as share of prompt-token growth | 16.0% | 17.7% | exceeds 20% | No |
-| Whole-file reads ≥2,000 tokens as share of whole-file-read tokens | 87.2% | 92.6% | exceeds 90% | **Nominally yes — see caveat below** |
+| Whole-file reads ≥2,000 tokens as share of whole-file-read tokens | 87.2% | 92.6% | exceeds 90% | **Yes — confirmed at wide scope (90.6%)** |
 | Locate-step (`Grep`/`Glob`) mean cost per call | 191 tok | ~482 tok (1,103 calls, ~532,009 tok) | exceeds 500 tok | No, but closer to the threshold than the baseline |
 
-**The third row is not a confirmed trigger fire.** The 2026-08-10 baseline was measured across this engineer's full multi-account, all-repos corpus; today's run is scoped to this repo's own sessions only, which include plan-authoring and documentation-heavy work unrepresentative of the wider population the trigger was defined against. Comparing a repo-scoped population against an all-repos threshold is the same denominator-mismatch risk this plan's Approach section names for the markdown-only figures — it is not the same error, since this run does cover all `Read` calls in all scopes as the trigger requires, but the *population* still differs. Recorded as worth a wider, all-accounts rerun before treating it as fired; not run here, since the hard minimization control (`--this-repo`) is what this dispatch used and widening was not judged necessary for the other three rows.
+**The third row is a confirmed trigger fire, not a population artifact.** The 2026-08-10 baseline was measured across this engineer's full multi-account, all-repos corpus. The repo-scoped 92.6% figure above used a narrower population (`--this-repo`), so it could not settle the question on its own. Rerunning the same metric via `read-scope` at the tool's default wide, all-accounts scope — the same population the baseline used — produced 90.6%. That figure held across three independent runs, stable to rounding as the corpus grows. It still exceeds the 90% threshold. Narrowing to this repo's own sessions inflated the figure by roughly two points over the wide-scope run. The repo-scoped 92.6% overstated the margin, not the direction of the finding. See [`targeted-read-discipline.md`](targeted-read-discipline.md)'s "Revisit trigger resolution" section for the root-cause follow-up on which side of the main-thread/subagent boundary drove the growth.
 
 ### Cost re-weighting and waste heuristic (one-off, not re-executed here)
 
