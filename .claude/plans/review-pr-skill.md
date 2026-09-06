@@ -348,7 +348,7 @@ decided per session by improvisation rather than by a repeatable pipeline.
 
    This predicate is a pure function of a path list — it needs no `gh` call and
    no LLM judgment to execute correctly — so it is extracted into
-   `claude/.claude/skills/review-pr/audit-execution-surface.py`, a standalone
+   `claude-skills/skills/review-pr/audit-execution-surface.py`, a standalone
    script the skill invokes via Bash rather than logic left to prose
    interpretation. See Critical files.
 3. **Check out** — fetch **`refs/pull/<N>/head`** from the base repo's remote,
@@ -419,16 +419,16 @@ decided per session by improvisation rather than by a repeatable pipeline.
 ## Critical files
 
 **Create**
-- `claude/.claude/skills/review-pr/SKILL.md` — the skill (≤200 lines).
-- `claude/.claude/skills/review-pr/REFERENCES.md` — `gh` field reference and the
+- `claude-skills/skills/review-pr/SKILL.md` — the skill (≤200 lines).
+- `claude-skills/skills/review-pr/REFERENCES.md` — `gh` field reference and the
   execution-surface file list, at edit time only.
-- `claude/.claude/skills/review-pr/audit-execution-surface.py` — the step-2
+- `claude-skills/skills/review-pr/audit-execution-surface.py` — the step-2
   passive-execution predicate as a standalone script (path list in, stop/continue
   + matched-path reasons out), so it is unit-testable without a `gh` fixture
   harness or a hook. Covers `.gitattributes` filter drivers, `core.hooksPath`
   targets, `.claude/settings.json`, `.claude/hooks/**`, `.claude/agents/**`,
   `.mcp.json`, `CLAUDE.md`.
-- `claude/.claude/skills/review-pr/tests/test_audit_execution_surface.py` —
+- `claude-skills/skills/review-pr/tests/test_audit_execution_surface.py` —
   fixed path-list fixtures: empty list, single hit, hit at the 100/101
   truncation boundary, a unicode filename, a case-variant `.MCP.json`.
 
