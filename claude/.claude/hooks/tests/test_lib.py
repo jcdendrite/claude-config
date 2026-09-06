@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import textwrap
 import time
@@ -2787,6 +2788,214 @@ class TestLibConfigDir:
         result = _run_config_dir({"HOME": "", "PATH": os.environ["PATH"]})
         assert result.returncode != 0
         assert result.stdout == ""
+
+
+def _run_resume_context_tmpdir_root(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_tmpdir_root"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestLibResumeContextTmpdirRoot:
+    def test_uses_resume_context_tmpdir_when_set(self) -> None:
+        result = _run_resume_context_tmpdir_root(
+            {"RESUME_CONTEXT_TMPDIR": "/custom-root", "TMPDIR": "/other-tmp", "PATH": os.environ["PATH"]}
+        )
+        assert result.stdout.strip() == "/custom-root"
+
+    def test_falls_back_to_tmpdir_when_resume_context_tmpdir_unset(self) -> None:
+        result = _run_resume_context_tmpdir_root({"TMPDIR": "/other-tmp", "PATH": os.environ["PATH"]})
+        assert result.stdout.strip() == "/other-tmp"
+
+    def test_falls_back_to_slash_tmp_when_both_unset(self) -> None:
+        result = _run_resume_context_tmpdir_root({"PATH": os.environ["PATH"]})
+        assert result.stdout.strip() == "/tmp"
+
+
+def _run_resume_context_index_dir(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_index_dir"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestLibResumeContextIndexDir:
+    """Different-owner pre-creation can't be reproduced in single-uid CI:
+    mkdir(2)'s atomicity plus the `[ -O ]` check closes the race regardless
+    (see `_lib_resume_context_index_dir`), so it's recorded here rather than
+    exercised. A future edit weakening the guard (e.g. `[ -O ]` -> `[ -w ]`)
+    should break this documented intent instead of silently reopening the
+    gap."""
+
+    def test_creates_0700_directory_and_prints_it(self, tmp_path: Path) -> None:
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert result.stdout.strip() == str(expected_dir)
+        assert stat.S_IMODE(expected_dir.stat().st_mode) == 0o700
+
+    def test_returns_1_when_tmpdir_root_is_world_writable_without_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """A world-writable, non-sticky root breaks the mkdir-to-chmod
+        race-closure argument the guard rests on: another local user could
+        unlink/rename the directory entry in that window. See the guard's
+        own comment in _lib_resume_context_index_dir for the mechanism."""
+        tmp_path.chmod(0o777)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_succeeds_when_tmpdir_root_is_world_writable_with_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors production /tmp's 1777 mode -- the sticky bit is what
+        keeps a world-writable root safe for this guard."""
+        tmp_path.chmod(0o1777)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert result.stdout.strip() == str(expected_dir)
+
+    def test_returns_1_when_tmpdir_root_is_group_writable_without_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """A group-writable, non-sticky root presents the same
+        unlink/rename race to a same-group different-uid attacker as the
+        world-writable case above. See the guard's own comment in
+        _lib_resume_context_index_dir for the mechanism."""
+        tmp_path.chmod(0o770)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_returns_1_and_prints_nothing_when_directory_is_a_symlink(self, tmp_path: Path) -> None:
+        real_dir = tmp_path / "elsewhere"
+        real_dir.mkdir()
+        symlinked = tmp_path / f"resume-context-index-{os.geteuid()}"
+        symlinked.symlink_to(real_dir)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_repairs_a_preexisting_0755_directory_to_0700(self, tmp_path: Path) -> None:
+        """Mirrors the file-level 0644->0600 repair pass a pre-existing
+        looser-mode day-file gets from record_consumed_destination -- the
+        directory's own `chmod 700` is unconditional, not gated on the mode
+        already being wrong, so it needs the same symmetric coverage."""
+        preexisting_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        preexisting_dir.mkdir()
+        preexisting_dir.chmod(0o755)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        assert stat.S_IMODE(preexisting_dir.stat().st_mode) == 0o700
+
+    def test_second_call_under_set_e_does_not_abort_via_command_substitution(self, tmp_path: Path) -> None:
+        """The function's doc comment states its unguarded `mkdir` is safe
+        under `set -e` only because every call happens inside a `$(...)`
+        command substitution, never called directly -- the second call's
+        expected EEXIST must not abort the calling script. Calls the
+        function twice via `x=$(...)` under `set -euo pipefail`, matching
+        resume-context.sh's own `set -euo pipefail` then `. _lib.sh` order,
+        and asserts both calls succeed."""
+        script = (
+            "set -euo pipefail\n"
+            f". {_LIB_SH}\n"
+            "first=$(_lib_resume_context_index_dir)\n"
+            'printf "first:%s\\n" "$first"\n'
+            "second=$(_lib_resume_context_index_dir)\n"
+            'printf "second:%s\\n" "$second"\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert f"first:{expected_dir}" in result.stdout
+        assert f"second:{expected_dir}" in result.stdout
+
+
+def test_lib_print_recovery_hint_prints_reload_command_to_stderr_only() -> None:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_print_recovery_hint "$1"', "bash", "/tmp/some-dest-path"],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    assert result.stdout == ""
+    assert result.stderr.strip() == "reload with: claude --append-system-prompt-file /tmp/some-dest-path"
+
+
+# _lib_sanitize_for_terminal — direct unit coverage of all three documented
+# stripped ranges (0x01-0x08, 0x0a-0x1f, 0x7f) plus the tab exemption. The
+# channel-level tests in test_resume_context.py and
+# test_find_consumed_continuity_file.py only exercise \x1b (middle range);
+# this pins the other two ranges' boundary bytes and the tab carve-out
+# directly against the helper, independent of any caller.
+def test_lib_sanitize_for_terminal_strips_all_three_ranges_and_preserves_tab() -> None:
+    result = _run_lib_call(
+        r"_lib_sanitize_for_terminal $'a\x01b\x08c\x0ad\x1fe\x7ff\tg'",
+        env=dict(os.environ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "abcdef\tg"
+
+
+# Multi-byte UTF-8 must pass through unchanged -- the property that makes
+# the byte-wise C0/DEL strip safe on a filesystem path that isn't
+# guaranteed to be valid UTF-8. See _lib_sanitize_for_terminal's own header
+# comment for why `local LC_ALL=C` byte-wise indexing never splits a
+# multi-byte sequence at a strip point.
+def test_lib_sanitize_for_terminal_passes_through_multibyte_utf8() -> None:
+    result = _run_lib_call(
+        "_lib_sanitize_for_terminal 'café-handoff.md'",
+        env=dict(os.environ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "café-handoff.md"
+
+
+# _lib_sanitize_for_terminal's C1 range (0x80-0x9f) pass-through is an
+# accepted residual, not an oversight -- see docs/scripts.md's
+# find-consumed-continuity-file.sh entry for the full rationale.
+# Pinned here so a future edit that starts (or stops) stripping it shows up
+# as a visible test diff instead of a silent behavior change.
+# A raw 0x9b byte is not valid standalone UTF-8, so this bypasses
+# _run_lib_call's text-mode decoding (which would raise UnicodeDecodeError
+# on it) and captures stdout as bytes instead.
+def test_lib_sanitize_for_terminal_does_not_strip_c1_bytes() -> None:
+    result = subprocess.run(
+        ["bash", "-c", rf". {_LIB_SH}; _lib_sanitize_for_terminal $'a\x9bb'"],
+        capture_output=True,
+        env=dict(os.environ),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == b"a\x9bb"
 
 
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its

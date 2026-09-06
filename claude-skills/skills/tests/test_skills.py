@@ -2241,6 +2241,21 @@ def test_handoff_and_brief_warn_against_read_to_verify(skill_name: str) -> None:
     )
 
 
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_reference_find_consumed_continuity_file(skill_name: str) -> None:
+    """Content-consistency check only, not a behavioral test (test_resume_context.py
+    and test_find_consumed_continuity_file.py cover the script's actual
+    behavior) — the only guard previously named for the "does not name where
+    the file went" clause was the line-count ceiling, which says nothing
+    about whether the replacement prose itself references the new lookup
+    script."""
+    body = _skill_file(skill_name).read_text()
+    assert "find-consumed-continuity-file" in body, (
+        f"{skill_name}/SKILL.md must reference find-consumed-continuity-file "
+        "as the recovery path for an already-consumed continuity file"
+    )
+
+
 # --- Citation placement: URLs live in REFERENCES.md, not in a SKILL.md body ---
 #
 # A SKILL.md body loads into the session on every skill fire; REFERENCES.md never
