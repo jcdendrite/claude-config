@@ -353,6 +353,18 @@ is what this register already does, so the method gets no row of its own.
 | Set budgets and output caps | Rejected, no exposed surface | Subagent frontmatter (Anthropic, *Create custom subagents*) carries no `task_budget`, `max_tokens`, or output-token-cap field; the only budget-adjacent fields are `maxTurns` (a turn count, not a token limit) and `experimental.cacheTtl` (the cache-duration lever above). `max_tokens` is set by the API caller, which is Claude Code, not this repo. `maxTurns` is reachable and truncates a dispatch rather than pricing it — a safety cap, not a cost lever. |
 | Multi-model architectures (Advisor, Orchestrator) | Already implemented, under different names | Advisor: `plan-architect`'s `MODE=consult` dispatch is a cheap executor escalating one hard design decision to an Opus-pinned read-only agent on demand (`design-decisions.md` §37), and `MODE=plan-sections` is the same escalation on a fixed trigger (§30). Orchestrator: a Sonnet-default parent decomposes and delegates bulk work to `code-writer` and the reviewer roster, with the global `CLAUDE.md`'s Model & Effort Routing rule fixing which tier each dispatch gets. Recorded honestly: the guide's precondition — a multi-model configuration must beat a single model's entire score-vs-spend curve — was never measured here. Both arrangements were adopted on other grounds, not as a validated curve win. |
 
+**2026-09-06 correction:** `reviewer-instance-continuation.md`'s
+over-powered-primitive check claims `experimental.cacheTtl` "warms only the
+small system-prompt prefix and never touches a `Read` result." Primary-source
+verification (Claude Code's own prompt-caching guide,
+`https://code.claude.com/docs/en/prompt-caching`, distinct from the generic
+Messages API doc cited above) shows this is wrong: Claude Code decides TTL
+**per request**, and a request's cached content is "the system prompt, your
+project context, every prior message and tool result" — `Read` results
+included, on the same TTL `cacheTtl` sets. See the
+`reviewer-instance-continuation.md` section below for the corrected pricing
+this unlocks.
+
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 
 Full empirical record: [`case-studies/markdown-context-ingestion.md`](case-studies/markdown-context-ingestion.md). Supersedes nothing in the `lsp-token-reduction-feasibility.md` section above — that entry already rejected LSP as a general token lever and named markdown as the bucket it doesn't touch; this row closes the follow-up that finding implies, a markdown-specific LSP.
@@ -401,3 +413,29 @@ later — not a revised version of this one, since it raises the write
 multiplier on every dispatch, including the ~66% of same-(agent-type,
 branch) dispatches that are first-of-type on a branch and gain nothing from
 a warm-cache continuation fix.
+
+**2026-09-06 follow-up, the named `cacheTtl: 1h` lever, priced.** The
+plan's over-powered-primitive check asserted `cacheTtl` "never touches a
+`Read` result" — corrected above as false. Re-running this section's own
+gap measurement at the 1-hour boundary (`review-trace --this-repo --since
+2026-07-07`, rerun same day; 271 same-session repeats, up from 263 above)
+finds 86.7% fall under one hour. That clears gate criterion 1 decisively,
+the reverse of the 5-minute-boundary result.
+
+Criterion 2 — the $50 floor — still fails. A one-off scan against
+`reviewer_yield.py`'s existing per-dispatch transcript resolution (not a
+rerunnable script — treat the precision accordingly, per this register's
+usual caveat for such scans) measured `R` directly: mean 14,260 tokens
+across 550 dispatches, well under the plan's 20,000–35,000 extrapolation.
+Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
+1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
+dispatch's own write) totals ≈$17.65 over the window. The avoided-rewrite
+benefit, reaching only the subset warm under the new boundary, totals
+≈$17.35. Net ≈ −$0.30 — break-even, nowhere near $50 either way.
+
+**Verdict unchanged (decline).** The corrected mechanics flip criterion 1
+from failing to passing, but the roster-wide cost and the repeat-only
+benefit are the same order of magnitude and cancel. A permanent `R`
+subcommand isn't warranted either: `reviewer_yield.py`'s per-dispatch
+resolution already supplies it via a throwaway script, and this plan treats
+`R` as magnitude-only, never sign-determining.
