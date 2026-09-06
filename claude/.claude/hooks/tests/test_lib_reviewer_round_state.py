@@ -9,6 +9,8 @@ functions directly rather than through either hook.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -39,11 +41,13 @@ def _state_key(repo: Path) -> subprocess.CompletedProcess:
     )
 
 
-def _state_value(repo: Path) -> subprocess.CompletedProcess:
+def _state_value(repo: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    env = {**os.environ, **extra_env} if extra_env else None
     return subprocess.run(
         ["bash", "-c", f'. "{LIB_SH}"; _lib_reviewer_round_state_value "$1"', "_", str(repo)],
         capture_output=True,
         text=True,
+        env=env,
         check=False,
     )
 
@@ -158,6 +162,31 @@ class TestLibReviewerRoundStateValue:
 
     def test_empty_on_empty_repo_root_argument(self):
         result = _state_value("")
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_unknown_diff_state_returns_1_with_no_stdout(self, tmp_path):
+        """A failed or capped `git diff --cached --quiet` (_lib_staged_diff_state's
+        "unknown" outcome) must not be stored as though it were a real round
+        state -- a later genuinely empty diff at the same
+        HEAD would otherwise `grep -qFx` match a poisoned line. Forced with a
+        stub `git` that fails only the probe's exact argument shape, so the
+        real HEAD resolution still succeeds."""
+        real_git = shutil.which("git")
+        repo = tmp_path / "unknown-diff-state"
+        _init_repo(repo)
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
+            '  exit 128\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+        result = _state_value(repo, extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"})
         assert result.returncode != 0
         assert result.stdout == ""
 

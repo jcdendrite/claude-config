@@ -633,11 +633,15 @@ class TestMarkerScriptEmptyStagedGuard:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"guard should not write a marker: {stray}"
 
-    def test_code_review_empty_staged_no_unstaged_writes_marker(
+    def test_code_review_empty_staged_no_unstaged_exits_0_without_marker(
         self, isolated_home, git_repo
     ):
         """Guard must NOT fire when staged is empty AND there are no unstaged
-        changes — the review-of-nothing escape hatch must stay open."""
+        changes — the review-of-nothing escape hatch must stay open. But a
+        genuinely clean tree is exactly _lib_staged_diff_state's "empty"
+        outcome, so the write arm must exit 0 without writing a marker,
+        not silently record sha256sum's fixed-width empty-input digest as
+        though it hashed something."""
         _seed_session(isolated_home, self.SID)
         # Unstage then discard the fixture's change so both index and working
         # tree are clean. Order matters: reset the index first (HEAD → index),
@@ -646,8 +650,10 @@ class TestMarkerScriptEmptyStagedGuard:
         subprocess.run(["git", "checkout", "--", "file.txt"], cwd=git_repo, check=True)
         result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
+        assert "staged diff is empty" in result.stderr
         marker_dir = isolated_home / ".claude" / "code-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty staged diff must not write a marker: {stray}"
 
     # ── skill-review (path-scoped to SKILL.md) ────────────────────────────
 
@@ -669,7 +675,10 @@ class TestMarkerScriptEmptyStagedGuard:
         self, isolated_home, git_repo
     ):
         """Unstaged change outside the SKILL.md pathspec with nothing staged
-        must NOT trigger the guard — the guard is pathspec-scoped."""
+        must NOT trigger the guard — the guard is pathspec-scoped. But the
+        SKILL.md-scoped diff is genuinely empty here (no SKILL.md exists at
+        all), so the write arm exits 0 without writing a marker, not the
+        guard firing."""
         _seed_session(isolated_home, self.SID)
         # file.txt is staged from the fixture; reset it so staged is empty for
         # the whole tree. The unstaged file.txt change is outside the SKILL.md
@@ -678,7 +687,8 @@ class TestMarkerScriptEmptyStagedGuard:
         result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty SKILL.md-scoped diff must not write a marker: {stray}"
 
     def test_skill_review_unstaged_skill_md_exits_2(self, isolated_home, git_repo):
         """Guard fires when staged SKILL.md diff is empty but an unstaged
@@ -743,7 +753,9 @@ class TestMarkerScriptEmptyStagedGuard:
         plan-review is out of scope for the hardcoded
         `claude-skills/skills/plan-review/ROUTING.md` pathspec — the guard
         must not fire, proving the pathspec is the exact path, not a
-        generic `**/ROUTING.md` glob."""
+        generic `**/ROUTING.md` glob. But the pathspec-scoped diff is
+        genuinely empty here, so the write arm exits 0 without writing a
+        marker, not the guard firing."""
         _seed_session(isolated_home, self.SID)
         # file.txt is staged from the fixture; reset it so staged is empty for
         # the whole tree, matching the sibling out-of-scope test's setup.
@@ -754,7 +766,8 @@ class TestMarkerScriptEmptyStagedGuard:
         result = _run(["write", "skill-review"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an empty pathspec-scoped diff must not write a marker: {stray}"
 
     def test_skill_review_unstaged_routing_md_exits_2(self, isolated_home, git_repo):
         """Guard fires when the staged plan-review/ROUTING.md diff is empty
@@ -770,6 +783,228 @@ class TestMarkerScriptEmptyStagedGuard:
         marker_dir = isolated_home / ".claude" / "skill-review-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"guard should not write a marker: {stray}"
+
+
+class TestMarkerScriptStagedDiffStateClassification:
+    """_lib_staged_diff_state's "unknown" outcome (probe timeout) and the
+    status arm's degradation to absent/historical are exercised here
+    through marker.sh's write and status arms. The content/empty/unknown
+    classification itself, including the four non-empty-diff categories
+    (mode-only change, rename, binary file, a no-op GIT_EXTERNAL_DIFF), is
+    covered directly against _lib_staged_diff_state's own stdout by
+    test_lib.py's TestLibStagedDiffState. test_write_code_review_creates_marker
+    in TestMarkerScriptHappyPath already confirms the write arm wires a
+    "content" classification through to a written marker. No separate
+    wiring check for the other content-yielding shapes is kept here."""
+
+    SID = "test-session-diff-state"
+
+    # ── the probe's own cap, exercised on the write arm ─────────────────
+
+    @pytest.mark.timing
+    def test_write_code_review_aborts_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """_lib_staged_diff_state's probe is capped via the shared 5s
+        _lib_capped -- a stalled `git diff --cached --quiet` must abort the
+        write (exit 2, no marker) rather than silently falling through as
+        though nothing were staged. _guard_staged_vs_unstaged runs its own
+        uncapped `diff --cached --quiet` check first with the identical
+        argument shape, so the stub only sleeps on the SECOND matching
+        invocation -- the probe's own call -- leaving the guard's call to
+        pass through immediately."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        counter_file = tmp_path / "invocation-count"
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            f'COUNTER_FILE="{counter_file}"\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
+            '  count=$(( $(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))\n'
+            '  printf "%s" "$count" > "$COUNTER_FILE"\n'
+            '  [ "$count" -eq 2 ] && sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        start = time.monotonic()
+        result = _run(
+            ["write", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 2, result.stderr
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire on the probe "
+            f"(stub sleeps 10s if it does not), took {elapsed:.1f}s"
+        )
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an unanswerable diff state must not write a marker: {stray}"
+
+    @pytest.mark.timing
+    def test_write_skill_review_aborts_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Same as the code-review case above, retargeted at the
+        skill-review arm's pathspec-scoped probe call."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        counter_file = tmp_path / "invocation-count"
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            f'COUNTER_FILE="{counter_file}"\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
+            '  count=$(( $(cat "$COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))\n'
+            '  printf "%s" "$count" > "$COUNTER_FILE"\n'
+            '  [ "$count" -eq 2 ] && sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        start = time.monotonic()
+        result = _run(
+            ["write", "skill-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 2, result.stderr
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire on the probe "
+            f"(stub sleeps 10s if it does not), took {elapsed:.1f}s"
+        )
+        marker_dir = isolated_home / ".claude" / "skill-review-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an unanswerable diff state must not write a marker: {stray}"
+
+    # ── status degrades to absent/historical, not a crash ───────────────
+
+    @pytest.mark.timing
+    def test_status_code_review_falls_through_to_absent_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    ):
+        """status has no _guard_staged_vs_unstaged call, so its own
+        _lib_staged_diff_state probe is the only matching invocation for
+        the whole-repo (no-pathspec, 6-arg) shape -- unlike the write-arm
+        tests above, no invocation counter is needed.
+
+        status also computes a cumulative-review line via
+        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
+        gh_timeout_shim stub keeps that call off the real, network- and
+        auth-dependent `gh`."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ] && [ "$#" -eq 6 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        )
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert "code-review: absent" in result.stdout
+
+    @pytest.mark.timing
+    def test_status_skill_review_falls_through_to_absent_when_diff_state_is_unknown(
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    ):
+        """Same as the code-review case above, but matches the
+        skill-review line's 3-pathspec (9-arg) probe shape specifically, so
+        it doesn't also stall the code-review line's own probe call.
+
+        status also computes a cumulative-review line via
+        _lib_cumulative_diff_hash, which shells out to `gh pr view`; the
+        gh_timeout_shim stub keeps that call off the real, network- and
+        auth-dependent `gh`."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ] && [ "$#" -eq 9 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        )
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: absent" in result.stdout
+
+    # ── a stray empty-digest marker must not read live ──────────────────
+
+    def test_status_empty_digest_marker_is_not_live_on_clean_tree(
+        self, isolated_home, git_repo
+    ):
+        """A completion marker seeded with sha256("")'s digest must not read
+        `live` once the tree is actually clean -- `status` computes no hash
+        at all for the "empty" state, so it can never match this value."""
+        _seed_session(isolated_home, self.SID)
+        subprocess.run(["git", "reset", "HEAD", "--", "file.txt"], cwd=git_repo, check=True)
+        subprocess.run(["git", "checkout", "--", "file.txt"], cwd=git_repo, check=True)
+        empty_digest = hashlib.sha256(b"").hexdigest()
+        write_marker(isolated_home, git_repo, empty_digest, session_id=self.SID)
+        skill_marker = skill_review_marker_path(isolated_home, git_repo, session_id=self.SID)
+        skill_marker.parent.mkdir(parents=True, exist_ok=True)
+        skill_marker.write_text(empty_digest + "\n")
+
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "code-review: live" not in result.stdout
+        assert "skill-review: live" not in result.stdout
 
 
 class TestMarkerScriptStalePidLookup:
@@ -850,6 +1085,15 @@ class TestMarkerDirectoryNamingConvention:
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         (plans_dir / "p.md").write_text("# plan\n")
+        if skill == "skill-review":
+            # A staged SKILL.md-matching path: otherwise the pathspec-scoped
+            # diff is empty and the write arm exits 0 without writing a
+            # marker, which this test isn't exercising.
+            skill_dir = git_repo / "claude-skills" / "skills" / "naming-convention-test-skill"
+            skill_dir.mkdir(parents=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text("# test skill\n")
+            subprocess.run(["git", "add", str(skill_md)], cwd=git_repo, check=True)
         extra_env = None
         if skill == "cumulative-review":
             # cumulative-review's own diff recipe needs a resolvable default
@@ -1713,20 +1957,15 @@ class TestMarkerScriptStatusCompletionMarkers:
         stub.chmod(0o755)
 
         _seed_session(isolated_home, self.SID)
-        start = time.monotonic()
-        result = _run(
-            ["status"],
-            cwd=git_repo,
-            home=isolated_home,
-            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
-        )
-        elapsed = time.monotonic() - start
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            )
 
         assert result.returncode == 0, result.stderr
-        assert elapsed < 9.5, (
-            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
-            f"it does not), took {elapsed:.1f}s"
-        )
         assert "code-review: absent" in result.stdout
 
     # ── skill-review ───────────────────────────────────────────────────
@@ -2314,7 +2553,8 @@ class TestMarkerScriptCumulativeReview:
         assert "cumulative-review:" in result.stdout
         assert (
             "cumulative-review: could not verify (pr-diff-against-base.sh failed, "
-            "produced no output, or timed out -- the state above reflects marker "
+            "the diff is empty -- often because this branch already has a merged "
+            "PR -- or resolution timed out -- the state above reflects marker "
             "presence only, not a confirmed hash comparison)"
         ) in result.stderr
 

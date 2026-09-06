@@ -3972,6 +3972,20 @@ def test_session_id_redaction_present_at_every_check_output_site() -> None:
     )
 
 
+def test_ready_for_review_step3_halts_on_empty_cumulative_diff() -> None:
+    """A legitimately empty cumulative diff (the branch's PR is already
+    merged) must halt the skill before it reaches `/code-review`, rather
+    than running a vacuous review and then failing at the marker.sh write
+    gate with a message naming causes that never fired."""
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+    assert "the branch's cumulative diff against its base is empty" in section_text, (
+        f"{skill_md_path}: Step 3 must name the empty-diff halt condition explicitly"
+    )
+
+
 def _step4_tripwire_names() -> set[str]:
     """Bolded tripwire names from plan-review/SKILL.md's Step 4 bullet list.
 
