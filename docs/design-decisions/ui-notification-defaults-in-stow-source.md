@@ -62,4 +62,4 @@ question.
 - [Claude Code settings](https://code.claude.com/docs/en/settings) — the five-level precedence model and each level's file path.
 - [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference) — per-key scope column, including the "Any file" scope cited above.
 - [Fullscreen mode](https://code.claude.com/docs/en/fullscreen) — alternate-screen renderer behavior, memory, and mouse support.
-- `claude/.claude/hooks/guard-settings-session-keys.sh` and [`docs/hooks.md`](hooks.md) — the guarded key set and the staged-vs-`main` comparison.
+- `claude/.claude/hooks/guard-settings-session-keys.sh` and [`docs/hooks.md`](../hooks.md) — the guarded key set and the staged-vs-`main` comparison.

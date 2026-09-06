@@ -138,11 +138,12 @@ TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture
 
 # Blanket for every file under docs/, rather than one exact-match constant
 # per file: test_hook_alignment.py reads docs/hooks.md, test_doc_counts.py
-# reads docs/design-decisions.md, docs/skills.md, and docs/handoff-nudge.md,
-# and test_skills.py's test_doc_has_no_state_path parametrizes over nearly
-# every docs/**/*.md file for a per-account state-path contract. A per-file
-# constant list would silently under-select the day a new doc gains a test
-# dependency; this rule can't.
+# reads docs/design-decisions/specialist-reviewer-roster.md,
+# docs/design-decisions/reviewer-findings-path-output.md, docs/skills.md, and
+# docs/handoff-nudge.md, and test_skills.py's test_doc_has_no_state_path
+# parametrizes over nearly every docs/**/*.md file for a per-account
+# state-path contract. A per-file constant list would silently under-select
+# the day a new doc gains a test dependency; this rule can't.
 DOCS_DIR = "docs"
 
 # test_doc_counts.py (HOOKS_TESTS_DIR) pins reviewer-agent and token-cap
