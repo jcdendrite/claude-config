@@ -1039,10 +1039,13 @@ class TestResolveTargetPaths:
         assert resolved == ["claude/.claude/"]
 
     def test_two_sibling_directories_both_survive_in_sorted_order(self):
+        """Input is deliberately reverse-sorted so the assertion can fail
+        if resolve_target_paths stops sorting; feeding already-sorted
+        input would leave this test unable to detect that regression."""
         resolved = _mod.resolve_target_paths(
-            [_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR], repo_root=_REPO_ROOT,
+            [_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR], repo_root=_REPO_ROOT,
         )
-        assert resolved == [_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR]
+        assert resolved == sorted([_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR])
 
     def test_idempotent_on_its_own_output(self):
         """main passes an already-resolved list into build_pytest_argv,
@@ -1096,10 +1099,13 @@ class TestResolveTargetPaths:
 
 class TestBuildPytestArgv:
     def test_plain_directory_targets_pass_through_unchanged(self):
+        """Input is deliberately reverse-sorted so the assertion can fail
+        if resolve_target_paths stops sorting; feeding already-sorted
+        input would leave this test unable to detect that regression."""
         argv = _mod.build_pytest_argv(
-            [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR], [], repo_root=_REPO_ROOT,
+            [_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR], [], repo_root=_REPO_ROOT,
         )
-        assert argv == [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR]
+        assert argv == sorted([_mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR])
 
     def test_glob_target_expands_to_concrete_sorted_files_on_disk(self):
         argv = _mod.build_pytest_argv([_mod.TRANSCRIPT_ANALYSIS_TEST_GLOB], [], repo_root=_REPO_ROOT)
@@ -1124,6 +1130,18 @@ class TestBuildPytestArgv:
             repo_root=_REPO_ROOT,
         )
         assert argv == [_mod.HOOKS_TESTS_DIR, "-k", "foo"]
+
+    def test_passthrough_path_still_shadows_a_selected_directory(self):
+        """Containment resolution covers target_paths only. A path passed on the
+        command line reaches pytest verbatim and does shadow a selected directory
+        there -- deliberate, because classifying passthrough tokens as paths means
+        parsing pytest's option grammar."""
+        argv = _mod.build_pytest_argv(
+            [_mod.HOOKS_TESTS_DIR],
+            [_mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH],
+            repo_root=_REPO_ROOT,
+        )
+        assert argv == [_mod.HOOKS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH]
 
 
 class TestRunPytest:
@@ -1716,10 +1734,10 @@ class TestMainComposition:
         [
             pytest.param(
                 ["claude/.claude/hooks/__init__.py"],
-                [
+                sorted([
                     _mod.HOOKS_TESTS_DIR,
                     *_mod._expand_target(_mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, repo_root=_REPO_ROOT),
-                ],
+                ]),
                 id="file-inside-directory",
             ),
             pytest.param(
@@ -1728,7 +1746,7 @@ class TestMainComposition:
                 # member of SKILL_FILES_READ_BY_HOOK_TESTS as well as its own
                 # standalone SCRIPTS_TESTS_DIR row. The glob's expansions are
                 # absorbed into SCRIPTS_TESTS_DIR either way.
-                [_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR],
+                sorted([_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR]),
                 id="directory-absorbs-globs-expansions",
             ),
         ],

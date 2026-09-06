@@ -657,6 +657,9 @@ def resolve_target_paths(target_paths: Iterable[str], *, repo_root: Path) -> lis
 def build_pytest_argv(
     target_paths: Iterable[str], passthrough_args: Iterable[str], *, repo_root: Path,
 ) -> list[str]:
+    """Only target_paths are containment-resolved; passthrough_args reach
+    pytest verbatim, so a path given on the command line can still shadow a
+    resolved target."""
     return [*resolve_target_paths(target_paths, repo_root=repo_root), *list(passthrough_args)]
 
 
