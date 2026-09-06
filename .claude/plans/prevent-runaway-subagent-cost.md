@@ -50,7 +50,7 @@ Three independent mechanisms, each closing a different gap the incident exposed:
 
 ## Verification
 
-- `../../../.venv/bin/pytest claude/.claude/` and `../../../.venv/bin/ruff check claude/.claude/` green after all changes.
+- `../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py` and `../../../.venv/bin/ruff check claude/.claude/` green after all changes.
 - New unit tests: `marker.sh`'s check verb returns true only for a matching current-state hash and false for any mismatch (stale diff, different HEAD) — a false positive here would silently skip a real review.
 - New unit tests for the nudge hook: fires only above the measured threshold, fires only when `AGENT_TYPE` is a subagent type (never in the main session), produces the same JSON contract as the handoff-nudge hook, never blocks or kills the tool call it observes.
 - Manual dry run: stage a no-op change on a scratch branch, confirm `/code-review` short-circuits on a second invocation once a marker already matches; make a real change and confirm it does *not* short-circuit.
