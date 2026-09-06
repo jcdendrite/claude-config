@@ -218,17 +218,20 @@ a silent fail-open.
 11. Each detector scans non-comment lines and is a regression guard for
     the established call shapes, not a shell parser; each test docstring
     names its own blind spot. Bare `jq`: a `jq` token in command position
-    — after start-of-line, `|`, `;`, `&`, `(`, or `$(` — which by
-    construction skips `--jq`, `command -v jq`, `_lib_jq`,
-    `_lib_capped_for 2 jq`, and prose inside a printf string, and misses
-    `xargs jq` and `command jq` (bypassing a same-named function without
-    `command -v`) — an extension of the same accepted blind spot, not a
-    new one (`claude-hook-review`, this round). Inline matcher: a
+    — after start-of-line, `|`, `;`, `&`, `(`, or `$(`. This is an
+    extension of the same accepted blind spot, not a new one
+    (`claude-hook-review`):
+    - Skips `--jq`, `command -v jq`, `_lib_jq`, `_lib_capped_for 2 jq`,
+      and prose inside a printf string.
+    - Misses `xargs jq` and `command jq` (bypassing a same-named
+      function without `command -v`).
+
+    Inline matcher: a
     `grep`-family invocation (match the family broadly — `grep -q`, `-c`,
     `-l`, piped into `[ -n ... ]`, etc., not only the literal `-q` flag,
     since a hook author using any of those forms implements the same
     command-detection idiom and could otherwise evade the check by
-    accident — `claude-hook-review`, this round) carrying a **literal**
+    accident — `claude-hook-review`) carrying a **literal**
     pattern in which a tool token (`git`, `gh`, `marker.sh`)
     is immediately followed by a whitespace-class atom, which by
     construction skips flag-presence checks (`--dry-run`, `--tags`,
@@ -250,6 +253,19 @@ a silent fail-open.
     parametrize over `ALL_HOOKS` instead if either returns zero — free
     coverage with no allowlist. `[verified: repo-wide jq grep across
     plugins/, run this session]` `anchors: row10`
+    **Resolved in cumulative-diff round 4 (`ciso-reviewer`):** the `\s`
+    grep returned 3 hits, not zero — `require-plugin-version-bump.sh:90`,
+    `require-npm-version-bump.sh:126`, and `require-skill-review.sh:83`
+    each gate `git commit` with the same GNU-only `\s` pattern this phase
+    converts elsewhere, undispositioned until this finding. Converted all
+    three to `[[:space:]]` in this PR (identical substitution, each
+    plugin's `version` bumped patch per `plugin-semver`), and
+    `test_no_gnu_backslash_s_regex_extension` now parametrizes over
+    `ALL_HOOKS`, per this row's own original condition. The inline-matcher
+    grep still returns non-zero for the same three files (the identical
+    `git`+whitespace-atom shape `require-ready-for-review.sh`'s own git arm
+    already carries, exempted there) — that test stays on `_MAIN_HOOKS`,
+    unadjudicated, per this row's original disposition.
 13. **GH-485's defect did not reproduce on any of four independent
     probes this session, including the real target platform.** (1) A
     first Docker/busybox attempt used a shell heredoc (`<<<`) as stdin,
@@ -336,7 +352,7 @@ named-constant-with-rationale idiom (`test_hook_alignment.py:45-107`,
   the appropriate empty/failure check for `reason_json`) — without this
   guard, a timed-out or missing jq produces `{"decision":"block","reason":}`,
   malformed JSON, not the silent-allow the hook's header requires
-  (`claude-hook-review`, this round). `|| true` and the trailing `exit 0`
+  (`claude-hook-review`). `|| true` and the trailing `exit 0`
   stay. Update the header sentence at `:12-14` to state the durable fact
   in one line: the reason is encoded through the capped wrapper and a
   failed encode emits nothing, so a broken, missing, or hung jq degrades
@@ -382,7 +398,7 @@ named-constant-with-rationale idiom (`test_hook_alignment.py:45-107`,
   GH-485 investigation (row 13) actually found — not "some grep
   implementations don't support it," which would overclaim a confirmed
   defect after four independent negative results, per
-  `ai-instruction-and-memory-files`'s review this round. Engineer-requested this session,
+  `ai-instruction-and-memory-files`'s review. Engineer-requested this session,
   after the GH-485 reproduction investigation (row 13) — makes the
   convention the new `\s` conformance test enforces discoverable to a
   future contributor, not just silently checked. Scoped to `\s`
@@ -391,6 +407,28 @@ named-constant-with-rationale idiom (`test_hook_alignment.py:45-107`,
   enforcement would be an unenforced claim. Route through
   `ai-instruction-and-memory-files` at `/plan-review` and `/code-review`
   time, per this repo's own Domain: Claude Code config checklist.
+
+**Added in cumulative-diff round 4** (see row 12's resolution note above):
+- `claude/.claude/hooks/require-respond-pr.sh` — one sentence added to the
+  threat-model header noting its cooperative-only posture is deliberately
+  narrower than `require-ready-for-review.sh`'s adversarial one, since a
+  prior round's fix rewrote only the latter's header, leaving the two
+  hooks silently contradicting each other (`ciso-reviewer`).
+- `claude/.claude/hooks/tests/test_hook_alignment.py` — `_BARE_JQ_COMMAND_POSITION_RE`'s
+  anchor set gains `)` (a `case` statement's pattern-close, e.g.
+  `*) jq -n '{}' ;;`), with a matching fixture line in
+  `test_bare_jq_detector_flags_known_anchor_shapes` (`staff-sdet`).
+  `test_no_gnu_backslash_s_regex_extension` moves from `_MAIN_HOOKS` to
+  `ALL_HOOKS`.
+- `plugins/plugin-semver/hooks/require-plugin-version-bump.sh`,
+  `plugins/npm-semver/hooks/require-npm-version-bump.sh`,
+  `plugins/skill-management/hooks/require-skill-review.sh` — the same
+  `\s`→`[[:space:]]` substitution as `require-ready-for-review.sh` above,
+  applied to each file's `git commit` gate regex. Each plugin's
+  `.claude-plugin/plugin.json` `version` bumped patch (backward-compatible
+  bug fix, per `plugin-semver`).
+- `CLAUDE.md` — the "Hook regexes: POSIX ERE only" bullet's enforcement
+  citation updated to name `ALL_HOOKS`, matching the widened test scope.
 
 No `docs/hooks.md` change: none of the three hook edits changes documented
 behavior, and a wrapper choice is an implementation caveat that belongs in
@@ -446,7 +484,7 @@ Beyond the scoped suite:
    single well-formed `{"decision":"block","reason":…}` object.
 4. **New regression-lock test in `test_require_ready_for_review.py`**
    for the `gh --repo o/r pr create` bypass (`ciso-reviewer` and
-   `staff-sdet`, this round, independently converging), mirroring the
+   `staff-sdet`, independently converging), mirroring the
    file's existing test for the sibling full-path-invocation bypass
    (`/usr/bin/gh pr create`, `test_require_ready_for_review.py:1344-1353`)
    and the master plan's own precedent for this identical shape (GH-498's
@@ -462,7 +500,7 @@ Beyond the scoped suite:
    unrelated future edit to this matcher (touched while fixing something
    else) could silently widen the bypass further with nothing failing.
 5. **Self-test the bare-jq detector's command-position anchor set**
-   (`staff-sdet`, this round): the described anchor set (start-of-line,
+   (`staff-sdet`): the described anchor set (start-of-line,
    `|`, `;`, `&`, `(`, `$(`) omits two shell-syntactic command-start
    positions common elsewhere in this repo's hooks — after a keyword
    (`then`, `else`, `elif`, `do`) and after brace-grouping (`{`) — plus
@@ -501,8 +539,8 @@ Beyond the scoped suite:
    hook family, not as a confirmed fix — state plainly that the specific
    fail-open GH-485 describes was tested four ways, including on the
    actual macOS grep binary, and not reproduced.
-8. **One-way-door consequence for Phases 1–2 (`staff-platform-engineer`,
-   this round).** State plainly in the PR body: merging this PR forecloses
+8. **One-way-door consequence for Phases 1–2 (`staff-platform-engineer`).**
+   State plainly in the PR body: merging this PR forecloses
    standalone revert of Phases 1 or 2 — per the master plan's own "rollback
    is forward-only past Phase 5" line (Verification section), reverting
    either after this point requires reverting Phase 5 first, since their
@@ -521,7 +559,7 @@ Beyond the scoped suite:
   tracking-convenience choice, not a technical dependency between the two
   files — `enforce-marker-script-shape.sh:502-556` already proves the
   OR-combination is a per-file, incremental fix with no cross-file
-  coupling (`claude-hook-review`, this round: the fix is not "blocked on"
+  coupling (`claude-hook-review`: the fix is not "blocked on"
   `require-respond-pr.sh`, bundling them is purely for issue-tracking
   economy). The likely shape is the unconditional OR-combination
   `enforce-marker-script-shape.sh` already uses. The issue must name the
@@ -529,7 +567,7 @@ Beyond the scoped suite:
   `gh pr --body x comment 5` currently pass both gates — and the master
   plan's existing `require-respond-pr.sh` deferral folds into it rather
   than staying separate. **File this issue before or alongside this PR,
-  not as a dangling promise** (`ciso-reviewer`, this round): the
+  not as a dangling promise** (`ciso-reviewer`): the
   allowlist comment and the new behavioral pinning test (Verification
   item 2a) both cite an issue number, and a placeholder or missing
   reference at merge time degrades the disclosure to unfollowed prose.

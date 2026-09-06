@@ -510,11 +510,11 @@ def test_strip_comment_string_interior_hash_is_a_known_blind_spot() -> None:
 
 
 # jq in command position: immediately after start-of-line, `|`, `;`, `&`,
-# `(`, `$(`, `{`, or a then/else/elif/do keyword. Plus a hand-rolled
-# `timeout [N] jq`, which duplicates rather than reuses _lib_jq's own
-# timeout.
+# `(`, `)` (a `case` pattern's close, e.g. `*) jq ...;;`), `$(`, `{`, or a
+# then/else/elif/do keyword. Plus a hand-rolled `timeout [N] jq`, which
+# duplicates rather than reuses _lib_jq's own timeout.
 _BARE_JQ_COMMAND_POSITION_RE = re.compile(
-    r"(?:^|[|;&(]|\$\(|\{|\b(?:then|else|elif|do))\s*jq\b"
+    r"(?:^|[|;&()]|\$\(|\{|\b(?:then|else|elif|do))\s*jq\b"
 )
 _BARE_JQ_TIMEOUT_WRAPPED_RE = re.compile(r"\btimeout\s+(?:[0-9]+\s+)?jq\b")
 
@@ -562,13 +562,13 @@ def test_no_bare_jq_outside_lib_wrapper(hook: Path) -> None:
 def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
     """Meta-test for _bare_jq_hits's anchor set: one fixture line per anchor
     position _BARE_JQ_COMMAND_POSITION_RE documents (start-of-line, `|`,
-    `;`, `&`, `(`, `$(`, `{`, and each of the then/else/elif/do keywords),
-    plus the separate hand-rolled `timeout N jq` pattern. Each fixture line
-    must be flagged before relying on the detector as a regression guard
-    across 40+ hook files. Two negative-control lines (compliant `_lib_jq`
-    and `_lib_capped_for N jq` calls) must stay unflagged, proving the
-    detector distinguishes a wrapped call from a bare one rather than
-    matching on the bare `jq` substring alone.
+    `;`, `&`, `(`, `)`, `$(`, `{`, and each of the then/else/elif/do
+    keywords), plus the separate hand-rolled `timeout N jq` pattern. Each
+    fixture line must be flagged before relying on the detector as a
+    regression guard across 40+ hook files. Two negative-control lines
+    (compliant `_lib_jq` and `_lib_capped_for N jq` calls) must stay
+    unflagged, proving the detector distinguishes a wrapped call from a
+    bare one rather than matching on the bare `jq` substring alone.
     """
     fixture = tmp_path / "fixture.sh"
     fixture.write_text(
@@ -584,12 +584,13 @@ def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
         "if false; then :; else jq -n '{}'; fi\n"
         "if false; then :; elif jq -e . f >/dev/null; then :; fi\n"
         "for i in 1; do jq -n '{}'; done\n"
+        "case x in *) jq -n '{}' ;; esac\n"
         "timeout 5 jq -n '{}'\n"
         "_lib_jq -n '{}'\n"
         "x=$(_lib_capped_for 2 jq -s \"$FILTER\")\n"
     )
     hits = _bare_jq_hits(fixture)
-    assert len(hits) == 12, f"expected exactly the 12 positive fixture lines flagged, got {hits!r}"
+    assert len(hits) == 13, f"expected exactly the 13 positive fixture lines flagged, got {hits!r}"
 
 
 # grep-family invocation: -q/-c/-l among the flags, broad enough to catch
@@ -700,13 +701,18 @@ def _live_backslash_s_hits(hook: Path) -> list[str]:
     return hits
 
 
-@pytest.mark.parametrize("hook", _MAIN_HOOKS, ids=[h.name for h in _MAIN_HOOKS])
+@pytest.mark.parametrize("hook", ALL_HOOKS, ids=[h.name for h in ALL_HOOKS])
 def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
-    """No claude/.claude/hooks/*.sh regex uses GNU grep's `\\s` extension --
-    not POSIX ERE, and a POSIX-strict grep reads it as a literal `s`. Use
-    `[[:space:]]` instead. See _live_backslash_s_hits for the detector's
-    blind spot (a same-line trailing comment mentioning `\\s` in prose would
-    also be stripped before the scan, same as the two detectors above).
+    """No hook regex -- claude/.claude/hooks/*.sh or plugins/*/hooks/*.sh --
+    uses GNU grep's `\\s` extension -- not POSIX ERE, and a POSIX-strict grep
+    reads it as a literal `s`. Use `[[:space:]]` instead. Parametrized over
+    ALL_HOOKS, not _MAIN_HOOKS like the sibling matcher tests below: this
+    detector has zero plugins/*/hooks/*.sh hits and needs no allowlist,
+    unlike the bare-jq and inline-matcher checks, which each have unresolved
+    plugin-side hits requiring adjudication first. See _live_backslash_s_hits
+    for the detector's blind spot (a same-line trailing comment mentioning
+    `\\s` in prose would also be stripped before the scan, same as the two
+    detectors above).
     """
     hits = _live_backslash_s_hits(hook)
     assert not hits, (
