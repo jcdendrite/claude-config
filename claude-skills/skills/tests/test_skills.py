@@ -47,7 +47,7 @@ import pytest
 
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
-from helpers import SCRIPTS_DIR, extract_skill_command, run_skill_command
+from helpers import CLAUDE_DIR, REPO_ROOT, SCRIPTS_DIR, SKILLS_DIR, extract_skill_command, run_skill_command
 
 # Single source of truth for SKILL.md structural rules — the commit-gate hook
 # shells out to the same module. pyproject.toml's [tool.pytest.ini_options]
@@ -60,14 +60,13 @@ from validate_skill_structure import (
     validate,
 )
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills"
-# Plugins live two levels above the .claude/ dir: <repo>/plugins/<name>/skills/<skill>/SKILL.md
-_PLUGINS_DIR = SKILLS_DIR.parent.parent.parent / "plugins"
+# Plugins live at the repo root, alongside claude/ and claude-skills/: <repo>/plugins/<name>/skills/<skill>/SKILL.md
+_PLUGINS_DIR = REPO_ROOT / "plugins"
 # The stowed global instruction file, installed to ~/.claude/CLAUDE.md.
-_GLOBAL_CLAUDE_MD = SKILLS_DIR.parent / "CLAUDE.md"
+_GLOBAL_CLAUDE_MD = CLAUDE_DIR / "CLAUDE.md"
 
 
-_AGENTS_DIR = SKILLS_DIR.parent / "agents"
+_AGENTS_DIR = CLAUDE_DIR / "agents"
 
 
 def _agent_body(agent_name: str) -> str:
@@ -152,7 +151,7 @@ def _settings_skill_overrides() -> dict[str, str]:
     Returns the override map keyed by skill name. Skills absent from the map
     default to "on" (fully model-invokable with description in budget).
     """
-    settings_path = Path(__file__).resolve().parents[4] / "claude/.claude/settings.base.json"
+    settings_path = REPO_ROOT / "claude/.claude/settings.base.json"
     settings = json.loads(settings_path.read_text())
     return settings.get("skillOverrides", {})
 
@@ -722,6 +721,47 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         assert "how many were dismissed as undecidable" in self._body()
 
 
+class TestSkillFidelityReviewerNameResolutionOrdering:
+    """Pin Name resolution's Glob-then-filter-then-Read ordering.
+
+    Anchor order, not mere presence, is the contract -- a regression
+    that reintroduces a body Read ahead of the filters would still
+    contain all three anchor phrases, just in the wrong order.
+    """
+
+    def _body(self):
+        return _agent_body("skill-fidelity-reviewer")
+
+    def test_globs_for_existence_before_filtering_before_reading(self):
+        """Existence must resolve via Glob, then the out-of-scope and
+        decidability filters apply, and only a skill surviving both gets
+        a body Read."""
+        body = self._body()
+        glob_anchor = body.index("`Glob` for `~/.claude/skills/<name>/SKILL.md`")
+        filter_anchor = body.index("check it against the out-of-scope list above")
+        read_anchor = body.index(
+            "`Read` the body only for a skill that reaches this step"
+        )
+        assert glob_anchor < filter_anchor < read_anchor, (
+            "anchor order inverted -- Name resolution must Glob for "
+            "existence, then filter, then Read, in that order"
+        )
+
+    def test_unfamiliar_skill_defaults_to_reading_not_guessed_undecidable(self):
+        """A skill name matching neither the out-of-scope list nor the
+        enumerated undecidable exemplars -- an unfamiliar skill with a
+        diff-invisible artifact, say -- must default to a body read
+        rather than a guessed dismissal. Without this default, an
+        unfamiliar skill's dismissal is indistinguishable in output
+        shape from a correctly-reasoned one, silently regressing the
+        exact property this agent exists to protect."""
+        body = self._body()
+        assert (
+            'A name matching neither list defaults to a body read, not '
+            'a guessed "undecidable"' in body
+        )
+
+
 class TestSkillFidelityReviewerArchitectConsultCheck:
     """Pin the architect-consult check's mandatory-emission contract and the
     Input-contract correction it depends on.
@@ -887,19 +927,19 @@ class TestPrDescriptionExternalStateCheck:
 
 
 class TestPrDescriptionCostSectionWiring:
-    """Wiring tripwire, not a behavioral test: the `## Cost` section's actual
-    runtime behavior -- sentinel absent or mode not "dollars" -> block
-    deleted if present; mode "dollars" -> sync regenerates; detached HEAD ->
-    section omitted -- is validated behaviorally by
-    claude/.claude/scripts/tests/test_pr_cost_section.py (real subprocess
-    execution against pr-cost-section.sh), not here. The account-scoped
-    mode-grammar gate and the config-dir resolution this skill body used to
-    inline directly now live in that script instead (docs/worktree-bash-guard.md),
+    """Wiring tripwire, not a behavioral test: the `## Cost (list-price
+    estimate)` section's actual runtime behavior -- sentinel absent or mode
+    not "dollars" -> block deleted if present; mode "dollars" -> sync
+    regenerates; detached HEAD -> section omitted -- is validated
+    behaviorally by claude/.claude/scripts/tests/test_pr_cost_section.py
+    (real subprocess execution against pr-cost-section.sh), not here. The
+    account-scoped mode-grammar gate and the config-dir resolution live in
+    that script rather than in this skill body (docs/worktree-bash-guard.md),
     so pinning their exact source shape a second time here would be
     redundant with that behavioral suite -- same reasoning this class
     already applies to install.sh's own _report_account_sentinel. This class
-    only proves the delimiters and the script-call wiring are present in the
-    skill body's source text.
+    only proves the delimiters, the script-call wiring, and the raw-markdown
+    embedding rule are present in the skill body's source text.
     """
 
     def _body(self):
@@ -918,6 +958,11 @@ class TestPrDescriptionCostSectionWiring:
     def test_declares_cost_heading_literal(self):
         body = self._body()
         assert "## Cost (list-price estimate)" in body
+
+    def test_declares_raw_markdown_not_code_fence(self):
+        body = self._body()
+        assert "raw markdown" in body
+        assert "code fence" in body
 
 
 class TestPrDescriptionProseTighteningPassWiring:
@@ -1884,10 +1929,10 @@ def test_trigger_cases_files_well_formed() -> None:
     run_skill_evals.VALID_METHODS must be handled explicitly here — an
     unrecognized method fails loudly rather than silently skipping validation.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     found_files: list[Path] = []
     for base in [
-        repo_root / "claude" / ".claude" / "skills",
+        repo_root / "claude-skills" / "skills",
         repo_root / "plugins",
     ]:
         for p in base.glob("*/evals/*-cases.json"):
@@ -1952,7 +1997,7 @@ class TestValidateDispositionFidelityCase:
     scenario_file — the validator only checks existence, not content shape.
     """
 
-    _REPO_ROOT = Path(__file__).resolve().parents[4]
+    _REPO_ROOT = REPO_ROOT
     _EXISTING_SCENARIO_FILE = "evals/fixtures/dispatch-session-handoff.md"
 
     def test_valid_case_passes(self) -> None:
@@ -1995,7 +2040,7 @@ def test_skill_overrides_documented_in_docs_skills_md() -> None:
     (repo or bundled skills available by name without description budget cost). Each must
     appear as a | `/<name>` | table row so its rationale is visible to contributors.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     settings = json.loads((repo_root / "claude/.claude/settings.base.json").read_text())
     docs_text = (repo_root / "docs/skills.md").read_text()
     for skill_name, state in settings.get("skillOverrides", {}).items():
@@ -2033,7 +2078,7 @@ _DRY_RUN_CLEANUP_FORMS = [
 def test_destructive_cleanup_forms_require_ask_not_allow() -> None:
     """Destructive cleanup invocations must be in permissions.ask, absent
     from permissions.allow. --dry-run siblings must stay in permissions.allow."""
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     settings = json.loads((repo_root / "claude/.claude/settings.base.json").read_text())
     permissions = settings.get("permissions", {})
     allow = permissions.get("allow", [])
@@ -2295,10 +2340,10 @@ def _all_skill_md_files() -> list[Path]:
     a recursive glob from the repo root would scan them and fail on another
     branch's content.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     found: list[Path] = []
     for base, pattern in [
-        (repo_root / "claude" / ".claude" / "skills", "*/SKILL.md"),
+        (repo_root / "claude-skills" / "skills", "*/SKILL.md"),
         (repo_root / ".claude" / "skills", "*/SKILL.md"),
         (repo_root / "plugins", "*/skills/*/SKILL.md"),
     ]:
@@ -2459,7 +2504,7 @@ def test_skill_bodies_carry_no_citation_urls() -> None:
     that direction; see _closed_fence_line_indices for why under-flagging is
     treated as the unacceptable failure mode.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     skill_files = _all_skill_md_files()
 
     violations: list[str] = []
@@ -2762,7 +2807,7 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     contributor fixes the whole set in one pass — same convention as
     test_skill_bodies_carry_no_citation_urls above.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     violations = _citation_report(_all_skill_md_files(), repo_root=repo_root)
 
     assert not violations, (
@@ -2782,7 +2827,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = REPO_ROOT
     doc_path = repo_root / "docs" / "handoff-nudge.md"
     expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
     citations = [
@@ -4079,7 +4124,7 @@ def _all_doc_paths() -> list[Path]:
     repo-root README/CONTRIBUTING/SECURITY files. docs/reports/** and
     docs/case-studies/** hold preserved historical records (CLAUDE.md
     Axis 3) and are excluded, matching the plan's Out of scope list."""
-    repo_root = SKILLS_DIR.parent.parent.parent
+    repo_root = REPO_ROOT
     docs_root = repo_root / "docs"
     paths = [
         path
@@ -4359,6 +4404,40 @@ def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() ->
             "missing — ROUTING.md's findings_path wiring paragraph must reuse "
             "code-review/SKILL.md's contract statement verbatim."
         )
+
+
+_LEDGER_INLINE_OBLIGATION_TOKEN = "copied into the spawn prompt as literal text"
+
+
+def test_routing_spawn_step_states_ledger_instruction_passed_as_literal_text() -> None:
+    """The spawn-step paragraph in plan-review/ROUTING.md must state the
+    Ledger cross-check instruction is copied into the spawn prompt as
+    literal text, not left as a pointer to the "## Ledger cross-check"
+    section below.
+
+    Sampled dispatches carried a pointer instead of the inlined instruction,
+    so the obligation to inline it is pinned at the spawn step rather than
+    left to a one-time skill-review pass to keep catching a reversion.
+    Scoped to the text preceding the "## Ledger cross-check" heading rather
+    than a file-wide substring search: the token is a future-proofing bound,
+    not a condition that holds today (the token currently appears nowhere
+    inside that section) — if a later edit to the section's own wording ever
+    introduces the token or a shorter substring of it there, an unscoped
+    search would stop catching a reverted spawn-step paragraph.
+    """
+    routing_text = _ROUTING_MD_PATH.read_text()
+    ledger_heading = "## Ledger cross-check"
+    heading_index = routing_text.index(ledger_heading)
+    spawn_step_text = routing_text[:heading_index]
+
+    assert _LEDGER_INLINE_OBLIGATION_TOKEN in spawn_step_text, (
+        "plan-review/ROUTING.md: the spawn-step section (before "
+        f"{ledger_heading!r}) no longer states the ledger cross-check "
+        f"instruction is {_LEDGER_INLINE_OBLIGATION_TOKEN!r} — a pointer to "
+        "the Ledger cross-check section is not sufficient, since the "
+        "spawned reviewer's prompt must carry the instruction's literal "
+        "wording."
+    )
 
 
 def _routing_reviewer_agent_names() -> set[str]:

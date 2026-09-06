@@ -405,6 +405,27 @@ class TestAgentFrontmatter:
             f"rename one file's `name:` field so dispatch is unambiguous."
         )
 
+    _AGENT_AND_PLUGIN_FILES = sorted(_AGENT_FILES) + sorted(
+        (REPO_ROOT / "plugins").glob("*/agents/*.md")
+    )
+
+    @pytest.mark.parametrize(
+        "agent_path", _AGENT_AND_PLUGIN_FILES, ids=lambda p: p.name
+    )
+    def test_no_agent_declares_worktree_isolation(self, agent_path):
+        """No agent file in this repo may declare frontmatter `isolation:`.
+
+        That key applies the harness's ephemeral worktree — a checkout at a
+        committed ref with no path back to the dispatching session's tree —
+        to every dispatch of that agent. No agent in this roster can take
+        it: each either reads the dispatching session's uncommitted work or
+        writes its output back into that tree. The only exception that would
+        justify adding it is an agent whose input is fully committed *and*
+        whose output is disposable (`claude/.claude/CLAUDE.md`'s "Agent
+        Briefing" section; `docs/design-decisions.md` §52).
+        """
+        assert "isolation" not in parse_frontmatter(agent_path)
+
     @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
     def test_description_length(self, agent_path):
         """Description must not exceed AGENT_DESCRIPTION_MAX_CHARS characters."""

@@ -172,8 +172,10 @@ set -uo pipefail
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
+DENY_GATE_LABEL="worktree-enforcement"
+
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -184,18 +186,17 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by worktree-enforcement hook: could not source _lib.sh — hook cannot evaluate git discipline safely."
+  emit_deny "could not source _lib.sh — hook cannot evaluate git discipline safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by worktree-enforcement hook: could not parse tool-input JSON. Refusing to evaluate git discipline under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate git discipline under malformed input."
 
 # Defensive: prevent GIT_DIR / GIT_WORK_TREE env overrides from making the
 # main tree impersonate a linked worktree via rev-parse output.
 # HOME is not unset: it comes from the OS user session (trusted), unlike git env vars.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Fast-path: commands that don't mention `git` as a word are not our
@@ -230,7 +231,7 @@ _lib_worktree_enforcement_active "$REPO_ROOT" || exit 0
   read -r REPO_GIT_COMMON_DIR
 } < <(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
 if [ -z "${SESSION_GIT_DIR_ABS:-}" ] || [ -z "${REPO_GIT_COMMON_DIR:-}" ]; then
-  emit_deny "Blocked by worktree-enforcement hook: could not determine git state for the session working directory. Refusing to evaluate git discipline under unresolvable git state."
+  emit_deny "could not determine git state for the session working directory. Refusing to evaluate git discipline under unresolvable git state."
   exit 0
 fi
 SESSION_IS_WORKTREE=false
@@ -275,7 +276,7 @@ fi
 # properly.
 PARSER="$(dirname "$0")/parse-git-command.py"
 if ! command -v python3 >/dev/null 2>&1; then
-  emit_deny "Blocked by worktree-enforcement hook: python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree whose lock this session already holds, where the fast path above does not require python3."
+  emit_deny "python3 is required to parse this command safely and was not found on PATH. Install python3 (see claude-config README) or run this git operation from inside a linked worktree whose lock this session already holds, where the fast path above does not require python3."
   exit 0
 fi
 
@@ -287,7 +288,7 @@ fi
 RECORDS=$(printf '%s' "$COMMAND" | _lib_capped python3 "$PARSER" 2>/dev/null)
 PARSER_EXIT=$?
 if [ "$PARSER_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by worktree-enforcement hook: the command parser exited abnormally (exit $PARSER_EXIT) or timed out. Refusing to evaluate git discipline under an unparseable command. If this persists, check that claude/.claude/hooks/parse-git-command.py is present and executable with python3."
+  emit_deny "the command parser exited abnormally (exit $PARSER_EXIT) or timed out. Refusing to evaluate git discipline under an unparseable command. If this persists, check that claude/.claude/hooks/parse-git-command.py is present and executable with python3."
   exit 0
 fi
 
@@ -332,7 +333,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
   [ -z "$rec_type" ] && continue
   case "$rec_type" in
     SENTINEL)
-      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: $field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, use the EnterWorktree tool, or spawn an agent with isolation: worktree."
+      emit_deny_folding_fresh_lock_context "$field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, or use the EnterWorktree tool."
       exit 0
       ;;
     CD)
@@ -377,7 +378,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       # whatever `running_cwd` currently holds), an unresolved cd earlier
       # in this command, or an unresolved/ambiguous `-C`.
       if [ "$in_group" = "1" ] || [ "$op" = "||" ] || [ "$op" = "&" ] || [ "$c_status" = "UNRESOLVED" ] || ! $resolvable; then
-        emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd — or spawn an agent with isolation: worktree."
+        emit_deny_folding_fresh_lock_context "'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd."
         exit 0
       fi
 
@@ -388,7 +389,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         LITERAL)
           resolved_c=$(cd "$running_cwd" 2>/dev/null && cd "$c_path" 2>/dev/null && pwd -P 2>/dev/null)
           if [ -z "$resolved_c" ]; then
-            emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+            emit_deny_folding_fresh_lock_context "'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
             exit 0
           fi
           effective_cwd="$resolved_c"
@@ -399,7 +400,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
           # deny rather than silently treat it as NONE (which would
           # discard a real -C target and judge the write against the
           # wrong cwd).
-          emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' carries an unrecognized -C status ('$c_status') that this hook does not know how to judge safely. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
+          emit_deny_folding_fresh_lock_context "'git $subcmd' carries an unrecognized -C status ('$c_status') that this hook does not know how to judge safely. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
           exit 0
           ;;
       esac
@@ -413,7 +414,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         read -r eff_common_dir
       } < <(cd "$effective_cwd" 2>/dev/null && _lib_capped git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
       if [ -z "$eff_git_dir" ] || [ -z "$eff_common_dir" ] || [ "$eff_common_dir" != "$REPO_GIT_COMMON_DIR" ]; then
-        emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+        emit_deny_folding_fresh_lock_context "'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
         exit 0
       fi
 
@@ -424,7 +425,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         WAS_UNLOCKED=false
         _lib_worktree_lock_absent "$eff_git_dir" && WAS_UNLOCKED=true
         COLLISION_REASON=$(_lib_worktree_collision_guard "$effective_cwd" "$REPO_GIT_COMMON_DIR") || {
-          emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+          emit_deny_folding_fresh_lock_context "'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
           exit 0
         }
         if $WAS_UNLOCKED; then
@@ -433,7 +434,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         continue
       fi
 
-      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: 'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree), or spawn an agent with isolation: worktree. See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
+      emit_deny_folding_fresh_lock_context "'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree). See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
       exit 0
       ;;
     *)
@@ -441,7 +442,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       # kind this hook doesn't know how to judge, or the wire format got
       # corrupted in transit. Deny rather than silently skip the record:
       # an unjudged record could represent a real git write.
-      emit_deny_folding_fresh_lock_context "Blocked by worktree-enforcement hook: received an unrecognized record type ('$rec_type') from the command parser. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
+      emit_deny_folding_fresh_lock_context "received an unrecognized record type ('$rec_type') from the command parser. This likely indicates a parser/hook version mismatch. Refusing to evaluate git discipline under an unrecognized record shape."
       exit 0
       ;;
   esac

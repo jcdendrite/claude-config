@@ -89,9 +89,12 @@ run.
 Hold the anchor still for the life of any dispatch, read-only ones
 included — the isolation check re-evaluates it for the whole dispatch,
 not just at launch. Re-anchoring mid-dispatch denies the subagent's
-Write/Edit calls outright, not redirected. Pin `isolation: worktree`
-or an explicit cwd at launch to avoid this denial. Its Bash calls are
-denied too, a bare `pwd` included, for the rest of the run.
+Write/Edit calls outright, not redirected. Its Bash calls are denied
+too, a bare `pwd` included, for the rest of the run. Finish anchoring
+before the dispatch rather than during it; `isolation: worktree` is
+not a substitute, since it changes what the agent reads — a checkout
+at a committed ref, without the parent's uncommitted work
+(`claude/.claude/CLAUDE.md` § "Agent Briefing").
 
 The anchor is session-scoped. A resumed session starts unanchored, so
 re-enter the worktree before running *any* other command or

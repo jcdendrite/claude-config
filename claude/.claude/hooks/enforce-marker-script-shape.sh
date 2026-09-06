@@ -84,12 +84,14 @@
 # those forms ungated.
 set -uo pipefail
 
+DENY_GATE_LABEL="marker-script-shape"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -100,11 +102,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by marker-script-shape gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # ---------------------------------------------------------------------------
 # Gate-release authority
@@ -228,54 +230,16 @@ _marker_shape_match() {
 # settings.json matchers alone. Anything that is neither a file-write tool nor
 # Bash cannot reach marker state.
 #
-# Per-fire cost is why the two arms read .agent_type at different points. This
-# hook fires on EVERY Write/Edit/MultiEdit and EVERY Bash call, so neither arm
-# may spend more than it must. The Bash arm defers reading .agent_type until
-# after Stage 1's substring test, which rejects the overwhelming majority of
-# Bash calls for free. The file-write arm uses the in-shell key test below for
-# the same purpose, then reads .agent_type and .file_path together in a single
-# jq call.
+# Both arms key on .agent_type; neither pays a per-fire subprocess for it any
+# more, since _lib_parse_tool_input_or_deny already populates AGENT_TYPE
+# (and, for this arm, FILE_PATH) from the single shared parse every hook
+# invocation already pays for.
 case "$TOOL_NAME" in
   Write|Edit|MultiEdit)
     # Path-based arm. Every marker lives under a known directory, so the
     # decision is "is this agent writing marker state?" — a question the
     # resolved path answers directly, with no command text to outsmart.
-    #
-    # In-shell fast-reject before spending a subprocess: this arm can only ever
-    # deny a subagent, so a payload with no agent_type key at all is the main
-    # session and needs no jq. The harness — not the model — serializes the
-    # enclosing object; a subagent controls only .tool_input, so it cannot
-    # reorder, reformat, or omit this key to dodge the test. A payload that
-    # contains the literal string elsewhere falls through to the authoritative
-    # jq read below, so this cannot produce a false allow.
-    #
-    # Both this test and the jq parse are linear in payload size — $INPUT holds
-    # the full file CONTENT on a Write — so there is no constant-time option
-    # here, only a choice of constant. Measured on a 5MB Write against a
-    # 684ms parse-only floor: this test adds ~162ms, the jq call it skips adds
-    # ~345ms. Keep the cheap test first; do not "simplify" it away, and do not
-    # compare it against a hypothetical `grep` that would itself cost a
-    # subprocess to avoid one.
-    case "$INPUT" in
-      *'"agent_type"'*) ;;
-      *) exit 0 ;;
-    esac
-    #
-    #
-    # .agent_type is the trust-boundary field the decision hinges on, so read
-    # it fail-closed. An unchecked read leaves it empty on a jq failure and
-    # falls through to the main-session path — the one fail-OPEN branch in an
-    # otherwise fail-closed hook. Both fields come back from a single jq call
-    # delimited by ASCII Unit Separator (0x1f), the same technique and the same
-    # reasoning as _lib_parse_tool_input_or_deny: one subprocess, and a
-    # delimiter that cannot occur in a real agent type or path.
-    if ! AGENT_AND_PATH=$(printf '%s\n' "$INPUT" \
-      | _lib_jq -r '"\(.agent_type // "")\u001f\(.tool_input.file_path // "")"' 2>/dev/null); then
-      emit_deny "Blocked by marker-script-shape gate: could not read .agent_type and .tool_input.file_path from the tool payload — refusing to evaluate gate-release authority under unreadable trust-boundary fields."
-      exit 0
-    fi
-    AGENT_TYPE="${AGENT_AND_PATH%%$'\x1f'*}"
-    TARGET_PATH="${AGENT_AND_PATH#*$'\x1f'}"
+    TARGET_PATH="$FILE_PATH"
 
     _lib_is_no_gate_release_agent "$AGENT_TYPE" || exit 0
     [ -n "$TARGET_PATH" ] || exit 0
@@ -286,12 +250,12 @@ case "$TOOL_NAME" in
     _marker_shape_match "$TARGET_PATH"
     case "$?" in
       0)
-        emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate by writing '$TARGET_PATH'.
+        emit_deny "Marker write — the '$AGENT_TYPE' agent cannot release a review gate by writing '$TARGET_PATH'.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
         ;;
       2)
-        emit_deny "Marker write denied: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$TARGET_PATH' is not a review-marker path."
+        emit_deny "Marker write — could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$TARGET_PATH' is not a review-marker path."
         ;;
     esac
     exit 0
@@ -471,17 +435,16 @@ _marker_write_candidate_mentions_claude() {
 MARKER_WRITE_COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 MARKER_WRITE_COMMAND_UNQUOTED_EXIT=$?
 if [ "$MARKER_WRITE_COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by marker-script-shape gate: could not quote-strip the command text (exit ${MARKER_WRITE_COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+  emit_deny "could not quote-strip the command text (exit ${MARKER_WRITE_COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
   exit 0
 fi
 if printf '%s' "$MARKER_WRITE_COMMAND_UNQUOTED" | grep -qiF '.claude'; then
   MARKER_WRITE_REDIRECT_CANDIDATES=$(_bash_marker_redirect_candidates "$MARKER_WRITE_COMMAND_UNQUOTED")
   MARKER_WRITE_REDIRECT_CANDIDATES_EXIT=$?
   if [ "$MARKER_WRITE_REDIRECT_CANDIDATES_EXIT" -ne 0 ]; then
-    emit_deny "Blocked by marker-script-shape gate: could not split the command into fragments (exit ${MARKER_WRITE_REDIRECT_CANDIDATES_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+    emit_deny "could not split the command into fragments (exit ${MARKER_WRITE_REDIRECT_CANDIDATES_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
     exit 0
   fi
-  MARKER_WRITE_AGENT_CHECKED=false
   MARKER_WRITE_REALPATH_BUDGET=10
   while IFS= read -r MARKER_WRITE_CANDIDATE; do
     [ -n "$MARKER_WRITE_CANDIDATE" ] || continue
@@ -496,23 +459,15 @@ if printf '%s' "$MARKER_WRITE_COMMAND_UNQUOTED" | grep -qiF '.claude'; then
     MARKER_WRITE_SHAPE_STATUS=$?
     if [ "$MARKER_WRITE_SHAPE_STATUS" -eq 2 ]; then
       MARKER_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$MARKER_WRITE_CANDIDATE" | cut -c1-80)
-      emit_deny "Marker write denied: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$MARKER_WRITE_CANDIDATE_TRUNCATED' is not a review-marker path."
+      emit_deny "Marker write — could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$MARKER_WRITE_CANDIDATE_TRUNCATED' is not a review-marker path."
       exit 0
     fi
     [ "$MARKER_WRITE_SHAPE_STATUS" -eq 0 ] || continue
-    # .agent_type is read here, not up front, so the common case — zero
-    # shape-matching candidates — never spends a subprocess on it; unlike the
-    # Write/Edit arm above, this jq call is not unavoidable.
-    if ! $MARKER_WRITE_AGENT_CHECKED; then
-      if ! AGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.agent_type // empty' 2>/dev/null); then
-        emit_deny "Blocked by marker-script-shape gate: could not read .agent_type from the tool payload — refusing to evaluate gate-release authority under an unreadable trust-boundary field."
-        exit 0
-      fi
-      MARKER_WRITE_AGENT_CHECKED=true
-    fi
+    # AGENT_TYPE is already populated by _lib_parse_tool_input_or_deny's
+    # shared parse, at no added per-fire cost.
     if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
       MARKER_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$MARKER_WRITE_CANDIDATE" | cut -c1-80)
-      emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate by writing '$MARKER_WRITE_CANDIDATE_TRUNCATED'.
+      emit_deny "Marker write — the '$AGENT_TYPE' agent cannot release a review gate by writing '$MARKER_WRITE_CANDIDATE_TRUNCATED'.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
       exit 0
@@ -581,15 +536,8 @@ printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 # marker (same ancestor walk) and could disrupt a review running outside its
 # own turn. Narrow enough to accept; noted so the omission reads as a decision.
 #
-# .agent_type is read here rather than at the top of the hook so that the
-# overwhelming majority of Bash calls — the ones Stage 1 already rejected —
-# never spend a subprocess on it. Read fail-closed: an unchecked read leaves it
-# empty on a jq failure and falls through to the main-session path.
-if ! AGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.agent_type // empty' 2>/dev/null); then
-  emit_deny "Blocked by marker-script-shape gate: could not read .agent_type from the tool payload — refusing to evaluate gate-release authority under an unreadable trust-boundary field."
-  exit 0
-fi
-
+# AGENT_TYPE is already populated by _lib_parse_tool_input_or_deny's shared
+# parse, at no added per-fire cost.
 if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
   MARKER_GATE_MATCHED=false
   MARKER_GATE_INDETERMINATE=false
@@ -608,13 +556,13 @@ if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
   done
 
   if $MARKER_GATE_MATCHED; then
-    emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate.
+    emit_deny "Marker write — the '$AGENT_TYPE' agent cannot release a review gate.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
     exit 0
   fi
   if $MARKER_GATE_INDETERMINATE; then
-    emit_deny "Blocked by marker-script-shape gate: could not determine whether '${COMMAND:0:200}' invokes marker.sh write/activate (sed/tr may be missing, killed, or errored) — failing closed per this gate's documented fail-closed posture rather than letting an unscanned command bypass gate-release authority."
+    emit_deny "could not determine whether '${COMMAND:0:200}' invokes marker.sh write/activate (sed/tr may be missing, killed, or errored) — failing closed per this gate's documented fail-closed posture rather than letting an unscanned command bypass gate-release authority."
     exit 0
   fi
 fi

@@ -214,9 +214,9 @@ The rule is encoded in two planning skills: `plan-it` instructs that effort sect
 
 ### Sources
 
-- `claude/.claude/skills/plan-it/SKILL.md` — the governing rule (Step 5, effort section guidance)
-- `claude/.claude/skills/plan-review/SKILL.md` — enforcement (checklist item B15)
-- `claude/.claude/skills/plan-it/REFERENCES.md` — cross-template research confirming no canonical PR planning template uses hour/day estimates at single-PR scope
+- `claude-skills/skills/plan-it/SKILL.md` — the governing rule (Step 5, effort section guidance)
+- `claude-skills/skills/plan-review/SKILL.md` — enforcement (checklist item B15)
+- `claude-skills/skills/plan-it/REFERENCES.md` — cross-template research confirming no canonical PR planning template uses hour/day estimates at single-PR scope
 
 ## 15. Convention skills wired by explicit pointer, not description-based auto-trigger
 
@@ -245,7 +245,7 @@ The fix wires §14's principle into disposition: the code-review skill's Finding
 
 ### Sources
 
-- `claude/.claude/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
+- `claude-skills/skills/code-review/SKILL.md` — Finding disposition (ADDRESS/DEFER) machinery
 - §14 — the parent principle this extends
 
 ## 17. `loop` and `simplify` flipped from `off` to `name-only` (2026-06-17)
@@ -456,7 +456,7 @@ Two tradeoffs are accepted rather than closed.
 
 The corrected `reviewer-yield` measurement (GH-762, PR #764) puts `skill-fidelity-reviewer`'s zero-finding-bucket cited-path edit rate well below every peer reviewer's. §9 established this agent's charter and its own findings-rate re-measurement instruction; it contains no discussion of the cited-path column, so citing it for why that rate is expected is a misattribution. This entry, not §9, is the record's home for the cited-path reasoning below.
 
-**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude/.claude/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
+**Mechanism 1: the join key is lexical and hashed, so even the one branch shape where the citation is the work surface still cannot register.** `skill-fidelity-reviewer` resolves each skill by reading `~/.claude/skills/<name>/SKILL.md` (its Name resolution step) — a config-dir path. A branch in this repo that edits that same skill edits it through the stow source, `claude-skills/skills/<name>/SKILL.md`. `_normalize_cited_path` is deliberately lexical — no `Path.resolve()`, `os.path.realpath`, or `stat` — and hashes the normalized string to a sha256 prefix. Two spellings of the same file produce two different keys and never join, so a branch that genuinely edits the cited skill in response to a finding still would not register as an edited cited path.
 
 **Mechanism 2: on a clean pass the scanned output names specifications, not the branch's work surface.** Citations are drawn from the last assistant text plus every `Write` blob. With `findings_path` set, the inline return is a one-line pointer, and the substance lives in the findings file. On a clean pass, that file's content is a dismissal list naming skills and skill bodies — the specs the agent read, not the diff it was handed. A branch is not normally editing the skill it invoked, which is what keeps the numerator small.
 
@@ -470,7 +470,7 @@ Together this means the cross-reviewer `Rate` comparison is not like-for-like. A
 
 - `claude/.claude/scripts/transcript_analysis/reviewer_yield.py` — `_normalize_cited_path` (lexical, hashed join key) and `_reviewer_yield_cited_keys` (citation candidates drawn from the last assistant text and every `Write` blob).
 - `claude/.claude/agents/skill-fidelity-reviewer.md` — Name resolution (config-dir path reads); Output format (findings-file substance on a clean pass).
-- `claude/.claude/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
+- `claude-skills/skills/ready-for-review/SKILL.md` — the once-per-branch dispatch step.
 - `docs/transcript-analysis.md`'s `reviewer-yield` section — the `Cited`/`Active`/`Edited`/`Rate` column definitions and the digest-only redaction note.
 - GH-762 / PR #764 — the reviewer-yield measurement fix this observation post-dates.
 
@@ -564,14 +564,14 @@ Two `tighten-prose` rules were declined rather than promoted. The ~20–25-word 
 
 `comment-discipline-reviewer` gained no new rule to enforce: all six of its review angles were already stated in `claude/.claude/CLAUDE.md`'s Code Comments section before this change. Per §9, that reviewer is a fresh-context sweep against a rule the authoring session already had loaded, not a backstop for a missing rule, so the gap it closes is authoring-session satisficing on a rule already in context — a gap no CLAUDE.md line can close. This change should be expected to move `tighten-prose`'s rewrite volume and not that reviewer's finding volume.
 
-The new section's "one idea per sentence" restates the core of §Code Comments' "Split multi-fact comments" bullet, and the overlap is deliberate rather than an oversight. It stands under the Engineering Judgment section's "a small duplicated value that beats a bad abstraction" exception, not the "instructional prose that must stand alone" exception — both sections live in the same always-loaded file behind the identical load path, so no consumer ever sees one without the other, which is what the stand-alone exception is meant to protect against. Four files at six sites (`claude/.claude/skills/code-review/SKILL.md`, `claude/.claude/agents/code-writer.md`, `claude/.claude/agents/comment-discipline-reviewer.md`, `claude/.claude/skills/plan-it/SKILL.md`) cite the Code Comments section by name as a self-contained rule set, so trimming it to defer upward would ripple into those sites — including a `SKILL.md` edit that would pull hook-enforced `/skill-review` into a prose-only change — for a saving of one repeated clause. The comment-scoped bullet also carries a remedy the general rule does not: an explicit list when the facts are genuinely parallel.
+The new section's "one idea per sentence" restates the core of §Code Comments' "Split multi-fact comments" bullet, and the overlap is deliberate rather than an oversight. It stands under the Engineering Judgment section's "a small duplicated value that beats a bad abstraction" exception, not the "instructional prose that must stand alone" exception — both sections live in the same always-loaded file behind the identical load path, so no consumer ever sees one without the other, which is what the stand-alone exception is meant to protect against. Four files at six sites (`claude-skills/skills/code-review/SKILL.md`, `claude/.claude/agents/code-writer.md`, `claude/.claude/agents/comment-discipline-reviewer.md`, `claude-skills/skills/plan-it/SKILL.md`) cite the Code Comments section by name as a self-contained rule set, so trimming it to defer upward would ripple into those sites — including a `SKILL.md` edit that would pull hook-enforced `/skill-review` into a prose-only change — for a saving of one repeated clause. The comment-scoped bullet also carries a remedy the general rule does not: an explicit list when the facts are genuinely parallel.
 
 ### Sources
 
-- `claude/.claude/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
+- `claude-skills/skills/tighten-prose/SKILL.md` §2 and §4 — the mined rule list and the preserve-every-fact constraint.
 - `claude/.claude/agents/comment-discipline-reviewer.md` — the six review angles, all already covered by existing CLAUDE.md rules.
-- `claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
-- `claude/.claude/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
+- `claude-skills/skills/ai-instruction-and-memory-files/SKILL.md`'s length-targets section — the 200-line cap and the per-line behavior test each promoted line was drafted against.
+- `claude-skills/skills/plan-it/SKILL.md` Step 5 — subagent CLAUDE.md loading, and the `Explore`/`Plan` exception.
 
 ## 39. `claudeMdExcludes` suppresses the nested-discovery duplicate of `claude/.claude/CLAUDE.md` (2026-08-31)
 
@@ -676,8 +676,8 @@ work nothing else does.
 - [anthropics/claude-code #65657](https://github.com/anthropics/claude-code/issues/65657) — report that the system-prompt trailer overrides `attribution.commit`; closed as not planned.
 - [anthropics/claude-code #77830](https://github.com/anthropics/claude-code/issues/77830) — report that the `Claude-Session:` trailer is injected via the Bash tool description and ignores `attribution`; closed, labeled a bug and reproduced.
 - [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web), "Share sessions" — sessions are private by default and become visible to others only on an explicit share.
-- `claude/.claude/skills/respond-pr/SKILL.md` — the Attribution section's prefix-and-trailer requirement, and the prefix's pre-PATCH self-authorship check.
-- `claude/.claude/skills/pr-description/SKILL.md` — the top-and-bottom trailer placement rule.
+- `claude-skills/skills/respond-pr/SKILL.md` — the Attribution section's prefix-and-trailer requirement, and the prefix's pre-PATCH self-authorship check.
+- `claude-skills/skills/pr-description/SKILL.md` — the top-and-bottom trailer placement rule.
 - `claude/.claude/hooks/require-respond-pr.sh` — the tool-call-boundary gate routing every comment write through the skill that applies the prefix.
 
 ## 41. `ScheduleWakeup` misapplied outside `/loop`: documented, not guarded (2026-09-01)
@@ -721,7 +721,7 @@ The correct alternative already lives in this repo. `handoff/SKILL.md`'s collect
 - [anthropics/claude-code #88260](https://github.com/anthropics/claude-code/issues/88260) and [#88205](https://github.com/anthropics/claude-code/issues/88205) — the missing-`prompt`-field validation-error sub-mode.
 - `claude/.claude/hooks/require-routing-read.sh:33-60` — the marker-as-predicate mechanism and its fail-open default, and why it doesn't transfer to a harness-owned skill.
 - `claude/.claude/hooks/consume-durable-continuity-file-on-read.sh` — the advisory-nudge shape considered and declined here.
-- `claude/.claude/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
+- `claude-skills/skills/handoff/SKILL.md` and `.claude/plans/handoff-hard-block.md` — this repo's own prior rejection of `ScheduleWakeup`-based polling, and the correct alternative's load-scope limits.
 - `.claude/plans/harness-context-mismatched-tool-dispatch.md` — full assumption ledger, per-mechanism reasoning, and the corpus-evidence sourcing this entry summarizes.
 
 ## 42. `/code-review`'s Fix-route step routes a mechanism-inventing fix through `plan-architect`, dispatched rather than hooked (2026-09-02)
@@ -1111,3 +1111,64 @@ Reusing any of the three would still mean adding new prompt-content matching for
 - `claude/.claude/hooks/log-reviewer-round.sh` — an `Agent`/`Task`-matching `PostToolUse` hook reading both `tool_input.subagent_type` and `tool_input.prompt` to record round state, never denies.
 - `.claude/plans/guard-placeholder-wait-forks.md` — the first mechanism choice, including the ledger rows that rejected both a hook and CLAUDE.md at that time.
 - `.claude/plans/guard-no-op-dispatch-rule.md` — this change's assumption ledger.
+
+## 52. Reviewer-agent dispatches are scoped to input provenance, not persona, and carry no `isolation: "worktree"` carve-out (2026-09-04)
+
+A session dispatched several reviewer subagents with `isolation: "worktree"` plus a `findings_path` write. Every findings-file write was denied by worktree enforcement, and each agent fell back to inline output. The dispatching session was not misbehaving: repo prose in several places, including the deny message a blocked session reads, licensed the combination.
+
+The corrected rule (`claude/.claude/CLAUDE.md`'s "Agent Briefing" section) is scoped to **input provenance**, not to "reviewer" as a persona: `isolation: "worktree"` is passed only when an agent's input is already committed and its output is disposable, and never when the agent's input is the dispatching session's working tree or its output has to land there. A persona-scoped rule ("never combine `isolation` with `findings_path`") would still license the failure mode's silent half: an isolated reviewer dispatched *without* `findings_path` reads a committed-ref checkout that never contained the changes under review, is denied nothing, and can return a clean verdict on work it never read. That false-clean outcome is why the rule is scoped to provenance rather than to the `findings_path` collision alone. It is deliberately not restated in the CLAUDE.md bullet itself: the always-loaded rule already prohibits the dispatch outright, so spelling out the consequence there would add motivation rather than a new instruction, at a recurring context cost every stow consumer's session pays.
+
+The rule carries no exception clause. The exception is exactly the judgment call that failed on every dispatch that faced it; a carve-out would reinstate it.
+
+The fix is prose plus one structural test — `test_no_agent_declares_worktree_isolation`, asserting no agent file under `claude/.claude/agents/` or `plugins/*/agents/*.md` declares `isolation:` in frontmatter — not a hook gate. A `PreToolUse` gate on `Agent(isolation:worktree)` is deferred, not rejected outright: whether `tool_input.isolation` appears in a hook's raw stdin JSON is unverified, and a gate that could only match on the permission-rule `if` and read `subagent_type` would need a persona allowlist — the same judgment call the corrected rule removes. `permissions.deny` is not a substitute: a permission rule is scoped to one parameter, so it cannot be narrowed by subagent type, and a blanket deny would over-block the two dispatch shapes the corrected rule still permits (parallel exploration of already-committed code, throwaway spikes). Layering a runtime gate on prose that currently commands the mistake is also the compounding-defensive-layers tell — fix the foundation first, then measure whether the corrected prose holds.
+
+Two related defects are filed as separate issues rather than fixed here. First, the lock-reason parser that backs worktree-collision detection does not recognize the harness's own ephemeral-worktree lock-reason shape, so it denies with a liveness-blind message for any legitimately-isolated agent that writes. Fixing that does not make the isolated-reviewer combination work: a relative `findings_path` still resolves inside the ephemeral worktree rather than the parent's tree. Second, the `PreToolUse` gate above, blocked on the stdin-JSON question.
+
+### Sources
+
+- `.claude/plans/reviewer-agent-worktree-isolation-prose.md` — full assumption ledger, mechanism-by-mechanism reasoning, and verification steps.
+
+## 53. Full-suite pytest drift traced to two stale pre-`select-tests.py` plans; no handoff-validation mechanism added (2026-09-04)
+
+A transcript-corpus audit of this repository's own project directories, described in full in the plan, confirmed the full-suite-run pattern was recurring, not a one-off, after the rule shipped (`7200d727`/`bf215df9`, 2026-08-25).
+
+A systemic fix was drafted and rejected. The design added a `check-handoff.py` soft check plus a `handoff/SKILL.md` §3 clause requiring a handoff's named verification command be re-derived from the project's current documentation rather than copied from its plan. `/plan-review` found a foundation-level defect: CLAUDE.md's second full-suite exception ("a plan's Verification step... genuinely calls for a whole-repo claim") is a condition on intent, not a machine-readable predicate. Any mechanism checking "does this command match the default" would therefore silently override a legitimate whole-repo Verification claim on some future plan — trading the observed defect for a different one. This forecloses the whole family of "just check the command against the default" fixes, not only the one drafted here.
+
+The two stale plan files are not fixed by this decision. That correction was handed directly to the two branches' own sessions rather than made from this unrelated branch, since editing another branch's plan file re-arms `require-plan-review.sh` there until re-reviewed. The full ledger, evidence, and rejected design live in `.claude/plans/select-tests-handoff-drift.md`, kept on this branch as the durable record rather than restated here.
+
+**Revisit** if any of:
+
+- A future inherited full-suite run traces to a plan file that postdates `select-tests.py` (2026-08-25) — that would mean the drift is live and recurring rather than two aging plans working through their own backlog, and would reopen the systemic-fix question.
+- Either of the two branches above merges without its Verification section corrected — the stale command becomes a merged, harder-to-notice instruction rather than a live one two sessions were told about directly.
+- `review-pipeline-orchestrator-subagent.md`'s proposed (not yet built) Bash-mutation-restriction hook ships with its command allowlist still omitting `select-tests.py` — that would convert this from a stale instruction into an enforced one.
+
+### Sources
+
+- `.claude/plans/select-tests-handoff-drift.md` — full assumption ledger, per-session provenance classification, and the rejected mechanism's design and `/plan-review` rejection.
+- `CLAUDE.md`'s Commands section — the `select-tests.py` rule and its two named exceptions.
+- `.claude/plans/prevent-runaway-subagent-cost.md` and `.claude/plans/review-pipeline-orchestrator-subagent.md` (each on its own branch) — the two stale Verification sections this entry traces the drift to.
+- `.claude/plans/select-tests-fallback-audit.md` (merged, GH-765) — the prior related audit that fixed five other propagation surfaces without flagging `handoff/SKILL.md`'s silence as one of them.
+
+## 54. `guard-settings-session-keys.sh`'s default-branch diff accepts up to 4 extra `_lib_capped` git calls on its staged path (2026-09-04)
+
+`guard-settings-session-keys.sh` diffs staged `claude/.claude/settings.json` against the repo's resolved default branch, so an unresolvable default branch must deny rather than silently comparing nothing. This is the one fail-closed exception to the hook's otherwise fail-open posture. Resolving that branch via the shared `_lib_resolve_default_branch` (`_lib.sh`) adds up to 4 more `_lib_capped` git calls on the settings.json-staged path:
+- one for the symbolic-ref probe
+- up to three more for the `main`/`master`/`develop` candidate loop
+
+Each call is capped at `_lib_capped`'s default 5s, so the theoretical worst case — every call independently timing out — is ~45s. That is well past the hooks' <100ms/fire budget. On a machine lacking both `timeout(1)` and `gtimeout(1)`, each of these calls instead runs uncapped and can hang indefinitely rather than for a bounded 5s. This diff also roughly doubles the sequential-call count on the settings-staged path (4 pre-existing calls to up to 8), so that uncapped-timeout exposure compounds against more calls, not just a longer one.
+
+This is an accepted tradeoff scoped to the narrow settings.json-staged path, not a general latency regression. The hook's earlier staged-file check exits before reaching this diff on every commit that doesn't touch `claude/.claude/settings.json`, which is what keeps the cost scoped to that one path. The new `.cwd`-extraction `jq` call this diff also adds, however, runs unconditionally on every gated `git commit`, not only the settings.json-staged path. `require-ready-for-review.sh`'s default-branch bypass check pays a comparable call-count shape. It resolves the default branch through its own separately-duplicated logic, not this shared helper.
+
+## 55. Python environment discipline ships as a rule plus a CLAUDE.md clause, not a hook (2026-09-04)
+
+An agent restoring Python dependencies had no instruction naming which interpreter the restore must land in, and `claude/.claude/CLAUDE.md`'s own always-loaded exemption for restoring already-declared dependencies named a bare `pip install -r requirements.txt` as the example — blessing the interpreter-ambiguous form that lets packages land in the machine's system interpreter instead of a project-local one. A `PreToolUse` gate is the usual mechanism for this repo's install-time discipline (§1), but it doesn't fit here: the shared parser exposes exactly `tool_name` and `tool_input.command` (`claude/.claude/hooks/_lib.sh:211-248`, `_lib_parse_tool_input_or_deny`), nothing describing the environment the command's shell will inherit. A gate can't tell a `pip install -r requirements.txt` that lands in an already-correct `PATH` from one that doesn't.
+
+Two shapes make that blindness concrete rather than theoretical. A CI runner's `actions/setup-python` step gives the job a single-project interpreter that already is the project environment — `.github/workflows/tests.yml:142` runs a bare `pip install -r requirements-dev.txt` there, correctly. A direnv- or conda-activated shell puts the right interpreter first on `PATH` before Claude Code ever sees the command, so the same bare form is also correct there. Either a deny or a non-blocking nudge hook would fire on both of these already-correct cases as readily as on the failing one, training the reader to dismiss it — the nudge is no better than the deny for a check the payload can't resolve.
+
+The fix ships as two documentation surfaces instead, split by an altitude difference rather than duplicated: `claude/.claude/CLAUDE.md` loads in every session and every subagent against a hook-enforced 200-line cap (`claude/.claude/hooks/check-claude-md-length.sh:63-74`), so its line states only the example, using venv rather than bare python. `claude/.claude/rules/python-environment-conventions.md` loads lazily, only on a matching `**/*.py`/`**/requirements*.txt`/`**/pyproject.toml`/`**/Pipfile` touch, so it can afford to carry the full detect-then-defer recipe, the PEP 668 explanation, and the CI/direnv carve-out without taking a permanent slot in the always-loaded budget.
+
+The rule prescribes `<venv>/bin/pip install -r requirements.txt`, not `<venv>/bin/python -m pip install -r requirements.txt`, for a reason beyond the durable one stated in the rule body (an explicit `<venv>/bin/pip` path already pins the interpreter through its shebang, so `-m` buys nothing). This repo's own `deny-network-installs.sh` denies the `-m` form today. `_install_check_pip_family` matches the bare `pip` word inside `-m pip` as the manager token. `-m` is absent from `_INSTALL_VALUE_TAKING_MARKERS`, so it consumes no value. The interpreter word `.venv/bin/python` then survives `_install_has_leftover_token` and reads as a named package argument — a false deny, confirmed empirically against the hook (GH-868). This is a distinct gap from the grep-text false-positive filed as GH-850, and it isn't listed in the hook's own header Known-gaps block. Fixing it is out of scope here — bundling a security-hook behavior change into a documentation change doubles the review surface, and GH-850 already set the precedent of filing rather than fixing a gate false-positive found in passing — so a follow-up issue is filed instead, and the rule sidesteps the gap by prescribing the form the gate already allows.
+
+`deny-network-installs.sh` also has a second, more severe gap: it has zero detection for the `poetry`/`pipenv` manager families at all. `grep -n "poetry\|pipenv" claude/.claude/hooks/deny-network-installs.sh` returns no matches. Piping `poetry add <pkg>` or `pipenv install <pkg>` through the hook returns allow for both, confirmed empirically. Unlike the `-m pip` gap above, this gap is fail-open rather than fail-safe. GH-850 and GH-868 both over-block a command that should be allowed. This gap, by contrast, silently permits a network fetch the hook exists to catch. The new rule this section documents only prescribes the safe, no-argument restore verbs (`poetry install`, `pipenv install`), never the fetch-new-package verbs, so following the rule as written doesn't reach the ungated shape. A deviation does, though — the same "hit an ImportError, recall an install command" pattern this whole feature exists to correct for pip/npm/uv lands on a manager family with no hook backstop at all. Filed as GH-872 rather than fixed here, per the same bundling-avoidance precedent as GH-850/GH-868.
+
+**What would flip this.** If the harness ever exposed the resolved interpreter or an active `VIRTUAL_ENV`/`CONDA_PREFIX` in the `PreToolUse` payload, the CI-runner and direnv/conda false-positive shapes above would stop applying, and a gate would become viable — worth revisiting then, not before.

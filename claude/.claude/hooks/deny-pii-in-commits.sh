@@ -110,12 +110,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="PII commit"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -128,11 +130,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by PII commit gate: could not source _lib.sh — hook cannot evaluate the commit safely."
+  emit_deny "could not source _lib.sh — hook cannot evaluate the commit safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by PII commit gate: could not parse tool-input JSON. Refusing to evaluate the commit under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate the commit under malformed input."
 
 # Defense-in-depth: only act on Bash calls (settings.json already matches Bash).
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -160,7 +162,7 @@ GIT_FRAGMENTS_SPLIT_EXIT=$?
 # Checked and fail-closed, matching deny-invisible-commit-content.sh's own
 # SPLIT_EXIT pattern.
 if [ "$GIT_FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Commit blocked by PII/credential guard: could not split the command into fragments (exit ${GIT_FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+  emit_deny "Commit — could not split the command into fragments (exit ${GIT_FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
   exit 0
 fi
 while IFS= read -r git_fragment; do
@@ -173,7 +175,7 @@ while IFS= read -r git_fragment; do
   git_fragment_unquoted=$(_lib_strip_shell_quotes "$git_fragment")
   git_fragment_unquoted_exit=$?
   if [ "$git_fragment_unquoted_exit" -ne 0 ]; then
-    emit_deny "Commit blocked by PII/credential guard: could not quote-strip a command fragment (exit ${git_fragment_unquoted_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+    emit_deny "Commit — could not quote-strip a command fragment (exit ${git_fragment_unquoted_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
     exit 0
   fi
   _lib_fragment_invokes_git "$git_fragment_unquoted" || continue
@@ -201,7 +203,7 @@ fi
 _lib_capped git rev-parse --is-inside-work-tree >/dev/null 2>&1
 REV_PARSE_STATUS=$?
 if [ "$REV_PARSE_STATUS" -eq 124 ]; then
-  emit_deny "Commit blocked by PII/credential guard: could not determine whether this is a git work tree within the scan timeout. Fail-closed — the guard cannot verify commit content is scannable without it."
+  emit_deny "Commit — could not determine whether this is a git work tree within the scan timeout. Fail-closed — the guard cannot verify commit content is scannable without it."
   exit 0
 fi
 if [ "$REV_PARSE_STATUS" -ne 0 ]; then
@@ -237,7 +239,10 @@ while IFS=$'\t' read -r config_lineno line; do
   case "$line" in
     *:*) ;;
     *)
-      emit_deny "Blocked by PII commit gate: ~/.claude/pii-patterns.md line ${config_lineno} is not a valid entry — every non-comment line must be '<label>: <regex>' or 'exclude: <glob>'. A line the hook cannot parse is an unscanned PII pattern, so the gate fails closed. Fix the line and retry."
+      # shellcheck disable=SC2088 # the leading ~ is prose naming the config
+      # file's conventional path for the human reading the deny message, not
+      # a shell path this script expands.
+      emit_deny "~/.claude/pii-patterns.md line ${config_lineno} is not a valid entry — every non-comment line must be '<label>: <regex>' or 'exclude: <glob>'. A line the hook cannot parse is an unscanned PII pattern, so the gate fails closed. Fix the line and retry."
       exit 0
       ;;
   esac
@@ -248,7 +253,9 @@ while IFS=$'\t' read -r config_lineno line; do
   config_label="${config_label%"${config_label##*[![:space:]]}"}"
   config_value="${config_value#"${config_value%%[![:space:]]*}"}"
   if [ -z "$config_label" ] || [ -z "$config_value" ]; then
-    emit_deny "Blocked by PII commit gate: ~/.claude/pii-patterns.md line ${config_lineno} has an empty label or empty value. Every non-comment line must be '<label>: <regex>' or 'exclude: <glob>'. The gate fails closed on an unparseable pattern line. Fix the line and retry."
+    # shellcheck disable=SC2088 # prose path, not a shell expansion — see the
+    # identical rationale above.
+    emit_deny "~/.claude/pii-patterns.md line ${config_lineno} has an empty label or empty value. Every non-comment line must be '<label>: <regex>' or 'exclude: <glob>'. The gate fails closed on an unparseable pattern line. Fix the line and retry."
     exit 0
   fi
 
@@ -261,7 +268,9 @@ while IFS=$'\t' read -r config_lineno line; do
   # regex (no match) and >=2 for a malformed one.
   grep -E -e "$config_value" /dev/null >/dev/null 2>&1
   if [ "$?" -ge 2 ]; then
-    emit_deny "Blocked by PII commit gate: ~/.claude/pii-patterns.md line ${config_lineno} ('${config_label}') has a regex that grep -E cannot compile. The gate fails closed rather than silently skip a PII pattern. Fix the regex and retry."
+    # shellcheck disable=SC2088 # prose path, not a shell expansion — see the
+    # identical rationale above.
+    emit_deny "~/.claude/pii-patterns.md line ${config_lineno} ('${config_label}') has a regex that grep -E cannot compile. The gate fails closed rather than silently skip a PII pattern. Fix the regex and retry."
     exit 0
   fi
   USER_LABELS+=("$config_label")
@@ -317,11 +326,11 @@ added_lines_of() {
 STAGED_DIFF=$(_lib_capped git diff --cached -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
 STAGED_DIFF_STATUS=$?
 if [ "$STAGED_DIFF_STATUS" -eq 124 ]; then
-  emit_deny "Commit blocked by PII/credential guard: could not compute the staged diff within the scan timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
+  emit_deny "Commit — could not compute the staged diff within the scan timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
   exit 0
 fi
 if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
-  emit_deny "Commit blocked by PII/credential guard: git diff --cached failed (exit ${STAGED_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
+  emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify staged content is free of PII/credentials without it."
   exit 0
 fi
 SCAN_TARGET+=$'\n'"$(printf '%s' "$STAGED_DIFF" | added_lines_of)"
@@ -330,18 +339,18 @@ if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
   _lib_capped git rev-parse HEAD >/dev/null 2>&1
   HEAD_REV_STATUS=$?
   if [ "$HEAD_REV_STATUS" -eq 124 ]; then
-    emit_deny "Commit blocked by PII/credential guard: could not resolve HEAD within the scan timeout, and this commit form needs a HEAD-relative scan. Fail-closed."
+    emit_deny "Commit — could not resolve HEAD within the scan timeout, and this commit form needs a HEAD-relative scan. Fail-closed."
     exit 0
   fi
   if [ "$HEAD_REV_STATUS" -eq 0 ]; then
     HEAD_DIFF=$(_lib_capped git diff HEAD -- "${PATHSPEC_EXCLUDES[@]}" 2>/dev/null)
     HEAD_DIFF_STATUS=$?
     if [ "$HEAD_DIFF_STATUS" -eq 124 ]; then
-      emit_deny "Commit blocked by PII/credential guard: could not compute the HEAD diff within the scan timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
+      emit_deny "Commit — could not compute the HEAD diff within the scan timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
       exit 0
     fi
     if [ "$HEAD_DIFF_STATUS" -ne 0 ]; then
-      emit_deny "Commit blocked by PII/credential guard: git diff HEAD failed (exit ${HEAD_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
+      emit_deny "Commit — git diff HEAD failed (exit ${HEAD_DIFF_STATUS}), not a timeout. Fail-closed — the guard cannot verify HEAD-relative content is free of PII/credentials without it."
       exit 0
     fi
     SCAN_TARGET+=$'\n'"$(printf '%s' "$HEAD_DIFF" | added_lines_of)"
@@ -353,11 +362,11 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
   while IFS= read -r msg_path; do
     [ -z "$msg_path" ] && continue
     if is_pseudo_file_path "$msg_path"; then
-      emit_deny "Blocked by PII commit gate: git commit passes a message-source flag pointing at a pseudo-file path ('${msg_path}'). The gate cannot statically verify what git will read from '-' / '/dev/stdin' / '/dev/fd/*'. Inline the message with -m or use a real on-disk file."
+      emit_deny "git commit passes a message-source flag pointing at a pseudo-file path ('${msg_path}'). The gate cannot statically verify what git will read from '-' / '/dev/stdin' / '/dev/fd/*'. Inline the message with -m or use a real on-disk file."
       exit 0
     fi
     if [ ! -f "$msg_path" ] || [ ! -r "$msg_path" ]; then
-      emit_deny "Blocked by PII commit gate: git commit references a message-source file at '${msg_path}', but that path is not a readable regular file from the hook. The gate refuses to scan it (fail-closed) — unscanned content is the leak vector this hook guards. Create the file, inline the message with -m, or simplify the path if it contains whitespace."
+      emit_deny "git commit references a message-source file at '${msg_path}', but that path is not a readable regular file from the hook. The gate refuses to scan it (fail-closed) — unscanned content is the leak vector this hook guards. Create the file, inline the message with -m, or simplify the path if it contains whitespace."
       exit 0
     fi
     SCAN_TARGET+=$'\n'"$(cat "$msg_path" 2>/dev/null || true)"
@@ -374,7 +383,7 @@ fi
 SCAN_TARGET_UNQUOTED=$(_lib_strip_shell_quotes "$SCAN_TARGET")
 SCAN_TARGET_UNQUOTED_EXIT=$?
 if [ "$SCAN_TARGET_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Commit blocked by PII/credential guard: could not quote-strip the scan target (exit ${SCAN_TARGET_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+  emit_deny "Commit — could not quote-strip the scan target (exit ${SCAN_TARGET_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
   exit 0
 fi
 SCAN_TARGET_BOTH=$(printf '%s\n%s' "$SCAN_TARGET" "$SCAN_TARGET_UNQUOTED")
@@ -437,7 +446,7 @@ fi
 
 if [ "${#MATCHED_LABELS[@]}" -gt 0 ]; then
   LABEL_LIST=$(printf '%s\n' "${MATCHED_LABELS[@]}" | sort -u | tr '\n' ',' | sed 's/,/, /g; s/, $//')
-  emit_deny "Commit blocked by PII/credential guard: the staged diff, commit message, or a referenced commit-message file matches: ${LABEL_LIST}. The matched values are not echoed here — they are PII or a live secret. Remove the offending content before committing. For a legitimate synthetic test fixture, add an 'exclude: <repo-relative-glob>' line to ~/.claude/pii-patterns.md rather than disarming the gate. See docs/security-hardening.md."
+  emit_deny "Commit — the staged diff, commit message, or a referenced commit-message file matches: ${LABEL_LIST}. The matched values are not echoed here — they are PII or a live secret. Remove the offending content before committing. For a legitimate synthetic test fixture, add an 'exclude: <repo-relative-glob>' line to ~/.claude/pii-patterns.md rather than disarming the gate. See docs/security-hardening.md."
   exit 0
 fi
 

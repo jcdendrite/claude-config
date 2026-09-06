@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
+import pytest
 from helpers import (
     HOOKS_DIR,
     agent_input,
@@ -134,6 +137,60 @@ class TestRequireArchitectConsult:
             agent_input(session_id="s-code-writer", subagent_type="code-writer"),
             cwd=repo,
         ) == "allow"
+
+    @pytest.mark.timing
+    def test_subagent_type_hung_jq_allows_within_timeout(self, isolated_home, tmp_path):
+        """The subagent_type extraction at line ~63 uses _lib_jq, not bare jq
+        (GH-489's uncapped-secondary-jq defect class) — a hung jq binary must
+        resolve within the 5s _lib_jq backstop rather than blocking every
+        Agent/Task dispatch indefinitely. The expected outcome is allow, not
+        deny: an empty SUBAGENT_TYPE from a failed extraction reads as "not a
+        reviewer-persona dispatch" (`_lib_is_reviewer_persona "" || exit 0`),
+        the same fail-open direction this hook's header documents for state
+        failures — the property under test is bounded latency, not a
+        decision flip.
+
+        The hook's first jq call (_lib_parse_tool_input_or_deny's six-field
+        extraction) is already _lib_jq-wrapped and would itself resolve
+        within budget on an always-hung jq, which would pass this test even
+        if the second call (subagent_type, this test's actual target) were
+        still bare jq. Matching narrowly on the subagent_type filter string
+        (rather than a call counter) isolates that specific call — a
+        call-counter stub would also catch any later, unrelated jq call
+        this hook happens to make (e.g. a deny path's own reason-encoding
+        call), which would add an unrelated timeout cycle to elapsed time."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        repo, _round1, _round2 = _repo_at_cap(isolated_home, tmp_path, "hung-jq")
+        _stage_change(repo, "first\nround-one\nround-three\n")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "jq"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            '  *subagent_type*) sleep 10 ;;\n'
+            f'  *) exec "{real_jq}" "$@" ;;\n'
+            "esac\n"
+        )
+        stub.chmod(0o755)
+
+        start = time.monotonic()
+        result = run_hook(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-hung-jq", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+        assert result == "allow"
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_jq timeout to fire on the second (subagent_type) "
+            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
+        )
 
     def test_live_plan_review_active_marker_allows(self, isolated_home, tmp_path):
         """A live /plan-review fan-out must not consume a round-counting

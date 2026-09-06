@@ -169,6 +169,22 @@ class TestSessionMarkerDashboard:
         result = _run_dashboard({"session_id": "sess-exit-check"}, isolated_home)
         assert result.returncode == 0
 
+    def test_malformed_json_does_not_block_and_emits_no_output(self, isolated_home):
+        """hook-class: informational — malformed stdin must not block
+        session startup. _lib_jq on unparseable input yields an empty
+        SESSION_ID, which the hook's own empty-SESSION_ID guard rejects."""
+        env = {**os.environ, "HOME": str(isolated_home)}
+        result = subprocess.run(
+            [str(SESSION_MARKER_DASHBOARD_HOOK)],
+            input="not valid json {{",
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+
     # -- CLAUDE_CONFIG_DIR ------------------------------------------------
 
     def test_fresh_plan_review_marker_under_config_dir_emits_json(self, isolated_home, tmp_path):

@@ -20,7 +20,7 @@ CLAUDE_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = CLAUDE_DIR.parent.parent
 
 HOOKS_DIR = CLAUDE_DIR / "hooks"
-SKILLS_DIR = CLAUDE_DIR / "skills"
+SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
@@ -460,12 +460,15 @@ def bash_input(
     command: str,
     session_id: str | None = None,
     agent_type: str | None = None,
+    cwd: str | None = None,
 ) -> dict:
     payload: dict = {"tool_name": "Bash", "tool_input": {"command": command}}
     if session_id is not None:
         payload["session_id"] = session_id
     if agent_type is not None:
         payload["agent_type"] = agent_type
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
 
 
@@ -849,9 +852,9 @@ def write_skill_review_marker(
             "diff",
             "--cached",
             "--",
-            "claude/.claude/skills/**/SKILL.md",
+            "claude-skills/skills/**/SKILL.md",
             "plugins/*/skills/**/SKILL.md",
-            "claude/.claude/skills/plan-review/ROUTING.md",
+            "claude-skills/skills/plan-review/ROUTING.md",
         ],
         capture_output=True,
         check=True,

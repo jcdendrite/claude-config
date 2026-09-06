@@ -14,7 +14,7 @@ Review an implementation plan. Act as a review board evaluating a proposal befor
 
 Write the active-session marker so this skill's own Write/Edit operations are not blocked by the `require-plan-review.sh` hook while the review is in progress:
 
-<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh activate plan-review
 ```
@@ -276,14 +276,14 @@ End with the absolute path resolved in Step 1, then a verdict: **Approve**, **Ap
 
 Always remove the active-session marker at the end of the skill run, regardless of verdict — including **Request changes**, error, or user-cancel paths:
 
-<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's active-marker cleanup. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh deactivate plan-review
 ```
 
 Then write the completion marker, but only when the verdict is **Approve** or **Approve with changes** and all required changes have been applied to the plan. Do not write it on **Request changes** — write it only after the plan author revises the plan and a clean re-review completes.
 
-<!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude/.claude/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: record-completion — the hook-alignment test suite reads this exact fenced block from this file (claude-skills/skills/plan-review/SKILL.md) to verify it matches require-plan-review.sh's completion-marker layout. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh write plan-review
 ```

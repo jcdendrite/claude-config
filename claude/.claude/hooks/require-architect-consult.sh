@@ -28,12 +28,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="architect-consult"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -42,11 +44,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment).
   # shellcheck disable=SC2218
-  emit_deny "Blocked by architect-consult gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by architect-consult gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Self-filter on tool name -- registered on the union Agent|Task: the
 # harness's confirmed dispatch tool name is "Agent", but a future
@@ -58,13 +60,12 @@ esac
 
 # Only a reviewer-persona spawn can trip this gate -- a code-writer,
 # general-purpose, Explore, or Plan dispatch is never gated.
-SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
+SUBAGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
 _lib_is_reviewer_persona "$SUBAGENT_TYPE" || exit 0
 
 # Machine-wide kill switch, checked before any git call.
 _lib_round_consult_gate_disabled && exit 0
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # A live /plan-review or /ready-for-review fan-out must not consume a
 # round-counting slot -- without this, 115 plan-driven branches in the
 # measured window (docs/case-studies/opus-frontload-review-rounds.md line
@@ -81,7 +82,6 @@ fi
 # allow, per this gate's allow-on-state-failure posture (see header).
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 REPO_ROOT=$(_lib_capped git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)
@@ -112,4 +112,4 @@ grep -qFx -e "$CURRENT_STATE" -- "$STATE_FILE" 2>/dev/null && exit 0
 LATCH_FILE="$CONFIG_DIR/.architect-consult-latch.d/$STATE_KEY"
 [ -f "$LATCH_FILE" ] && exit 0
 
-emit_deny "Blocked by architect-consult gate: this branch is entering its third distinct reviewed state without a recent architect consult. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then retry this reviewer spawn once it returns. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
+emit_deny "this branch is entering its third distinct reviewed state without a recent architect consult. Dispatch \`plan-architect MODE=consult\` first (unspecialized -- 'is the foundation wrong?'), then retry this reviewer spawn once it returns. If dispatching that consult is genuinely not workable in this session, report this block to the engineer rather than resolving it unilaterally -- do not attempt to disable this gate yourself, since that is a persistent, machine-wide behavioral change no agent should self-authorize. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."

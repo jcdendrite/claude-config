@@ -8,24 +8,26 @@ set -uo pipefail
 # marker directly so require-routing-read.sh sees it immediately.
 
 INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty')
 [ "$TOOL_NAME" = "Read" ] || exit 0
 
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
+FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty')
 case "$FILE_PATH" in
     */skills/plan-review/ROUTING.md) ;;
     *) exit 0 ;;
 esac
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 [ -n "$SESSION_ID" ] || exit 0
 
 # SESSION_ID feeds both marker paths below as a path component ("../" would
 # escape their marker directories); fail the same way an empty id already
 # does.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 _lib_valid_session_id_component "$SESSION_ID" || exit 0
 
 # An unresolvable config dir leaves nothing to check or write, so this

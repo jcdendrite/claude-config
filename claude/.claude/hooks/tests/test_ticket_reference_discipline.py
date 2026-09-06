@@ -1,6 +1,6 @@
 """Deterministic scan for two ticket-reference shapes CLAUDE.md's naming and
 comment-discipline rules forbid, over every tracked `.py`/`.sh` file under
-`claude/` and `plugins/`:
+`claude/`, `claude-skills/`, and `plugins/`:
 
 - An identifier (Python `def`/`class`, shell function) carrying a
   ticket-prefixed token, e.g. `TestGh483Invariants`.
@@ -33,7 +33,7 @@ _THIS_FILE = Path(__file__).resolve()
 
 def _tracked_corpus_files() -> list[Path]:
     output = subprocess.run(
-        ["git", "ls-files", "-z", "--", "claude", "plugins"],
+        ["git", "ls-files", "-z", "--", "claude", "claude-skills", "plugins"],
         cwd=REPO_ROOT, capture_output=True, text=True, check=True,
     ).stdout
     files = []
@@ -59,7 +59,10 @@ _CORPUS_IDS = [str(p.relative_to(REPO_ROOT)) for p in _CORPUS]
 def test_corpus_is_non_empty() -> None:
     """Guard against a broken git-ls-files invocation silently collecting
     zero files, which would make every check below vacuously pass."""
-    assert _CORPUS, f"expected at least one tracked .py/.sh file under claude/ or plugins/, found none under {REPO_ROOT}"
+    assert _CORPUS, (
+        f"expected at least one tracked .py/.sh file under claude/, claude-skills/, "
+        f"or plugins/, found none under {REPO_ROOT}"
+    )
 
 
 # --- Identifier tokenizer --------------------------------------------------
@@ -273,7 +276,7 @@ _TOP_LEVEL_DEF_OR_CLASS_RE = re.compile(r"^(?:async\s+def|def|class)\s+([A-Za-z_
 
 def _tracked_test_py_files_under_claude_or_plugins() -> list[Path]:
     output = subprocess.run(
-        ["git", "ls-files", "-z", "--", "claude", "plugins"],
+        ["git", "ls-files", "-z", "--", "claude", "claude-skills", "plugins"],
         cwd=REPO_ROOT, capture_output=True, text=True, check=True,
     ).stdout
     files = []
@@ -305,7 +308,8 @@ def test_test_py_corpus_under_claude_or_plugins_is_non_empty() -> None:
     """Guard against a broken git-ls-files invocation silently collecting
     zero files, which would make the check below vacuously pass."""
     assert _TEST_PY_FILES_UNDER_CLAUDE_OR_PLUGINS, (
-        f"expected at least one tracked test_*.py file under claude/ or plugins/, found none under {REPO_ROOT}"
+        f"expected at least one tracked test_*.py file under claude/, claude-skills/, "
+        f"or plugins/, found none under {REPO_ROOT}"
     )
 
 

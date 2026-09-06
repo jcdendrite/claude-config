@@ -9,7 +9,7 @@ using the structure below.
 
 ## Before writing: activate the handoff bypass marker
 
-<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude-skills/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh activate handoff
 ```
@@ -190,7 +190,7 @@ Best-effort: silently skips the log append if this session's id can't be resolve
 
 ## After writing: deactivate the handoff bypass marker
 
-<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude-skills/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh deactivate handoff
 ```

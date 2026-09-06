@@ -2,7 +2,7 @@
 # Creates the active account's handoffs/ or briefs/ directory. Exactly one
 # argument, "handoffs" or "briefs" -- anything else, including empty, exits
 # non-zero without touching the filesystem.
-# See claude/.claude/skills/handoff/SKILL.md's and brief/SKILL.md's
+# See claude-skills/skills/handoff/SKILL.md's and brief/SKILL.md's
 # "write-target" fixture blocks for the callers this implements.
 set -euo pipefail
 

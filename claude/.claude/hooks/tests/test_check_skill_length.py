@@ -18,7 +18,7 @@ from helpers import (
 from .conftest import assert_cap_engaged
 
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
-SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
+SKILL_PATH = "claude-skills/skills/my-skill/SKILL.md"
 
 
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
@@ -53,7 +53,7 @@ def make_repo_with_skill(tmp_path: Path, head_lines: int) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    skill_dir = repo / "claude" / ".claude" / "skills" / "my-skill"
+    skill_dir = repo / "claude-skills" / "skills" / "my-skill"
     skill_dir.mkdir(parents=True)
     (repo / SKILL_PATH).write_text(make_skill_content(head_lines))
     subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
@@ -78,7 +78,7 @@ def new_skill_repo(tmp_path):
     (repo / "README.md").write_text("hello\n")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    (repo / "claude" / ".claude" / "skills" / "my-skill").mkdir(parents=True)
+    (repo / "claude-skills" / "skills" / "my-skill").mkdir(parents=True)
     return repo
 
 
@@ -274,8 +274,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        cr_path = "claude/.claude/skills/code-review/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "code-review").mkdir(parents=True)
+        cr_path = "claude-skills/skills/code-review/SKILL.md"
+        (repo / "claude-skills" / "skills" / "code-review").mkdir(parents=True)
         (repo / cr_path).write_text(make_skill_content(290))
         subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -297,8 +297,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        cr_path = "claude/.claude/skills/code-review/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "code-review").mkdir(parents=True)
+        cr_path = "claude-skills/skills/code-review/SKILL.md"
+        (repo / "claude-skills" / "skills" / "code-review").mkdir(parents=True)
         (repo / cr_path).write_text(make_skill_content(490))
         subprocess.run(["git", "add", cr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -320,8 +320,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        pr_path = "claude/.claude/skills/plan-review/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        pr_path = "claude-skills/skills/plan-review/SKILL.md"
+        (repo / "claude-skills" / "skills" / "plan-review").mkdir(parents=True)
         (repo / pr_path).write_text(make_skill_content(290))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -343,8 +343,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        routing_path = "claude/.claude/skills/plan-review/ROUTING.md"
-        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        routing_path = "claude-skills/skills/plan-review/ROUTING.md"
+        (repo / "claude-skills" / "skills" / "plan-review").mkdir(parents=True)
         (repo / routing_path).write_text(make_skill_content(290))
         subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -366,8 +366,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        routing_path = "claude/.claude/skills/plan-review/ROUTING.md"
-        (repo / "claude" / ".claude" / "skills" / "plan-review").mkdir(parents=True)
+        routing_path = "claude-skills/skills/plan-review/ROUTING.md"
+        (repo / "claude-skills" / "skills" / "plan-review").mkdir(parents=True)
         (repo / routing_path).write_text(make_skill_content(490))
         subprocess.run(["git", "add", routing_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -391,8 +391,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        pr_path = "claude/.claude/skills/pr-description/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "pr-description").mkdir(parents=True)
+        pr_path = "claude-skills/skills/pr-description/SKILL.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
         (repo / pr_path).write_text(make_skill_content(195))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -414,8 +414,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        pr_path = "claude/.claude/skills/pr-description/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "pr-description").mkdir(parents=True)
+        pr_path = "claude-skills/skills/pr-description/SKILL.md"
+        (repo / "claude-skills" / "skills" / "pr-description").mkdir(parents=True)
         (repo / pr_path).write_text(make_skill_content(205))
         subprocess.run(["git", "add", pr_path], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -446,8 +446,8 @@ class TestCheckSkillLength:
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
-        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
+        memory_path = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
+        (repo / "claude-skills" / "skills" / "ai-instruction-and-memory-files").mkdir(
             parents=True
         )
         (repo / memory_path).write_text(make_skill_content(195))
@@ -478,7 +478,7 @@ class TestCheckSkillLength:
         """
         (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
         subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        subdir = skill_repo / "claude"
+        subdir = skill_repo / "claude-skills"
         assert (
             run_hook(
                 CHECK_SKILL_LENGTH_HOOK,

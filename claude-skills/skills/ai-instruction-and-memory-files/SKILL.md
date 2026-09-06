@@ -12,7 +12,7 @@ user-invocable: false
 
 ## Step 0 — Activate gate session
 
-<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude-skills/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh activate memory-skill
 ```
@@ -177,7 +177,7 @@ Rule-file review stays inline here rather than becoming its own skill (like `ski
 
 ## Final step — Deactivate gate session
 
-<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude-skills/skills/ai-instruction-and-memory-files/SKILL.md to verify it matches require-memory-skill.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
 ```
 ~/.claude/scripts/marker.sh deactivate memory-skill
 ```

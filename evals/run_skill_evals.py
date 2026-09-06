@@ -48,7 +48,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVALS_DIR = Path(__file__).resolve().parent
-SKILLS_DIR = REPO_ROOT / "claude" / ".claude" / "skills"
+SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 PLUGINS_DIR = REPO_ROOT / "plugins"
 
 sys.path.insert(0, str(REPO_ROOT / "claude" / ".claude" / "scripts"))

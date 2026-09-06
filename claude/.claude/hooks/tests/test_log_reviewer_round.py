@@ -618,6 +618,26 @@ class TestLogReviewerRoundFailureDegradesCleanly:
         assert result.stdout == ""
         assert not (isolated_home / ".claude" / ".reviewer-round-state.d").exists()
 
+    def test_malformed_json_does_not_block_and_emits_no_output(self, isolated_home, tmp_path):
+        """hook-class: informational — malformed stdin must not block the
+        Agent/Task tool result. _lib_jq on unparseable input yields empty
+        TOOL_NAME, which the `Agent | Task` case guard rejects."""
+        repo = tmp_path / "malformed-json"
+        _init_repo(repo)
+        env = {**os.environ, "HOME": str(isolated_home)}
+        result = subprocess.run(
+            [str(LOG_REVIEWER_ROUND_HOOK)],
+            input="not valid json {{",
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert not (isolated_home / ".claude" / ".reviewer-round-state.d").exists()
+
     def test_unresolvable_config_dir_is_clean_noop(self, isolated_home, tmp_path):
         repo = tmp_path / "bad-config-dir"
         _init_repo(repo)

@@ -32,7 +32,7 @@ The dispatch prompt's first line names the mode: `MODE=plan-sections` or
 
 ## MODE=plan-sections
 
-Read `claude/.claude/skills/plan-it/SKILL.md` for the exact section grammar
+Read `claude-skills/skills/plan-it/SKILL.md` for the exact section grammar
 your return must follow — Approach, assumption ledger (root/Givens/numbered
 rows with `anchors:`), Critical files, Verification, Out of scope. Its
 co-located `REFERENCES.md` is an edit-time reference for humans revising

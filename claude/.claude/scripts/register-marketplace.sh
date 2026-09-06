@@ -18,7 +18,9 @@ set -euo pipefail
 # normally invoked through its stowed symlink at
 # ~/.claude/scripts/register-marketplace.sh rather than a direct checkout
 # path the way install.sh always is.
-resolved="$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
+if ! resolved="$(readlink -f -- "$0" 2>/dev/null)"; then
+  resolved="$0"
+fi
 REPO_DIR="$(cd -- "$(dirname -- "$resolved")/../../.." && pwd -P)"
 
 if [ ! -f "$REPO_DIR/.claude-plugin/marketplace.json" ]; then

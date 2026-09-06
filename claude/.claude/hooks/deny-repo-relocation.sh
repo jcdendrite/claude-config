@@ -49,12 +49,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="repo-relocation"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -65,11 +67,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by repo-relocation hook: could not source _lib.sh — hook cannot evaluate relocation discipline safely."
+  emit_deny "could not source _lib.sh — hook cannot evaluate relocation discipline safely."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by repo-relocation hook: could not parse tool-input JSON. Refusing to evaluate relocation discipline under malformed input."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to evaluate relocation discipline under malformed input."
 
 [ "$TOOL_NAME" = "Bash" ] || exit 0
 
@@ -90,7 +92,6 @@ fi
 # relative mv/rsync source arguments resolve against it, not this hook
 # process's own $PWD. Falls back to $PWD when absent (mirrors
 # require-worktree-for-git-writes.sh's identical CWD read).
-CWD=$(_lib_jq -r '.cwd // empty' <<< "$INPUT" 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Quote-stripped so an adjacent-quote split (`'mv' "$REPO_ROOT" /tmp`) can't
@@ -103,7 +104,7 @@ CWD=$(_lib_jq -r '.cwd // empty' <<< "$INPUT" 2>/dev/null)
 COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 COMMAND_UNQUOTED_EXIT=$?
 if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by repo-relocation hook: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned mv/rsync."
+  emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned mv/rsync."
   exit 0
 fi
 
@@ -177,7 +178,7 @@ _relocation_resolve_source() {
 FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
 FRAGMENTS_SPLIT_EXIT=$?
 if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by repo-relocation hook: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned relocation command."
+  emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned relocation command."
   exit 0
 fi
 while IFS= read -r fragment; do
@@ -199,7 +200,7 @@ while IFS= read -r fragment; do
     [ -z "$resolved" ] && continue
 
     if [ "$resolved" = "$REPO_ROOT" ] || [ "${REPO_ROOT#"$resolved"/}" != "$REPO_ROOT" ]; then
-      emit_deny "Blocked by repo-relocation hook: this '$tool_label' command's source '$candidate' resolves to the claude-config checkout (or an ancestor of it) at '$resolved', and moving or renaming this checkout outside a supported path would break every stow symlink under ~/.claude/ and ~/.local/bin/ at once. Use 'relocate-claude-config <new-path>' instead — it unstows, moves, and re-stows this checkout safely, and also repairs an already-broken ~/.claude via 'relocate-claude-config --repair <new-path>'."
+      emit_deny "this '$tool_label' command's source '$candidate' resolves to the claude-config checkout (or an ancestor of it) at '$resolved', and moving or renaming this checkout outside a supported path would break every stow symlink under ~/.claude/ and ~/.local/bin/ at once. Use 'relocate-claude-config <new-path>' instead — it unstows, moves, and re-stows this checkout safely, and also repairs an already-broken ~/.claude via 'relocate-claude-config --repair <new-path>'."
       exit 0
     fi
   done <<< "$(_relocation_positional_sources "$fragment")"

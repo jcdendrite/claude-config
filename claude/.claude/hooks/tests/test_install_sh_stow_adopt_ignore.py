@@ -57,6 +57,15 @@ def _make_package(tmp_path: Path) -> Path:
     tells adopted content apart from package content via `git ls-files`, not
     .gitignore, so the fixture must actually track 'skills' and
     'scripts' and leave 'briefs' untracked to exercise that distinction.
+
+    Also needs a top-level 'claude-skills' package directory: stow-packages.sh
+    self-locates against the real checkout (see the comment below), so it
+    prints that real manifest's rows regardless of pkg_root's layout, and the
+    extracted block's per-row `stow` calls run with pkg_root as cwd -- a row
+    naming a package directory pkg_root doesn't have makes stow fail outright.
+    Its one child is named 'placeholder', not 'skills', so it does not
+    collide at the stow target with the 'claude' package's own '.claude/skills'
+    child above -- both packages' rows target $HOME/.claude in this fixture.
     """
     pkg_root = tmp_path / "pkg"
     briefs = pkg_root / "claude" / ".claude" / "briefs"
@@ -68,6 +77,15 @@ def _make_package(tmp_path: Path) -> Path:
     scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "_stow_migration_lib.sh").symlink_to(SCRIPTS_DIR / "_stow_migration_lib.sh")
+    # The extracted block shells out to "$REPO_DIR/claude/.claude/scripts/
+    # stow-packages.sh" -- symlinked in the same way as _stow_migration_lib.sh
+    # above, rather than duplicated: stow-packages.sh self-locates via its own
+    # $0, so following this symlink resolves to the real repo's checkout and
+    # prints its real package list regardless of pkg_root's own layout.
+    (scripts_dir / "stow-packages.sh").symlink_to(SCRIPTS_DIR / "stow-packages.sh")
+    claude_skills = pkg_root / "claude-skills" / "placeholder"
+    claude_skills.mkdir(parents=True)
+    (claude_skills / "content.md").write_text("# placeholder claude-skills content\n")
 
     subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
     # `git add`, deliberately no `git commit`: `git ls-files` (default, no
@@ -159,6 +177,27 @@ class TestStowAdoptIgnorePattern:
             f"stow output: {result.stderr!r}"
         )
 
+    def test_claude_skills_package_resolves_under_home_dot_claude(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins the claude-skills manifest row's actual stow target: a row
+        naming the wrong target (e.g. $HOME instead of $HOME/.claude) would
+        still let the loop complete and every other assertion in this file
+        pass, since none of them inspect where claude-skills's own content
+        lands."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        placeholder_link = home / ".claude" / "placeholder"
+        assert placeholder_link.is_symlink(), (
+            f"claude-skills's 'placeholder' entry must resolve under "
+            f"$HOME/.claude; stow output: {result.stderr!r}"
+        )
+
     def test_dotted_untracked_name_is_ignored_without_over_matching_a_sibling(
         self, tmp_path: Path
     ) -> None:
@@ -198,14 +237,17 @@ class TestStowAdoptIgnorePattern:
 
 def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
     """Runs the real --ignore-arg-construction loop from the extracted
-    block, but replaces the trailing `stow -v ...` line with a printf of
-    the constructed array -- isolates the loop's own set -e/continue
+    block, replacing everything from the manifest loop onward with a printf
+    of the constructed array. Isolates the loop's own set -e/continue
     behavior from real stow's separate, unrelated all-or-nothing conflict
-    handling (a failure on one --ignore'd name makes real stow refuse the
+    handling: a failure on one --ignore'd name makes real stow refuse the
     *entire* invocation, which would make "did the loop still process the
-    other names" unobservable through stow's own exit code)."""
+    other names" unobservable through stow's own exit code. Splits on the
+    manifest loop's `while IFS=$'\\t' read ...` line rather than a comment,
+    since that line is syntactically unique within the block and so survives
+    a comment rewrap that would move a prose-anchored split point."""
     block = _extract_stow_adopt_block()
-    stow_line_start = block.index("stow -v")
+    stow_line_start = block.index("while IFS=$'\\t' read -r package_dir stow_target_rel")
     loop_only = block[:stow_line_start]
     script = (
         f'. "{SCRIPTS_DIR / "_stow_migration_lib.sh"}"\n'

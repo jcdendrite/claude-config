@@ -292,11 +292,11 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md'
+        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md'
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (both stowed
         # and plugin locations) plus plan-review/ROUTING.md, matching what
         # require-skill-review.sh checks at commit time.
-        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
+        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
@@ -572,7 +572,7 @@ case "$SUBCOMMAND" in
 
     # skill-review: same recipe as the `write skill-review` arm above,
     # scoped to the SKILL.md/ROUTING.md pathspecs.
-    SKILL_REVIEW_PATHSPECS=('claude/.claude/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude/.claude/skills/plan-review/ROUTING.md')
+    SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
     SKILL_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached -- "${SKILL_REVIEW_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"

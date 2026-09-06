@@ -22,13 +22,19 @@ from transcript_analysis import corpus, pricing, redaction, render, scope
 # not a claim about which branch the dispatched work belongs to.
 _WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
 
-# Printed as both render paths' first content line (see _cost_report). Two-part
-# because readers span subscription, API-billed, and contracted-rate accounts,
-# which have three different notions of "what I'm billed."
+# Printed as both render paths' first content line (see _cost_report).
+# The full report prints this sentence directly. --summary wraps it in
+# _LIST_PRICE_CAVEAT_ALERT below. Two-part because readers span subscription,
+# API-billed, and contracted-rate accounts, which have three different
+# notions of "what I'm billed."
 _LIST_PRICE_CAVEAT = (
     "Computed locally at API list price — this is a compute estimate, not an"
     " invoice, and may not match what your plan or contract actually bills."
 )
+
+# Must stay unfenced: --summary embeds this in a GitHub PR body where GFM
+# alerts render, and a GFM alert cannot nest inside another element.
+_LIST_PRICE_CAVEAT_ALERT = f"> [!IMPORTANT]\n> {_LIST_PRICE_CAVEAT}"
 
 
 def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
@@ -801,10 +807,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # tables) needs the total computed before that print.
     total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
-        # The caveat is the block's first printed line, verbatim -- no
-        # leading blank line, since pr-cost-section.sh embeds this stdout
-        # as the PR body's Cost section body with no separator of its own.
-        print(_LIST_PRICE_CAVEAT)
+        # No leading blank line: pr-cost-section.sh embeds this stdout verbatim,
+        # with no separator of its own, as the Cost section body.
+        # The Scope: print's blank line terminates the GFM alert; omitting it lets
+        # lazy continuation fold Scope: into the blockquote.
+        print(_LIST_PRICE_CAVEAT_ALERT)
         unreadable_clause = f", {total_transcripts_skipped:,} unreadable" if total_transcripts_skipped else ""
         print(
             f"\nScope: this account only, {title_since} ({total_transcripts_scanned:,} transcripts scanned"

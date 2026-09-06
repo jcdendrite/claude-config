@@ -106,7 +106,7 @@ to re-run at higher `K` (e.g. `--samples 30`), not as a confirmed regression.
 Co-locate a `trigger-cases.json` file in the skill's `evals/` subdirectory:
 
 ```
-claude/.claude/skills/<name>/evals/trigger-cases.json
+claude-skills/skills/<name>/evals/trigger-cases.json
 ```
 
 Schema:
@@ -188,7 +188,7 @@ boundary between adjacent skills is ambiguous.
 ### runtime
 
 The harness runs `claude -p <query>` from a throwaway project whose
-`.claude/skills/` is symlinked to the working-tree `claude/.claude/skills/`.
+`.claude/skills/` is symlinked to the working-tree `claude-skills/skills/`.
 Real skills compete in real mutual context. When the model decides to invoke a
 skill, it calls the `Skill` tool with the skill name in the input JSON. The
 harness reads the stream-json output and looks for:
@@ -302,7 +302,7 @@ it can be deleted outright, or it can be reworded until it no longer drives
 the correct disposition. These need different guards:
 
 - **Layer 1 — deterministic anchor-presence test** (in the normal pytest
-  suite, `claude/.claude/skills/tests/test_skills.py::test_disposition_rule_anchors_present`).
+  suite, `claude-skills/skills/tests/test_skills.py::test_disposition_rule_anchors_present`).
   Zero-flake, zero-cost, runs in CI. Asserts each rule's
   `<!-- DISPOSITION_RULE:<name> start/end -->` anchor block exists and encloses
   non-trivial text — catches deletion, not rewording.
@@ -386,7 +386,7 @@ more synthetic ones. The schema below is for whoever authors the first case.
 The `method` schema, the classification-answer and disposition-answer
 parsers, the anchor extractor, and the stream-json detectors (runtime and
 behavioral-dispatch) are unit-tested offline (synthetic inputs, no `claude -p`)
-in `claude/.claude/skills/tests/test_trigger_detector.py`; the fixtures live in
+in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 `evals/fixtures/`.
 
 ## Linting

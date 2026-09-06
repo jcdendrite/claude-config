@@ -1,6 +1,9 @@
 #!/bin/bash
 # hook-class: gate
 set -uo pipefail
+
+DENY_GATE_LABEL="routing-read"
+
 # PreToolUse: during an active plan-review session, require that ROUTING.md
 # was Read (tracked by log-routing-read.sh) before any Agent spawn.
 #
@@ -13,7 +16,7 @@ set -uo pipefail
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -24,15 +27,14 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by routing-read gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by routing-read gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 [ "$TOOL_NAME" = "Agent" ] || exit 0
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
 # Absent session_id (older Claude Code versions, payload-schema drift) has no
 # marker to check at all, so there is nothing to distinguish "plan-review
 # active" from "not active" and the safer default is to allow.
@@ -65,4 +67,4 @@ if [ -f "$ROUTING_MARKER" ] && [ -n "$(find "$ROUTING_MARKER" -mmin -60 2>/dev/n
   exit 0
 fi
 
-emit_deny "Agent spawn blocked by plan-review routing gate: use the Read tool to read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent — a Bash read (cat/sed/grep) does not satisfy this gate. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."
+emit_deny "Agent spawn — use the Read tool to read ~/.claude/skills/plan-review/ROUTING.md before spawning any specialist agent — a Bash read (cat/sed/grep) does not satisfy this gate. All spawn criteria (always-spawn rules, item ownership, reconciliation logic) live exclusively in ROUTING.md."

@@ -157,17 +157,17 @@ jobs:
 
       - name: Run tests (parallel)
         if: steps.detect.outputs.changed == 'true'
-        run: pytest claude/.claude/ plugins/ -v -m "not timing"
+        run: pytest claude/.claude/ claude-skills/ plugins/ -v -m "not timing"
 
       # !cancelled() (not bare `if:`) so a parallel-pass failure above doesn't
       # suppress this step's own report in the same run.
       - name: Run tests (timing, serial)
         if: ${{ !cancelled() && steps.detect.outputs.changed == 'true' }}
-        run: pytest claude/.claude/ plugins/ -v -m timing -n0
+        run: pytest claude/.claude/ claude-skills/ plugins/ -v -m timing -n0
 
       - name: Lint
         if: steps.detect.outputs.changed == 'true'
-        run: ruff check claude/.claude/ plugins/
+        run: ruff check claude/.claude/ claude-skills/ plugins/
 
       - name: Shellcheck
         if: steps.detect.outputs.shell_changed == 'true'

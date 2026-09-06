@@ -75,7 +75,10 @@ Resolve the section with a single script call:
 
 Exit 0: enabled and the branch resolved cleanly — stdout is the cost report; embed it **verbatim** under
 `## Cost (list-price estimate)`, followed by the exact command `~/.claude/scripts/pr-cost-section.sh` as "the exact command
-that produced it" for reproducibility — never recompose, round, or re-narrate the figures. Exit 1:
+that produced it" for reproducibility — never recompose, round, or re-narrate the figures.
+Embed it as raw markdown, never inside a code fence. A fenced block
+renders its GFM alert and its `### Cost by …` tables as literal text
+instead of a callout and tables. Exit 1:
 disabled, unreadable, or malformed `<config-dir>/pr-cost-disclosure` — delete the block if one exists,
 no stdout. Exit 2: enabled but the branch is the literal `HEAD` (detached) — omit the section and say
 why, no stdout. Exit 3: branch resolved but the downstream cost report itself failed — omit `## Cost (list-price estimate)`
@@ -159,6 +162,9 @@ Flag and fix:
 - `TBD` / `pending` / "to be updated" markers still in the body.
 - Files in the diff absent from the body.
 - **Missing or duplicated attribution trailer.** Older bodies may carry the trailer only at the bottom — add it as the first line too. Never end up with more than one copy at either position.
+- **A code-fenced cost block.** The `<!-- pr-cost:start -->` span holds
+  raw markdown; a fence around it renders the alert and tables as
+  literal text.
 
 ## Delivering the body
 

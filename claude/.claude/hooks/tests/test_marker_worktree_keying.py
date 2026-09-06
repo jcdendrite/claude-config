@@ -529,7 +529,7 @@ class TestReaderHooksHashComparisonUsesPayloadCwd:
     ):
         other_repo = tmp_path / "other-skill-repo"
         _init_repo(other_repo)
-        other_skill = other_repo / "claude" / ".claude" / "skills" / "s" / "SKILL.md"
+        other_skill = other_repo / "claude-skills" / "skills" / "s" / "SKILL.md"
         other_skill.parent.mkdir(parents=True)
         other_skill.write_text("## initial\n")
         subprocess.run(["git", "add", "."], cwd=other_repo, check=True)
@@ -540,7 +540,7 @@ class TestReaderHooksHashComparisonUsesPayloadCwd:
         # Ambient cwd (git_repo) also has a staged SKILL.md diff, with
         # different content -- both trees non-empty, so neither early exit
         # (no-SKILL.md-staged, empty-diff) can short-circuit.
-        ambient_skill = git_repo / "claude" / ".claude" / "skills" / "s" / "SKILL.md"
+        ambient_skill = git_repo / "claude-skills" / "skills" / "s" / "SKILL.md"
         ambient_skill.parent.mkdir(parents=True, exist_ok=True)
         ambient_skill.write_text("## ambient repo change\n")
         subprocess.run(

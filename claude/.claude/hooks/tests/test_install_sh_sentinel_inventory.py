@@ -133,7 +133,7 @@ _report_repo_sentinel() {
 }
 
 # Content, not presence, is this row's state — see the mode grammar in
-# claude/.claude/skills/pr-description/SKILL.md, whose gate this reporter
+# claude-skills/skills/pr-description/SKILL.md, whose gate this reporter
 # mirrors byte-for-byte (same trim/lowercase/anchored-compare snippet, pinned
 # in both places so they cannot silently diverge). Resolution, not union:
 # $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never
