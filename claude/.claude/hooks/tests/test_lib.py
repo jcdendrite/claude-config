@@ -1596,21 +1596,23 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
     assert result.stdout == ""
 
 
-# --- _lib_resolve_default_branch ------------------------------------------
+# --- _lib_default_branch_from_origin_head / _lib_default_branch_or_guess --
 #
-# guard-settings-session-keys.sh calls this to pick its git-show comparison
-# branch. require-ready-for-review.sh resolves its own default branch the
-# same way, inline, to decide its default-branch push bypass.
+# guard-settings-session-keys.sh calls _lib_default_branch_or_guess to pick
+# its git-show comparison branch. require-ready-for-review.sh resolves its
+# own default branch the same way, inline, to decide its default-branch push
+# bypass.
 
 
-def _resolve_default_branch(repo_root: Path) -> str:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_resolve_default_branch "$1"', "bash", str(repo_root)],
+def _resolve_default_branch(
+    repo_root: Path, func: str = "_lib_default_branch_or_guess"
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; {func} "$1"', "bash", str(repo_root)],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
-    return result.stdout
 
 
 def _init_repo_on_branch(path: Path, branch: str) -> None:
@@ -1637,7 +1639,10 @@ def test_resolve_default_branch_via_symbolic_ref_for_non_main_name(tmp_path: Pat
         cwd=repo, check=True,
     )
 
-    assert _resolve_default_branch(repo) == "trunk"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "trunk"
 
 
 def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
@@ -1653,17 +1658,23 @@ def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == "develop"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "develop"
 
 
 def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
     """No origin/HEAD symbolic ref and no origin/{main,master,develop} ref at
     all (e.g. a repo with no configured remote) — the helper reports "could
-    not resolve" as empty stdout rather than guessing."""
+    not resolve" as empty stdout and a non-zero exit rather than guessing."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "main")
 
-    assert _resolve_default_branch(repo) == ""
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
@@ -1671,22 +1682,26 @@ def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
 ) -> None:
     """origin/trunk exists, but no origin/HEAD symbolic ref and none of the
     probed candidates (main, master, develop) do -- the candidate loop must
-    report unresolvable rather than matching trunk by some other means."""
+    report unresolvable, with a non-zero exit, rather than matching trunk by
+    some other means."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == ""
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
     tmp_path: Path,
 ) -> None:
     """A default branch name containing "/" (e.g. release/v2) must come back
-    unmangled -- the sed strip removes only the "refs/remotes/origin/"
-    prefix, not every slash in the string."""
+    unmangled -- the "refs/remotes/origin/" strip is a literal anchored
+    prefix strip, not a strip of every slash in the string."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "release/v2")
     subprocess.run(
@@ -1697,7 +1712,10 @@ def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
         cwd=repo, check=True,
     )
 
-    assert _resolve_default_branch(repo) == "release/v2"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "release/v2"
 
 
 def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
@@ -1715,7 +1733,10 @@ def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == "master"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "master"
 
 
 def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
@@ -1735,17 +1756,20 @@ def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
         ["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == "main"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "main"
 
 
-def test_resolve_default_branch_symbolic_ref_does_not_verify_target(
+def test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected(
     tmp_path: Path,
 ) -> None:
     """origin/HEAD points at origin/main via a symbolic ref, but
-    origin/main itself was never created — the symbolic-ref path returns
-    "main" anyway, unlike the candidate loop, because it never verifies the
-    target ref resolves. Pins this asymmetry as the helper's current
-    contract rather than leaving it undefended."""
+    origin/main itself was never created. The symbolic-ref path verifies
+    the target resolves to a commit before trusting it, so a dangling
+    target reports unresolvable, with a non-zero exit, exactly like any
+    other unverified origin/HEAD (docs/design-decisions.md #54)."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "main")
     subprocess.run(
@@ -1753,7 +1777,80 @@ def test_resolve_default_branch_symbolic_ref_does_not_verify_target(
         cwd=repo, check=True,
     )
 
-    assert _resolve_default_branch(repo) == "main"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_default_branch_from_origin_head_resolves_verified_target_in_isolation(
+    tmp_path: Path,
+) -> None:
+    """_lib_default_branch_from_origin_head in isolation (not through the
+    guessing layer): a valid origin/HEAD symbolic ref pointing at a verified
+    target resolves, with no candidate-probe fallback involved at all."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "trunk")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+        cwd=repo, check=True,
+    )
+
+    result = _resolve_default_branch(repo, func="_lib_default_branch_from_origin_head")
+
+    assert result.returncode == 0
+    assert result.stdout == "trunk"
+
+
+def test_default_branch_from_origin_head_rejects_dangling_target_in_isolation(
+    tmp_path: Path,
+) -> None:
+    """_lib_default_branch_from_origin_head in isolation (not through the
+    guessing layer): origin/HEAD points at refs/remotes/origin/main, but
+    that target was never created (dangling), and no candidate ref exists
+    either. Proves the narrow layer's own target-verification failure
+    directly, rather than inferring it through _lib_default_branch_or_guess's
+    separate candidate-loop failure, as
+    test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected
+    does."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _resolve_default_branch(repo, func="_lib_default_branch_from_origin_head")
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_develop(
+    tmp_path: Path,
+) -> None:
+    """origin/HEAD points at origin/main via a symbolic ref, but origin/main
+    was never created (dangling) -- so the narrow layer fails -- while
+    origin/develop is a real, resolvable ref. Proves
+    _lib_default_branch_or_guess falls through to the candidate probe on the
+    narrow layer's failure rather than returning empty outright."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "develop")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
+    )
+
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "develop"
 
 
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
