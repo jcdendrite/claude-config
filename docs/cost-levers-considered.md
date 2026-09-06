@@ -419,9 +419,8 @@ branch) dispatches that are first-of-type on a branch and gain nothing from
 a warm-cache continuation fix.
 
 **2026-09-06 follow-up, the named `cacheTtl: 1h` lever, priced.** The
-plan's over-powered-primitive check asserted `cacheTtl` "never touches a
-`Read` result" — corrected above as false. That correction only reopens
-the bundle the plan named: `cacheTtl: 1h` paired with the declined
+correction above reopens the bundle the plan named: `cacheTtl: 1h` paired
+with the declined
 `SendMessage` continuation. `cacheTtl` alone cannot warm one dispatch's
 `Read` results for a different dispatch. Reviewer file reads land in
 `messages[]` after each dispatch's own divergent prompt, so nothing
@@ -435,11 +434,11 @@ That clears gate criterion 1 decisively, the reverse of the
 5-minute-boundary result.
 
 Criterion 2 — the $50 floor — still fails. A one-off scan against
-`reviewer_yield.py`'s existing per-dispatch transcript resolution (not a
-rerunnable script — treat the precision accordingly, per this register's
-usual caveat for such scans) measured the per-dispatch `Read`-token volume
-(the plan's `R`) directly: mean 14,260 tokens
-across 550 dispatches, well under the plan's 20,000–35,000 extrapolation.
+`reviewer_yield.py`'s existing per-dispatch transcript resolution measured
+the per-dispatch `Read`-token volume (the plan's `R`) directly — not a
+rerunnable script, so treat the precision accordingly, per this register's
+usual caveat for such scans. The result: mean 14,260 tokens across 550
+dispatches, well under the plan's 20,000–35,000 extrapolation.
 Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
 1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
 dispatch's own write) totals ≈$17.65 over the window. The avoided-rewrite
@@ -458,6 +457,6 @@ it as magnitude-only, never sign-determining.
 This repricing doesn't reopen the `2026-09-01` "Pick the cache duration"
 row above, the register's canonical cache-duration entry. Its objection
 that `experimental.cacheTtl` sits in an unstable `experimental.` namespace
-is untouched by the cost side coming out a wash, and is now the
-load-bearing reason to decline, with the cost gap no longer doing that
-work on its own.
+is untouched by the cost side coming out a wash. That objection is now the
+sole reason to decline, since the cost gap no longer carries independent
+weight.
