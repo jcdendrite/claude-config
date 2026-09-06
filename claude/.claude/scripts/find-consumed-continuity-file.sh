@@ -29,14 +29,27 @@
 #     - are regular files
 #     - are not symlinks
 #     - are owned by $EUID
+#     - live directly under resume-context.sh's own tmpdir root
+#       (_lib_resume_context_tmpdir_root), with its mktemp-produced
+#       resume-context.* basename shape
 #   This filter is a truthfulness control: age-based tmp cleanup can reap a
 #   destination independently of the index's own 30-day day-file sweep. It
 #   is also an integrity control: an unowned or symlinked destination is
 #   never printed to output that may feed straight into
-#   `claude --append-system-prompt-file`. A row's $src field is sanitized
-#   (control bytes stripped) before printing, since it reaches a different
-#   session's terminal below. Stripping, not rejecting, means a poisoned
-#   row still surfaces rather than vanishing from the output.
+#   `claude --append-system-prompt-file`. The tmpdir-root/basename check
+#   stops a forged row from redirecting that same output at an arbitrary
+#   file the forging process owns. The index directory is a multi-writer
+#   surface at this EUID, so a row need not have come from
+#   record_consumed_destination at all. That check confines a forged $dest
+#   to $TMPDIR_ROOT/resume-context.* but does not verify the file it names
+#   was actually produced by record_consumed_destination -- a co-resident
+#   process at the same EUID can still plant its own conforming file there
+#   with fully attacker-authored content and have this reader recommend it.
+#   Accepted, scoped tradeoff: see docs/design-decisions.md §56. All three
+#   printed fields ($stamp, $dest, $src) are sanitized (control bytes
+#   stripped) before printing, since they reach a different session's
+#   terminal below. Stripping, not rejecting, means a poisoned row still
+#   surfaces rather than vanishing from the output.
 # - stderr: the reload hint for the newest printed row on success. On
 #   failure, one of three distinct diagnoses:
 #     - no index found (no day-files at all)
@@ -58,6 +71,10 @@ DIR=$(_lib_resume_context_index_dir) || {
   printf '%s\n' "$NO_INDEX_MSG" >&2
   exit 1
 }
+
+# Hoisted out of the per-row loop below: every row's $dest is checked
+# against this same root, so it's computed once rather than once per row.
+TMPDIR_ROOT=$(_lib_resume_context_tmpdir_root)
 
 FILES_FOUND=0
 MATCHED=0
@@ -82,17 +99,32 @@ for f in "$DIR"/consumed.*.tsv; do
       esac
     fi
     MATCHED=$((MATCHED + 1))
-    # $src is printed to a different session's terminal below; sanitize it
-    # here so a raw OSC/CSI escape from a crafted path never reaches
-    # rendered output. Matching above intentionally used the raw $src, not
-    # this sanitized copy, so stripping can't affect which rows match.
-    #
-    # A poisoned slug is written raw into the index row. resume-context.sh's
-    # not-found hint pre-fills the *stripped* slug instead. That stripped
-    # hint won't necessarily substring-match this row's raw src, so the
-    # handoff isn't recoverable via the suggested lookup command.
-    src=$(_lib_sanitize_for_terminal "$src")
-    if [ -f "$dest" ] && [ ! -L "$dest" ] && [ -O "$dest" ]; then
+    # See header: tmpdir-root/basename contract guards against a forged
+    # multi-writer-index row. Computed against the raw $dest, not a
+    # sanitized display copy, the same as the existence/ownership checks
+    # below.
+    dest_base="${dest##*/}"
+    dest_dir="${dest%/*}"
+    dest_contract_ok=0
+    if [ "$dest_dir" = "$TMPDIR_ROOT" ]; then
+      case "$dest_base" in
+        resume-context.*) dest_contract_ok=1 ;;
+      esac
+    fi
+    if [ -f "$dest" ] && [ ! -L "$dest" ] && [ -O "$dest" ] && [ "$dest_contract_ok" -eq 1 ]; then
+      # $stamp, $dest, and $src are all printed to a different session's
+      # terminal below; sanitize each here so a raw OSC/CSI escape from a
+      # crafted row (the index is a multi-writer surface -- see above) never
+      # reaches rendered output. Matching above intentionally used the raw
+      # $src, not this sanitized copy, so stripping can't affect which rows
+      # match.
+      #
+      # A poisoned slug's not-found hint uses the *stripped* copy, so it may
+      # not substring-match this row's raw $src -- recovery via that
+      # suggested command isn't guaranteed.
+      stamp=$(_lib_sanitize_for_terminal "$stamp")
+      dest=$(_lib_sanitize_for_terminal "$dest")
+      src=$(_lib_sanitize_for_terminal "$src")
       printf '%s\t%s\t%s\n' "$stamp" "$dest" "$src"
       PRINTED=$((PRINTED + 1))
       LAST_PRINTED_DEST="$dest"

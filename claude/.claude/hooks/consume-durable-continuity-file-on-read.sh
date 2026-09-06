@@ -32,28 +32,34 @@
 # ships in the globally-stowed claude/.claude/hooks/ and fires for every
 # stow user unconditionally.
 #
-# Timeout: the move runs synchronously inside this PostToolUse call. If
-# $HOME is network-backed (NFS/CIFS), a hung mount could otherwise block
-# the triggering Read call indefinitely. Wrapped in `timeout
-# ${RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS:-5}` when available (falls back to
-# a bare, unguarded call on BSD/macOS systems lacking timeout(1) — a
-# latency backstop, not a correctness boundary, matching _lib.sh's existing
-# _lib_jq/git_capped precedent; the env override exists so tests can inject
-# a short timeout without a real multi-second sleep). `timeout` sends its
-# signal only to its direct child (the resume-context.sh shell); that shell
-# can be blocked in wait4() on an already-forked `mv` child that is itself
-# stuck in a hung-mount rename/copy syscall, and the signal does not
-# propagate down into that grandchild `mv`. Accepted as a named, narrow
-# residual: it requires a hung network-backed $HOME, and the visible
-# symptom (the Read call returning promptly) already matches this hook's
-# documented goal. Not a one-shot cost, though — every hook fire against a
-# still-hung mount (repeated Reads while the mount stays stuck) leaks
-# another orphaned `mv`, reparented to init, each still holding a file
-# handle against the hung mount; this is unbounded process accumulation
-# over a long hung-mount window, not a single stray process. No bound is
-# implemented for it — the same "requires a hung network-backed $HOME"
-# scoping applies, and per-source-path locking to close it would be
-# meaningfully more machinery than this hook's narrow purpose warrants.
+# Timeout: the move, and record_consumed_destination's index append, run
+# synchronously inside this PostToolUse call. If $HOME is network-backed
+# (NFS/CIFS), a hung mount could otherwise block the triggering Read call
+# indefinitely. The index append adds a second, independently configurable
+# hang surface: $RESUME_CONTEXT_TMPDIR/$TMPDIR, distinct from $HOME, can
+# itself be network-backed, and a hung mount there can block any of the
+# extra syscalls that append reaches (mkdir, chmod, find, date, wc, tr), not
+# only mv. Wrapped in `timeout ${RESUME_CONTEXT_HOOK_TIMEOUT_SECONDS:-5}`
+# when available (falls back to a bare, unguarded call on BSD/macOS systems
+# lacking timeout(1) — a latency backstop, not a correctness boundary,
+# matching _lib.sh's existing _lib_jq/git_capped precedent; the env override
+# exists so tests can inject a short timeout without a real multi-second
+# sleep). `timeout` sends its signal only to its direct child (the
+# resume-context.sh shell); that shell can be blocked in wait4() on an
+# already-forked child — `mv`, or one of record_consumed_destination's own
+# children listed above — that is itself stuck in a hung-mount syscall, and
+# the signal does not propagate down into that grandchild. Accepted as a
+# named, narrow residual: it requires a hung
+# network-backed $HOME or tmpdir root, and the visible symptom (the Read
+# call returning promptly) already matches this hook's documented goal. Not
+# a one-shot cost, though — every hook fire against a still-hung mount
+# (repeated Reads while the mount stays stuck) leaks another orphaned child
+# process, reparented to init, still holding a file handle against the hung
+# mount; this is unbounded process accumulation over a long hung-mount
+# window, not a single stray process. No bound is implemented for it — the
+# same "requires a hung network-backed $HOME or tmpdir root" scoping
+# applies, and per-source-path locking to close it would be meaningfully
+# more machinery than this hook's narrow purpose warrants.
 #
 # Known gaps:
 # - Also fires on a plain inspection read of a continuity file (checking

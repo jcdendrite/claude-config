@@ -12,6 +12,7 @@ in isolation from the writer.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -380,6 +381,119 @@ def test_hostile_src_in_matched_row_channel_carries_no_raw_escape_byte(tmp_path:
     assert result.returncode == 0
     assert "\x1b" not in result.stdout
     assert "\x1b" not in result.stderr
+
+
+def test_hostile_stamp_in_matched_row_channel_carries_no_raw_escape_byte(tmp_path: Path) -> None:
+    """Channel-level guard mirroring the $src case above: a row's $stamp
+    field can also be forged directly -- the index directory is a
+    multi-writer surface at this EUID, so a row need not have come from
+    record_consumed_destination at all -- and must be sanitized the same way
+    before reaching a different session's terminal."""
+    dest = tmp_path / "resume-context.abc123"
+    dest.write_text("moved content\n")
+    stamp = "2026-01-01T00:00:00Z\x1b[31mFAKE\x1b[0m"
+    src = tmp_path / "originals" / "my-slug-handoff.md"
+    _write_index(tmp_path, [(stamp, str(dest), str(src))])
+
+    result = _run(["my-slug"], tmp_path)
+
+    assert result.returncode == 0
+    assert "\x1b" not in result.stdout
+    assert "\x1b" not in result.stderr
+
+
+def test_hostile_dest_in_matched_row_channel_carries_no_raw_escape_byte(tmp_path: Path) -> None:
+    """Channel-level guard mirroring the $src case above: $dest must still
+    pass the ownership/regular-file/non-symlink/tmpdir-root checks to reach
+    the print site, so this constructs a real file whose crafted name embeds
+    a raw ANSI escape byte -- proving the sanitizer covers $dest too, not
+    only $src."""
+    dest = tmp_path / "resume-context.abc123\x1b[31mFAKE\x1b[0m"
+    dest.write_text("moved content\n")
+    src = tmp_path / "originals" / "my-slug-handoff.md"
+    _write_index(tmp_path, [("2026-01-01T00:00:00Z", str(dest), str(src))])
+
+    result = _run(["my-slug"], tmp_path)
+
+    assert result.returncode == 0
+    assert "\x1b" not in result.stdout
+    assert "\x1b" not in result.stderr
+
+
+def test_rejects_a_dest_outside_the_tmpdir_root_even_when_owned_and_live(tmp_path: Path) -> None:
+    """A dest whose file exists, is owned by $EUID, and isn't a symlink is
+    still rejected if it doesn't live directly under resume-context.sh's own
+    tmpdir root with its resume-context.* naming contract -- closing the
+    forged-row path that would otherwise let any file the forging process
+    owns, anywhere on the filesystem, be recommended via
+    `claude --append-system-prompt-file`. Disposition matches an
+    already-reaped destination: matched, but not printed."""
+    escaped_dir = tmp_path / "escaped"
+    escaped_dir.mkdir()
+    dest = escaped_dir / "resume-context.abc123"
+    dest.write_text("moved content\n")
+    src = tmp_path / "originals" / "my-slug-handoff.md"
+    _write_index(tmp_path, [("2026-01-01T00:00:00Z", str(dest), str(src))])
+
+    result = _run(["my-slug"], tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "cleaned up" in result.stderr
+    assert "unrecoverable" in result.stderr
+
+
+def test_rejects_a_dest_under_a_directory_sharing_the_tmpdir_root_as_a_string_prefix(tmp_path: Path) -> None:
+    """A dest under a directory literally named f"{tmpdir_root}-evil" -- not
+    the tmpdir root itself, but sharing its exact string prefix -- is
+    rejected even though its basename conforms to the resume-context.*
+    naming contract. Distinct from
+    test_rejects_a_dest_outside_the_tmpdir_root_even_when_owned_and_live's
+    nested-subdirectory case: this pins the production code's exact-string
+    `[ "$dest_dir" = "$TMPDIR_ROOT" ]` comparison (not a substring or
+    glob-prefix match) against a sibling directory a naive prefix check
+    would wrongly accept."""
+    prefix_collision_dir = tmp_path.parent / f"{tmp_path.name}-evil"
+    prefix_collision_dir.mkdir()
+    try:
+        dest = prefix_collision_dir / "resume-context.abc123"
+        dest.write_text("moved content\n")
+        src = tmp_path / "originals" / "my-slug-handoff.md"
+        _write_index(tmp_path, [("2026-01-01T00:00:00Z", str(dest), str(src))])
+
+        result = _run(["my-slug"], tmp_path)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "cleaned up" in result.stderr
+        assert "unrecoverable" in result.stderr
+    finally:
+        # A sibling of tmp_path, not a child, so pytest's own tmp_path
+        # cleanup does not remove it.
+        shutil.rmtree(prefix_collision_dir)
+
+
+def test_accepts_a_dest_planted_directly_without_going_through_resume_context_sh(tmp_path: Path) -> None:
+    """Pins the accepted residual documented in this script's header and in
+    docs/design-decisions.md §56: the tmpdir-root/basename check confirms
+    location and naming shape, not that record_consumed_destination's own
+    mktemp call actually produced the file. A file a test (standing in for
+    a co-resident same-EUID process) creates directly at a conforming path
+    -- never touched by any simulated resume-context.sh move -- still
+    satisfies every check and is printed. A future change that tightens
+    provenance turns this test red on purpose; a future regression that
+    further weakens the location/naming contract has this test, plus the
+    outside-tmpdir-root and prefix-collision tests above, to break instead."""
+    planted_dest = tmp_path / "resume-context.planted-by-someone-else"
+    planted_dest.write_text("fully attacker-authored content\n")
+    src = tmp_path / "originals" / "my-slug-handoff.md"
+    _write_index(tmp_path, [("2026-01-01T00:00:00Z", str(planted_dest), str(src))])
+
+    result = _run(["my-slug"], tmp_path)
+
+    assert result.returncode == 0
+    stamp, printed_dest, printed_src = result.stdout.rstrip("\n").split("\t")
+    assert printed_dest == str(planted_dest)
 
 
 def test_o_operator_guards_both_the_writer_directory_and_the_reader_destination() -> None:

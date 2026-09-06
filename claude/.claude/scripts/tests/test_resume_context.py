@@ -688,6 +688,32 @@ def _backdate(path: Path, days_old: float) -> None:
     os.utime(path, (stamp, stamp))
 
 
+# record_consumed_destination's timestamp field is always this length: `date
+# -u '+%Y-%m-%dT%H:%M:%SZ'` produces a fixed-width ISO-8601 UTC stamp.
+_STAMP_LEN = len("2026-01-01T00:00:00Z")
+# mktemp's "resume-context.XXXXXX" template always substitutes exactly 6
+# characters for the X's, so the destination basename length is fixed too.
+_DEST_BASENAME_LEN = len("resume-context.") + 6
+
+
+def _src_path_of_exact_length(tmpdir_root: Path, total_len: int) -> Path:
+    """Builds an absolute source path with exactly total_len characters,
+    using nested short directory components (each far under the 255-byte
+    NAME_MAX) so the total can be tuned to an exact byte count without
+    tripping ENAMETOOLONG -- the same nesting idiom the byte-cap tests above
+    use to build an over-cap path, generalized to hit a precise length."""
+    component_len = 100
+    dir_path = tmpdir_root
+    remaining = total_len - len(str(tmpdir_root))
+    assert remaining > component_len + 1, "fixture base path too long for this helper's assumptions"
+    while remaining > component_len + 1:
+        dir_path = dir_path / ("a" * component_len)
+        remaining -= component_len + 1
+    dir_path.mkdir(parents=True, exist_ok=True)
+    leaf_len = remaining - 1  # the "/" this final join adds
+    return dir_path / ("a" * leaf_len)
+
+
 class TestConsumedIndex:
     """Coverage for record_consumed_destination, the best-effort append run
     after a successful move and before the destination's mode-fixing chmod.
@@ -899,6 +925,49 @@ class TestConsumedIndex:
         src = deep / "task.md"
         src.write_text("hello brief\n")
         assert len(str(src)) < 2048, "fixture must stay under the character cap to isolate the byte-cap defect"
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip(), "consume-only stdout contract must be unaffected by a skipped index write"
+        assert not src.exists()
+        assert not _day_file(tmp_path).exists()
+
+    def test_row_at_exact_2048_byte_cap_appends(self, tmp_path: Path) -> None:
+        """Pins the exact boundary with the same rigor as
+        test_day_file_at_exact_30_day_boundary_survives_the_sweep below: a
+        row serialized to exactly 2048 bytes must still append -- `[
+        "$row_bytes" -gt 2048 ]` is a strict inequality, so the cap itself is
+        inclusive."""
+        stub, _ = _install_recorder(tmp_path)
+        dest_len = len(str(tmp_path)) + 1 + _DEST_BASENAME_LEN
+        src_len = 2048 - _STAMP_LEN - 1 - dest_len - 1 - 1
+        src = _src_path_of_exact_length(tmp_path, src_len)
+        src.write_text("hello brief\n")
+
+        result = _run(
+            ["--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0, result.stderr
+        rows = _day_file(tmp_path).read_text().splitlines()
+        assert len(rows) == 1
+        row_bytes = len((rows[0] + "\n").encode())
+        assert row_bytes == 2048, f"fixture must land exactly at the cap, got {row_bytes}"
+
+    def test_row_at_2049_bytes_skips_append_but_consume_still_succeeds(self, tmp_path: Path) -> None:
+        """One byte past the boundary pinned above must skip the append,
+        confirming the cap's strict inequality cuts off immediately past
+        2048, not somewhere looser."""
+        stub, _ = _install_recorder(tmp_path)
+        dest_len = len(str(tmp_path)) + 1 + _DEST_BASENAME_LEN
+        src_len = 2049 - _STAMP_LEN - 1 - dest_len - 1 - 1
+        src = _src_path_of_exact_length(tmp_path, src_len)
+        src.write_text("hello brief\n")
 
         result = _run(
             ["--consume-only", str(src)],

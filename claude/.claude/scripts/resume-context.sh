@@ -108,8 +108,6 @@
 #   `chmod 700 "$HOME/.claude"` (see install.sh for scope and the
 #   symlink-skip caveat) — enforced at install time, not by this script,
 #   and only if that step actually ran.
-#   Content exposure is still a strict improvement over the pre-fix
-#   /tmp/<slug>-handoff.md, which carried no permission hardening at all.
 # - The per-uid consumed-continuity index (the "third, durable-enough
 #   channel" below) does not extend the non-goal above across
 #   $CLAUDE_CONFIG_DIR accounts sharing one uid: its rows carry the
@@ -173,6 +171,14 @@ record_consumed_destination() {                 # invoked as `... || true`
   # (empirically confirmed). 2048 leaves headroom below that ceiling for
   # cross-platform/shell-version variance.
   row_bytes=$(printf '%s\n' "$row" | wc -c | tr -d '[:space:]') || return 0
+  # A missing `wc`/`tr` on PATH can leave $row_bytes non-numeric even though
+  # the pipeline above still exits 0, and a numeric `-gt` comparison against
+  # that fails open (prints "integer expression expected" but evaluates
+  # false), silently disabling the cap instead of skipping the write.
+  # Reject non-digit $row_bytes first so this path fails closed instead.
+  case "$row_bytes" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
   [ "$row_bytes" -gt 2048 ] && return 0
   ( umask 077; printf '%s\n' "$row" >> "$day_file" ) 2>/dev/null
   chmod 600 -- "$day_file" 2>/dev/null
