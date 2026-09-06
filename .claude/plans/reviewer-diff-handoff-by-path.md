@@ -4,7 +4,7 @@
 
 Make `/ready-for-review` step 4's `skill-fidelity-reviewer` dispatch satisfiable on a
 cumulative diff larger than the Bash tool's 30,000-byte truncation threshold, and stop
-step 3 from materializing a diff it will not review. Today `ready-for-review/SKILL.md:94`
+step 3 from materializing a diff it will not review. Today `ready-for-review/SKILL.md:96`
 instructs the parent to paste "the literal diff **output** step 3's `git diff` already
 produced," while `subagent-delegation/REFERENCES.md:10-15` establishes that output above
 30,000 bytes never reaches the parent — only a head-only 2 KB preview does — and
@@ -125,7 +125,7 @@ The `*-markers` suffix also means no hook file enters the diff.
 byte-identical across `--record`. The path line goes on stderr so the flag cannot
 perturb that contract. A `DIFF_FILE:` prefix rather than a bare path, because `:43`'s
 warning line can precede it; this matches step 5's `BODY_FILE: <path>` announcement
-already in this skill (`ready-for-review/SKILL.md:109`, `:115`) rather than
+already in this skill (`ready-for-review/SKILL.md:111`, `:117`) rather than
 `findings-path-suffix.sh`'s weaker "last line of output" convention.
 
 **Two artifacts, one lifecycle model.** On a cache miss the same diff text lands in two
@@ -206,7 +206,7 @@ actually reads.
 
 ### Assumption ledger
 
-**Root:** `ready-for-review/SKILL.md:94` requires the parent to relay diff *text* it
+**Root:** `ready-for-review/SKILL.md:96` requires the parent to relay diff *text* it
 provably does not hold above 30,000 bytes, and `:69-81` materializes that text before
 the cache check that may discard it — one instruction unsatisfiable by construction, one
 cost paid for nothing.
@@ -240,7 +240,7 @@ cost paid for nothing.
    2,000-byte head-only preview; overflow persisted to `tool-results/` and not auto-read.
 5. `[verified: subagent-delegation/SKILL.md:95-96]` "Never re-run the command or `Read`
    the persisted file whole" — the overflow file is not a recovery route.
-6. `[verified: ready-for-review/SKILL.md:94]` Step 4 today says to paste "the literal
+6. `[verified: ready-for-review/SKILL.md:96]` Step 4 today says to paste "the literal
    diff **output** step 3's `git diff` already produced." With rows 4–5 this is
    unsatisfiable above the threshold.
 7. `[verified: skill-fidelity-reviewer.md:5, :6, :20]` `tools: Read, Grep, Glob, Write`
@@ -256,7 +256,7 @@ cost paid for nothing.
 10. `[verified: pr-diff-against-base.sh:43, :56-59, :77-86]` The script already reports
     out-of-band on stderr, and `--record` is contracted never to withhold the diff or
     change the exit code. `--diff-file` inherits both properties.
-11. `[verified: findings-path-suffix.sh:2-5; ready-for-review/SKILL.md:94, :109, :115]`
+11. `[verified: findings-path-suffix.sh:2-5; ready-for-review/SKILL.md:96, :111, :117]`
     The harness surfaces a script's stderr to the model, and this skill already consumes
     a named-token path line from stderr in step 5 (`BODY_FILE: <path>`). A named prefix
     is the established parse rule here, and it is needed because
@@ -271,20 +271,21 @@ cost paid for nothing.
 13. `[verified: marker.sh:401-404]` `write cumulative-review` `rm -f`s the subject on a
     successful write, so the subject file cannot be step 4's artifact — and on a cache
     hit no subject is written at all.
-14. `[verified: ready-for-review/SKILL.md:69-81, :83-98, :93-94]` Step 3 prints before
-    checking the cache. Step 4 runs on both cache branches, but `:93`'s
+14. `[verified: ready-for-review/SKILL.md:69-81, :83-98, :95-96]` Step 3 prints before
+    checking the cache. Step 4 runs on both cache branches, but `:95`'s
     empty-invocation-list branch returns without dispatching, so the artifact write
-    belongs inside `:94`'s "Otherwise" branch — an empty list writes nothing.
-15. ``[verified: check-skill-length.sh:71-72; `wc -l` = 195]`` The per-skill cap is
-    200 — five lines of headroom. Every
+    belongs inside `:96`'s "Otherwise" branch — an empty list writes nothing.
+15. ``[verified: check-skill-length.sh:71-72; `wc -l` = 198 as of the `reviewer-diff-handoff-by-path` → `main` sync that landed GH-849's skill-package split plus an unrelated context-budget-check bullet in this same file]`` The
+    per-skill cap is 200 — two lines of headroom, down from the five available when this
+    row was first verified; the sync consumed the other three. Every
     prescribed edit is in-paragraph or a whole-block relocation except one new bullet in
-    step 4, so the expected post-edit count is **196**; the ≤198 gate below is an
-    independent safety margin.
-16. `[verified: test_skills.py:3506-3528]`
+    step 4, so the expected post-edit count is **199**; the ≤199 gate below is the
+    remaining safety margin, tighter than before but still short of the hard cap.
+16. `[verified: test_skills.py:3594-3612]`
     `test_ready_for_review_step3_never_produces_a_staged_diff` asserts the literal
     `pr-diff-against-base.sh --record` inside step 3's section. The cache-miss command is
     unchanged from today, so this assertion passes untouched.
-17. `[verified: test_skills.py:3325-3327, :3360-3387]` `_PINNED_CACHE_CLAUSES` pins the
+17. `[verified: test_skills.py:3410, :3444-3453]` `_PINNED_CACHE_CLAUSES` pins the
     `CACHE_RULE:ready-for-review-cumulative-diff-cache` block's exact normalized text;
     the reorder rewrites that block, so this constant is a required update.
     `_EXPECTED_CACHE_ANCHORS`, `_EXPECTED_SCOPE_ANCHORS`, and `_PINNED_SCOPE_CLAUSES` are
@@ -307,7 +308,7 @@ cost paid for nothing.
     deliberately leaves it armed on its failure branch. `--diff-file` therefore installs
     none, and `rm -f`s its own temp inline on failure instead. A second `EXIT` trap
     would silently overwrite `--record`'s and leak its temp.
-21. `[verified: ready-for-review/SKILL.md:109, :115; ciso-reviewer round-1 Answer 2]`
+21. `[verified: ready-for-review/SKILL.md:111, :117; ciso-reviewer round-1 Answer 2]`
     Step 5's `BODY_FILE` handoff is the same *announcement* shape but **not** a precedent
     for lifetime or content sensitivity: a PR body is already destined for publication
     and lives one step-to-step handoff.
@@ -348,7 +349,7 @@ cost paid for nothing.
 28. `[verified: docs/cost-levers-considered.md:104-113, :115-139, :166-170]` Three dated
     follow-ups already sit under their tables in bold `**<date> follow-up:**` form. That
     is the shape M5 reuses.
-29. `[verified: docs/cost-levers-considered.md:157 vs ready-for-review/SKILL.md:94]` The
+29. `[verified: docs/cost-levers-considered.md:157 vs ready-for-review/SKILL.md:96]` The
     row's `ready-for-review/SKILL.md:102` citation is stale; the instruction it names is
     at `:94` and this change removes it.
 30. `[verified: docs/cost-levers-considered.md:149-151, :155, :157]`
@@ -389,7 +390,7 @@ cost paid for nothing.
     the script's own write nor the main session's invocation is affected.
     `docs/hooks.md:89` currently names one non-marker directory the glob incidentally
     protects — singular, and now inaccurate.
-36. `[verified: test_skills.py:3675-3687]` `_PER_ACCOUNT_STATE_PATH_RE` treats a literal
+36. `[verified: test_skills.py:4165]` `_PER_ACCOUNT_STATE_PATH_RE` treats a literal
     `~/.claude/<name>-markers/` mention in a skill body as a functional bug under a
     non-personal `CLAUDE_CONFIG_DIR`. The `SKILL.md` edits may not name the artifact
     directory with a `~/.claude/` prefix — and need not, since the script announces the
@@ -407,7 +408,7 @@ cost paid for nothing.
     skill-fidelity-reviewer.md:6]` The reviewer holds no `Bash`, so it cannot size the
     file before reading. `Read`'s line cap is a second truncation surface independent of
     G1's byte threshold, and it is the fix's own failure mode if left unaddressed.
-39. `[verified: test_skills.py:70, :73-75, :1951, :3693-3709, :3816-3822]`
+39. `[verified: test_skills.py:70, :73-75, :1951, :4080, :4204]`
     `_MARKER_TRIPLE_SITES` +
     `test_marker_triple_site_stays_unmigrated` is a **per-file substring-presence** check
     over parametrized (skill, literal) pairs (`assert expected_substring in
@@ -491,7 +492,7 @@ cost paid for nothing.
     parser). Version skew is therefore the residual diagnosis, not the first one. A halt
     message leading with it would misname the commoner resolution and write failures,
     which the script already diagnosed correctly.
-51. `[verified: ready-for-review/SKILL.md:88, :98]` Step 4's section already contains the
+51. `[verified: ready-for-review/SKILL.md:85, :100]` Step 4's section already contains the
     word "halt" twice, in its own heading and in the "Halt on a silent-abbreviation
     finding" bullet, so a bare `halt` substring assertion passes independently of the new
     clause. Every phrase pin must be an exact literal chosen to appear nowhere else in the
@@ -551,7 +552,7 @@ instead of the diff* — simpler mechanism, but it changes what `/code-review` r
 forces a full `Read` on every miss, the open decision recorded in Out of scope.
 
 **M3 — step 4 writes the artifact and hands over its path: one unconditional Bash call,
-`~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null`, inside `:94`'s
+`~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null`, inside `:96`'s
 "Otherwise" branch; the dispatch relays the announced path instead of pasted diff text; a
 missing `DIFF_FILE:` line halts the step.** `anchors: root, row6, row11, row12, row14,
 row15, row18, row23, row31, row36, row43, row44` — the mechanism that makes the path line
@@ -690,7 +691,7 @@ state, created by `mkdir -p` at write time.
   cleanup" message to name both artifacts (row 26). No new subcommand, no `MARKER_SHAPE`
   change, no `settings.json` rule (row 18), no change to `docs/scripts.md`'s "17 valid
   invocation shapes" (row 19).
-- `claude/.claude/skills/ready-for-review/SKILL.md` — two independent edits.
+- `claude-skills/skills/ready-for-review/SKILL.md` — two independent edits.
   - **Step 3 (`:67-81`), M2:** move the `CACHE_RULE` block above the fenced command block
     so it comes first. Its rewritten text directs `marker.sh status` before anything is
     computed, and on `live` skips `/code-review`, reports the hit, and continues to step 4
@@ -699,7 +700,7 @@ state, created by `mkdir -p` at write time.
     cache-miss branch. `SCOPE_RULE` and `:81`'s clean-pass/marker/`code-writer` prose are
     unchanged except for relocating the "On a cache miss," lead-in. Step 3 gains no
     reference to `--diff-file`.
-  - **Step 4 (`:93-98`), M3:** split `:94` into two bullets. The first: run
+  - **Step 4 (`:93-98`), M3:** split `:96` into two bullets. The first: run
     `~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null` **as its own Bash
     call** — it prints `DIFF_FILE: <path>` on stderr and no diff bytes on stdout; if no
     `DIFF_FILE:` line appears, halt and do not dispatch or fall back to pasted diff text.
@@ -712,7 +713,7 @@ state, created by `mkdir -p` at write time.
     never a range expression and never the command that produced it, since the agent has
     `Read` but no `Bash`. No freshness qualifier and no "first occurrence" rule (row 31).
     Do **not** write the artifact directory with a `~/.claude/` prefix anywhere in this
-    file (row 36). Net growth is one line: expect 196 (row 15).
+    file (row 36). Net growth is one line: expect 199 (row 15).
 - `claude/.claude/agents/skill-fidelity-reviewer.md` — M4. `:20`'s Input-contract bullet
   and the `description:` phrase at `:5`. The bullet gains: a path is read with `Read`;
   continue with `offset` until a read returns no further lines, since a single `Read`
@@ -796,7 +797,7 @@ state, created by `mkdir -p` at write time.
   and before invoking `deactivate` — the same shape `:2487` and `:2510` already use.
   Without both helpers and that pre-assertion, all three pass vacuously against an
   unimplemented M6.
-- `claude/.claude/skills/tests/test_skills.py` — update
+- `claude-skills/skills/tests/test_skills.py` — update
   `_PINNED_CACHE_CLAUSES[("ready-for-review",
   "CACHE_RULE:ready-for-review-cumulative-diff-cache")]` (`:3361-3369`) to the rewritten
   block. Add one test asserting the handoff contract, using the section-slicing
@@ -828,8 +829,8 @@ pipeline), `claude/.claude/settings.json` (row 18 — no allow rule is added, so
 `/review-permissions` stays out of the pipeline),
 `claude/.claude/scripts/findings-path-suffix.sh` (it stays in step 4; the artifact needs
 neither its suffix nor its ignore-list append),
-`claude/.claude/skills/code-review/SKILL.md` (Out of scope item 3),
-`claude/.claude/skills/subagent-delegation/*`, `docs/design-decisions.md` (§50 is a dated
+`claude-skills/skills/code-review/SKILL.md` (Out of scope item 3),
+`claude-skills/skills/subagent-delegation/*`, `docs/design-decisions.md` (§50 is a dated
 record and Axis-3 preserved content; the artifact's documentation homes are the script
 header, `docs/scripts.md`, and `docs/hooks.md`),
 `claude/.claude/hooks/tests/test_agent_roster.py` (no roster field changes).
@@ -840,11 +841,11 @@ Per repo `CLAUDE.md` §Commands, scoped to the diff:
 
 ```bash
 .venv/bin/python3 claude/.claude/scripts/select-tests.py
-.venv/bin/ruff check claude/.claude/
+.venv/bin/ruff check claude/.claude/ claude-skills/
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck
 ```
 
-The diff touches `claude/.claude/scripts/`, `claude/.claude/skills/`, and
+The diff touches `claude/.claude/scripts/`, `claude-skills/skills/`, and
 `claude/.claude/agents/`, so `select-tests.py` widens to the script, marker, and skill
 suites — that is it working, not a reason to hand-widen to the full suite.
 
@@ -876,11 +877,14 @@ the own-Bash-call requirement, and the halt clause; step 3's section carries non
 This is the static backstop for the drift a live gate run papers over by inference.
 
 **The line-budget check, run before staging:** `wc -l
-claude/.claude/skills/ready-for-review/SKILL.md` ≤ 198. The file is 195 lines today and
+claude-skills/skills/ready-for-review/SKILL.md` ≤ 199. The file is 198 lines as of this
+plan's post-sync revision (row 15) and
 every prescribed edit is in-paragraph or a whole-block relocation except step 4's one new
-bullet, so the expected count is 196; a growth past 198 means an edit was structured
+bullet, so the expected count is 199; a growth past 199 means an edit was structured
 differently than planned. `check-skill-length.sh` enforces 200 at `git commit`, so a miss
-surfaces as a commit-time denial rather than a test failure.
+there surfaces as a commit-time denial rather than a test failure — but at 198 lines
+there is only one line of headroom left before that hard stop, so this check is the only
+thing that catches an oversized edit before the commit-time gate does.
 
 Review pipeline, in order: `/plan-review` on this plan; `/skill-review` on the
 `ready-for-review/SKILL.md` diff (hook-enforced — `require-skill-review.sh` blocks the
