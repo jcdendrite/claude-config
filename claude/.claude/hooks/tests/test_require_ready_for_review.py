@@ -815,7 +815,7 @@ class TestRequireReadyForReview:
         assert marker.exists(), "the pre-SESSION_ID deny must not evict the marker"
 
     def test_dead_pid_active_marker_evicts_on_non_gated_command(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+        self, isolated_home, repo_on_feature_branch
     ):
         """The relocation widens eviction the same way it widens refresh: a
         non-gated command now also evicts an orphaned dead-PID marker, even
