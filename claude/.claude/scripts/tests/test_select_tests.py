@@ -1042,7 +1042,7 @@ class TestResolveTargetPaths:
         resolved = _mod.resolve_target_paths(
             [_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR], repo_root=_REPO_ROOT,
         )
-        assert resolved == [_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR]
+        assert resolved == [_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR]
 
     def test_idempotent_on_its_own_output(self):
         """main passes an already-resolved list into build_pytest_argv,
@@ -1583,7 +1583,11 @@ class TestMainComposition:
         exit_code = _mod.main([])
 
         assert exit_code == 0
-        assert recorded["pytest_argv"] == list(_mod.FULL_SUITE_TARGETS)
+        # build_pytest_argv resolves its input through resolve_target_paths,
+        # which always sorts its output -- FULL_SUITE_TARGETS' declared order
+        # was never a contract, so the recorded argv is compared against the
+        # sorted form rather than the tuple's own literal order.
+        assert recorded["pytest_argv"] == sorted(_mod.FULL_SUITE_TARGETS)
         assert recorded["cwd"] == fake_repo_root
 
     def test_domain_selected_paths_are_passed_through_to_run_pytest(self, monkeypatch):
@@ -1724,7 +1728,7 @@ class TestMainComposition:
                 # member of SKILL_FILES_READ_BY_HOOK_TESTS as well as its own
                 # standalone SCRIPTS_TESTS_DIR row. The glob's expansions are
                 # absorbed into SCRIPTS_TESTS_DIR either way.
-                [_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR, _mod.SKILLS_TESTS_DIR],
+                [_mod.SKILLS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR],
                 id="directory-absorbs-globs-expansions",
             ),
         ],
