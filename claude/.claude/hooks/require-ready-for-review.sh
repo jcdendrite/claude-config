@@ -197,13 +197,13 @@ push_fragment_args_after_repo() {
 push_fragment_publishes_reviewable_change() {
   local fragment="$1"
   local remaining
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--dry-run(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--dry-run([[:space:]]|$)'; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])(-d|--delete)([[:space:]]|$)'; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '[[:space:]]:[A-Za-z0-9._/-]+([[:space:]]|$)'; then
     # Delete-only holds only when every refspec is a deletion form, since a
     # real refspec alongside one is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
@@ -219,7 +219,7 @@ push_fragment_publishes_reviewable_change() {
       return 1
     fi
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--tags(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--tags([[:space:]]|$)'; then
     # Tag-only holds only when --tags is the sole refspec hint, since a
     # branch ref alongside it is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
@@ -260,10 +260,14 @@ while IFS= read -r frag; do
       is_gated_git_push=true
     fi
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
+  # These two matchers scan the whole fragment rather than resolving its
+  # command word, so a `bash -c` or `eval` wrapper stays covered, matching
+  # the git arm above; the cost is that a flag interposed before the
+  # subcommand is missed.
+  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+ready([[:space:]]|;|$)'; then
     is_gh_pr_ready=true
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+create(\s|;|$)'; then
+  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|;|$)'; then
     is_gh_pr_create=true
   fi
 done <<< "$FRAGMENTS"

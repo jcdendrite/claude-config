@@ -12,7 +12,18 @@ hook that gates it — both files present, and the hook still wired into a
 PreToolUse matcher group — asserts that same PreToolUse wiring for every
 hook-class: gate hook regardless of skill pairing, and pins standalone
 config-value invariants in settings.json unrelated to gate/skill pairing
-(e.g. the plan-mode-entry deny/defaultMode declarations).
+(e.g. the plan-mode-entry deny/defaultMode declarations). Three further
+static shape checks, scoped to claude/.claude/hooks/*.sh:
+- Every `jq` invocation goes through a `_lib_*` wrapper (bare `jq` outside
+  one reintroduces the per-hook duplicated timeout-handling this suite
+  exists to prevent).
+- Every inline command-matcher regex resolves through the shared
+  subcommand-matching helpers rather than a hand-rolled literal pattern.
+- No hook regex uses GNU grep's `\\s` extension, which a POSIX-strict grep
+  reads as a literal `s`.
+
+Each of the three carries a small, named exemption dict for a structural
+holdout the sweep didn't convert.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -420,6 +431,209 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
 # ------------------------------------------------------------------ #
 # Layer 1 — Static checks                                            #
 # ------------------------------------------------------------------ #
+
+# Filename -> structural reason a bare-`jq` call at this hook stays
+# unwrapped rather than converted to a _lib_* wrapper. A dict (not a
+# frozenset/tuple) so the reason travels with the entry, and each test below
+# asserts a listed hook still violates, so a stale entry fails loudly
+# instead of outliving its reason.
+_BARE_JQ_EXEMPT_HOOKS: dict[str, str] = {
+    "check-branch-divergence.sh": (
+        "does not source _lib.sh; carries its own TIMEOUT_CMD probe applied "
+        "to the network call only"
+    ),
+}
+
+# Filename -> structural reason an inline, hand-rolled command-matcher regex
+# at this hook stays unconverted rather than routed through
+# _lib_command_invokes_tool_subcmd / _lib_fragment_invokes_git.
+_INLINE_COMMAND_MATCHER_EXEMPT_HOOKS: dict[str, str] = {
+    "enforce-marker-script-shape.sh": (
+        "raw-text arm OR-combined with _lib_command_invokes_tool_subcmd per "
+        "that hook's own dual-detection design"
+    ),
+    "require-ready-for-review.sh": (
+        "whole-fragment scan retained so a bash -c/eval wrapper stays "
+        "covered, matching the git arm above, at the cost of missing a flag "
+        "interposed before the subcommand — the retained regex misses both "
+        "`gh --repo o/r pr create` and `gh --repo o/r pr ready` "
+        "(adjacency-only), live bypasses tracked by GH-897, the follow-up "
+        "issue covering this hook and require-respond-pr.sh together"
+    ),
+}
+
+
+def _strip_comment(line: str) -> str:
+    """Strip a full-line or same-line trailing `#` comment from a shell
+    line, for the three detectors below.
+
+    Naive substring split on " #", not shell-aware: no line in the current
+    hook set has a literal " #" inside a string (verified this session).
+    """
+    if line.lstrip().startswith("#"):
+        return ""
+    return line.split(" #", 1)[0]
+
+
+# jq in command position: immediately after start-of-line, `|`, `;`, `&`,
+# `(`, `$(`, `{`, or a then/else/elif/do keyword. Plus a hand-rolled
+# `timeout [N] jq`, which duplicates rather than reuses _lib_jq's own
+# timeout.
+_BARE_JQ_COMMAND_POSITION_RE = re.compile(
+    r"(?:^|[|;&(]|\$\(|\{|\b(?:then|else|elif|do))\s*jq\b"
+)
+_BARE_JQ_TIMEOUT_WRAPPED_RE = re.compile(r"\btimeout\s+(?:[0-9]+\s+)?jq\b")
+
+
+def _bare_jq_hits(hook: Path) -> list[str]:
+    """Return non-comment lines invoking `jq` in command position outside a
+    _lib_* wrapper (_lib_jq, _lib_capped_for N jq).
+
+    Blind spot: only catches the anchor set documented on
+    _BARE_JQ_COMMAND_POSITION_RE above, plus a hand-rolled `timeout [N] jq`.
+    Misses `xargs jq` and `command jq` (bypassing a same-named function
+    without `command -v`), and any jq reached through a variable-held
+    command name.
+    """
+    hits = []
+    for line in hook.read_text().splitlines():
+        code = _strip_comment(line)
+        if not code.strip():
+            continue
+        if _BARE_JQ_COMMAND_POSITION_RE.search(code) or _BARE_JQ_TIMEOUT_WRAPPED_RE.search(code):
+            hits.append(line.strip())
+    return hits
+
+
+@pytest.mark.parametrize("hook", _MAIN_HOOKS, ids=[h.name for h in _MAIN_HOOKS])
+def test_no_bare_jq_outside_lib_wrapper(hook: Path) -> None:
+    """Every `jq` invocation in claude/.claude/hooks/*.sh goes through a
+    _lib_* wrapper, so the shared timeout backstop covers every call. See
+    _bare_jq_hits for the detector's blind spot.
+    """
+    hits = _bare_jq_hits(hook)
+    if hook.name in _BARE_JQ_EXEMPT_HOOKS:
+        assert hits, (
+            f"{hook.name} is listed in _BARE_JQ_EXEMPT_HOOKS "
+            f"({_BARE_JQ_EXEMPT_HOOKS[hook.name]!r}) but no bare-jq call "
+            "remains — remove the stale allowlist entry"
+        )
+        pytest.skip(_BARE_JQ_EXEMPT_HOOKS[hook.name])
+    assert not hits, (
+        f"{hook.name}: bare `jq` call(s) outside a _lib_* wrapper:\n" + "\n".join(hits)
+    )
+
+
+def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
+    """Meta-test for _bare_jq_hits's anchor set: one fixture line per anchor
+    position _BARE_JQ_COMMAND_POSITION_RE documents (start-of-line, `|`,
+    `;`, `&`, `(`, `$(`, `{`, and each of the then/else/elif/do keywords),
+    plus the separate hand-rolled `timeout N jq` pattern. Each fixture line
+    must be flagged before relying on the detector as a regression guard
+    across 40+ hook files.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text(
+        "#!/bin/bash\n"
+        "jq -n '{}'\n"
+        "echo x | jq -n '{}'\n"
+        "true; jq -n '{}'\n"
+        "false & jq -n '{}'\n"
+        "(jq -n '{}')\n"
+        "x=$(jq -n '{}')\n"
+        "{ jq -n '{}' ; }\n"
+        "if true; then jq -n '{}' ; fi\n"
+        "if false; then :; else jq -n '{}'; fi\n"
+        "if false; then :; elif jq -e . f >/dev/null; then :; fi\n"
+        "for i in 1; do jq -n '{}'; done\n"
+        "timeout 5 jq -n '{}'\n"
+    )
+    hits = _bare_jq_hits(fixture)
+    assert len(hits) == 12, f"expected all 12 fixture lines flagged, got {hits!r}"
+
+
+# grep-family invocation: -q/-c/-l among the flags, broad enough to catch
+# `-qE`, `-Eq`, `-cE`, etc.
+_GREP_FAMILY_RE = re.compile(r"grep\s+-[a-zA-Z]*[qcl][a-zA-Z]*\b")
+# A tool token immediately followed by a whitespace-class atom, either GNU
+# `\s` or POSIX `[[:space:]]` -- the shape is hand-rolled command matching
+# either way, independent of which atom form is used. `marker\\?\.sh` also
+# catches an unescaped-dot `marker.sh` (still valid ERE), not only the
+# backslash-escaped form.
+_TOOL_TOKEN_WHITESPACE_ATOM_RE = re.compile(r"(?:git|gh|marker\\?\.sh)(?:\\s|\[\[:space:\]\])")
+
+
+def _inline_command_matcher_hits(hook: Path) -> list[str]:
+    """Return non-comment lines invoking a grep-family command whose literal
+    pattern argument carries a tool token (`git`, `gh`, `marker.sh`)
+    immediately followed by a whitespace-class atom -- the shape
+    `_lib_command_invokes_tool_subcmd` and `_lib_fragment_invokes_git` exist
+    to replace.
+
+    Blind spot: misses a pattern hoisted into a variable before being
+    passed to grep (require-respond-pr.sh's PATTERN_* family), and a
+    grep-family call piped through `[ -n ... ]` rather than using -q/-c/-l
+    directly.
+    """
+    hits = []
+    for line in hook.read_text().splitlines():
+        code = _strip_comment(line)
+        if not code.strip():
+            continue
+        if _GREP_FAMILY_RE.search(code) and _TOOL_TOKEN_WHITESPACE_ATOM_RE.search(code):
+            hits.append(line.strip())
+    return hits
+
+
+@pytest.mark.parametrize("hook", _MAIN_HOOKS, ids=[h.name for h in _MAIN_HOOKS])
+def test_no_inline_command_matcher_regex(hook: Path) -> None:
+    """Every grep-family command match in claude/.claude/hooks/*.sh resolves
+    a tool subcommand through the shared _lib_command_invokes_tool_subcmd /
+    _lib_fragment_invokes_git helpers rather than a hand-rolled literal
+    pattern. See _inline_command_matcher_hits for the detector's blind spot.
+    """
+    hits = _inline_command_matcher_hits(hook)
+    if hook.name in _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS:
+        assert hits, (
+            f"{hook.name} is listed in _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS "
+            f"({_INLINE_COMMAND_MATCHER_EXEMPT_HOOKS[hook.name]!r}) but no "
+            "inline command-matcher regex remains — remove the stale "
+            "allowlist entry"
+        )
+        pytest.skip(_INLINE_COMMAND_MATCHER_EXEMPT_HOOKS[hook.name])
+    assert not hits, (
+        f"{hook.name}: hand-rolled command-matcher regex outside the shared "
+        f"helpers:\n" + "\n".join(hits)
+    )
+
+
+def _live_backslash_s_hits(hook: Path) -> list[str]:
+    """Return non-comment lines containing a literal backslash-`s`, GNU
+    grep's non-POSIX whitespace-class extension -- a POSIX-strict grep reads
+    it as a literal `s`, silently turning the enclosing match into a
+    fail-open.
+    """
+    hits = []
+    for line in hook.read_text().splitlines():
+        code = _strip_comment(line)
+        if "\\s" in code:
+            hits.append(line.strip())
+    return hits
+
+
+@pytest.mark.parametrize("hook", _MAIN_HOOKS, ids=[h.name for h in _MAIN_HOOKS])
+def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
+    """No claude/.claude/hooks/*.sh regex uses GNU grep's `\\s` extension --
+    not POSIX ERE, and a POSIX-strict grep reads it as a literal `s`. Use
+    `[[:space:]]` instead. See _live_backslash_s_hits for the detector's
+    blind spot (a same-line trailing comment mentioning `\\s` in prose would
+    also be stripped before the scan, same as the two detectors above).
+    """
+    hits = _live_backslash_s_hits(hook)
+    assert not hits, (
+        f"{hook.name}: literal backslash-`s` outside a comment -- convert "
+        f"to POSIX [[:space:]]:\n" + "\n".join(hits)
+    )
 
 
 @pytest.mark.parametrize("hook", ALL_HOOKS, ids=[h.name for h in ALL_HOOKS])

@@ -633,6 +633,48 @@ def test_jq_absent_exits_zero_empty_stdout(armed_home, dirty_repo, tmp_path):
     assert result.stdout.strip() == ""
 
 
+def _fake_jq_failing_on_flag(fake_bin: Path, flag: str) -> str:
+    """A `jq` shim that delegates to the real binary except when invoked
+    with `flag`, where it exits 1 with no output — isolates a failure to one
+    specific call shape rather than removing jq from PATH entirely."""
+    real_jq = shutil.which("jq")
+    if not real_jq:
+        pytest.skip("jq not found in PATH")
+    shim = fake_bin / "jq"
+    shim.write_text(
+        "#!/bin/bash\n"
+        f'for arg in "$@"; do [ "$arg" = "{flag}" ] && exit 1; done\n'
+        f'exec "{real_jq}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    return f"{fake_bin}:{os.environ['PATH']}"
+
+
+def test_reason_encode_failure_degrades_to_silent_exit(armed_home, dirty_repo, tmp_path):
+    """The six-field read (:87, `_lib_jq -r`) succeeds normally, but the
+    reason-encode call (:220, `_lib_jq -Rs .`) fails — pins that the guard
+    added around that printf degrades to silent-allow rather than emitting
+    the malformed `{"decision":"block","reason":}` a bare printf would.
+    test_jq_absent_exits_zero_empty_stdout above removes jq from PATH
+    entirely, which exits at the earlier six-field-read gate and never
+    reaches this line at all.
+    """
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    path = _fake_jq_failing_on_flag(fake_bin, "-Rs")
+    result = subprocess.run(
+        [str(ADVANCE_HOOK)],
+        input=stop_input_json(ISSUE_QUOTE_QUESTION, "s", "p1", str(dirty_repo)),
+        capture_output=True,
+        text=True,
+        cwd=dirty_repo,
+        env={**os.environ, "HOME": str(armed_home), "PATH": path},
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
 def test_git_absent_silent(armed_home, dirty_repo, tmp_path):
     result = subprocess.run(
         [str(ADVANCE_HOOK)],
