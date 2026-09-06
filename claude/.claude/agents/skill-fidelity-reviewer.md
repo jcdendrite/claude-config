@@ -25,10 +25,12 @@ Your dispatch prompt gives you:
   when it additionally brings a completed `code-review` pass into scope, and
   "The architect-consult check" below, which fires on its presence alone. It
   carries `reviewer-spawn` rows (gated by `_is_reviewer_subagent_type`, not
-  every `Agent`/`Task` dispatch) and `architect-consult` rows, both
-  main-thread only, never subagent records — tool-call metadata, not the
-  deviating session's narration, so reading it doesn't weaken the blindness
-  property above.
+  every `Agent`/`Task` dispatch) and `architect-consult` rows, both sourced
+  from the main thread and every dispatched subagent's own transcript, each
+  row marked with a `thread` field (`main` or `sidechain`) — tool-call
+  metadata, not the deviating session's narration, so reading it doesn't
+  weaken the blindness property above. See `docs/design-decisions.md` §58
+  for why widening thread scope doesn't reintroduce assistant prose.
 - **`findings_path`** — see Output format.
 
 Do not read session transcripts (`<config-dir>/projects/**`, where `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) even though nothing technically blocks it — the invocation list already tells you what ran, and reading transcripts would reintroduce the deviating session's rationale.

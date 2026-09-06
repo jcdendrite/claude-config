@@ -88,6 +88,8 @@ From the repo's README ("How enforcement complements instructions"):
 
 Generalized: structural enforcement runs at 100% by construction; prose runs at whatever compliance rate the agent's judgment delivers — and that rate is not 100%. Across this repo's transcript corpus (785 sessions, 2026-04-21 to 2026-05-22), with the worktree-enforcement hook active *and* CLAUDE.md prose instructing worktree use, the hook still denied 387 main-tree git or file operations across 243 sessions. Those are 387 attempts the prose did not prevent and the hook did. On a public repo where commits ship to the world and history can't be retracted, that residual is the case for enforcement. The companion case study [Review gates and the agent-babysitting problem](review-vs-babysitting.md) extends this measurement across every review gate in the repo.
 
+**Not comparable to a post-2026-09-06 `review-trace` run.** The 387-denial figure above was measured under `review-trace`'s pre-2026-09-06 main-thread-only scan, which excluded subagent (sidechain) transcript records.
+
 ## Why opt-in per-repo
 
 The hook is not the right default for every repo. From [`design-decisions.md` §7](../design-decisions.md):
