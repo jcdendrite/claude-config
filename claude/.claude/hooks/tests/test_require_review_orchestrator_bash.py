@@ -34,9 +34,11 @@ CLOSED_VERIFICATION_COMMANDS = [
     ".venv/bin/pytest claude/.claude/",
     ".venv/bin/ruff check claude/.claude/",
     "scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck",
+    ".venv/bin/python3 claude/.claude/scripts/select-tests.py",
     "../../../.venv/bin/pytest claude/.claude/",
     "../../../.venv/bin/ruff check claude/.claude/",
     "scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck",
+    "../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py",
 ]
 
 
@@ -801,9 +803,24 @@ class TestCommandInvokingGitFlagDenied:
 
     def test_git_show_textconv_backslash_escaped_denied(self):
         """Backslash-escape splice (\\--textconv rather than a quoted
-        boundary): bash's own quote/escape removal still reassembles the
-        real flag at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own
+        quote/escape removal -- but the command-text character-class
+        allowlist now denies the raw backslash character outright, before
+        this scan ever runs, closing the bypass at the lexical-alphabet
+        level instead."""
         command = "git show \\--textconv HEAD:file.bin"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_show_textconv_interior_spliced_quote_denied_by_word_level_scan(self):
+        """Companion proving the --textconv word-level scan is still
+        independently load-bearing behind the character-class allowlist: an
+        interior-spliced quote (--tex't'conv) carries no $, backtick,
+        backslash, or brace, so it reaches this scan rather than the
+        character class, and the scan's own quote-stripping still catches
+        it."""
+        command = "git show --tex't'conv HEAD:file.bin"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
         ) == "deny"
@@ -814,34 +831,133 @@ class TestCommandInvokingGitFlagDenied:
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
         ) == "deny"
 
-    def test_git_log_textconv_ansi_c_hex_escape_bypass_allowed(self):
-        """Required regression test pinning a documented residual: bash's
-        ANSI-C \\xHH hex escape ($'--tex\\x74conv' decodes \\x74 to 't' at
-        exec time) reassembles the real --textconv flag, but
+    def test_git_log_textconv_ansi_c_hex_escape_denied(self):
+        """Regression test for the closed ANSI-C hex-escape bypass: bash's
+        \\xHH hex escape ($'--tex\\x74conv' decodes \\x74 to 't' at exec
+        time) reassembles the real --textconv flag, and
         _lib_strip_word_quotes does not decode multi-character ANSI-C
-        escapes -- see docs/design-decisions.md §40's accepted-residual
-        entry for _lib_strip_word_quotes. Currently allowed, not denied;
-        pins the gap as a reviewed decision rather than an unnoticed one."""
+        escapes -- but the command-text character-class allowlist now denies
+        the raw $ character outright, before this word-level scan ever
+        runs, closing the bypass at the lexical-alphabet level instead."""
         command = "git log $'--tex\\x74conv' HEAD"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
-        ) == "allow"
+        ) == "deny"
 
-    def test_git_log_textconv_ansi_c_octal_escape_bypass_allowed(self):
+    def test_git_log_textconv_ansi_c_octal_escape_denied(self):
         """Octal-escape variant of the hex-escape bypass above
-        ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- same
-        documented residual, see docs/design-decisions.md §40's
-        accepted-residual entry for _lib_strip_word_quotes."""
+        ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- closed the
+        same way, by the character-class allowlist denying the raw $
+        character before _lib_strip_word_quotes's escape-blind scan runs."""
         command = "git log $'--tex\\164conv' HEAD"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
-        ) == "allow"
+        ) == "deny"
 
     def test_plain_readonly_git_log_with_no_unsafe_flag_still_allowed(self):
         """Regression guard: the new flag scan must not false-deny an
         ordinary read-only git subcommand with none of the unsafe flags."""
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input("git log -5", agent_type=AGENT)
+        ) == "allow"
+
+
+class TestCommandTextCharacterClassAllowlist:
+    """require-review-orchestrator-bash.sh restricts the raw COMMAND text to
+    a closed character class before any fragment splitting or per-word
+    matching below -- a denylist of just $/backtick/backslash still misses
+    brace expansion (`git show --te{x,}tconv` reassembles --textconv
+    without ever spelling the flag literally anywhere in the command text),
+    so the allowlist bans the lexical alphabet outright instead."""
+
+    def test_brace_expansion_textconv_reconstruction_denied(self):
+        """The motivating proof-of-concept this allowlist closes: brace
+        expansion reassembles the denied --textconv flag with no $,
+        backtick, or backslash anywhere in the command text, so a
+        denylist of those three characters alone would not have caught
+        it."""
+        command = "git show --te{x,}tconv HEAD:file.bin"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_backtick_command_substitution_denied(self):
+        command = "git log `touch /tmp/pwned`"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_dollar_paren_command_substitution_denied(self):
+        command = "git log $(touch /tmp/pwned)"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_nested_command_substitution_denied(self):
+        """Nested $(...) inside $(...) still carries the $ character, so it
+        denies at the same character-class level as the single-nesting
+        case above, before any fragment splitting sees the nesting depth."""
+        command = "git log $(echo $(printf -- --textconv)) HEAD"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_newline_embedded_statement_separator_denied(self):
+        """A literal newline is outside the allowed character set -- the
+        allowlist has no newline in its character class, so a newline used
+        as a statement separator in place of `;` denies at the same
+        lexical-alphabet level as any other disallowed byte."""
+        command = "git log\ngit shove"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_pretty_format_specifier_with_percent_and_colon_allowed(self, git_repo):
+        """Confound-free companion: %, :, and other punctuation this
+        allowlist newly admits must not false-deny an ordinary read-only
+        git invocation that legitimately uses them."""
+        command = "git log --pretty=format:%H"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT), cwd=git_repo
+        ) == "allow"
+
+    def test_bare_parameter_expansion_denied(self):
+        """${var} is outside the allowed character set (no { or }), so bare
+        parameter expansion denies before any fragment-level check runs."""
+        command = "git log ${PAGER}"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_process_substitution_denied(self):
+        """<(cmd) needs ( and ), neither in the allowed character set."""
+        command = "git log --pretty=%H | diff - <(cat /etc/passwd)"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_locale_quoting_denied(self):
+        """$"..." (locale-translated quoting) opens with $, outside the
+        allowed character set -- same closure as ANSI-C $'...' quoting."""
+        command = 'git log $"--oneline"'
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_checkpoint_append_with_colon_delimited_step_name_allowed(self, tmp_path):
+        """Confound-free companion: orchestrator-checkpoint.sh's own
+        `--step reviewer:<name>:fix:<n>` shape (review-orchestrator.md's
+        Checkpointing section) needs colons in a real invocation and must
+        not false-deny."""
+        isolated_home, _ = _write_canonical_scripts(tmp_path, ["orchestrator-checkpoint.sh"])
+        command = (
+            "~/.claude/scripts/orchestrator-checkpoint.sh append code-review-my-branch-1700000000-abcd1234 "
+            "--step reviewer:staff-backend-engineer:fix:1 --status done --attempt 2"
+        )
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK,
+            bash_input(command, agent_type=AGENT),
+            home=isolated_home,
         ) == "allow"
 
 
@@ -897,9 +1013,24 @@ class TestGitWriteTargetFlagDenied:
 
     def test_git_log_output_backslash_escaped_denied(self):
         """Backslash-escape splice (\\--output rather than a quoted
-        boundary): bash's own quote/escape removal still reassembles the
-        real flag at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own
+        quote/escape removal -- but the command-text character-class
+        allowlist now denies the raw backslash character outright, before
+        this scan ever runs, closing the bypass at the lexical-alphabet
+        level instead."""
         command = "git log \\--output=/tmp/pwned.txt"
+        assert run_hook(
+            REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
+        ) == "deny"
+
+    def test_git_log_output_interior_spliced_quote_denied_by_word_level_scan(self):
+        """Companion proving the --output word-level scan is still
+        independently load-bearing behind the character-class allowlist: an
+        interior-spliced quote (--out'put'=...) carries no $, backtick,
+        backslash, or brace, so it reaches this scan rather than the
+        character class, and the scan's own quote-stripping still catches
+        it."""
+        command = "git log --out'put'=/tmp/pwned.txt"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
         ) == "deny"
@@ -980,13 +1111,16 @@ class TestGitPathFlagOutsideRepoRootDenied:
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input("git log -5", agent_type=AGENT), cwd=git_repo
         ) == "allow"
 
-    def test_ansi_c_quoted_pathspec_argument_allowed(self, git_repo):
-        """Confound-free companion: a benign ANSI-C-quoted pathspec argument
-        carrying none of the path-bearing flags must not false-deny."""
+    def test_ansi_c_quoted_pathspec_argument_denied_by_character_class(self, git_repo):
+        """ANSI-C quoting ($'...') is denied outright by the command-text
+        character-class allowlist, which excludes $ unconditionally --
+        superseding the path-bearing-flag scan this class otherwise covers,
+        so even a benign ANSI-C-quoted pathspec with no path-bearing flag no
+        longer reaches that scan at all."""
         command = "git log -- $'file.txt'"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT), cwd=git_repo
-        ) == "allow"
+        ) == "deny"
 
     def test_git_dir_interior_spliced_quote_pointing_outside_repo_denied(self, tmp_path):
         """An interior-spliced quote (--git-di'r=x' rather than a quoted
@@ -1000,8 +1134,11 @@ class TestGitPathFlagOutsideRepoRootDenied:
 
     def test_git_dir_backslash_escaped_flag_pointing_outside_repo_denied(self, tmp_path):
         """Backslash-escape splice (\\--git-dir rather than a quoted
-        boundary): bash's own quote/escape removal still reassembles the
-        real flag at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own
+        quote/escape removal -- but the command-text character-class
+        allowlist now denies the raw backslash character outright, before
+        this scan ever runs, closing the bypass at the lexical-alphabet
+        level instead."""
         command = f"git \\--git-dir={tmp_path}/.git log"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1009,8 +1146,10 @@ class TestGitPathFlagOutsideRepoRootDenied:
 
     def test_git_dir_ansi_c_quoted_flag_pointing_outside_repo_denied(self, tmp_path):
         """ANSI-C quote opener ($'--git-dir=...' rather than a quoted
-        boundary): bash's own quote removal still reassembles the real flag
-        at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own quote
+        removal -- but the command-text character-class allowlist now
+        denies the raw $ character outright, before this scan ever runs,
+        closing the bypass at the lexical-alphabet level instead."""
         command = f"git $'--git-dir={tmp_path}/.git' log"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1018,8 +1157,10 @@ class TestGitPathFlagOutsideRepoRootDenied:
 
     def test_git_dir_locale_quoted_flag_pointing_outside_repo_denied(self, tmp_path):
         """Locale quote opener ($"--git-dir=..." rather than a quoted
-        boundary): bash's own quote removal still reassembles the real flag
-        at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own quote
+        removal -- but the command-text character-class allowlist now
+        denies the raw $ character outright, before this scan ever runs,
+        closing the bypass at the lexical-alphabet level instead."""
         command = f'git $"--git-dir={tmp_path}/.git" log'
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1204,8 +1345,11 @@ class TestGitGrepNoIndexDenied:
 
     def test_no_index_flag_backslash_escaped_denied(self):
         """Backslash-escape splice (\\--no-index rather than a quoted
-        boundary): bash's own quote/escape removal still reassembles the
-        real flag at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own
+        quote/escape removal -- but the command-text character-class
+        allowlist now denies the raw backslash character outright, before
+        this scan ever runs, closing the bypass at the lexical-alphabet
+        level instead."""
         command = "git grep foo \\--no-index"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1213,8 +1357,10 @@ class TestGitGrepNoIndexDenied:
 
     def test_no_index_flag_ansi_c_quoted_denied(self):
         """ANSI-C quote opener ($'--no-index' rather than a quoted
-        boundary): bash's own quote removal still reassembles the real flag
-        at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own quote
+        removal -- but the command-text character-class allowlist now
+        denies the raw $ character outright, before this scan ever runs,
+        closing the bypass at the lexical-alphabet level instead."""
         command = "git grep foo $'--no-index'"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1222,8 +1368,10 @@ class TestGitGrepNoIndexDenied:
 
     def test_no_index_flag_locale_quoted_denied(self):
         """Locale quote opener ($"--no-index" rather than a quoted
-        boundary): bash's own quote removal still reassembles the real flag
-        at exec time, so this scan must too."""
+        boundary) once reached this word-level scan via bash's own quote
+        removal -- but the command-text character-class allowlist now
+        denies the raw $ character outright, before this scan ever runs,
+        closing the bypass at the lexical-alphabet level instead."""
         command = 'git grep foo $"--no-index"'
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1238,13 +1386,16 @@ class TestGitGrepNoIndexDenied:
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT), cwd=git_repo
         ) == "allow"
 
-    def test_ansi_c_quoted_search_term_allowed(self, git_repo):
-        """Confound-free companion: a benign ANSI-C-quoted search term
-        carrying no --no-index flag must not false-deny."""
+    def test_ansi_c_quoted_search_term_denied_by_character_class(self, git_repo):
+        """ANSI-C quoting ($'...') is denied outright by the command-text
+        character-class allowlist, which excludes $ unconditionally --
+        superseding the --no-index scan this class otherwise covers, so
+        even a benign ANSI-C-quoted search term with no --no-index flag no
+        longer reaches that scan at all."""
         command = "git grep $'TODO'"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT), cwd=git_repo
-        ) == "allow"
+        ) == "deny"
 
 
 class TestSudoDoasWrapperDenied:
@@ -1300,27 +1451,33 @@ class TestSudoDoasWrapperDenied:
         ) == "deny"
 
     def test_backslash_escaped_sudo_wrapper_denied(self):
-        """Backslash-escape splice (\\sudo rather than a quoted boundary):
-        bash's own quote/escape removal still reassembles the real wrapper
-        name at exec time, so this scan must too."""
+        """Backslash-escape splice (\\sudo rather than a quoted boundary)
+        once reached this word-level scan via bash's own quote/escape
+        removal -- but the command-text character-class allowlist now
+        denies the raw backslash character outright, before this scan ever
+        runs, closing the bypass at the lexical-alphabet level instead."""
         command = "\\sudo git log"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
         ) == "deny"
 
     def test_ansi_c_quoted_sudo_wrapper_denied(self):
-        """ANSI-C quote opener ($'sudo' rather than a quoted boundary):
-        bash's own quote removal still reassembles the real wrapper name at
-        exec time, so this scan must too."""
+        """ANSI-C quote opener ($'sudo' rather than a quoted boundary) once
+        reached this word-level scan via bash's own quote removal -- but
+        the command-text character-class allowlist now denies the raw $
+        character outright, before this scan ever runs, closing the
+        bypass at the lexical-alphabet level instead."""
         command = "$'sudo' git log"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
         ) == "deny"
 
     def test_locale_quoted_sudo_wrapper_denied(self):
-        """Locale quote opener ($"sudo" rather than a quoted boundary):
-        bash's own quote removal still reassembles the real wrapper name at
-        exec time, so this scan must too."""
+        """Locale quote opener ($"sudo" rather than a quoted boundary) once
+        reached this word-level scan via bash's own quote removal -- but
+        the command-text character-class allowlist now denies the raw $
+        character outright, before this scan ever runs, closing the
+        bypass at the lexical-alphabet level instead."""
         command = '$"sudo" git log'
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT)
@@ -1333,13 +1490,16 @@ class TestSudoDoasWrapperDenied:
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input("git log -5", agent_type=AGENT), cwd=git_repo
         ) == "allow"
 
-    def test_ansi_c_quoted_pathspec_argument_allowed(self, git_repo):
-        """Confound-free companion: a benign ANSI-C-quoted pathspec argument
-        must not false-deny as a spliced sudo/doas wrapper."""
+    def test_ansi_c_quoted_pathspec_argument_denied_by_character_class(self, git_repo):
+        """ANSI-C quoting ($'...') is denied outright by the command-text
+        character-class allowlist, which excludes $ unconditionally --
+        superseding the sudo/doas wrapper scan this class otherwise covers,
+        so even a benign ANSI-C-quoted pathspec no longer reaches that scan
+        at all."""
         command = "git log -- $'file.txt'"
         assert run_hook(
             REQUIRE_REVIEW_ORCHESTRATOR_BASH_HOOK, bash_input(command, agent_type=AGENT), cwd=git_repo
-        ) == "allow"
+        ) == "deny"
 
 
 class TestHelperScriptEnvAssignmentInjectionDenied:

@@ -237,6 +237,19 @@ _fragment_raw_write_targets() {
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
 }
 
+# Splits $1 on the true command-chaining operators only (;, &&, ||, |, |&, a
+# bare &), keeping $(...)/backtick bytes intact -- unlike _lib_split_fragments,
+# which sub-splits on them -- because the git-invoking-fragment check below
+# needs those bytes still present.
+_top_level_command_segments() {
+  local amp_marker=$'\x01'
+  printf '%s' "$1" \
+    | sed -E "s/(>|<)&/\\1${amp_marker}/g; s/&(>>?)/${amp_marker}\\1/g" \
+    | sed -E 's/;/\n/g; s/\|&/\n/g; s/&&/\n/g; s/&/\n/g; s/\|\|/\n/g; s/\|/\n/g' \
+    | sed -E "s/${amp_marker}/\\&/g" \
+    | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
+}
+
 case "$TOOL_NAME" in
   Write|Edit|MultiEdit)
     if ! FILE_PATH=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.file_path // empty' 2>/dev/null); then
@@ -362,24 +375,71 @@ case "$TOOL_NAME" in
     done < <(_lib_readonly_git_subcmds)
     ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
-    # Quote-stripped so an adjacent-quote split (`'sed' -i file`, `"git"
-    # checkout`) can't dodge the word-walk detectors below — same helper
-    # as deny-network-installs.sh. Checked and fail-closed, matching
-    # deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
-    COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
-    COMMAND_UNQUOTED_EXIT=$?
-    if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
-      emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+    # Escape/expansion bypass check, run as its own self-contained pass over
+    # _top_level_command_segments (see that function's own comment for why
+    # it -- not _lib_split_fragments -- drives this specific check). A
+    # single split feeding a single loop, with no second, independently
+    # split array to correlate it against by index.
+    TOP_LEVEL_SEGMENTS=$(_top_level_command_segments "$COMMAND")
+    TOP_LEVEL_SEGMENTS_EXIT=$?
+    if [ "$TOP_LEVEL_SEGMENTS_EXIT" -ne 0 ]; then
+      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into top-level segments (exit ${TOP_LEVEL_SEGMENTS_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      exit 0
+    fi
+    while IFS= read -r raw_segment; do
+      [ -z "$raw_segment" ] && continue
+      segment_stripped=$(_lib_strip_shell_quotes "$raw_segment")
+      segment_stripped_exit=$?
+      if [ "$segment_stripped_exit" -ne 0 ]; then
+        emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip a command segment (exit ${segment_stripped_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+        exit 0
+      fi
+      if _lib_fragment_invokes_git "$segment_stripped"; then
+        # A $'...', ${...}, $(...), or backtick construct inside a
+        # git-invoking fragment can reassemble a mutating flag or subcommand
+        # that the checks below only recognize literally. A review-only
+        # agent never has a legitimate reason to reach for any of these
+        # specifically inside a git invocation, unlike its otherwise-
+        # unrestricted shell use.
+        # Accepted over-deny: this denies ANY brace in a git-invoking
+        # segment, including a benign literal brace in a search pattern
+        # (`git log --grep='{TODO}'`), not just brace-expansion syntax --
+        # mirroring the sibling hook's own accepted parens over-deny.
+        case "$raw_segment" in
+          *'$'*|*'`'*|*'{'*|*'}'*)
+            emit_deny "Blocked by reviewer-tree-mutation hook: '$segment_stripped' invokes git and its raw text carries a \$, backtick, or brace construct -- these can reassemble a mutating flag or subcommand into a token this hook's checks don't recognize literally. $SANCTIONED_ALTERNATIVE"
+            exit 0
+            ;;
+        esac
+      fi
+    done <<< "$TOP_LEVEL_SEGMENTS"
+
+    # Fine-grained split driving every other check below: _lib_split_fragments's
+    # $(...)/backtick sub-splitting lets a nested command (e.g. `echo $(sed -i
+    # ...)`) get scanned as its own fragment, which the coarse split above
+    # deliberately does not do. Each fragment's quote-stripped form is
+    # derived from that fragment's own raw text below, not from a
+    # whole-command strip computed upfront.
+    # Accepted over-deny: this split is quote-blind, so a shell metacharacter
+    # embedded inside a quoted argument value (e.g. a --grep pattern
+    # literally containing "&sed -i ...") still splits the command and can
+    # land in its own fragment that matches a denied pattern, even though
+    # the real shell would never execute that quoted text as a command.
+    FRAGMENTS_RAW=$(_lib_split_fragments "$COMMAND")
+    FRAGMENTS_RAW_EXIT=$?
+    if [ "$FRAGMENTS_RAW_EXIT" -ne 0 ]; then
+      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into fragments (exit ${FRAGMENTS_RAW_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
       exit 0
     fi
 
-    FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
-    FRAGMENTS_SPLIT_EXIT=$?
-    if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
-      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
-      exit 0
-    fi
-    while IFS= read -r fragment; do
+    while IFS= read -r raw_fragment; do
+      [ -z "$raw_fragment" ] && continue
+      fragment=$(_lib_strip_shell_quotes "$raw_fragment")
+      fragment_exit=$?
+      if [ "$fragment_exit" -ne 0 ]; then
+        emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip a fragment (exit ${fragment_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+        exit 0
+      fi
       [ -z "$fragment" ] && continue
 
       if _lib_fragment_is_bare_env_assignment "$fragment"; then
@@ -506,7 +566,7 @@ case "$TOOL_NAME" in
     # the last fragment is newline-terminated. Mirrors deny-pii-in-commits.sh
     # and deny-private-project-refs.sh's identical assign-then-`<<<
     # "$VAR"`-here-string pattern.
-    done <<< "$FRAGMENTS"
+    done <<< "$FRAGMENTS_RAW"
     exit 0
     ;;
   *)

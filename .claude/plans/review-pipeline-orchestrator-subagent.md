@@ -28,20 +28,25 @@ dedicates or enforces it, so sessions fall back to running the skills
 inline under context pressure exactly the way `docs/design-decisions.md` §1
 predicts advisory rules do.
 
-Intended outcome: a new dedicated `review-orchestrator` subagent runs these
-three skills to completion — including the fix→re-verify loop, which it
-performs by nested-dispatching `code-writer` rather than editing directly
-— and a new hook makes dispatching it the only path, instead of an
-optional convention. The main session's context receives only a
-synthesized summary, never raw findings or fix-loop churn.
+Intended outcome: a new dedicated `review-orchestrator` subagent runs
+`code-review` and `plan-review` to completion — including the fix→re-verify
+loop, which it performs by nested-dispatching `code-writer` rather than
+editing directly — and a new hook makes dispatching it the only path,
+instead of an optional convention. The main session's context receives only
+a synthesized summary, never raw findings or fix-loop churn. `ready-for-review`
+is deferred (see Approach) pending a design for its push/PR-creation
+boundary.
 
 ## Approach
 
 A new `review-orchestrator` agent invokes the **existing, unmodified**
-`code-review`/`plan-review`/`ready-for-review` `SKILL.md` files via the
-`Skill` tool and follows their instructions to completion inside its own
-disposable context; a new hook denies the top-level session from invoking
-those three skills directly, forcing the dispatch. The orchestrator gets no
+`code-review`/`plan-review` `SKILL.md` files via the `Skill` tool and follows
+their instructions to completion inside its own disposable context; a new
+hook denies the top-level session from invoking those two skills directly,
+forcing the dispatch. (`ready-for-review` is deferred — it pushes and opens
+a PR, which conflicts with this agent's zero-mutation/zero-egress invariant
+until that boundary has its own design; see
+`docs/design-decisions.md` §40.) The orchestrator gets no
 `Edit`/`Write` tool, and — because `Bash` alone can mutate the tree just as
 well as `Edit` can (`echo > file`, `sed -i`, `git commit`) — a second new
 hook restricts its `Bash` calls to a narrow allowlist (read-only git
@@ -68,7 +73,7 @@ itself was built instead of leaving code-writing on ad hoc `general-purpose`
 dispatch (§11); (3) hand-rolled checkpoint file vs. a Workflow script for
 native `resumeFromRunId` resumability — **hand-rolled**, because Workflow
 scripts have no `Skill`-tool hook, so a Workflow-based version would have to
-reimplement all three skills' dispatch/reconciliation/disposition logic as
+reimplement both skills' dispatch/reconciliation/disposition logic as
 JavaScript running in parallel with the `SKILL.md` prose, which is the
 single-source-of-truth violation CLAUDE.md's first Engineering Judgment
 bullet warns against, and nothing would mechanically catch the two
@@ -152,9 +157,11 @@ disposition logic.
       [engineer-verified]
 
 Row 2 [mechanism]: new hook `require-review-orchestrator-dispatch.sh`
-(PreToolUse on Skill-tool calls naming code-review/plan-review/
-ready-for-review, firing only when `agent_type` is absent from the payload
-— the true top-level session) — anchors: root. A nested Skill(code-review)
+(PreToolUse on Skill-tool calls naming code-review/plan-review, firing only
+when `agent_type` is absent from the payload — the true top-level session) —
+anchors: root. `ready-for-review` is not named by this hook — it is out of
+`review-orchestrator`'s scope (see Approach) and stays reachable inline as
+today. A nested Skill(code-review)
 call made by review-orchestrator itself (agent_type=review-orchestrator) is
 unaffected, and so is any other subagent's ad hoc use of the existing
 general-purpose escape hatch — this hook narrows only the top-level
@@ -342,7 +349,7 @@ accreted via etc./like").
 Row 8 [assumption]: plan-review's own design never has the acting session
 edit the plan file itself — required changes always return to the plan's
 author — so review-orchestrator running /plan-review needs no
-fix-application capability at all; only code-review and ready-for-review do
+fix-application capability at all; only code-review does
 [verified: claude/.claude/skills/plan-review/SKILL.md:270 — "Do not write
 [the marker] on Request changes — write it only after the plan author
 revises the plan and a clean re-review completes."] — anchors: root.
@@ -373,11 +380,12 @@ note:
   pipeline changes, and the orchestrator is only ever reached by an
   explicit, manual `Agent` dispatch. Independently mergeable and useful on
   its own.
-- **Gate.** Open PR 2 only once each of the three skills has been manually
-  dispatched through `review-orchestrator` at least twice, on real work in
-  this repo, with no nested-dispatch failure and no checkpoint-resume
-  anomaly (Verification steps 3–4). A count-based, run-your-own-usage gate
-  — not a calendar-time one.
+- **Gate.** Open PR 2 only once each of `code-review` and `plan-review` has
+  been manually dispatched through `review-orchestrator` at least twice, on
+  real work in this repo, with no nested-dispatch failure and no
+  checkpoint-resume anomaly (Verification steps 3–4). A count-based,
+  run-your-own-usage gate — not a calendar-time one. `ready-for-review` is
+  out of scope (see Approach) and has no gate here.
 - **PR 2** — `require-review-orchestrator-dispatch.sh`, the CLAUDE.md
   rewiring, and the `docs/` entries. If Row 4 turns out false or unreliable
   during PR 1's dogfooding, PR 2 simply never opens, and every stow user's
@@ -391,7 +399,7 @@ the forward change did, via a plain `git pull`. For the interim window
 before a revert lands, the existing `general-purpose` escape hatch (see the
 residual gap below) is the **sanctioned** bypass if
 `require-review-orchestrator-dispatch.sh` misfires for a session that needs
-to run one of these three skills immediately — this promotes it from an
+to run `code-review` or `plan-review` immediately — this promotes it from an
 unclosed loophole to a documented rollback path, matching this repo's
 existing precedent of a general-purpose-shaped escape hatch for other
 marker-write hooks. No automated detection exists for post-merge,
@@ -416,8 +424,8 @@ depends on this same gap staying open.)
 
 **No changes to any skill's content.** Because the orchestrator calls the
 `Skill` tool and follows what loads, `code-review/SKILL.md`,
-`plan-review/SKILL.md`, `plan-review/ROUTING.md`, and
-`ready-for-review/SKILL.md` need zero edits — every new behavior (fix
+`plan-review/SKILL.md`, and `plan-review/ROUTING.md` need zero edits — every
+new behavior (fix
 substitution, halt substitution, checkpointing) lives in the new agent
 file. Where a skill's instructions say "fix it" or "halt on findings," the
 orchestrator's own body carries one generic substitution rule: if it lacks
@@ -467,8 +475,8 @@ kill-and-resume check is the only coverage it gets, once, by hand.
 
 | File | Change |
 |---|---|
-| `claude/.claude/hooks/require-review-orchestrator-dispatch.sh` | **New.** PreToolUse on `Skill` calls naming code-review/plan-review/ready-for-review with `agent_type` absent; denies with the exact dispatch shape (agent name, no isolation, required prompt fields) to run instead. |
-| `claude/.claude/hooks/tests/test_require_review_orchestrator_dispatch.py` | **New**, mirroring `test_require_skill_review.py`'s shape. Cases: deny when `agent_type` absent and skill name matches one of the three; allow when `agent_type=review-orchestrator`; allow when `agent_type=general-purpose` (the preserved escape hatch — a regression here silently breaks the documented rollback path above, so this case is load-bearing, not incidental); allow for an unrelated skill name (e.g. `skill-review`) even with `agent_type` absent; malformed/missing `agent_type` field handled as absent, not as a crash. |
+| `claude/.claude/hooks/require-review-orchestrator-dispatch.sh` | **New.** PreToolUse on `Skill` calls naming code-review/plan-review with `agent_type` absent; denies with the exact dispatch shape (agent name, no isolation, required prompt fields) to run instead. Does not name `ready-for-review` — out of `review-orchestrator`'s scope (see Approach). |
+| `claude/.claude/hooks/tests/test_require_review_orchestrator_dispatch.py` | **New**, mirroring `test_require_skill_review.py`'s shape. Cases: deny when `agent_type` absent and skill name matches one of the two; allow when `agent_type=review-orchestrator`; allow when `agent_type=general-purpose` (the preserved escape hatch — a regression here silently breaks the documented rollback path above, so this case is load-bearing, not incidental); allow for an unrelated skill name (e.g. `skill-review`, `ready-for-review`) even with `agent_type` absent; malformed/missing `agent_type` field handled as absent, not as a crash. |
 | `claude/.claude/settings.json` | Register `require-review-orchestrator-dispatch.sh`, following `require-skill-review.sh`'s existing PreToolUse registration shape. This repo's stow distribution means a plain `git pull` is sufficient for every contributor to pick this up — no `install.sh` re-run, since `settings.json` is a plain symlink with no `--adopt` merging step. A session already running when the pull happens won't see the new hook until its next start (hook config is read at session start), which is expected, not a bug. |
 | `claude/.claude/CLAUDE.md` | Rewrite the "Code Review," "Plan Review," and "Pre-Handoff Review" bullets to describe dispatching `review-orchestrator` instead of running the skill inline. Add one bullet to Model & Effort Routing naming `review-orchestrator`, mirroring the existing `code-writer` bullet's shape. File is 141 lines against a 200-line cap — budget the additions accordingly. |
 | `docs/hooks.md` | Document `require-review-orchestrator-dispatch.sh`, alongside the two PR1 hooks already documented there. |
@@ -508,8 +516,8 @@ kill-and-resume check is the only coverage it gets, once, by hand.
    resumed run re-doing a step), no reviewer already dispatched is
    dispatched again, no fix already verified is re-applied.
 5. **Manual dogfooding round** (the two-PR gate above): dispatch
-   `review-orchestrator` by hand for each of the three skills against real
-   work in this repo, at least twice each, before opening PR 2.
+   `review-orchestrator` by hand for each of `code-review` and `plan-review`
+   against real work in this repo, at least twice each, before opening PR 2.
 6. `agent-review` on `review-orchestrator.md` (code-review's own Change-type
    table already routes agent files there — no skill edit needed for this).
 7. `claude-hook-review` on both new hooks.

@@ -56,8 +56,35 @@ fi
 # through unconditionally regardless of command.
 _lib_is_bash_mutation_restricted_agent "$AGENT_TYPE" || exit 0
 
-SANCTIONED_ALTERNATIVE="review-orchestrator's Bash calls are restricted to read-only git subcommands, the marker.sh/review-ledger.sh/orchestrator-checkpoint.sh helper scripts, and this repo's own verification commands (pytest/ruff/shellcheck). Any step that requires changing repository content — applying a review fix, writing a non-marker file, running a formatter — must be satisfied by dispatching code-writer instead of running it directly."
+SANCTIONED_ALTERNATIVE="review-orchestrator's Bash calls are restricted to read-only git subcommands, the marker.sh/review-ledger.sh/orchestrator-checkpoint.sh helper scripts, and this repo's own verification commands (pytest/ruff/shellcheck/select-tests.py). Any step that requires changing repository content — applying a review fix, writing a non-marker file, running a formatter — must be satisfied by dispatching code-writer instead of running it directly."
 
+# Denies any character outside [A-Za-z0-9_./=:,@+~^%'"<>|&; -] in the raw
+# command text before any fragment splitting or command-word matching
+# below, since this hook's whole legitimate surface (the eight exact
+# verification commands, read-only git subcommands, and the three helper
+# scripts) needs none of $, backtick, {, or } -- closing the
+# brace-expansion/ANSI-C bypass class a four-construct denylist would miss,
+# e.g. `git show --te{x,}tconv` reassembles --textconv without ever
+# spelling the flag literally.
+#
+# Accepted over-deny: `(` and `)` are also outside the allowed set (needed
+# to close process substitution, `<(cmd)`), so legitimate git syntax using
+# parens denies too, given this hook's actual surface (the eight exact
+# verification commands and read-only git only):
+#   - `--grep="fix(auth)"`
+#   - `--format="%(decorate:short)"`
+#   - pathspec magic `:(glob)*.py`
+ALLOWED_COMMAND_CHARS_RE='[^A-Za-z0-9_./=:,@+~^%'\''"<>|&; -]'
+if [[ "$COMMAND" =~ $ALLOWED_COMMAND_CHARS_RE ]]; then
+  emit_deny "Blocked by review-orchestrator Bash gate: command text contains a character outside this hook's closed lexical allowlist (letters, digits, and a fixed set of path/operator punctuation) -- \$, backtick, backslash, and { or } are never needed by a legitimate review-orchestrator command and are exactly what bash's own quote-removal, command-substitution, and brace-expansion machinery could otherwise reassemble into a denied flag. $SANCTIONED_ALTERNATIVE"
+  exit 0
+fi
+
+# These commands are specific to this repo (claude-config) even though this
+# hook is registered globally via the stow-source claude/.claude/settings.json
+# -- review-orchestrator has no verification-command path allowed here today
+# when working in any other repo.
+#
 # Closed verification-command allowlist:
 # - Exactly the forms root CLAUDE.md's own Commands section names, plus
 #   their worktree-relative (../../../.venv/bin/...) forms.
@@ -70,9 +97,11 @@ case "$COMMAND" in
   '.venv/bin/pytest claude/.claude/') exit 0 ;;
   '.venv/bin/ruff check claude/.claude/') exit 0 ;;
   'scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck') exit 0 ;;
+  '.venv/bin/python3 claude/.claude/scripts/select-tests.py') exit 0 ;;
   '../../../.venv/bin/pytest claude/.claude/') exit 0 ;;
   '../../../.venv/bin/ruff check claude/.claude/') exit 0 ;;
   'scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck') exit 0 ;;
+  '../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py') exit 0 ;;
 esac
 
 # Strict read-only git subcommand alternation, built once from the single

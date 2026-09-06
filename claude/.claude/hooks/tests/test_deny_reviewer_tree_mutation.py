@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
 from helpers import (
@@ -385,24 +386,183 @@ class TestCommandInvokingGitFlagDenied:
         ordinary read-only git subcommand with none of the unsafe flags."""
         assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
 
-    def test_git_log_textconv_ansi_c_hex_escape_bypass_allowed(self):
-        """Required regression test pinning a documented residual shared with
+    def test_git_log_textconv_ansi_c_hex_escape_bypass_denied(self):
+        """Regression guard for the ANSI-C-escape bypass shared with
         require-review-orchestrator-bash.sh: bash's ANSI-C \\xHH hex escape
         ($'--tex\\x74conv' decodes \\x74 to 't' at exec time) reassembles the
-        real --textconv flag, but _lib_strip_word_quotes does not decode
-        multi-character ANSI-C escapes -- see docs/design-decisions.md §40's
-        accepted-residual entry for _lib_strip_word_quotes. Currently
-        allowed, not denied; pins the gap as a reviewed decision reaching
-        this hook's whole existing reviewer roster, not an unnoticed one."""
+        real --textconv flag, which _lib_strip_word_quotes does not decode
+        (see docs/design-decisions.md §40's accepted-residual entry). The
+        git-anchored $'.../${.../backslash check denies the fragment outright
+        rather than relying on decoding the escape correctly."""
         command = "git log $'--tex\\x74conv' HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
 
-    def test_git_log_textconv_ansi_c_octal_escape_bypass_allowed(self):
+    def test_git_log_textconv_ansi_c_octal_escape_bypass_denied(self):
         """Octal-escape variant of the hex-escape bypass above
         ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- same
-        documented residual, see docs/design-decisions.md §40's
+        blanket $'...' deny, see docs/design-decisions.md §40's
         accepted-residual entry for _lib_strip_word_quotes."""
         command = "git log $'--tex\\164conv' HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+
+# --- _top_level_command_segments direct unit tests --------------------------
+#
+# Mirrors _lib.sh's _lib_split_fragments (see test_lib.py's
+# TestSplitFragmentsBareAmpersand), which this function is deliberately a
+# coarser variant of -- see the function's own comment in
+# deny-reviewer-tree-mutation.sh for why it keeps $(...)/backtick bytes
+# intact rather than sub-splitting on them.
+
+
+def _extract_shell_function(source: Path, name: str) -> str:
+    """Return NAME's function definition, delimited by its own closing brace
+    line. Safe here because _top_level_command_segments has no nested braces
+    in its body -- a real shell-syntax parser is unneeded."""
+    text = source.read_text()
+    start_marker = f"{name}() {{"
+    start = text.index(start_marker)
+    end = text.index("\n}", start)
+    return text[start : end + len("\n}")]
+
+
+def _top_level_command_segments(command: str) -> list[str]:
+    function_src = _extract_shell_function(HOOK, "_top_level_command_segments")
+    result = subprocess.run(
+        ["bash", "-c", f'{function_src}\n_top_level_command_segments "$1"', "bash", command],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+class TestTopLevelCommandSegmentsDirect:
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # >&/<& fd duplication and &>/&>> combined redirect must stay
+            # glued to their fragment -- a split here would separate the
+            # redirect target from the command it applies to.
+            ("cmd1 2>&1", ["cmd1 2>&1"]),
+            ("cmd1 0<&1", ["cmd1 0<&1"]),
+            ("cmd1 &> /dev/null", ["cmd1 &> /dev/null"]),
+            ("cmd1 &>> /dev/null", ["cmd1 &>> /dev/null"]),
+            # |& (combined stdout+stderr pipe) invokes two distinct
+            # commands exactly like a plain `|` does, so it must split
+            # cleanly -- with no stray operator byte glued onto either
+            # side, which a naive protect-only-the-`&` approach produces.
+            ("cmd1 |& cmd2", ["cmd1", "cmd2"]),
+        ],
+    )
+    def test_glued_ampersand_forms_named_in_sibling_function(self, command: str, expected: list[str]) -> None:
+        assert _top_level_command_segments(command) == expected
+
+    def test_subshell_paren_stripped(self) -> None:
+        """Leading/trailing parens are stripped, same as _lib_split_fragments,
+        so a subshell-wrapped command yields a clean git fragment rather than
+        one carrying a stray trailing `)`."""
+        assert _top_level_command_segments("(cd /x; git push)") == ["cd /x", "git push"]
+
+    def test_dollar_paren_and_backtick_bytes_survive_the_split(self) -> None:
+        """The one behavior that actually distinguishes this function from
+        _lib_split_fragments: `$(` and a bare backtick are NOT split points
+        here, so a git-invoking segment's own command-substitution bytes
+        stay intact for the git-anchored $/backtick/brace check to see."""
+        assert _top_level_command_segments("git log $(printf -- --textconv) HEAD") == [
+            "git log $(printf -- --textconv) HEAD"
+        ]
+        assert _top_level_command_segments("git log `printf -- --textconv` HEAD") == [
+            "git log `printf -- --textconv` HEAD"
+        ]
+
+
+class TestEscapeExpansionBypassRedesign:
+    """Regression tests for the per-fragment escape/expansion redesign: a
+    prior version paired two independently split arrays (one split on the
+    raw command, one on its quote-stripped form) by index, which desynced
+    whenever quote-stripping created a new adjacent-delimiter pair that
+    wasn't adjacent in the raw text. The redesign uses a single coarse split
+    (_top_level_command_segments) so there is nothing left to desync, and
+    still catches brace expansion and command/backtick substitution, which
+    the prior version's character-class check never covered at all."""
+
+    def test_multi_fragment_index_desync_denied(self):
+        """A bare `&` inside an ANSI-C string ($'&') plus a real `&`
+        immediately after it splits into three raw fragments, but only two
+        survive quote-stripping -- the exact desync that let the prior
+        per-index-pairing design skip the real git fragment's own raw text
+        entirely. Verified empirically against the unfixed hook before this
+        test was written: the command below was allowed."""
+        command = "echo $'&'& git log $'--tex\\x74conv' HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_brace_expansion_textconv_denied(self):
+        """git show --te{x,}tconv reassembles --textconv via bash brace
+        expansion, the sibling hook's own motivating example -- never
+        covered by the prior $'.../${.../backslash-only character check."""
+        command = "git show --te{x,}tconv HEAD:file.bin"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_command_substitution_textconv_denied(self):
+        """$(printf -- --textconv) synthesizes --textconv at exec time.
+        _lib_split_fragments itself splits on "$(", consuming those two
+        bytes as the delimiter -- so a check that only inspects the
+        resulting per-fragment text (fine-grained _lib_split_fragments
+        output) can never see them. _top_level_command_segments does not
+        split on "$(", so the git-invoking segment's own raw text still
+        carries it."""
+        command = "git log $(printf -- --textconv) HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_backtick_command_substitution_textconv_denied(self):
+        """Backtick variant of the command-substitution bypass above --
+        _lib_split_fragments also splits on a bare backtick, so the same
+        coarser-split rationale applies."""
+        command = "git log `printf -- --textconv` HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_nested_command_substitution_textconv_denied(self):
+        """Nested $(...) inside $(...) is still just a $ character to this
+        segment's raw text -- the git-anchored check denies on the presence
+        of the construct, not on parsing its nesting depth."""
+        command = "git log $(echo $(printf -- --textconv)) HEAD"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_subshell_wrapped_ansi_c_textconv_bypass_denied(self):
+        """The ANSI-C hex-escape bypass still denies once wrapped in a
+        subshell/group: _top_level_command_segments strips the leading '('
+        and trailing ')', so the git-anchored check still sees the
+        unwrapped fragment's own $'...' construct."""
+        command = "(git log $'--tex\\x74conv' HEAD)"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_grep_pattern_with_legitimate_brace_denied(self):
+        """Accepted over-deny: a benign literal brace in a search pattern
+        (not brace-expansion syntax) still denies, because the git-anchored
+        check denies on ANY brace in a git-invoking segment -- pinned as
+        current behavior, not an unnoticed regression."""
+        command = "git log --grep='{TODO}'"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_quoted_ampersand_metacharacter_over_deny_confound_denied(self):
+        """Accepted quote-blind-split over-deny: _lib_split_fragments splits
+        on a bare `&` even inside a quoted argument value, so a --grep
+        pattern that literally contains '&sed -i ...' splits into its own
+        fragment and denies via the in-place-edit family check below, even
+        though the real shell would never execute that quoted text as a
+        command. Pinned as current behavior, not a fix target here."""
+        command = 'git log --grep="a&sed -i s/x/y/ file"'
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_grep_pattern_with_legitimate_backslash_allowed(self):
+        """Confound-free companion: a real git invocation with a backslash
+        in an ordinary --grep pattern, and no $, backtick, {, or } anywhere,
+        must not be false-denied. The prior design's bare `*\\\\*` alternative
+        denied ANY backslash in a git-invoking fragment; the redesign drops
+        that alternative because ANSI-C escape decoding needs a $' prefix a
+        bare backslash can't supply on its own."""
+        command = 'git log --grep="\\bTODO\\b"'
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
 
