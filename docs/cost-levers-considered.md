@@ -397,5 +397,7 @@ repo's own usage it does not: 85.6% of same-session repeats exceed the
 boundary where continuation costs more than it saves. No code change ships.
 Per the plan's own out-of-scope note, `experimental.cacheTtl: 1h` on the
 reviewer roster is the follow-up lever to open if a warm-share fix is wanted
-later — not a revised version of this one, since it prices every dispatch
-including the two-thirds that gain nothing from it.
+later — not a revised version of this one, since it raises the write
+multiplier on every dispatch, including the ~66% of same-(agent-type,
+branch) dispatches that are first-of-type on a branch and gain nothing from
+a warm-cache continuation fix.
