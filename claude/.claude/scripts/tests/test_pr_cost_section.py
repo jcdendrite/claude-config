@@ -13,12 +13,14 @@ presence and content.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+from helpers import SKILLS_DIR
 
 from .conftest import _base_test_env, _make_repo_with_remote
 
@@ -488,3 +490,20 @@ class TestCostBodyEndsWithTableRow:
 
         assert result.returncode == 0
         assert result.stdout == _EXPECTED_COST_BLOCK_ENDING_IN_TABLE_ROW
+
+
+class TestCostHeadingLiteralMatchesSkillBody:
+    """Tripwire, not a behavioral test: pr-cost-section.sh's printf argument
+    and pr-description/SKILL.md's descriptive mention of the heading are two
+    independently-maintained copies of the same string, introduced by moving
+    the heading into the script. A rename of one copy without the other would
+    leave both this suite's byte-exact block assertions and test_skills.py's
+    test_declares_cost_heading_literal green while the two diverge."""
+
+    def test_heading_literal_appears_identically_in_both_places(self):
+        script_source = _SCRIPT.read_text()
+        heading_match = re.search(r"'(## Cost \(list-price estimate\))'", script_source)
+        assert heading_match, "printf's heading argument not found in pr-cost-section.sh"
+
+        skill_body = (SKILLS_DIR / "pr-description" / "SKILL.md").read_text()
+        assert heading_match.group(1) in skill_body

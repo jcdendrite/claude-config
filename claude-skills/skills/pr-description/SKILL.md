@@ -73,22 +73,22 @@ Resolve the section with a single script call:
 ~/.claude/scripts/pr-cost-section.sh
 ```
 
-Exit 0: enabled and the branch resolved cleanly — stdout is the finished
-`## Cost (list-price estimate)` block, with its delimiters, heading, tables,
-and reproducibility trailer already in it. Embed that stdout **verbatim** and
-add nothing around it: no heading, no trailer, and no delimiters of your own.
-Never recompose, round, or re-narrate the figures. Embed it as raw markdown,
-never inside a code fence. A fenced block renders its GFM alert and its
-`### Cost by …` tables as literal text instead of a callout and tables.
-Exit 1: disabled, unreadable, or malformed `<config-dir>/pr-cost-disclosure`
-— delete the block if one exists, no stdout. Exit 2: enabled but the branch is
-the literal `HEAD` (detached) — omit the block and say why, no stdout. Exit 3:
-branch resolved but the downstream cost report itself failed — omit the block
-and note in the body that the report failed to generate, unlike exit 1's
-silent deletion. The sentinel
-check (`<config-dir>/pr-cost-disclosure`, trimmed and lowercased, exactly
-`dollars`) is per Claude
-account, not per repo: cost is an organizational fact, and each account is its own billing entity.
+- **Exit 0:** enabled and the branch resolved cleanly — stdout is the finished
+  `## Cost (list-price estimate)` block, with its delimiters, heading, tables,
+  and reproducibility trailer already in it. Embed that stdout **verbatim** and
+  add nothing around it: no heading, no trailer, and no delimiters of your own.
+  Never recompose, round, or re-narrate the figures. Embed it as raw markdown,
+  never inside a code fence. A fenced block renders its GFM alert and its
+  `### Cost by …` tables as literal text instead of a callout and tables.
+- **Exit 1:** disabled, unreadable, or malformed `<config-dir>/pr-cost-disclosure`
+  — delete the block if one exists, no stdout.
+- **Exit 2:** enabled but the branch is the literal `HEAD` (detached) — omit
+  the block and say why, no stdout.
+- **Exit 3:** branch resolved but the downstream cost report itself failed —
+  omit the block and note in the body that the report failed to generate,
+  unlike exit 1's silent deletion.
+
+The sentinel check (`<config-dir>/pr-cost-disclosure`, trimmed and lowercased, exactly `dollars`) is per Claude account, not per repo: cost is an organizational fact, and each account is its own billing entity.
 Resolves that one config-dir path only — never unions it with `$HOME/.claude`, or one account's opt-in
 would activate disclosure under another; call the script once, it performs the sentinel check internally.
 **One deliberate narrowing:** a sentinel consisting of a blank line followed by `dollars` reads as

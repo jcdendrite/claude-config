@@ -939,8 +939,8 @@ class TestPrDescriptionCostSectionWiring:
     redundant with that behavioral suite -- same reasoning this class
     already applies to install.sh's own _report_account_sentinel. The
     delimiters, the heading, and the reproducibility trailer are emitted by
-    pr-cost-section.sh and pinned byte-exactly by test_pr_cost_section.py;
-    this class only proves the skill body still names the script, both
+    pr-cost-section.sh and pinned byte-exactly by test_pr_cost_section.py.
+    This class only proves the skill body still names the script, both
     delimiters, the heading, and the raw-markdown rule.
     """
 
