@@ -1528,6 +1528,37 @@ _lib_stray_marker_hint() {
   printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
 }
 
+# _lib_hook_claude_pid
+# Resolves this hook's own Claude Code main-process PID. Hooks are direct
+# children of `claude`, so $PPID is already that process, unlike
+# _lib_resolve_claude_pid's ancestor walk below (for callers, such as a Bash
+# tool script, that sit one or more hops further away).
+#
+# Validate-then-select: an unusable $CLAUDE_PID must fall back to $PPID, not
+# abort the caller, so substitution can't happen before the checks below run.
+# Accepted only within one hop of $PPID (itself, or its immediate parent --
+# the shim case) so an unrelated live process can't be named. Shared by
+# capture-session-id.sh (SessionStart, SubagentStart) and
+# record-session-end.sh (SessionEnd), both of which need this identical
+# resolution.
+#
+# Always prints something (falls back to $PPID) and returns 0; the printed
+# value can still be empty if $PPID itself is empty, so callers must check
+# for that themselves and decide their own failure message, mirroring
+# capture-session-id.sh's own post-call check.
+# Usage: CLAUDE_PID=$(_lib_hook_claude_pid)
+_lib_hook_claude_pid() {
+  local resolved_claude_pid=$PPID
+  if [ -n "${CLAUDE_PID:-}" ] && [[ $CLAUDE_PID =~ ^[0-9]+$ ]]; then
+    local ppid_parent
+    ppid_parent=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
+    if [ "$CLAUDE_PID" = "$PPID" ] || { [ -n "$ppid_parent" ] && [ "$CLAUDE_PID" = "$ppid_parent" ]; }; then
+      resolved_claude_pid=$CLAUDE_PID
+    fi
+  fi
+  printf '%s\n' "$resolved_claude_pid"
+}
+
 # _lib_resolve_claude_pid
 # Prints "<session_id> <pid>" for the live Claude Code main-process PID that
 # is an ancestor of the calling process, and returns 0. Returns 2 with no
