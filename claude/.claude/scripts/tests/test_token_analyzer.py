@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import _write_subagent_jsonl
+
+from .conftest import _write_subagent_jsonl
 
 # Load token-analyzer as a module without it being on sys.path as a package.
 _SCRIPT = Path(__file__).parent.parent / "token-analyzer.py"

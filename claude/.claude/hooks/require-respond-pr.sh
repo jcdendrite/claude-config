@@ -17,8 +17,9 @@
 # prevents one session's marker from leaking bypass to unrelated parallel
 # sessions — both of which the singleton design did not handle.
 #
-# Orphaned markers (from sessions that errored before cleanup) are evicted
-# automatically: the hook checks kill -0 on the stored PID; dead PID → rm.
+# Eviction (dead PID, or a live PID whose mtime has idled past 60 minutes)
+# and the touch-on-use refresh that keeps a live marker from expiring
+# mid-run are documented in docs/hooks.md's "Gate deadlock recovery" section.
 # The gate also covers `repos/{o}/{r}/(pulls|issues)/comments/{id}` (no
 # PR/issue-number segment) — the destructive PATCH endpoint that overwrites
 # a comment in place; gating it forces any edit to flow through
@@ -82,7 +83,7 @@ fi
 # Claude Code versions, payload-schema drift) or a path-escaping one falls
 # through to the gate.
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
-if _lib_active_bypass_marker_live ".respond-pr-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then
   exit 0
 fi
 
@@ -105,12 +106,21 @@ fi
 # would be reading a command the shell never runs. A bare newline separates
 # commands, and joins with a space.
 #
-# Parameter expansion, not `printf | tr`: a subshell pipeline that fails to
-# exec leaves COMMAND_FLAT empty, every arm below misses, and the gate falls
-# through to allow — a fail-open in a fail-closed gate. This form cannot fail
-# and spares the forks on a hook that fires on every Bash call.
-COMMAND_UNWRAPPED=${COMMAND//\\$'\n'/}
-COMMAND_FLAT=${COMMAND_UNWRAPPED//$'\n'/ }
+# GH-801: awk with RS = "\0" (matching _mask_shell_quotes's identical
+# technique in deny-invisible-commit-content.sh), not a per-line sed —
+# a per-line tool never sees an embedded newline character to substitute in
+# the first place, since the newline itself is what separates its input
+# into lines; slurping the whole command as one record is what lets a
+# single gsub reach across it. Checked and fail-closed: awk missing,
+# killed, or erroring denies explicitly below rather than falling through
+# to this gate's normal "no arm matched, allow" path — matching
+# deny-invisible-commit-content.sh's own COMMAND_UNQUOTED precedent.
+COMMAND_FLAT=$(printf '%s' "$COMMAND" | awk 'BEGIN { RS = "\0" } { gsub(/\\\n/, ""); gsub(/\n/, " "); printf "%s", $0 }')
+COMMAND_FLAT_EXIT=$?
+if [ "$COMMAND_FLAT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by respond-pr gate: could not flatten the command text (exit ${COMMAND_FLAT_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than evaluating an unflattened command that could hide a gated pattern across a line break."
+  exit 0
+fi
 
 # Match PR comment read/write patterns. Forms:
 #   gh api .../pulls/N/comments       (inline review comments)

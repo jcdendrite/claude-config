@@ -1,6 +1,6 @@
-"""Small display-formatting helpers -- model-family labels, markdown/table
-rendering -- no dependency on any cmd_* subcommand, scope resolution,
-redaction, or pricing.
+"""Small display-formatting and text-normalization helpers -- model-family
+labels, markdown/table rendering -- no dependency on any cmd_* subcommand,
+scope resolution, redaction, or pricing.
 """
 from __future__ import annotations
 
@@ -85,6 +85,21 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 def _sanitize_table_cell(value: str) -> str:
     """Strip ASCII control characters from a --deny-summary table cell value."""
     return _CONTROL_CHAR_RE.sub("", value)
+
+
+_TASK_NOTIFICATION_RE = re.compile(r"<task-notification>.*?</task-notification>", re.DOTALL)
+
+
+def _strip_task_notifications(text: str) -> str:
+    """Remove `<task-notification>...</task-notification>` spans from a user turn's text.
+
+    The harness delivers a finished background task or subagent as a plain
+    `type: "user"` record whose body is that envelope, so its `<summary>` is
+    the subagent's own prose about its own findings, not human input.
+    """
+    # Replaced with a space, not "", so a removed span can't weld the words on either side into a phrase nobody wrote.
+    # An unterminated or self-quoting envelope is left partially or fully in place rather than swallowing the rest of the turn.
+    return _TASK_NOTIFICATION_RE.sub(" ", text)
 
 
 def _pretty_tool_call(tool_call: dict) -> str:

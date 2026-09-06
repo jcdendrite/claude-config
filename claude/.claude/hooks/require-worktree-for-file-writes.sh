@@ -10,6 +10,13 @@
 # live session via _lib_worktree_collision_guard (_lib.sh) — see that
 # function's header for the full design and known gaps.
 #
+# Known gaps: a write that freshly acquires the worktree lock reports that
+# via additionalContext, decided by a plain `[ -e ... ]` pre-check on the
+# lock file just before the collision-guard call. This pre-check is wired
+# identically to require-worktree-for-git-writes.sh's own pre-check at its
+# one call site here. See that file's Known gaps for the full
+# TOCTOU/uncapped-stat analysis.
+#
 # Known exclusion: paths under $HOME/.claude/ are always exempt —
 # they are Claude Code harness/skill infrastructure, never project work.
 # Assumption: no project repo will be placed directly under $HOME/.claude/
@@ -146,10 +153,16 @@ fi
 # another live session before allowing. See require-worktree-for-git-writes.sh
 # and _lib_worktree_collision_guard (_lib.sh) for the full design.
 if [ "$GIT_DIR_ABS" != "$GIT_COMMON_DIR" ]; then
+  # See _lib_worktree_lock_absent (_lib.sh) for the pre-check contract.
+  WAS_UNLOCKED=false
+  _lib_worktree_lock_absent "$GIT_DIR_ABS" && WAS_UNLOCKED=true
   COLLISION_REASON=$(_lib_worktree_collision_guard "$lookup_dir" "$GIT_COMMON_DIR") || {
     emit_deny "Blocked by worktree-enforcement hook (file-writes): $TOOL_NAME targets '$FILE_PATH' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
     exit 0
   }
+  if $WAS_UNLOCKED; then
+    _lib_emit_allow_with_context "$TOOL_NAME on '$FILE_PATH' re-acquired the worktree lock for $lookup_dir, since worktree discipline allows only one live session per linked worktree at a time. If this was unintended, run 'git worktree unlock $lookup_dir' again."
+  fi
   exit 0
 fi
 

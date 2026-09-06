@@ -66,10 +66,19 @@ one.
 **Conventional Commits (`https://www.conventionalcommits.org/`):** governs
 commit-message format, not PR body content, and this repo already derives
 its PR title grammar (`<TICKET-ID>: <slug>`) from the branch name in
-`/ready-for-review` step 6, so adopting it would conflict rather than fill a
+`/ready-for-review` step 1, so adopting it would conflict rather than fill a
 gap.
 
 ## Tool behavior the skill depends on
+
+**GitHub closing keywords, not bare mentions, create the linked-issue
+relationship.** GitHub Docs, "Linking a pull request to an issue," states a
+PR is linked to an issue "by using a supported keyword in the pull
+request's description," immediately followed by the reference (`Fixes
+#754`). The accepted keywords: `close`, `closes`, `closed`, `fix`, `fixes`,
+`fixed`, `resolve`, `resolves`, `resolved`. A bare mention of the same
+issue elsewhere in the body (e.g. a citation like `(GH-754)`) does not
+create that relationship and does not auto-close the issue on merge.
 
 **`--body-file` exists on both subcommands.** `gh pr create --help` and
 `gh pr edit --help` (gh 2.93.0) both list `-F, --body-file file`, and both

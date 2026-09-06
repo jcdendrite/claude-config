@@ -13,7 +13,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from conftest import _init_repo
+from .conftest import _init_repo
 
 _SCRIPT = Path(__file__).parent.parent / "autonomous-shipping-active.sh"
 

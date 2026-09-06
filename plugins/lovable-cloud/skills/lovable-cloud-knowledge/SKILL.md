@@ -94,7 +94,8 @@ When writing content for either field:
   that, Lovable drops content. Skill bodies (`.agents/skills/*.md`) have
   a separate 100,000-char limit. Even before either cap, length displaces
   active task instructions — apply the same length and behavior-test
-  discipline as Claude Code skills (see `ai-instruction-and-memory-files` §3).
+  discipline as Claude Code skills (see the length-targets and behavior-test
+  guidance in ai-instruction-and-memory-files).
 
 ## 4. Review checklist for `.lovable/**` and `.agents/skills/**` changes
 

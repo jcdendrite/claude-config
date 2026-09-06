@@ -1,21 +1,26 @@
 #!/bin/bash
 # hook-class: gate
 # Gate: when a PR being opened/edited against claude-config introduces a
-# new top-level entry under `claude/.claude/`, require the PR body (or a
-# referenced body-source file, or a referenced commit message via
-# `--fill`) to mention `install.sh` or `stow`. Reason: GNU Stow links
-# each child of `claude/.claude/` individually into `~/.claude/`, but a
-# *new* child only appears after re-running stow — `git pull` alone
-# doesn't create the symlink. Without a reminder in the PR body,
-# whoever merges and pulls won't know to re-run install.sh, and the new
-# folder/file silently fails to load (Claude Code reads from
-# ~/.claude/<X>, which is empty until stow links it).
+# new top-level entry under `claude/.claude/`, OR changes `install.sh`
+# (GH-465), require the PR body (or a referenced body-source file, or a
+# referenced commit message via `--fill`) to mention `install.sh` or
+# `stow`. Reason: GNU Stow links each child of `claude/.claude/`
+# individually into `~/.claude/`, but a *new* child only appears after
+# re-running stow — `git pull` alone doesn't create the symlink.
+# `install.sh` itself is not stowed and only takes effect when invoked, so
+# a change to it ships on `git pull` only if it removes stowed behavior,
+# with the replacement landing only after a manual re-run. Without a
+# reminder in the PR body, whoever merges and pulls won't know to re-run
+# install.sh, and the new folder/file (or the changed installer behavior)
+# silently fails to take effect (Claude Code reads from ~/.claude/<X>,
+# which is empty until stow links it).
 #
-# NOTE — `if`-dispatch is advisory; the real gate is the internal regex
-# below. settings.json wires two `if` entries (`Bash(gh pr create *)`,
-# `Bash(gh pr edit *)`) for early dispatch, but any drift between those
-# patterns and the IS_GH_PR regex here creates silent coverage gaps.
-# Update both surfaces when extending coverage.
+# NOTE — `if`-dispatch is advisory; the real gate is the internal
+# _lib_command_invokes_tool_subcmd check below. settings.json wires two
+# `if` entries (`Bash(gh pr create *)`, `Bash(gh pr edit *)`) for early
+# dispatch, but any drift between those patterns and this hook's own gh
+# pr create/edit matching creates silent coverage gaps. Update both
+# surfaces when extending coverage.
 #
 # Scope:
 # - Fires only when origin URL contains `claude-config` (parallel to
@@ -26,6 +31,9 @@
 #   top level (e.g. `claude/.claude/foo.md`) and new directory (e.g.
 #   `claude/.claude/agents/`) are both flagged — both need a fresh
 #   stow run to materialize their symlink in `~/.claude/`.
+# - GH-465: also fires when `install.sh` itself differs between `main`
+#   and `HEAD` (any change, not only new content), independent of whether
+#   any new top-level entry exists.
 # - For `gh pr edit`: only enforces when the edit is changing the body
 #   (`--body`, `--body-file`, `-F`, `--template`, `-T`). Title-only or
 #   label-only edits don't need the reminder.
@@ -78,8 +86,11 @@ CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
 
 # Internal filter (defense-in-depth against settings.json `if` drift).
-# Only fire on `gh pr create` or `gh pr edit` invocations.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*gh\s+pr\s+(create|edit)(\s|$)'; then
+# Only fire on `gh pr create` or `gh pr edit` invocations. Deliberately
+# unchecked, matching this hook's own fail-open posture (see header): status
+# 2 (could not determine) falls through the same "not gated, allow" path as
+# status 1 (no match), rather than gaining a dedicated deny fork.
+if ! _lib_command_invokes_tool_subcmd "$COMMAND" gh pr create && ! _lib_command_invokes_tool_subcmd "$COMMAND" gh pr edit; then
   exit 0
 fi
 
@@ -102,7 +113,19 @@ fi
 
 # Added paths on the branch since main, scoped to the stow source dir.
 ADDED_PATHS=$(cd "$REPO_ROOT" && git diff --name-only --diff-filter=A main...HEAD -- 'claude/.claude/' 2>/dev/null || true)
-if [ -z "$ADDED_PATHS" ]; then
+
+# GH-465: install.sh itself is not stowed and only takes effect when
+# invoked, so a change to it -- not only a new stowed entry under
+# claude/.claude/ -- also needs the re-run reminder. Any change (not
+# diff-filter=A alone): moving behavior OUT of a stowed file and INTO
+# install.sh ships the removal on `git pull` and the replacement only
+# after a manual re-run.
+INSTALL_SH_CHANGED=0
+if [ -n "$(cd "$REPO_ROOT" && _lib_capped git diff --name-only main...HEAD -- install.sh 2>/dev/null)" ]; then
+  INSTALL_SH_CHANGED=1
+fi
+
+if [ -z "$ADDED_PATHS" ] && [ "$INSTALL_SH_CHANGED" -eq 0 ]; then
   exit 0
 fi
 
@@ -134,15 +157,16 @@ done <<< "$ADDED_PATHS"
 
 # Trim leading space.
 NEW_TOPLEVEL_ENTRIES="${NEW_TOPLEVEL_ENTRIES# }"
-if [ -z "$NEW_TOPLEVEL_ENTRIES" ]; then
+if [ -z "$NEW_TOPLEVEL_ENTRIES" ] && [ "$INSTALL_SH_CHANGED" -eq 0 ]; then
   exit 0
 fi
 
 # For `gh pr edit`, only enforce when the edit modifies the body. The
 # create-time gate guarantees the marker landed initially; a non-body
-# edit can't remove it.
+# edit can't remove it. Deliberately unchecked, same fail-open posture as
+# the fast-reject filter above.
 IS_GH_PR_EDIT=0
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*gh\s+pr\s+edit(\s|$)'; then
+if _lib_command_invokes_tool_subcmd "$COMMAND" gh pr edit; then
   IS_GH_PR_EDIT=1
 fi
 if [ "$IS_GH_PR_EDIT" -eq 1 ]; then
@@ -200,6 +224,16 @@ fi
 # anchor (s/$/.../), not a shell variable — nothing here needs shell expansion.
 ENTRIES_HUMAN=$(printf '%s' "$NEW_TOPLEVEL_ENTRIES" | tr ' ' '\n' | sed 's/^/`claude\/.claude\//; s/$/`/' | tr '\n' ' ' | sed 's/ $//')
 
-emit_deny "Blocked by stow-reminder gate: this PR adds new top-level entries under claude/.claude/ ($ENTRIES_HUMAN). Stow links each top-level child individually, and a brand-new child only appears in ~/.claude/ after re-running install.sh — git pull alone does not create the symlink. Without a reminder in the PR body, whoever merges won't know to re-stow, and the new content will silently fail to load. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to link the new top-level entry.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
+# GH-465: state which trigger(s) fired so the deny message names the actual
+# reason rather than always describing the new-top-level-entry case.
+if [ -n "$NEW_TOPLEVEL_ENTRIES" ] && [ "$INSTALL_SH_CHANGED" -eq 1 ]; then
+  REASON_DETAIL="adds new top-level entries under claude/.claude/ ($ENTRIES_HUMAN) and changes install.sh"
+elif [ -n "$NEW_TOPLEVEL_ENTRIES" ]; then
+  REASON_DETAIL="adds new top-level entries under claude/.claude/ ($ENTRIES_HUMAN)"
+else
+  REASON_DETAIL="changes install.sh"
+fi
+
+emit_deny "Blocked by stow-reminder gate: this PR $REASON_DETAIL. Stow links each top-level child individually, and a brand-new child only appears in ~/.claude/ after re-running install.sh — git pull alone does not create the symlink. install.sh itself is not stowed and only takes effect when invoked, so a change to it ships on git pull only if it removes stowed behavior, with the replacement landing only after a manual re-run. Without a reminder in the PR body, whoever merges won't know to re-run install.sh, and the change will silently fail to take effect. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to pick up this change.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
 
 exit 0

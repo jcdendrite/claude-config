@@ -8,14 +8,10 @@ citing a claim.
 **Official (Anthropic):**
 
 - [Claude Code — How Claude remembers your project](https://code.claude.com/docs/en/memory)
-  — the "under 200 lines per CLAUDE.md file" size threshold, CLAUDE.md-loaded-not-AGENTS.md,
-  the `@AGENTS.md` import pattern, the auto-memory role split, the MEMORY.md 200-line/25KB load limit.
+  — the "under 200 lines per CLAUDE.md file" size threshold, the auto-memory role split,
+  the MEMORY.md 200-line/25KB load limit.
 
   > "Longer files consume more context and reduce adherence"
-
-  > "Claude Code reads CLAUDE.md, not AGENTS.md. If your repository already uses
-  > AGENTS.md for other coding agents, create a CLAUDE.md that imports it so both
-  > tools read the same instructions without duplicating them."
 
   > "Use CLAUDE.md files when you want to guide Claude's behavior.
   > Auto memory lets Claude learn from your corrections without manual
@@ -29,12 +25,9 @@ citing a claim.
   — CLAUDE.md is advisory while hooks are deterministic; the over-specified-CLAUDE.md failure mode.
 
   > hooks "guarantee the action happens"
-- [claude-code CHANGELOG.md](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
-  — zero AGENTS.md entries, confirming AGENTS.md support was never added.
 
 **Practitioner / research (not Anthropic — weigh accordingly):**
 
-- [agents.md standard](https://agents.md) — supporting-tools list; Claude Code is absent from it.
 - [Context Rot — Chroma Research](https://www.trychroma.com/research/context-rot)
   — model performance degrades as input length grows. Uses no word-count compliance threshold.
 - [Writing a good CLAUDE.md — HumanLayer](https://www.humanlayer.dev/blog/writing-a-good-claude-md)

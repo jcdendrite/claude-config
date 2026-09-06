@@ -49,6 +49,7 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 Dispatch `plan-architect` with an explicit `model: "opus"` override to author this section — on every `/plan-it` run, regardless of what model the session itself is anchored to. Pass no `isolation: "worktree"` — the session is already anchored in the implementation branch's worktree, and `plan-architect` writes nothing.
 
 The dispatch prompt carries:
+- `MODE=plan-sections` as the prompt's first line, on every Step 5 dispatch including revision re-dispatches. This literal selects the plan-section grammar — `plan-architect` also serves ad hoc consults, so the mode can no longer be inferred from context.
 - The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim.
 - Every Step 3 subagent's findings, framed as evidence rather than conclusions, plus the absolute path of every file it flagged.
 
@@ -66,6 +67,8 @@ Re-dispatch from scratch, rather than repairing inline, on any of these returns:
 Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
 **External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — not a paraphrase, not a summary, not the section heading. A bare pattern name risks crystallizing a wrong interpretation.
+
+**Comment-content discipline.** When a plan prescribes a comment or docstring verbatim, prescribe the durable one-line fact only — the plan's own rationale belongs in the commit message and PR body, per CLAUDE.md §Code Comments, Documentation, and Prose.
 
 **Name the dispatch split.** Implementation of an approved plan is
 delegated to `code-writer` per phase by default (`subagent-delegation`);
@@ -102,7 +105,7 @@ Write the plan with these sections:
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
 3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths.
-4. **Verification** — how to test end-to-end
+4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
 5. **Out of scope** — only if scope creep was observed
 
 Effort sections optional; if present, describe review surface (file count, domain spread, risk concentration), never hours or days.
@@ -131,11 +134,8 @@ engineer if undocumented) — the review still counts, it just ships as
 findings rather than a commit. Stop here — the choice below is about
 where implementation runs, and there is none.
 
-Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` and act on its JSON (`docs/handoff-nudge.md` carries the contract):
+Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`, following `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for how to read its result: hand off when it says the session is past its threshold. When the check can't resolve a measurement (`"status":"cannot-resolve"` or `"status":"schema-drift"`), say the estimate is unavailable, name the `reason`, and fall back to judgment: the plan boundary is itself a natural seam, weighed against how much of the plan remains.
 
-- `"status":"ok"` — hand off when `over_threshold` is `true`, or when `already_fired` is `true`. Report `estimate` and `threshold`. Say so when `nudge_disabled` is `true`: the measurement is still valid, but no nudge will arrive on its own. When `"model_recognized":false`, report `model` and `context_window` as well and treat the result as a soft number — the window fell back to the 1M default, so the threshold may not match the running model and those two fields are what let the engineer judge how far off it is.
-- `"status":"cannot-resolve"` or `"status":"schema-drift"` — say the estimate is unavailable, name the `reason`, and fall back to judgment: session length, how much of the task remains, whether the plan boundary is a natural seam.
-
-These are a floor, not the only signal: hand off regardless when the engineer asked, when the session is ending anyway, or when a `handoff` §2 reason applies on its own terms. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or plan file.
+These are a floor, not the only signal: hand off regardless when any of these apply: the engineer asked; the session is ending anyway; or a `handoff` §2 reason applies on its own terms. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or plan file.
 
 Delegating implementation to `code-writer` is a separate axis, not a tiebreaker: a subagent starts from a fresh context either way, so it neither argues for handing off nor for staying. Whichever session implements, dispatch `code-writer` per phase by default — the plan already fixed scope and approach, so `subagent-delegation`'s decision-made test is satisfied by construction. See `subagent-delegation`'s "Implementation work → `code-writer`" section for the two carve-outs.

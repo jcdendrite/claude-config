@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from transcript_analysis import pricing
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -48,9 +49,13 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 # gh-credential env vars that must never leak from a contributor's real
 # shell into a test's PATH-shimmed subprocess (see _base_test_env).
+# NODE_AUTH_TOKEN is an npm-registry variable, not a gh one, but a container
+# that provisions a classic PAT exports it carrying that identical secret,
+# so it needs the same scrubbing.
 _SENSITIVE_ENV_VARS = frozenset({
     "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
     "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
+    "CI_CHECKS_GH_TOKEN", "NODE_AUTH_TOKEN",
 })
 
 
@@ -475,12 +480,14 @@ def _reviewer_yield_args(
     projects: str = "*",
     this_repo: bool = False,
     since: str | None = None,
+    until: str | None = None,
     redact: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
         "this_repo": this_repo,
         "since": since,
+        "until": until,
         "redact": redact,
     })()
 
@@ -576,12 +583,28 @@ def _isolate_transcript_corpus_lookups(tmp_path, monkeypatch):
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "nonexistent-transcript-config-dirs"))
 
 
-def _init_repo(path: Path) -> None:
+@pytest.fixture(autouse=True)
+def _reset_pricing_format_drift_flags(monkeypatch):
+    """Reset pricing's two per-process format-drift flags before every test.
+
+    pytest-xdist's default --dist=load doesn't group by file, so a test that
+    trips _warn_if_run_usage_drift or _warn_if_subagent_format_drift (e.g.
+    test_transcript_analysis.py's and test_transcript_reviewer_yield.py's own
+    drift-canary tests) would otherwise leak a fired flag into a later
+    _cost_report test sharing the same worker, intermittently tripping its
+    PRICING INTEGRITY banner for an unrelated reason. monkeypatch.setattr
+    (not a bare assignment) so the prior value is restored on teardown too.
+    """
+    monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+    monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
+
+
+def _init_repo(path: Path, initial_branch: str = "main") -> None:
     """Initialise a git repo with one commit and a remote pointing at itself."""
     path.mkdir(parents=True, exist_ok=True)
-    # --initial-branch=main avoids depending on the system's init.defaultBranch setting,
-    # which varies across git versions and CI environments.
-    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=path, check=True)
+    # Passing --initial-branch explicitly avoids depending on the system's
+    # init.defaultBranch setting, which varies across git versions and CI environments.
+    subprocess.run(["git", "init", "-q", f"--initial-branch={initial_branch}"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
 
@@ -592,19 +615,19 @@ def _commit(repo: Path, message: str = "commit") -> None:
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
-def _make_repo_with_remote(tmp_path: Path) -> tuple[Path, Path]:
+def _make_repo_with_remote(tmp_path: Path, default_branch: str = "main") -> tuple[Path, Path]:
     """Return (local_repo, bare_remote) with origin configured and default branch set."""
     bare = tmp_path / "remote.git"
     bare.mkdir()
-    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main"], cwd=bare, check=True)
+    subprocess.run(["git", "init", "--bare", "-q", f"--initial-branch={default_branch}"], cwd=bare, check=True)
 
     local = tmp_path / "local"
-    _init_repo(local)
+    _init_repo(local, initial_branch=default_branch)
     _commit(local, "init")
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=local, check=True)
-    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=local, check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", default_branch], cwd=local, check=True)
     # Set origin/HEAD so a caller relying on it can resolve the default branch
-    subprocess.run(["git", "remote", "set-head", "origin", "main"], cwd=local, check=True)
+    subprocess.run(["git", "remote", "set-head", "origin", default_branch], cwd=local, check=True)
     return local, bare
 
 

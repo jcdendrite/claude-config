@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import _dead_pid, _seed_session
 from helpers import (
     CANARY_CONTENT,
     SCRIPTS_DIR,
@@ -17,6 +16,8 @@ from helpers import (
     git_toplevel,
     plant_traversal_canary,
 )
+
+from .conftest import _dead_pid, _seed_session
 
 REVIEW_LEDGER_SCRIPT = SCRIPTS_DIR / "review-ledger.sh"
 

@@ -39,7 +39,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -222,13 +224,11 @@ def _model_invokable_skills() -> list[str]:
 
 
 # Explicit registry of user-only command skills that use the frontmatter
-# disable-model-invocation: true flag. Currently empty — the four former command
-# skills (brief, handoff, read-docx-comments, transcript-analysis) now use
-# skillOverrides: name-only, making them model-invokable by name while keeping
-# their descriptions out of the budget. Add to this list only when a new skill
-# needs strict slash-only access (no model invocation at all) via frontmatter
-# rather than skillOverrides.
-COMMAND_SKILLS: list[str] = []
+# disable-model-invocation: true flag. Plugin skills that need the listing-
+# budget exemption register here instead of via skillOverrides, which does
+# not apply to plugin skills — see docs/skills.md for the full mechanism and
+# the /skill-review exception.
+COMMAND_SKILLS: list[str] = ["issue-triage"]
 
 # Skills that are user-invocable: false (model/hook-dispatched) but deliberately
 # carry no TRIGGER blocks because they are always dispatched by name — never by
@@ -329,6 +329,21 @@ class TestSpecialistSkillTriggerContracts:
         assert "disable-model-invocation: true" in desc, (
             f"{skill_name}/SKILL.md is registered as a command skill but is missing "
             f"disable-model-invocation: true; add it or remove from COMMAND_SKILLS"
+        )
+
+    @pytest.mark.parametrize("skill_name", COMMAND_SKILLS)
+    def test_command_skill_excluded_from_model_invokable_corpus(self, skill_name):
+        """A registered command skill must not count toward the listing budget.
+
+        Asserted directly against _model_invokable_skills(), independent of
+        the aggregate budget's momentary headroom — TestTotalListingBudgetUnderSonnet
+        would only catch a regression here if the corpus happened to be close
+        to the cap at the time.
+        """
+        assert skill_name not in _model_invokable_skills(), (
+            f"{skill_name} is registered in COMMAND_SKILLS (disable-model-invocation: "
+            f"true) but still appears in _model_invokable_skills() — check that flag "
+            f"is actually present and the plugin-scanning loop is reading it"
         )
 
 
@@ -435,6 +450,23 @@ class TestConventionSkillWiring:
         """code-writer must tell the writer to consult sql-query-conventions for read-path SQL."""
         assert "sql-query-conventions/SKILL.md" in self._agent_body("code-writer")
 
+    def test_code_writer_self_review_cross_checks_porcelain(self):
+        """code-writer's self-review must cross-check tracked paths against `git status --porcelain`."""
+        assert "git status --porcelain" in self._agent_body("code-writer")
+
+    def test_code_writer_self_review_avoids_git_diff_head(self):
+        """code-writer's self-review must warn against `git diff HEAD`, which pulls a prior round's staged work into the diff."""
+        body = self._agent_body("code-writer")
+        lines_with_git_diff_head = [
+            line for line in body.splitlines() if "git diff HEAD" in line
+        ]
+        assert lines_with_git_diff_head, (
+            "code-writer body no longer mentions `git diff HEAD` at all."
+        )
+        assert any("never" in line.lower() for line in lines_with_git_diff_head), (
+            "code-writer mentions `git diff HEAD` but no line prohibits it."
+        )
+
     def test_staff_sdet_reads_test_conventions_body(self):
         """staff-sdet must Read test-conventions/SKILL.md to ground its §N citations."""
         body = self._agent_body("staff-sdet")
@@ -461,6 +493,113 @@ class TestConventionSkillWiring:
     def test_handoff_runs_pr_description(self):
         """handoff's pre-write checklist must have an actionable run pointer to pr-description."""
         assert "run the `pr-description`" in self._skill_body("handoff")
+
+    def test_ready_for_review_continues_past_pr_description(self):
+        """ready-for-review step 5 must tell the model pr-description's ending is not this gate's stopping point."""
+        # Normalized so a future hard-wrap of this paragraph doesn't break the pin.
+        body = " ".join(self._skill_body("ready-for-review").split())
+        assert "continue to the next step in the same turn" in body
+
+    def test_handoff_continues_past_pr_description(self):
+        """handoff's pre-write checklist must tell the model pr-description's ending is not this checklist's stopping point."""
+        # Normalized so a future hard-wrap of this paragraph doesn't break the pin.
+        body = " ".join(self._skill_body("handoff").split())
+        assert "write the handoff file in the same turn" in body
+
+
+class TestMemorySkillSectionOrdinalCrossReferences:
+    """Pin every cross-reference this repo rewrote when
+    ai-instruction-and-memory-files/SKILL.md's sections were renumbered
+    (§2→§1, §3→§2, §5→§3) and its §1/§4 content moved to
+    claude/.claude/rules/claude-md-conventions.md.
+
+    A renumber silently redirects any pointer that still cites the old
+    ordinal to whatever content now sits at that number, rather than
+    breaking — `plugins/lovable-cloud/skills/lovable-cloud-knowledge/
+    SKILL.md` had already drifted this way undetected, citing "§3" for
+    content that had moved to §2, and a manual `git grep` sweep would not
+    have caught it because the ordinal still resolved to a real heading,
+    just the wrong one. These tests fail if a future edit changes what a
+    cited ordinal or named heading means without updating the citing text.
+    """
+
+    @staticmethod
+    def _section_body(full_body: str, ordinal: str) -> str:
+        """Body text of `## <ordinal>. <title>` up to the next `## ` heading."""
+        heading = re.search(rf"^## {ordinal}\. .+$", full_body, re.MULTILINE)
+        assert heading, f"no '## {ordinal}. ' heading found"
+        start = heading.end()
+        next_heading = re.search(r"^## ", full_body[start:], re.MULTILINE)
+        end = start + next_heading.start() if next_heading else len(full_body)
+        return full_body[start:end]
+
+    def _memory_skill_body(self) -> str:
+        return _skill_body("ai-instruction-and-memory-files")
+
+    def test_step1_item1_ordinals_resolve_to_named_content(self):
+        """SKILL.md:25 cites '§2 advisory vs deterministic, §3 anti-duplication
+        heuristic' — §2 must still discuss advisory/deterministic and §3 must
+        still carry the anti-duplication heuristic."""
+        body = self._memory_skill_body()
+        section_2 = self._section_body(body, "2")
+        assert "advisory" in section_2 and "deterministic" in section_2
+        section_3 = self._section_body(body, "3")
+        assert "Anti-duplication heuristic" in section_3
+
+    def test_step1_closing_line_ordinal_resolves_to_routing_table(self):
+        """SKILL.md:31 cites '§3 for the full routing table' — §3 must still
+        carry the CLAUDE.md-vs-memory routing table."""
+        body = self._memory_skill_body()
+        section_3 = self._section_body(body, "3")
+        assert "Where does a given rule belong?" in section_3
+
+    def test_routing_table_row_ordinal_resolves_to_advisory_section(self):
+        """The '## 3. Claude Code auto-memory' routing table's 'Restatement of
+        a rule already in CLAUDE.md / AGENTS.md' row cites '§2 advisory vs
+        deterministic' — same target section as the Step 1 item 1 citation
+        above."""
+        body = self._memory_skill_body()
+        section_2 = self._section_body(body, "2")
+        assert "advisory" in section_2 and "deterministic" in section_2
+
+    def test_lovable_cloud_pointer_names_real_length_and_behavior_test_content(self):
+        """lovable-cloud-knowledge/SKILL.md points at 'the length-targets and
+        behavior-test guidance in ai-instruction-and-memory-files' with no
+        ordinal — the named content must still exist under that description.
+        An ordinal-based pointer to this same content is exactly the drift
+        the class docstring above describes; the no-ordinal form is immune
+        to a renumber, but only as long as the described content stays put."""
+        # Normalized so the drafted line-wrap doesn't break the pin.
+        lovable_body = " ".join(_skill_file("lovable-cloud-knowledge").read_text().split())
+        assert "the length-targets and behavior-test guidance in ai-instruction-and-memory-files" in lovable_body
+        body = self._memory_skill_body()
+        section_1 = self._section_body(body, "1")
+        assert "under 200 lines per CLAUDE.md file" in section_1
+        assert "The behavior test" in section_1
+
+
+class TestCodeWriterSelfReviewScope:
+    """Pin code-writer's self-review diffing instructions.
+
+    Deliberately does not pin the surrounding explanatory prose -- a
+    copy-edit there must not fail this test; the three pinned fragments are
+    the mechanical instructions whose loss changes what the agent diffs.
+    """
+
+    def _body(self) -> str:
+        return " ".join(_agent_body("code-writer").split())
+
+    def test_pins_git_diff_paths_for_pre_existing_files(self):
+        """A pre-existing modified file must be reviewed with `git diff -- <paths>`."""
+        assert "`git diff -- <paths>`" in self._body()
+
+    def test_pins_git_status_porcelain_cross_check(self):
+        """The self-tracked path list must be cross-checked against `git status --porcelain`."""
+        assert "`git status --porcelain`" in self._body()
+
+    def test_prohibits_git_diff_head(self):
+        """`git diff HEAD` must not be used -- it pulls a prior round's staged work into scope."""
+        assert "Never use `git diff HEAD`" in self._body()
 
 
 class TestSkillFidelityReviewerUndecidableDismissal:
@@ -583,6 +722,89 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         assert "how many were dismissed as undecidable" in self._body()
 
 
+class TestSkillFidelityReviewerArchitectConsultCheck:
+    """Pin the architect-consult check's mandatory-emission contract and the
+    Input-contract correction it depends on.
+
+    The check can never legitimately emit [SILENT-SKIP] -- a reviewer that
+    reverted to treating zero rows as an unmet obligation would silently
+    reintroduce the false-claim risk this forecloses. And the Input
+    contract's two stale clauses must stay corrected:
+    a future edit that reintroduced either -- "every Agent/Task dispatch" or
+    "present only for code-review's obligation" -- would make the agent
+    believe absence of a row proves absence of a dispatch, which the new
+    step's own reasoning depends on being false.
+    """
+
+    def _body(self):
+        """Whitespace-normalized so a substring spanning a markdown line
+        wrap (the body's line width isn't a contract this test pins) still
+        matches -- same convention as this file's other agent/skill-body
+        substring pins."""
+        return " ".join(_agent_body("skill-fidelity-reviewer").split())
+
+    def _section(self, body: str) -> str:
+        start = body.index("## The architect-consult check")
+        end = body.index("## The standard")
+        return body[start:end]
+
+    def test_declares_own_heading_independent_of_code_review_scope(self):
+        """The new check must fire on timeline-presence alone, not only
+        when a completed code-review pass is in scope."""
+        body = self._body()
+        assert "## The architect-consult check" in body
+        assert "independent of whether any `code-review` pass is in scope" in self._section(body)
+
+    def test_silent_skip_named_inapplicable(self):
+        """[SILENT-SKIP] must be explicitly ruled out for this check, with
+        the absence-is-not-evidence reason -- not merely omitted."""
+        section = self._section(self._body())
+        assert "never `[SILENT-SKIP]`" in section
+        assert "absence of a row is not evidence of absence" in section
+
+    def test_states_two_outcome_verdict_set(self):
+        """The check's two honest outcomes -- consult-observed [DISCLOSED]
+        and the dismissed-as-undecidable fallback -- must both appear."""
+        section = self._section(self._body())
+        assert "[DISCLOSED]" in section
+        assert "Dismissed as undecidable" in section
+
+    def test_initiation_not_completion_wording(self):
+        """The check must state a consult dispatch was initiated, never that
+        it completed."""
+        assert "*initiated*, never that it completed" in self._section(self._body())
+
+    def test_input_contract_no_longer_claims_every_agent_task_dispatch(self):
+        """The stale 'every Agent/Task dispatch' claim must be gone --
+        _is_reviewer_subagent_type gates reviewer-spawn rows."""
+        assert "every `Agent`/`Task` dispatch on this branch's main thread" not in self._body()
+
+    def test_input_contract_no_longer_claims_timeline_is_code_review_only(self):
+        """The stale 'present only when checking code-review's
+        spawn-dispatch obligation' claim must be gone -- the timeline now
+        also serves the architect-consult check."""
+        assert "present only when checking" not in self._body()
+
+    def test_input_contract_names_architect_consult_rows(self):
+        """The Input contract must say what the timeline does contain --
+        reviewer-spawn rows plus architect-consult rows, main thread only."""
+        body = self._body()
+        assert "`architect-consult` rows" in body
+        assert "main-thread only, never subagent records" in body
+
+    def test_description_names_architect_consult_check(self):
+        """The frontmatter description must name the third check for a
+        human skimming the roster."""
+        assert "plan-architect consult dispatch" in self._body()
+
+    def test_output_format_has_architect_consult_record_section(self):
+        """The consult-observed record needs its own labeled Output-format
+        slot, excluded from both <N> and <M>."""
+        body = self._body()
+        assert "## Architect consults observed" in body
+        assert "Never counted in `<N>` or `<M>`" in body
+
+
 class TestPrDescriptionTwoModeDispatch:
     """Pin pr-description's author/sync branching, in both directions.
 
@@ -692,6 +914,10 @@ class TestPrDescriptionCostSectionWiring:
         body = self._body()
         assert "pr-cost-disclosure" in body
         assert "~/.claude/scripts/pr-cost-section.sh" in body
+
+    def test_declares_cost_heading_literal(self):
+        body = self._body()
+        assert "## Cost (list-price estimate)" in body
 
 
 class TestPrDescriptionProseTighteningPassWiring:
@@ -863,7 +1089,7 @@ class TestHandoffCommitMarkerCoveredWork:
         marker-covered work before writing the file when the reconciliation
         flag fired."""
         body = _skill_file("handoff").read_text()
-        assert "Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim" in body
+        assert "Run `~/.claude/scripts/marker.sh status` and paste its output verbatim" in body
         assert "each labeled live, historical, or absent" in body
         assert "code-review or skill-review marker whose covered state has uncommitted" in body
         assert "commit it *before* writing this file" in body
@@ -1140,9 +1366,9 @@ class TestHandoffCollectStepPinsLoadBearingClauses:
     def test_collect_step_treats_a_repeat_hard_block_as_expected(self):
         body = _skill_file("handoff").read_text()
         assert (
-            "it is expected, not a new problem: it means this session is "
-            "still past its threshold while already following the block's "
-            "own remediation"
+            "that's expected, not a new problem — it just means the "
+            "session is still past its threshold while following the "
+            "block's own remediation"
             in body
         )
 
@@ -1360,7 +1586,79 @@ class TestCorpusBudgetFunction:
         assert violations[0].count("chars") >= 5  # each offender line ends "N chars"
 
 
+class TestValidateContextForkRequiresExplicitBackground:
+    """Unit tests for validate()'s third check — uses tmp_path fixtures."""
+
+    def _make_skill(self, tmp_path, name: str, frontmatter_lines: list[str]) -> Path:
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
+        lines = ["---", *frontmatter_lines, "---", ""]
+        skill_file.write_text("\n".join(lines))
+        return skill_file
+
+    def _background_violations(self, violations: list[str]) -> list[str]:
+        return [v for v in violations if "background" in v]
+
+    def test_bare_context_fork_with_no_background_key_fails(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork"])
+        assert self._background_violations(validate(f))
+
+    def test_background_null_fails(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", "background:"])
+        assert self._background_violations(validate(f))
+
+    def test_background_non_boolean_string_fails(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", 'background: "flase"'])
+        assert self._background_violations(validate(f))
+
+    def test_background_true_literal_passes(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", "background: true"])
+        assert not self._background_violations(validate(f))
+
+    def test_background_false_literal_passes(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: fork", "background: false"])
+        assert not self._background_violations(validate(f))
+
+    def test_yaml_coerced_boolean_spellings_pass(self, tmp_path):
+        """PyYAML's safe_load coerces yes/on/True (any case) to real
+        booleans, so Check 3's isinstance(background, bool) check accepts
+        them today — pinning this so a future change to the accepted-input
+        semantics doesn't silently narrow (or the message doesn't silently
+        drift from behavior) without a test noticing."""
+        for spelling in ("yes", "on", "True", "TRUE"):
+            f = self._make_skill(tmp_path, f"a_{spelling}", ["context: fork", f"background: {spelling}"])
+            assert not self._background_violations(validate(f)), (
+                f"background: {spelling} should currently pass (PyYAML coerces it to bool)"
+            )
+
+    def test_context_not_fork_skips_the_check_regardless_of_background(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["context: something-else"])
+        assert not self._background_violations(validate(f))
+
+    def test_no_context_key_skips_the_check(self, tmp_path):
+        f = self._make_skill(tmp_path, "a", ["description: 'x'"])
+        assert validate(f) == []
+
+    def test_near_miss_cased_context_value_is_not_flagged(self, tmp_path):
+        """Whether the harness's own frontmatter parser is case-sensitive on
+        `context:` is unestablished, so this check is deliberately exact-match
+        only — pinning today's behavior rather than guessing the harness's
+        tolerance."""
+        f = self._make_skill(tmp_path, "a", ["context: Fork"])
+        assert not self._background_violations(validate(f))
+
+
 _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|end) -->")
+
+# The three DISPOSITION_RULE anchor regions in the corpus. Asserted as an
+# exact set, not just "each found anchor is non-trivial" — a corpus scan
+# alone passes vacuously if an entire anchor pair is deleted.
+_EXPECTED_DISPOSITION_RULE_ANCHORS = {
+    ("code-review", "code-review-defer-invariant"),
+    ("code-review", "code-review-new-primitive-route"),
+    ("plan-review", "plan-review-fix-or-ask"),
+}
 
 
 def _all_skill_md_paths() -> list[Path]:
@@ -1521,19 +1819,34 @@ def test_disposition_rule_anchors_present() -> None:
     vice versa); calling the production parser here closes that gap. The
     regex below is retained only to discover which anchor *names* exist in
     each file — extract_governing_rule() needs a name to look up.
+
+    The found set is also compared against _EXPECTED_DISPOSITION_RULE_ANCHORS
+    exactly, not just "each found anchor is non-trivial." A scan that only
+    validates names it finds passes vacuously if an entire anchor pair is
+    deleted, since no name is left to fail the length check.
     """
     MIN_RULE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
 
+    found: set[tuple[str, str]] = set()
     for skill_md_path in _all_skill_md_paths():
         text = skill_md_path.read_text()
+        skill_name = skill_md_path.parent.name
         anchor_names = {m.group(1) for m in _DISPOSITION_RULE_ANCHOR_RE.finditer(text)}
 
         for name in anchor_names:
+            found.add((skill_name, name))
             enclosed = extract_governing_rule(skill_md_path, name)
             assert len(enclosed) >= MIN_RULE_TEXT_CHARS, (
                 f"{skill_md_path}: DISPOSITION_RULE:{name} encloses only {len(enclosed)} "
                 f"non-whitespace chars after stripping — looks deleted or gutted"
             )
+
+    assert found == _EXPECTED_DISPOSITION_RULE_ANCHORS, (
+        "DISPOSITION_RULE anchors drifted from the expected set — a region was "
+        "added, renamed, or deleted.\n"
+        f"  expected but missing: {sorted(_EXPECTED_DISPOSITION_RULE_ANCHORS - found)}\n"
+        f"  found but unexpected: {sorted(found - _EXPECTED_DISPOSITION_RULE_ANCHORS)}"
+    )
 
 
 _LEGACY_TRIGGER_METHODS = {"runtime", "description-fidelity", "behavioral-dispatch"}
@@ -1999,6 +2312,129 @@ def _all_skill_md_files() -> list[Path]:
     return sorted(found)
 
 
+# Skills carrying context: fork. The selection criterion is working set (how
+# much bulk content a skill's body pulls into the parent conversation), not
+# body size — see docs/skills.md's Skill architecture notes section. Extending
+# this set requires re-running that criterion against the candidate skill, not
+# just adding its name here.
+_FORKED_SKILLS = frozenset({"transcript-narrative", "error-mode-analysis"})
+
+
+class TestForkedSkillRoster:
+    """`context: fork` is reserved for a skill whose body instructs reading
+    bulk working-set content — raw transcripts, full PR-comment payloads —
+    directly into the parent conversation, with no residual parent work after
+    the artifact is written. A skill that already keeps its working set out
+    of the parent by dispatching subagents (code-review, plan-review) gains
+    only its body from forking and loses capability — the exact mistake this
+    roster test exists to catch before it lands.
+    """
+
+    def test_context_fork_roster_matches_working_set_criterion(self):
+        forked = {
+            path.parent.name
+            for path in _all_skill_md_files()
+            if parse_frontmatter(path).get("context") == "fork"
+        }
+        assert forked == _FORKED_SKILLS, (
+            "context: fork roster changed. Forking is a win only for a skill "
+            "whose body directs bulk working-set content into the parent "
+            "conversation with no residual parent work after the artifact is "
+            "written — not for a skill that is merely long. A skill that "
+            "already dispatches subagents to keep its working set out of the "
+            "parent (code-review, plan-review) gains only its body from "
+            "forking and loses capability. Read docs/skills.md's Skill "
+            "architecture notes section and re-run its criterion against the "
+            f"candidate skill before adding or removing a name here. Found: "
+            f"{sorted(forked)}, expected: {sorted(_FORKED_SKILLS)}"
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_forked_skill_declares_background_false_literal(self, skill_name):
+        frontmatter = parse_frontmatter(_skill_file(skill_name))
+        assert frontmatter.get("background") is False, (
+            f"{skill_name}: context: fork must pair with a literal "
+            f"background: false — omitting it defaults background to true, "
+            f"a background fork with a narrowed tool set and no /rewind "
+            f"checkpoint coverage."
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_forked_skill_carries_no_agent_key(self, skill_name):
+        frontmatter = parse_frontmatter(_skill_file(skill_name))
+        assert "agent" not in frontmatter, (
+            f"{skill_name}: must carry no agent: key, keeping it on the "
+            f"default general-purpose agent type — pinning a review-only "
+            f"agent type here would categorically forbid marker writes for "
+            f"any future forked skill."
+        )
+
+
+_NEGATIVE_GATE_RELEASE_INSTRUCTION = (
+    "This skill never invokes `marker.sh` and never invokes a review skill, "
+    "directly or by dispatching a subagent to do either on its behalf."
+)
+
+# Review-only skill names a forked skill's body must never invoke, matching
+# the personas _LIB_NO_GATE_RELEASE_AGENTS protects against releasing a gate.
+_REVIEW_SKILL_NAMES = (
+    "code-review",
+    "plan-review",
+    "skill-review",
+    "ready-for-review",
+    "agent-review",
+    "claude-hook-review",
+)
+
+
+class TestForkedSkillsDeclareNoGateReleaseAuthority:
+    """A forked skill runs unsupervised, in the parent's process identity,
+    with the full tool set. Both forked skills ingest content the session
+    owner did not write — raw transcripts, GitHub PR comments — so both must
+    state plainly that they never touch a review gate.
+    """
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_states_it_never_releases_a_gate(self, skill_name):
+        body = _skill_body(skill_name)
+        assert _NEGATIVE_GATE_RELEASE_INSTRUCTION in body, (
+            f"{skill_name}: forked skill body must state plainly that it "
+            f"never invokes marker.sh and never invokes a review skill."
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_does_not_actually_invoke_marker_or_a_review_skill(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "marker.sh write" not in body
+        assert "marker.sh activate" not in body
+        for review_skill in _REVIEW_SKILL_NAMES:
+            assert f'skill="{review_skill}"' not in body
+            assert f"Invoke the `{review_skill}`" not in body
+            assert f"run the `{review_skill}`" not in body
+
+
+class TestForkedSkillsCarryReturnAndGuardInstructions:
+    """A partial revert of either mechanism must fail loudly here rather than
+    silently reintroduce the parent-context cost forking exists to avoid.
+    """
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_defaults_its_output_location_to_mktemp(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "mktemp -d" in body, (
+            f"{skill_name}: must default its output location to a mktemp -d "
+            f"directory when no output path/directory argument is given."
+        )
+
+    @pytest.mark.parametrize("skill_name", sorted(_FORKED_SKILLS))
+    def test_body_states_the_bash_availability_guard(self, skill_name):
+        body = _skill_body(skill_name)
+        assert "v2.1.218" in body, (
+            f"{skill_name}: must stop and name the Claude Code v2.1.218 "
+            f"background: false floor when Bash is unavailable."
+        )
+
+
 def test_skill_bodies_carry_no_citation_urls() -> None:
     """No SKILL.md body may contain a URL outside a code fence or code span.
 
@@ -2120,6 +2556,476 @@ def test_blank_frontmatter_excludes_metadata_from_the_scan() -> None:
     assert "Body prose." in _blank_frontmatter(document)
 
 
+# --- Cross-reference integrity: `target` § "Heading" citations resolve ---
+#
+# A citation like `subagent-delegation/SKILL.md` § "Heavy command output" lets
+# one skill point at a section of another (or of a REFERENCES.md/doc) instead
+# of restating it — CLAUDE.md's single-source-of-truth rule applied to skill
+# prose. Nothing else in the repo checks that the target file still exists or
+# that its heading still reads exactly as quoted, so a rename on either side
+# leaves a stale pointer with no reader-visible symptom until someone follows
+# it. This section resolves every such citation in the skill tree against a
+# real file and a real heading in it.
+
+# The backticked target must be adjacent to `§`, with only whitespace (which
+# may include a single newline, so hard-wrapped prose still matches) between
+# the closing backtick and the section mark, and between the mark and the
+# opening quote.
+_CITATION_WITH_TARGET_RE = re.compile(r'`(?P<target>[^`\n]+)`\s+§\s+"(?P<heading>[^"\n]+)"')
+# A bare `§ "Heading"` with no adjacent backticked target resolves against the
+# citing file's own headings. Every with-target match above also satisfies
+# this pattern (the `§ "..."` tail is a substring of it), so callers must
+# discard a bare match whose span falls inside a with-target match's span —
+# see _extract_citations.
+_BARE_CITATION_RE = re.compile(r'§\s+"(?P<heading>[^"\n]+)"')
+
+# Known limit, deliberately not closed: this extractor can't tell a live
+# citation from an illustrative example of the citation grammar, so an
+# example inside a scanned SKILL.md/REFERENCES.md will false-fail. Currently
+# safe only because the grammar's own explanation lives outside the scanned
+# corpus (`.claude/rules/skill-and-agent-self-review.md`).
+
+
+class _Citation(NamedTuple):
+    line: int
+    target: str | None  # None means "resolve against the citing file itself"
+    heading: str
+
+
+def _extract_citations(markdown_text: str) -> list[_Citation]:
+    """Every `` `target` § "Heading" `` (or bare `§ "Heading"`) citation in a
+    markdown document.
+
+    Excludes frontmatter (`_blank_frontmatter`) and any citation whose match
+    starts on a line inside a *closed* fenced code block
+    (`_closed_fence_line_indices`) — deliberately not `_blank_code_regions`,
+    which blanks inline code spans and would blank the citation's own target.
+    """
+    prose = _blank_frontmatter(markdown_text)
+    lines = prose.split("\n")
+    fenced_lines = _closed_fence_line_indices(lines)
+
+    def _lineno(start: int) -> int:
+        return prose.count("\n", 0, start) + 1
+
+    citations: list[_Citation] = []
+    consumed_spans: list[tuple[int, int]] = []
+
+    for match in _CITATION_WITH_TARGET_RE.finditer(prose):
+        consumed_spans.append(match.span())
+        lineno = _lineno(match.start())
+        if (lineno - 1) in fenced_lines:
+            continue
+        citations.append(_Citation(lineno, match.group("target"), match.group("heading")))
+
+    for match in _BARE_CITATION_RE.finditer(prose):
+        if any(start <= match.start() < end for start, end in consumed_spans):
+            continue
+        lineno = _lineno(match.start())
+        if (lineno - 1) in fenced_lines:
+            continue
+        citations.append(_Citation(lineno, None, match.group("heading")))
+
+    return citations
+
+
+_HEADING_LINE_RE = re.compile(r"^#{1,6}\s+.+$")
+_HEADING_STRIP_CHARS_RE = re.compile(r"[`*_]")
+
+
+def _normalize_heading(text: str) -> str:
+    """Normalize a heading for citation comparison.
+
+    Strips leading/trailing `#`, strips every backtick/`*`/`_` character
+    anywhere in the text (so a heading containing inline code or emphasis is
+    citable in plain text), collapses whitespace runs, then strips the ends.
+    Both sides of a comparison run through this before the exact-equality
+    check, so `### Debug-investigation probe → \\`general-purpose\\` or
+    \\`Explore\\`` is citable as "Debug-investigation probe → general-purpose
+    or Explore".
+    """
+    text = text.strip("#")
+    text = _HEADING_STRIP_CHARS_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _heading_texts(markdown_text: str) -> set[str]:
+    """Every normalized ATX heading in a markdown document."""
+    return {
+        _normalize_heading(line)
+        for line in markdown_text.split("\n")
+        if _HEADING_LINE_RE.match(line)
+    }
+
+
+def _resolve_citation_target(
+    target: str | None,
+    *,
+    citing_file: Path,
+    repo_root: Path,
+    skill_md_files: Callable[[], list[Path]] = _all_skill_md_files,
+) -> Path | None:
+    """Resolve a citation's target to a real file, or None if unresolvable.
+
+    Resolution order: (1) a repo-root-relative path that exists; (2)
+    `<skill-dir>/<file>` under any of `skill_md_files()`'s three roots; (3) a
+    bare filename with no `/`, as a same-directory sibling of the citing
+    file. `target is None` (a bare `§ "..."` citation) always resolves to
+    the citing file itself. A candidate that exists but is a directory does
+    not count as resolved — a directory has no headings to satisfy the
+    citation.
+
+    `skill_md_files` defaults to the real, repo-wide `_all_skill_md_files`
+    but is overridable so a `tmp_path`-rooted test can exercise the
+    cross-skill-directory branch without touching the real repo tree.
+    """
+    if target is None:
+        return citing_file
+
+    root_relative = repo_root / target
+    if root_relative.is_file():
+        return root_relative
+
+    if "/" in target:
+        skill_name, filename = target.split("/", 1)
+        for skill_md_path in skill_md_files():
+            if skill_md_path.parent.name == skill_name:
+                candidate = skill_md_path.parent / filename
+                if candidate.is_file():
+                    return candidate
+    else:
+        same_dir_candidate = citing_file.parent / target
+        if same_dir_candidate.is_file():
+            return same_dir_candidate
+
+    return None
+
+
+def _citation_sources_for_skill_md(skill_md_path: Path) -> list[Path]:
+    """A SKILL.md plus its REFERENCES.md/ROUTING.md siblings, if present —
+    the two co-located auxiliary files `.claude/rules/skill-and-agent-self-review.md`
+    already names."""
+    sources = [skill_md_path]
+    # This set must stay in sync with select-tests.py's
+    # _is_skill_auxiliary_md_change — a shared constant would be warranted
+    # if a third auxiliary filename type is ever added.
+    for sibling_name in ("REFERENCES.md", "ROUTING.md"):
+        sibling = skill_md_path.parent / sibling_name
+        if sibling.exists():
+            sources.append(sibling)
+    return sources
+
+
+def _citation_report(skill_md_paths: Iterable[Path], *, repo_root: Path) -> list[str]:
+    """Glob (expand each SKILL.md into itself plus its auxiliary siblings) →
+    extract → resolve → aggregate → report, for a given set of SKILL.md
+    paths. Factored out from test_skill_citations_resolve_to_real_headings so
+    a synthetic-corpus test can drive the exact same pipeline without
+    depending on the real repo tree.
+    """
+    violations: list[str] = []
+    for skill_md_path in skill_md_paths:
+        for source_path in _citation_sources_for_skill_md(skill_md_path):
+            text = source_path.read_text()
+            relative_source = source_path.relative_to(repo_root)
+            for citation in _extract_citations(text):
+                resolved = _resolve_citation_target(
+                    citation.target, citing_file=source_path, repo_root=repo_root
+                )
+                if resolved is None:
+                    violations.append(
+                        f"{relative_source}:{citation.line} -> "
+                        f"unresolvable target {citation.target!r}"
+                    )
+                    continue
+                if _normalize_heading(citation.heading) not in _heading_texts(resolved.read_text()):
+                    violations.append(
+                        f"{relative_source}:{citation.line} -> target "
+                        f"{citation.target!r} resolved to "
+                        f"{resolved.relative_to(repo_root)} but it has no heading "
+                        f"matching {citation.heading!r}"
+                    )
+    return violations
+
+
+def test_skill_citations_resolve_to_real_headings() -> None:
+    """Every `` `target` § "Heading" `` citation in the skill tree resolves to
+    a real file and an exact heading in it.
+
+    Scanned corpus: every SKILL.md (`_all_skill_md_files`) plus every
+    REFERENCES.md/ROUTING.md sibling in those same skill directories —
+    widened past SKILL.md alone because a stale citation this test guards
+    against lives in review-permissions/REFERENCES.md.
+
+    Reports every violation at once rather than failing on the first, so a
+    contributor fixes the whole set in one pass — same convention as
+    test_skill_bodies_carry_no_citation_urls above.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    violations = _citation_report(_all_skill_md_files(), repo_root=repo_root)
+
+    assert not violations, (
+        "Skill-tree citations (`target` § \"Heading\") must resolve to a real "
+        "file and an exact heading in it — a rename on either side leaves a "
+        "stale pointer with no reader-visible symptom.\n"
+        + "\n".join(f"  {violation}" for violation in violations)
+    )
+
+
+def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
+    """docs/handoff-nudge.md's cross-reference to handoff/SKILL.md's
+    warrant-check section resolves to a real heading there.
+
+    `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus
+    (SKILL.md plus its REFERENCES.md/ROUTING.md siblings only), so
+    test_skill_citations_resolve_to_real_headings never sees this citation —
+    targeted narrowly here instead of widening that corpus.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    doc_path = repo_root / "docs" / "handoff-nudge.md"
+    expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
+    citations = [
+        citation
+        for citation in _extract_citations(doc_path.read_text())
+        if citation.target == "handoff/SKILL.md"
+        and _normalize_heading(citation.heading) == expected_heading
+    ]
+    assert citations, (
+        "docs/handoff-nudge.md no longer cites handoff/SKILL.md's "
+        "warrant-check section"
+    )
+
+    resolved = _resolve_citation_target(
+        citations[0].target, citing_file=doc_path, repo_root=repo_root
+    )
+    assert resolved is not None, (
+        "docs/handoff-nudge.md's citation target 'handoff/SKILL.md' failed to resolve"
+    )
+    assert expected_heading in _heading_texts(resolved.read_text()), (
+        f"docs/handoff-nudge.md's citation resolved to {resolved} but it has "
+        f"no heading matching {expected_heading!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_heading", "normalized"),
+    [
+        pytest.param("## Plain Heading", "Plain Heading", id="strips-leading-hashes"),
+        pytest.param(
+            "### Debug-investigation probe → `general-purpose` or `Explore`",
+            "Debug-investigation probe → general-purpose or Explore",
+            id="strips-backticks-mid-heading",
+        ),
+        pytest.param("## *Emphasized* heading", "Emphasized heading", id="strips-asterisk-emphasis"),
+        pytest.param("## _Emphasized_ heading", "Emphasized heading", id="strips-underscore-emphasis"),
+        pytest.param("##   Extra   spaces  ", "Extra spaces", id="collapses-whitespace-runs"),
+    ],
+)
+def test_normalize_heading(raw_heading: str, normalized: str) -> None:
+    """The real heading at subagent-delegation/SKILL.md:120 pins the
+    mid-heading-backtick case; the rest are synthetic but exercise the same
+    normalization independently."""
+    assert _normalize_heading(raw_heading) == normalized
+
+
+def _write_skill_files(tmp_path: Path, files: dict[str, str]) -> None:
+    for relative_path, content in files.items():
+        file_path = tmp_path / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content)
+
+
+@pytest.mark.parametrize(
+    ("skill_files", "expected_violation_count"),
+    [
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n"
+                    "```\n"
+                    'Fenced: `example-skill/SKILL.md` § "Nonexistent Heading"\n'
+                    "```\n"
+                ),
+            },
+            0,
+            # Would be 1 if the closed-fence exclusion broke — the fenced
+            # citation's heading does not exist.
+            id="citation-inside-closed-fence-not-scanned",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n"
+                    'Wrapped: `example-skill/SKILL.md`\n§ "Nonexistent Heading"\n'
+                ),
+            },
+            1,
+            # Would be 0 if \s+ didn't span the newline — the bad citation
+            # would never be extracted at all.
+            id="newline-wrapped-citation-is-matched",
+        ),
+        pytest.param(
+            {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'},
+            1,
+            id="unresolvable-target-fails",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": "## Real Heading\n",
+                "example-skill/ROUTING.md": (
+                    "## Routing\n\n" 'Bad: `does-not-exist.md` § "Whatever"\n'
+                ),
+            },
+            # Proves _citation_sources_for_skill_md actually walks into
+            # ROUTING.md — would be 0 if that sibling were never scanned.
+            1,
+            id="routing-md-sibling-is-scanned",
+        ),
+        pytest.param(
+            {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Real Heading"\n'},
+            0,
+            id="bare-citation-with-no-adjacent-target-resolves-same-file",
+        ),
+        pytest.param(
+            {"example-skill/SKILL.md": "## Real Heading\n\n" 'Bare: § "Nonexistent Heading"\n'},
+            1,
+            id="bare-citation-same-file-missing-heading-fails",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Home\n\n" 'Citation: `sibling.md` § "Config: "quoted" value"\n'
+                ),
+                "example-skill/sibling.md": '## Config: "quoted" value\n',
+            },
+            # The `[^"\n]+` heading class truncates at the first embedded
+            # quote, so the citation must fail loudly rather than
+            # prefix-match the real (longer) heading.
+            1,
+            id="heading-with-literal-quote-truncates-and-fails",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "---\nname: example-skill\ndescription: |\n"
+                    '  See `sibling.md` § "Nonexistent Heading" for details.\n'
+                    "---\n\n## Real Heading\n"
+                ),
+            },
+            # Would be 1 if frontmatter weren't blanked before extraction —
+            # pins _blank_frontmatter's exclusion for this extractor.
+            0,
+            id="citation-inside-frontmatter-is-excluded",
+        ),
+        pytest.param(
+            {
+                "example-skill/SKILL.md": (
+                    "## Real Heading\n\n" 'Citation: `sibling.md` § "Duplicate Heading"\n'
+                ),
+                "example-skill/sibling.md": "## Duplicate Heading\n\nFirst copy.\n\n## Duplicate Heading\n",
+            },
+            # Would be 1 if _heading_texts started requiring headings to be
+            # unique — today it returns a set, so two identical normalized
+            # headings in the target file still resolve.
+            0,
+            id="duplicate-headings-in-target-still-resolve",
+        ),
+    ],
+)
+def test_citation_report_cases(
+    tmp_path: Path, skill_files: dict[str, str], expected_violation_count: int
+) -> None:
+    _write_skill_files(tmp_path, skill_files)
+    violations = _citation_report([tmp_path / "example-skill" / "SKILL.md"], repo_root=tmp_path)
+    assert len(violations) == expected_violation_count, violations
+
+
+def test_citation_report_target_resolving_to_a_directory_fails(tmp_path: Path) -> None:
+    """A citation target that resolves to a directory, not a file, must fail
+    to resolve rather than raise when the resolver reads it for headings."""
+    skill_dir = tmp_path / "example-skill"
+    skill_dir.mkdir()
+    (skill_dir / "not-a-file").mkdir()
+    (skill_dir / "SKILL.md").write_text("## Home\n\n" 'Citation: `not-a-file` § "Whatever"\n')
+
+    violations = _citation_report([skill_dir / "SKILL.md"], repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert "not-a-file" in violations[0]
+
+
+def test_resolve_citation_target_cross_skill_directory_succeeds(tmp_path: Path) -> None:
+    """`skill-name/file` resolves via the injected `skill_md_files` seam when
+    a same-named skill directory holds the file, without touching the real
+    repo tree — this is what `_all_skill_md_files()` would do in production.
+
+    The real skill directory lives outside `repo_root` so the repo-relative
+    tier (1) cannot resolve it first — only the cross-skill-directory tier
+    (2), driven by the injected seam, can.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other_skill_md = tmp_path / "elsewhere" / "other-skill" / "SKILL.md"
+    other_skill_md.parent.mkdir(parents=True)
+    other_skill_md.write_text("## Home\n")
+    (other_skill_md.parent / "REFERENCES.md").write_text("## Target Heading\n")
+
+    resolved = _resolve_citation_target(
+        "other-skill/REFERENCES.md",
+        citing_file=repo_root / "example-skill" / "SKILL.md",
+        repo_root=repo_root,
+        skill_md_files=lambda: [other_skill_md],
+    )
+
+    assert resolved == other_skill_md.parent / "REFERENCES.md"
+
+
+def test_resolve_citation_target_cross_skill_directory_fails_on_unknown_skill(
+    tmp_path: Path,
+) -> None:
+    """A `skill-name/file` target whose skill name matches no directory
+    returned by the injected `skill_md_files` seam is unresolvable."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other_skill_md = tmp_path / "elsewhere" / "other-skill" / "SKILL.md"
+    other_skill_md.parent.mkdir(parents=True)
+    other_skill_md.write_text("## Home\n")
+
+    resolved = _resolve_citation_target(
+        "nonexistent-skill/REFERENCES.md",
+        citing_file=repo_root / "example-skill" / "SKILL.md",
+        repo_root=repo_root,
+        skill_md_files=lambda: [other_skill_md],
+    )
+
+    assert resolved is None
+
+
+def test_citation_report_names_citing_file_line_and_target_for_unresolvable_citation(
+    tmp_path: Path,
+) -> None:
+    """Drives the full glob → extract → resolve → aggregate → report path
+    over a small synthetic corpus with one resolvable and one unresolvable
+    citation. A later refactor that narrows the glob, swallows an exception,
+    or drops an aggregation branch would pass every helper-level test above
+    and only surface here.
+    """
+    skill_dir = tmp_path / "example-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "## Real Heading\n\n"
+        'Resolvable: `example-skill/SKILL.md` § "Real Heading".\n'
+        'Unresolvable: `missing-file.md` § "Some Heading".\n'
+    )
+
+    violations = _citation_report([skill_dir / "SKILL.md"], repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].startswith("example-skill/SKILL.md:4")
+    assert "missing-file.md" in violations[0]
+
+
 _INVALID_SKIP_HEADING = "**Invalid skip rationales.**"
 _SKIP_RATIONALE_LABEL_RE = re.compile(r'^[-*] \*\*"(?P<label>[^"]+)"\*\*')
 _TOP_LEVEL_LIST_ITEM_RE = re.compile(r"^[-*] ")
@@ -2184,6 +3090,417 @@ def test_invalid_skip_rationale_labels_match_across_review_skills() -> None:
     )
 
 
+_SCOPE_RULE_ANCHOR_RE = re.compile(r"<!-- SCOPE_RULE:(\S+) (start|end) -->")
+_SCOPE_EXEMPT_ROW_ANCHOR_RE = re.compile(r"<!-- SCOPE_EXEMPT_ROW (start|end) -->")
+
+# The three anchor regions the staged-diff scope-boundary redesign introduced.
+# Asserted as an exact set, not just "each found anchor is non-trivial" — a
+# corpus scan alone passes vacuously if an entire anchor pair is deleted.
+_EXPECTED_SCOPE_ANCHORS = {
+    ("code-review", "SCOPE_RULE:code-review-staged-diff-only"),
+    ("code-review", "SCOPE_EXEMPT_ROW"),
+    ("code-review", "SCOPE_RULE:code-review-causal-reach"),
+    ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"),
+}
+
+_SECURITY_CONTROLS_ROW = "Adds/modifies security controls"
+
+
+def _extract_scope_anchor_region(skill_md_path: Path, marker_name: str) -> str:
+    """Extract text strictly between a `<!-- <marker_name> start/end -->` pair.
+
+    Mirrors extract_governing_rule()'s (evals/run_skill_evals.py) presence/
+    order/duplicate validation, parameterized over the marker name instead of
+    that function's hard-coded `DISPOSITION_RULE:` prefix — reusing that
+    prefix would silently enroll a scope rule in the disposition-fidelity
+    eval, which is why this anchor namespace needs its own small parser
+    rather than calling extract_governing_rule() directly.
+    """
+    text = skill_md_path.read_text()
+    start_marker = f"<!-- {marker_name} start -->"
+    end_marker = f"<!-- {marker_name} end -->"
+    start_count = text.count(start_marker)
+    end_count = text.count(end_marker)
+    if start_count > 1 or end_count > 1:
+        raise ValueError(
+            f"{marker_name!r} anchor in {skill_md_path}: appears more than once "
+            f"(start x{start_count}, end x{end_count}) — duplicate anchor names "
+            "are not supported, rename one of them"
+        )
+    start_idx = text.find(start_marker)
+    end_idx = text.find(end_marker)
+    if start_idx == -1 or end_idx == -1:
+        raise ValueError(
+            f"{marker_name!r} anchor not found (or incomplete) in {skill_md_path} "
+            f"— start present: {start_idx != -1}, end present: {end_idx != -1}"
+        )
+    if end_idx < start_idx:
+        raise ValueError(
+            f"{marker_name!r} anchor in {skill_md_path}: end marker appears before start marker"
+        )
+    return text[start_idx + len(start_marker) : end_idx].strip()
+
+
+class TestExtractScopeAnchorRegion:
+    """Direct branch coverage for _extract_scope_anchor_region's three raise
+    branches, exercised with tiny inline fixtures rather than waiting for the
+    real corpus to happen to contain such a defect. Mirrors
+    TestTriggerAFenceScan's pattern of testing a small parsing helper
+    branch-by-branch with literal string fixtures before the corpus-wide
+    sweep runs.
+    """
+
+    _MARKER = "SCOPE_RULE:example"
+
+    def _write(self, tmp_path: Path, content: str) -> Path:
+        path = tmp_path / "SKILL.md"
+        path.write_text(content)
+        return path
+
+    def test_happy_path_extracts_enclosed_text(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} start -->\nsome rule text\n<!-- {self._MARKER} end -->",
+        )
+        assert _extract_scope_anchor_region(path, self._MARKER) == "some rule text"
+
+    def test_duplicate_start_marker_raises(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} start -->\nfirst\n<!-- {self._MARKER} start -->\n"
+            f"second\n<!-- {self._MARKER} end -->",
+        )
+        with pytest.raises(ValueError, match="more than once"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_duplicate_end_marker_raises(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} start -->\ntext\n<!-- {self._MARKER} end -->\n"
+            f"<!-- {self._MARKER} end -->",
+        )
+        with pytest.raises(ValueError, match="more than once"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_start_present_end_missing_raises(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, f"<!-- {self._MARKER} start -->\ntext")
+        with pytest.raises(ValueError, match="not found"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_end_present_start_missing_raises(self, tmp_path: Path) -> None:
+        path = self._write(tmp_path, f"text\n<!-- {self._MARKER} end -->")
+        with pytest.raises(ValueError, match="not found"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+    def test_end_before_start_raises(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            f"<!-- {self._MARKER} end -->\ntext\n<!-- {self._MARKER} start -->",
+        )
+        with pytest.raises(ValueError, match="before start"):
+            _extract_scope_anchor_region(path, self._MARKER)
+
+
+def test_scope_rule_anchors_present() -> None:
+    """Every SCOPE_RULE:/SCOPE_EXEMPT_ROW anchor pair is present, ordered, and
+    non-trivial in length — the SCOPE_RULE:/SCOPE_EXEMPT_ROW-namespace mirror
+    of test_disposition_rule_anchors_present above.
+    """
+    MIN_SCOPE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
+
+    found: set[tuple[str, str]] = set()
+    for skill_md_path in _all_skill_md_paths():
+        text = skill_md_path.read_text()
+        skill_name = skill_md_path.parent.name
+
+        marker_names = {f"SCOPE_RULE:{m.group(1)}" for m in _SCOPE_RULE_ANCHOR_RE.finditer(text)}
+        if _SCOPE_EXEMPT_ROW_ANCHOR_RE.search(text):
+            marker_names.add("SCOPE_EXEMPT_ROW")
+
+        for marker_name in marker_names:
+            found.add((skill_name, marker_name))
+            enclosed = _extract_scope_anchor_region(skill_md_path, marker_name)
+            assert len(enclosed) >= MIN_SCOPE_TEXT_CHARS, (
+                f"{skill_md_path}: {marker_name} encloses only {len(enclosed)} "
+                f"non-whitespace chars after stripping — looks deleted or gutted"
+            )
+
+    assert found == _EXPECTED_SCOPE_ANCHORS, (
+        "Scope-boundary anchors drifted from the expected set — a region was "
+        "added, renamed, or deleted.\n"
+        f"  expected but missing: {sorted(_EXPECTED_SCOPE_ANCHORS - found)}\n"
+        f"  found but unexpected: {sorted(found - _EXPECTED_SCOPE_ANCHORS)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "skill_name,inner_marker,outer_marker",
+    [
+        ("code-review", "SCOPE_EXEMPT_ROW", "SCOPE_RULE:code-review-staged-diff-only"),
+        (
+            "code-review",
+            "SCOPE_RULE:code-review-causal-reach",
+            "SCOPE_RULE:code-review-staged-diff-only",
+        ),
+    ],
+)
+def test_nested_anchor_fully_contained_within_outer_rule(
+    skill_name: str, inner_marker: str, outer_marker: str
+) -> None:
+    """A nested anchor must be textually contained inside its outer
+    SCOPE_RULE's start/end pair, not merely present somewhere in the file
+    alongside it — the design (see the SCOPE_RULE region's own prose) is
+    that a nested anchor's narrowing lives inside the outer rule, not as an
+    unrelated sibling anchor. Checks both the inner start and the inner end
+    offset, not just the start — an inner end marker that drifts outside the
+    outer region while the inner start stays correctly nested would pass a
+    start-only check silently.
+    """
+    skill_md_path = _skill_file(skill_name)
+    # Validates presence and rejects a duplicated marker before offsets are
+    # computed below — text.find() alone would silently resolve a
+    # duplicated marker to its first occurrence.
+    _extract_scope_anchor_region(skill_md_path, outer_marker)
+    _extract_scope_anchor_region(skill_md_path, inner_marker)
+    text = skill_md_path.read_text()
+
+    outer_start = text.find(f"<!-- {outer_marker} start -->")
+    outer_end = text.find(f"<!-- {outer_marker} end -->")
+    inner_start = text.find(f"<!-- {inner_marker} start -->")
+    inner_end = text.find(f"<!-- {inner_marker} end -->")
+    assert outer_start < inner_start and inner_end < outer_end, (
+        f"{skill_md_path}: {inner_marker} (offsets {inner_start}-{inner_end}) is not fully "
+        f"contained inside {outer_marker} (offsets {outer_start}-{outer_end})"
+    )
+
+
+_PINNED_SCOPE_CLAUSES: dict[tuple[str, str], str] = {
+    ("code-review", "SCOPE_RULE:code-review-causal-reach"): (
+        "A defect outside the boundary that the change causes, activates, or "
+        "newly reaches stays in scope for that spawn's flagging duty."
+    ),
+    ("ready-for-review", "SCOPE_RULE:ready-for-review-cumulative-unnarrowed"): (
+        "This pass reviews the cumulative diff with no responsibility-boundary "
+        "narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. "
+        "Per-commit findings from earlier in this branch's fix loop feed in as "
+        "context, not a substitute for this pass. The cache marker is written "
+        "only from a clean pass of this step's own cumulative `/code-review`, "
+        "never from a fix commit's staged-diff pass."
+    ),
+}
+
+
+def _normalized_anchor_text(skill_md_path: Path, marker_name: str) -> str:
+    """Whitespace-collapsed text of a SCOPE_RULE/SCOPE_EXEMPT_ROW anchor region.
+
+    Collapsing internal whitespace on both sides of a comparison keeps a
+    markdown reflow of the enclosed paragraph from false-failing an
+    exact-text pin against it.
+    """
+    return " ".join(_extract_scope_anchor_region(skill_md_path, marker_name).split())
+
+
+@pytest.mark.parametrize("skill_name,marker_name", sorted(_PINNED_SCOPE_CLAUSES))
+def test_pinned_scope_clause_matches_live_text(skill_name: str, marker_name: str) -> None:
+    """The pin is exact because a clause's mandatory-vs-advisory reading is not
+    deterministically derivable from its text, and the model-based check that
+    could derive it is local-only by cost. On failure, re-read the guarantee
+    and update the constant only if the new wording preserves it.
+    """
+    skill_md_path = _skill_file(skill_name)
+    live_text = _normalized_anchor_text(skill_md_path, marker_name)
+    pinned_text = " ".join(_PINNED_SCOPE_CLAUSES[(skill_name, marker_name)].split())
+    assert live_text == pinned_text, (
+        f"{skill_md_path}: {marker_name} no longer matches its pinned text.\n"
+        f"  live:   {live_text!r}\n"
+        f"  pinned: {pinned_text!r}"
+    )
+
+
+class TestNormalizedAnchorText:
+    """Direct coverage for _normalized_anchor_text's comparison machinery,
+    mirroring TestExtractScopeAnchorRegion's literal-fixture pattern. Both
+    live pinned regions currently sit on one unwrapped line, so neither the
+    mismatch nor the reflow path is exercised by the corpus-wide pin test
+    above.
+    """
+
+    _MARKER = "SCOPE_RULE:example"
+
+    def test_mismatched_text_fails_equality(self, tmp_path: Path) -> None:
+        """Confirms the extracted text matches exactly, not just
+        non-emptily — a truncated or partially-extracted result would
+        satisfy an inequality-only check against an unrelated string
+        while still defeating the pin test's equality comparison.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            f"<!-- {self._MARKER} start -->\nthe live clause\n<!-- {self._MARKER} end -->"
+        )
+        extracted = _normalized_anchor_text(path, self._MARKER)
+        assert extracted == "the live clause"
+        assert extracted != "a mismatched pinned clause"
+
+    def test_reflowed_text_normalizes_to_match(self, tmp_path: Path) -> None:
+        """Confirms whitespace-collapsing normalizes text reflowed across
+        multiple lines to match its single-line pinned form.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            f"<!-- {self._MARKER} start -->\nthe pinned\nclause  reflowed\nacross lines\n"
+            f"<!-- {self._MARKER} end -->"
+        )
+        assert (
+            _normalized_anchor_text(path, self._MARKER)
+            == "the pinned clause reflowed across lines"
+        )
+
+
+_CACHE_RULE_ANCHOR_RE = re.compile(r"<!-- CACHE_RULE:(\S+) (start|end) -->")
+
+# The one anchor region the cumulative-diff review cache introduced.
+# Asserted as an exact set for the same reason as _EXPECTED_SCOPE_ANCHORS: a
+# corpus scan alone passes vacuously if the anchor pair is deleted.
+_EXPECTED_CACHE_ANCHORS = {
+    ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"),
+}
+
+
+def test_cache_rule_anchors_present() -> None:
+    """Every CACHE_RULE: anchor pair is present, ordered, and non-trivial in
+    length — the CACHE_RULE:-namespace mirror of test_scope_rule_anchors_present
+    above.
+    """
+    MIN_CACHE_TEXT_CHARS = 20  # a single stripped char would pass a bare "non-empty" check
+
+    found: set[tuple[str, str]] = set()
+    for skill_md_path in _all_skill_md_paths():
+        text = skill_md_path.read_text()
+        skill_name = skill_md_path.parent.name
+
+        marker_names = {f"CACHE_RULE:{m.group(1)}" for m in _CACHE_RULE_ANCHOR_RE.finditer(text)}
+
+        for marker_name in marker_names:
+            found.add((skill_name, marker_name))
+            enclosed = _extract_scope_anchor_region(skill_md_path, marker_name)
+            assert len(enclosed) >= MIN_CACHE_TEXT_CHARS, (
+                f"{skill_md_path}: {marker_name} encloses only {len(enclosed)} "
+                f"non-whitespace chars after stripping — looks deleted or gutted"
+            )
+
+    assert found == _EXPECTED_CACHE_ANCHORS, (
+        "Cache-rule anchors drifted from the expected set — a region was "
+        "added, renamed, or deleted.\n"
+        f"  expected but missing: {sorted(_EXPECTED_CACHE_ANCHORS - found)}\n"
+        f"  found but unexpected: {sorted(found - _EXPECTED_CACHE_ANCHORS)}"
+    )
+
+
+_PINNED_CACHE_CLAUSES: dict[tuple[str, str], str] = {
+    ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"): (
+        "Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: "
+        "if its `cumulative-review` line reads `live`, this diff content already "
+        "passed a full unnarrowed cumulative review — skip the invocation below, "
+        "report the cache hit in the Completion summary, and continue to step 4. "
+        "Content type is never a skip reason on its own — on `historical` or "
+        "`absent`, markdown, skill, and config diffs get the same pass as "
+        "everything else."
+    ),
+}
+
+
+@pytest.mark.parametrize("skill_name,marker_name", sorted(_PINNED_CACHE_CLAUSES))
+def test_pinned_cache_clause_matches_live_text(skill_name: str, marker_name: str) -> None:
+    """The pin is exact for the same reason as test_pinned_scope_clause_matches_live_text:
+    the skip-vs-run reading is not deterministically derivable from the text alone.
+    On failure, re-read the guarantee and update the constant only if the new
+    wording preserves it.
+    """
+    skill_md_path = _skill_file(skill_name)
+    live_text = _normalized_anchor_text(skill_md_path, marker_name)
+    pinned_text = " ".join(_PINNED_CACHE_CLAUSES[(skill_name, marker_name)].split())
+    assert live_text == pinned_text, (
+        f"{skill_md_path}: {marker_name} no longer matches its pinned text.\n"
+        f"  live:   {live_text!r}\n"
+        f"  pinned: {pinned_text!r}"
+    )
+
+
+def _change_type_table_left_columns(skill_md_path: Path) -> list[str]:
+    """Left-column shorthand of every data row in the Change-type table.
+
+    Truncates a left-column cell at its first embedded `|`. Not exercised
+    by any current Change-type row. A future row using pipe-containing
+    inline-code shorthand would truncate here. At the current call sites
+    (`test_scope_exempt_row_resolves_to_real_change_type_row`,
+    `test_scope_exempt_row_excludes_security_controls_row`), a resulting
+    mismatch surfaces as a loud assertion failure, not silently.
+    """
+    lines = skill_md_path.read_text().splitlines()
+    header_index = next(
+        (i for i, line in enumerate(lines) if line.strip() == "| Change type | Spawn / invoke |"),
+        None,
+    )
+    assert header_index is not None, f"{skill_md_path}: Change-type table header not found."
+
+    rows = []
+    for line in lines[header_index + 2 :]:  # skip header row and the "|---|---|" separator
+        if not line.startswith("|"):
+            break
+        rows.append(line.split("|")[1].strip())
+    return rows
+
+
+class TestChangeTypeTableLeftColumns:
+    """Direct coverage for _change_type_table_left_columns's `line.split("|")`
+    parse, mirroring TestExtractScopeAnchorRegion's literal-fixture pattern.
+    """
+
+    def test_embedded_pipe_in_left_column_truncates(self, tmp_path: Path) -> None:
+        """A left-column cell containing inline code with an embedded `|`
+        (`` `a | b` ``) truncates at that first `|` — this documents the
+        helper's current split-based behavior rather than changing it.
+        """
+        path = tmp_path / "SKILL.md"
+        path.write_text(
+            "| Change type | Spawn / invoke |\n"
+            "|-------------|----------------|\n"
+            "| Uses inline code `a | b` in shorthand | `some-reviewer` |\n"
+        )
+        assert _change_type_table_left_columns(path) == ["Uses inline code `a"]
+
+
+def test_scope_exempt_row_resolves_to_real_change_type_row() -> None:
+    """SCOPE_EXEMPT_ROW's enclosed shorthand must exact-match a real
+    Change-type table row's left column — guards against silent drift if
+    that row is reworded without updating the anchor.
+    """
+    skill_md_path = _skill_file("code-review")
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    real_rows = _change_type_table_left_columns(skill_md_path)
+    assert exempt_shorthand in real_rows, (
+        f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r} does not exact-match "
+        f"any Change-type table row in {skill_md_path}"
+    )
+
+
+def test_scope_exempt_row_excludes_security_controls_row() -> None:
+    """Guards against a future edit sliding the *Adds/modifies security
+    controls* row's shorthand into SCOPE_EXEMPT_ROW, which would narrow
+    security spawn decisions — the match-narrowing carve-out is prose-only
+    by design.
+    """
+    skill_md_path = _skill_file("code-review")
+    exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
+    assert exempt_shorthand != _SECURITY_CONTROLS_ROW
+
+    real_rows = _change_type_table_left_columns(skill_md_path)
+    assert _SECURITY_CONTROLS_ROW in real_rows, (
+        f"{skill_md_path}: expected Change-type row {_SECURITY_CONTROLS_ROW!r} not "
+        "found — test fixture drifted from the table"
+    )
+
+
 _PLAN_REVIEW_REFERENCES_MD = _skill_file("plan-review").parent / "REFERENCES.md"
 
 _STEP4_HEADING = "## Step 4 — Design-fitness gate"
@@ -2206,7 +3523,7 @@ def _section_between(
 
     end_idx is exclusive, at the next line starting with '## ' (or len(lines)
     if the section runs to EOF — unlike test_reconciliation_block_consistency.py's
-    extractor, EOF is not itself a failure here, since none of the three
+    extractor, EOF is not itself a failure here, since none of the four
     headings this module bounds is currently last in its file). The start
     heading is asserted found, not inferred — a renamed or deleted heading
     would otherwise extract as empty and compare equal to another empty
@@ -2224,6 +3541,333 @@ def _section_between(
             end_idx = j
             break
     return start_idx, end_idx
+
+
+_READY_FOR_REVIEW_STEP3_HEADING = "## 3. Code review (halt on findings)"
+
+
+def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
+    """Structural regression for SCOPE_RULE:ready-for-review-cumulative-unnarrowed's
+    premise. Step 3 must always dispatch via `pr-diff-against-base.sh`. It must
+    never contain a `git diff --cached` invocation, so the diff it hands
+    `/code-review` can never satisfy the narrowing precondition's staged-diff
+    half. A fixture-based structural check, not a live model call.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    section_text = "".join(lines[start_idx:end_idx])
+    assert "pr-diff-against-base.sh --record" in section_text, (
+        f"{skill_md_path}: Step 3 no longer dispatches via pr-diff-against-base.sh --record"
+    )
+    assert "git diff --cached" not in section_text, (
+        f"{skill_md_path}: Step 3 must never produce a staged-diff (git diff "
+        "--cached) review basis — that's the commit-gate pass's job, not the "
+        "cumulative sweep's"
+    )
+
+
+_HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
+
+
+def _heading_section_text(skill_md_path: Path, heading: str) -> str:
+    """Whitespace-collapsed text of the markdown section under `heading`.
+
+    Mirrors _normalized_anchor_text's whitespace-collapse comparison but
+    bounds the region by markdown heading (`_section_between`) rather than an
+    HTML-comment anchor pair — handoff/SKILL.md's warrant-check section
+    carries no such anchor today.
+    """
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, heading, skill_md_path)
+    return " ".join("".join(lines[start_idx:end_idx]).split())
+
+
+def _raw_heading_section_text(skill_md_path: Path, heading: str) -> str:
+    """Whitespace-preserving companion to _heading_section_text.
+
+    Used where the section's structure — blank lines, bullet markers,
+    heading markers — must survive for a right-edge boundary check; the
+    collapsed form loses that structure.
+    """
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, heading, skill_md_path)
+    return "".join(lines[start_idx:end_idx])
+
+
+def _assert_pinned_clause_right_bounded(
+    pinned_text: str, raw_section_text: str, *, context: str
+) -> None:
+    """Assert `pinned_text`'s right edge in `raw_section_text` lands on a
+    structural boundary (section end, blank line, or a `-` bullet or `#`
+    heading marker on the next line) rather than mid-sentence, so a
+    contradicting clause appended right after the pinned text is caught
+    instead of silently matching as a substring.
+    """
+    pattern = r"\s+".join(re.escape(word) for word in pinned_text.split())
+    match = re.search(pattern, raw_section_text)
+    assert match is not None, (
+        f"{context}\n  pinned:  {pinned_text!r}\n  section: {raw_section_text!r}"
+    )
+    remainder = raw_section_text[match.end() :]
+    same_line_rest = remainder.lstrip(" \t")
+    boundary_ok = (
+        remainder.strip() == ""
+        or same_line_rest.startswith("\n\n")
+        or (same_line_rest.startswith("\n") and same_line_rest[1:2] in ("-", "#"))
+    )
+    assert boundary_ok, (
+        f"{context}: pinned clause is followed by unbounded trailing "
+        f"content instead of a structural boundary.\n"
+        f"  trailing: {remainder[:120]!r}"
+    )
+
+
+# Each entry is one condition→action-bound bullet from handoff/SKILL.md's
+# canonical "Before writing: is a handoff warranted?" section. Matched as a
+# whole clause with a right-edge boundary check (_assert_pinned_clause_right_bounded)
+# rather than by six `assert token in body` checks, because a token-presence
+# check would still pass on a gutted section that lists the field names as a
+# bare enumeration while dropping the binding between a status/field value
+# and what it means.
+_PINNED_HANDOFF_WARRANT_CHECK_CLAUSES: dict[str, str] = {
+    "status_ok": (
+        '`"status":"ok"` — the session is past its threshold when `over_threshold` '
+        "is `true` or `already_fired` is `true`; report `estimate` and `threshold` "
+        "either way."
+    ),
+    "nudge_disabled": (
+        "`nudge_disabled` is `true` — say so; the measurement still holds but no "
+        "nudge will arrive on its own."
+    ),
+    "model_recognized_false": (
+        '`"model_recognized":false` — the window fell back to the 1M default, '
+        "so also report `model`/`context_window` and treat the result as a "
+        "soft number; those two fields are what let the engineer judge how "
+        "far off it is."
+    ),
+    "cannot_resolve_or_schema_drift": (
+        '`"status":"cannot-resolve"` or `"status":"schema-drift"` — name the '
+        "`reason` and fall back to judgment."
+    ),
+    # The fallback-to-judgment sentence is followed on the same line by more
+    # prose, so this entry pins through the paragraph's own end (a real
+    # structural boundary) instead of stopping mid-sentence.
+    "fallback_to_judgment_and_closing": (
+        "When `--check` can't resolve a measurement, weigh session length, "
+        "how much of the task remains, and whether this is a natural seam. "
+        "Any of these warrant a handoff without a cost argument at all: a "
+        "§2 reason that applies on its own terms; an explicit engineer "
+        "request; or the session ending anyway. Do not quote the raw "
+        "`session_id` into prose that may reach a commit, PR body, or "
+        "handoff file. If none of the above warrant writing, run "
+        "`~/.claude/scripts/marker.sh "
+        "deactivate handoff` before stopping — the marker activated above "
+        "has no further purpose once the write itself doesn't happen."
+    ),
+}
+
+
+class TestHandoffWarrantCheckCanonicalSection:
+    """Pin handoff/SKILL.md's "Before writing: is a handoff warranted?"
+    section as the single canonical statement of the `--check` reporting
+    contract that `plan-it` Step 7 and `ready-for-review` step 1 cite rather
+    than restate, per CLAUDE.md's single-source-of-truth rule.
+    """
+
+    @pytest.mark.parametrize("branch", sorted(_PINNED_HANDOFF_WARRANT_CHECK_CLAUSES))
+    def test_pinned_branch_clause_matches_live_text(self, branch: str) -> None:
+        """Exact clause match per branch, mirroring
+        test_pinned_scope_clause_matches_live_text. On failure, re-read the
+        guarantee and update the constant only if the new wording preserves it.
+        """
+        raw_section = _raw_heading_section_text(
+            _skill_file("handoff"), _HANDOFF_WARRANT_CHECK_HEADING
+        )
+        pinned_text = " ".join(_PINNED_HANDOFF_WARRANT_CHECK_CLAUSES[branch].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=f"handoff/SKILL.md: {branch!r} branch no longer matches its pinned clause.",
+        )
+
+    def test_plan_it_cites_the_canonical_section(self) -> None:
+        """Uses the repo's own citation parser rather than a raw substring
+        match, so a benign hard-wrap the parser tolerates doesn't false-fail
+        this test. Citing-side presence only — whether the citation actually
+        resolves against the target file's real headings is
+        `test_skill_citations_resolve_to_real_headings`'s job.
+        """
+        citations = _extract_citations(_skill_file("plan-it").read_text())
+        expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
+        assert any(
+            citation.target == "handoff/SKILL.md"
+            and _normalize_heading(citation.heading) == expected_heading
+            for citation in citations
+        ), "plan-it/SKILL.md no longer cites handoff/SKILL.md's warrant-check section"
+
+    def test_ready_for_review_cites_the_canonical_section(self) -> None:
+        """Uses the repo's own citation parser rather than a raw substring
+        match, so a benign hard-wrap the parser tolerates doesn't false-fail
+        this test. Citing-side presence only — whether the citation actually
+        resolves against the target file's real headings is
+        `test_skill_citations_resolve_to_real_headings`'s job.
+        """
+        citations = _extract_citations(_skill_file("ready-for-review").read_text())
+        expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
+        assert any(
+            citation.target == "handoff/SKILL.md"
+            and _normalize_heading(citation.heading) == expected_heading
+            for citation in citations
+        ), "ready-for-review/SKILL.md no longer cites handoff/SKILL.md's warrant-check section"
+
+
+_PLAN_IT_STEP7_HEADING = (
+    "## Step 7 — Commit or unwind the plan, then choose where implementation runs"
+)
+
+# plan-it Step 7's own fallback clause for when `--check` can't resolve a
+# measurement. It mirrors _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES's
+# "cannot_resolve_or_schema_drift" branch, but substitutes plan-boundary
+# framing for the handoff-specific wording.
+_PINNED_PLAN_IT_FALLBACK_CLAUSE = (
+    'When the check can\'t resolve a measurement (`"status":"cannot-resolve"` '
+    'or `"status":"schema-drift"`), say the estimate is unavailable, name the '
+    "`reason`, and fall back to judgment: the plan boundary is itself a "
+    "natural seam, weighed against how much of the plan remains."
+)
+
+
+class TestPlanItStep7FallbackToJudgment:
+    """Pin plan-it Step 7's cannot-resolve/schema-drift fallback clause, so a
+    future edit that drops the plan-boundary framing or the reason-naming
+    requirement fails this test instead of drifting silently.
+    """
+
+    def test_step7_fallback_clause_matches_live_text(self) -> None:
+        raw_section = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP7_HEADING)
+        pinned_text = " ".join(_PINNED_PLAN_IT_FALLBACK_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=(
+                "plan-it/SKILL.md: Step 7's cannot-resolve/schema-drift "
+                "fallback clause no longer matches its pinned clause."
+            ),
+        )
+
+
+_READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
+
+# The condition→action clause from ready-for-review/SKILL.md's step-1
+# context-budget bullet, mirroring _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES:
+# pinning the bold label alone would still pass if a future edit added a
+# real halt condition nearby while leaving the label untouched.
+_PINNED_CONTEXT_BUDGET_CLAUSE = (
+    "**Context budget (warn only, never halts).** Run "
+    "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
+    '`"status":"ok"` with `over_threshold` or `already_fired` true, warn '
+    "the user with `estimate` and `threshold`. Also name `nudge_disabled` "
+    "inline when it is true — the measurement still holds, but no "
+    'nudge will arrive on its own. See `handoff/SKILL.md` § "Before '
+    'writing: is a handoff warranted?" for the remaining fields. This '
+    "bullet substitutes its own warn-and-continue action for that "
+    "section's write decision. Continue silently in every other case — "
+    '`"status":"ok"` under threshold, or any other status including '
+    "`cannot-resolve`/`schema-drift`. This gate's "
+    "outcome never depends on the tool's own success. Do not quote the "
+    "raw `session_id` into prose that may reach the PR body."
+)
+
+
+class TestReadyForReviewContextBudgetNeverHalts:
+    """Pin that ready-for-review's step-1 context-budget bullet warns and
+    continues rather than halting. Step 1's own header reads "(halt on
+    fail)", which invites a future edit to silently flip this bullet into a
+    gate on `over_threshold`; that stays warn-only by design.
+    """
+
+    def test_step1_context_budget_bullet_states_warn_only_never_halts(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING
+        )
+        pinned_text = " ".join(_PINNED_CONTEXT_BUDGET_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: step-1 context-budget bullet no longer matches its pinned clause.",
+        )
+
+
+_READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
+
+# The Overview's cross-reference binding the halt-step list to the
+# Completion section's restatement bullet, from ready-for-review/SKILL.md.
+_PINNED_HALT_RESTATEMENT_CLAUSE = (
+    "A halt on step 2, 3, 4, or 7 re-runs the context-budget check from "
+    "step 1 and restates it in the halt report, per the Completion "
+    "section's restatement bullet below."
+)
+
+
+class TestReadyForReviewHaltRestatesContextBudget:
+    """Pin ready-for-review's Overview sentence binding a halt on step 2,
+    3, 4, or 7 to re-running and restating the step-1 context-budget check,
+    so narrowing the halt-step list or dropping the restatement
+    cross-reference fails this test instead of drifting silently.
+    """
+
+    def test_overview_names_halt_steps_and_restatement_cross_reference(self) -> None:
+        raw_section = _raw_heading_section_text(
+            _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
+        )
+        pinned_text = " ".join(_PINNED_HALT_RESTATEMENT_CLAUSE.split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context="ready-for-review/SKILL.md: Overview's halt-restatement sentence no longer matches.",
+        )
+
+
+_READY_FOR_REVIEW_COMPLETION_HEADING = "## Completion"
+
+
+def test_session_id_redaction_present_at_every_check_output_site() -> None:
+    """Each `--check`-output site carries its own copy of the redaction
+    sentence — a safety rule that only fires if the reader follows a
+    citation doesn't fire.
+
+    Bound each ready-for-review assertion to its own heading section
+    (step 1, Completion) rather than a whole-file count — a whole-file count
+    stays unchanged if both copies relocate into the same section.
+    """
+    assert (
+        "Do not quote the raw `session_id` into prose that may reach a commit, "
+        "PR body, or handoff file."
+        in _skill_file("handoff").read_text()
+    )
+    assert (
+        "Do not quote the raw `session_id` into prose that may reach a commit, "
+        "PR body, or plan file."
+        in _skill_file("plan-it").read_text()
+    )
+    session_id_redaction_sentence = (
+        "Do not quote the raw `session_id` into prose that may reach the PR body."
+    )
+    step1_section = _heading_section_text(
+        _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING
+    )
+    assert session_id_redaction_sentence in step1_section, (
+        "ready-for-review/SKILL.md: step 1 no longer forbids quoting the raw "
+        "session_id."
+    )
+    completion_section = _heading_section_text(
+        _skill_file("ready-for-review"), _READY_FOR_REVIEW_COMPLETION_HEADING
+    )
+    assert session_id_redaction_sentence in completion_section, (
+        "ready-for-review/SKILL.md: Completion section no longer forbids "
+        "quoting the raw session_id."
+    )
 
 
 def _step4_tripwire_names() -> set[str]:
@@ -2335,17 +3979,6 @@ class TestStep4TripwireProvenanceParity:
         )
 
 
-# Scoped to the three SKILL.md files the transcript-corpus multi-account-scope
-# plan touches, by name -- not a repo-wide grep. ready-for-review/SKILL.md
-# also contains the stale interpreter path and is deliberately out of scope
-# for that plan, so a repo-wide contract would red-fail on it for an
-# unrelated reason.
-_TRANSCRIPT_TOOLKIT_SKILLS: tuple[str, ...] = (
-    "transcript-narrative",
-    "transcript-analysis",
-    "error-mode-analysis",
-)
-
 # Pinned verbatim: transcript-analysis/SKILL.md's "Scope confirmation"
 # section sentence. A prose caveat with no enforcement is the same failure
 # class as the transcript-config-dirs-unaware caveat that preceded it -- this
@@ -2357,22 +3990,6 @@ _SCOPE_CONFIRMATION_SENTENCE = (
     "the user whether other Claude accounts exist before treating the number "
     "as complete."
 )
-
-
-class TestTranscriptToolkitInterpreterPathContract:
-    """transcript-analysis.py's interpreter path is wrong under a relocated
-    config dir (CLAUDE_CONFIG_DIR pointed somewhere other than ~/.claude) --
-    every one of the three skills this plan touches must resolve it via
-    ${CLAUDE_CONFIG_DIR:-$HOME/.claude}, never a hardcoded ~/.claude/scripts/
-    literal."""
-
-    @pytest.mark.parametrize("skill_name", _TRANSCRIPT_TOOLKIT_SKILLS)
-    def test_skill_body_contains_no_hardcoded_claude_scripts_path(self, skill_name):
-        body = _skill_body(skill_name)
-        assert "~/.claude/scripts/" not in body, (
-            f"{skill_name}/SKILL.md still contains the hardcoded interpreter path; "
-            'use "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" instead'
-        )
 
 
 class TestTranscriptAnalysisScopeConfirmationContract:
@@ -2399,7 +4016,7 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 # "Worktree enforcement").
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
-    r"(handoffs/|briefs/|plans/|projects/|sessions/"
+    r"(handoffs/|briefs/|issue-triage/|plans/|projects/|sessions/"
     r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*\.d/|output-preferences\.md"
     r"|pii-patterns\.md|credential-file-guard\.md|credential-value-patterns\.md"
     r"|data-file-read-guard\.md|private-projects\.md|track-permission-prompts"
@@ -2428,6 +4045,9 @@ _MARKER_TRIPLE_SITES = [
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh activate memory-skill"),
     ("ai-instruction-and-memory-files", "~/.claude/scripts/marker.sh deactivate memory-skill"),
     ("code-review", "~/.claude/scripts/marker.sh write code-review"),
+    ("handoff", "~/.claude/scripts/marker.sh activate handoff"),
+    ("handoff", "~/.claude/scripts/marker.sh deactivate handoff"),
+    ("handoff", "~/.claude/scripts/marker.sh status"),
 ]
 
 
@@ -2488,6 +4108,14 @@ class TestPerAccountStatePathContract:
     from drifting back in, including the $HOME-form bypass a bare
     '~/.claude/' substring check would miss entirely."""
 
+    def test_flags_issue_triage_state_path(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("~/.claude/issue-triage/run.md")
+        assert match is not None
+
+    def test_does_not_flag_issue_triage_config_dir_prose(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("<config-dir>/issue-triage/run.md")
+        assert match is None
+
     @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
     def test_skill_body_has_no_state_path(self, skill_md_path):
         body = _strip_yaml_frontmatter(skill_md_path.read_text())
@@ -2495,7 +4123,9 @@ class TestPerAccountStatePathContract:
         assert match is None, (
             f"{skill_md_path} contains a hardcoded per-account-state path "
             f"{match.group(0)!r} — use <config-dir>/... (skill/agent prose) "
-            'or "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/..." (a runnable command)'
+            "or push resolution into the invoked script via its own "
+            "config_dir()/_lib_config_dir call (a runnable command needing "
+            "a config-dir-relative data path)"
         )
 
     @pytest.mark.parametrize("agent_md_path", _all_agent_md_paths(), ids=lambda p: str(p))
@@ -2534,3 +4164,323 @@ class TestPerAccountStatePathContract:
             "anchor + this literal form) must change in lockstep or not at "
             "all; see plan-review/SKILL.md's marker.sh comment"
         )
+
+
+# A templated $CLAUDE_CONFIG_DIR expansion, or a <config-dir> prose
+# placeholder, landing immediately in front of a scripts/ or hooks/ path --
+# every script and hook under claude/.claude/ is stow-shared and
+# machine-invariant (resolves into the same checkout under every account), so
+# its own call-site path never needs runtime templating; see
+# .claude/plans/deterministic-config-dir-resolution.md. Anchored on the
+# literal /scripts/ or /hooks/ segment so the ~25 legitimate per-account
+# *state* templating sites (handoffs/, briefs/, sentinels, logs --
+# _PER_ACCOUNT_STATE_PATH_RE's own domain) are left untouched.
+_STOWED_PATH_TEMPLATING_RE = re.compile(
+    r"CLAUDE_CONFIG_DIR[^}]*\}/(?:scripts|hooks)/"
+    r"|CLAUDE_CONFIG_DIR/(?:scripts|hooks)/"
+    r"|(?<=[<{])config-dir[>}]?/(?:scripts|hooks)/"
+)
+
+
+def _stowed_path_templating_matches(markdown_text: str) -> list[str]:
+    """Every _STOWED_PATH_TEMPLATING_RE match outside a
+    HOOK_TEST_FIXTURE/HOOK_SCRIPT_CONTENT_EXAMPLE-excluded fenced block.
+
+    Mirrors _trigger_a_matches's fence-exclusion structure (not
+    TestPerAccountStatePathContract's plain whole-body search): this
+    contract's corpus includes SKILL.md bodies with pytest-executed
+    HOOK_TEST_FIXTURE fenced blocks that would otherwise false-positive
+    against the regex.
+    """
+    lines = markdown_text.split("\n")
+    excluded_lines: set[int] = set()
+    for open_index, content in _fenced_code_blocks(lines):
+        if _fence_excluded_by_marker(lines, open_index):
+            close_index = open_index + 1 + len(content)
+            excluded_lines.update(range(open_index, close_index + 1))
+    matches: list[str] = []
+    for index, line in enumerate(lines):
+        if index in excluded_lines:
+            continue
+        matches.extend(match.group(0) for match in _STOWED_PATH_TEMPLATING_RE.finditer(line))
+    return matches
+
+
+class TestStowedScriptPathContract:
+    """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
+    may template $CLAUDE_CONFIG_DIR (or a <config-dir> prose placeholder) in
+    front of a scripts/ or hooks/ path -- see
+    .claude/plans/deterministic-config-dir-resolution.md. The other half of
+    the invariant TestPerAccountStatePathContract guards from the state-path
+    direction: stowed paths must be literal, state paths must stay
+    config-dir-relative."""
+
+    def test_flags_templated_expansion_in_fenced_block(self) -> None:
+        text = '```bash\npython3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/foo.py"\n```'
+        assert _stowed_path_templating_matches(text) == [
+            'CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/'
+        ]
+
+    def test_flags_prose_config_dir_placeholder_outside_any_fence(self) -> None:
+        text = "Run `<config-dir>/scripts/marker.sh status` and paste its output."
+        assert _stowed_path_templating_matches(text) == ["config-dir>/scripts/"]
+
+    def test_flags_hooks_path_as_well_as_scripts(self) -> None:
+        text = "Run `<config-dir>/hooks/nudge-handoff-near-context-cap.sh --check`."
+        assert _stowed_path_templating_matches(text) == ["config-dir>/hooks/"]
+
+    def test_flags_brace_free_config_dir_expansion(self) -> None:
+        text = "Resolves so `$CLAUDE_CONFIG_DIR/scripts/foo.py` runs."
+        assert _stowed_path_templating_matches(text) == ["CLAUDE_CONFIG_DIR/scripts/"]
+
+    def test_does_not_flag_unrelated_path_merely_ending_in_config_dir(self) -> None:
+        """"own-config-dir/scripts/build" has no preceding "<" or "${" --
+        it isn't a <config-dir> prose placeholder, just a path segment that
+        happens to end in the literal word "config-dir"."""
+        text = "own-config-dir/scripts/build"
+        assert _stowed_path_templating_matches(text) == []
+
+    def test_does_not_flag_marker_excluded_fence(self) -> None:
+        text = (
+            "<!-- HOOK_TEST_FIXTURE: example -->\n\n"
+            '```bash\npython3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/foo.py"\n```'
+        )
+        assert _stowed_path_templating_matches(text) == []
+
+    def test_does_not_flag_per_account_state_path(self) -> None:
+        """A state path (handoffs/, briefs/) templated the same way is the
+        legitimate _PER_ACCOUNT_STATE_PATH_RE case, not this contract's --
+        the regex is anchored on the literal scripts/ or hooks/ segment,
+        never handoffs/ or briefs/."""
+        text = 'mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"'
+        assert _stowed_path_templating_matches(text) == []
+
+    @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
+    def test_skill_body_has_no_templated_stowed_path(self, skill_md_path):
+        matches = _stowed_path_templating_matches(skill_md_path.read_text())
+        assert not matches, (
+            f"{skill_md_path} templates $CLAUDE_CONFIG_DIR or <config-dir> in "
+            f"front of a scripts/hooks path {matches!r} — every script/hook "
+            "under claude/.claude/ is stow-shared and machine-invariant, so "
+            "name it literally (~/.claude/scripts/<name> or "
+            "~/.claude/hooks/<name>) instead"
+        )
+
+    @pytest.mark.parametrize("agent_md_path", _all_agent_md_paths(), ids=lambda p: str(p))
+    def test_agent_body_has_no_templated_stowed_path(self, agent_md_path):
+        matches = _stowed_path_templating_matches(agent_md_path.read_text())
+        assert not matches, (
+            f"{agent_md_path} templates $CLAUDE_CONFIG_DIR or <config-dir> in "
+            f"front of a scripts/hooks path {matches!r} — name it literally "
+            "(~/.claude/scripts/<name> or ~/.claude/hooks/<name>) instead"
+        )
+
+    @pytest.mark.parametrize("doc_path", _all_doc_paths(), ids=lambda p: str(p))
+    def test_doc_has_no_templated_stowed_path(self, doc_path):
+        matches = _stowed_path_templating_matches(doc_path.read_text())
+        assert not matches, (
+            f"{doc_path} templates $CLAUDE_CONFIG_DIR or <config-dir> in "
+            f"front of a scripts/hooks path {matches!r} — name it literally "
+            "(~/.claude/scripts/<name> or ~/.claude/hooks/<name>) instead"
+        )
+
+    def test_global_claude_md_has_no_templated_stowed_path(self):
+        matches = _stowed_path_templating_matches(_GLOBAL_CLAUDE_MD.read_text())
+        assert not matches, (
+            f"claude/.claude/CLAUDE.md templates $CLAUDE_CONFIG_DIR or "
+            f"<config-dir> in front of a scripts/hooks path {matches!r} — "
+            "name it literally (~/.claude/scripts/<name> or "
+            "~/.claude/hooks/<name>) instead"
+        )
+
+
+# --- findings_path wiring in plan-review/ROUTING.md ---
+# See .claude/plans/consult-dispatch-findings-file.md for the design; ledger
+# rows cited in the docstrings below are that plan's assumption ledger. The
+# mechanical recipe (info/exclude append, <epoch>-<slug> derivation) moved
+# into claude/.claude/scripts/findings-path-suffix.sh — see
+# .claude/plans/findings-path-script.md — leaving each dispatcher body with
+# only the contract statement (path template, spawn-synchronously rule,
+# read-back protocol).
+#
+# Four tests:
+# 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
+#    verbatim on the two surviving contract tokens.
+# 2. Reviewer-contract coverage backstop: only contract-carrying reviewers
+#    may receive a findings_path.
+# 3. Script-invocation presence check across the three dispatchers.
+# 4. Retired-recipe absence scan across every skill body, so a fourth
+#    dispatcher copy-pasting the old recipe fails rather than passing unseen.
+
+_ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
+
+# Contract tokens pinned verbatim, not just paraphrased — code-review/SKILL.md
+# and plan-review/ROUTING.md must reuse the same findings_path template and
+# background-spawn rule, so a future edit to either would drop the exact
+# substring pinned here and fail, rather than passing a looser template-only
+# check. The background-spawn rule is pinned as the negated phrase actually
+# used ("not `run_in_background`"), not the bare `run_in_background` token —
+# a future edit permitting background spawn would still contain the bare
+# substring and pass while re-introducing the same-turn read-back race the
+# rule exists to prevent. ready-for-review/SKILL.md is deliberately excluded
+# here: it spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-
+# <suffix>.md`, not the `<agent-name>` placeholder) and says "synchronously"
+# rather than carrying the `not run_in_background` phrase, so its contract
+# statement is not a verbatim match for these two tokens.
+_FINDINGS_PATH_RECIPE_TOKENS = (
+    "agent-reviews/<agent-name>-<suffix>.md",
+    "not `run_in_background`",
+)
+
+
+def test_findings_path_recipe_tokens_present_in_code_review_and_plan_review() -> None:
+    """code-review/SKILL.md and plan-review/ROUTING.md must carry the same
+    findings_path contract tokens, verbatim.
+
+    Modeled on test_invalid_skip_rationale_labels_match_across_review_skills
+    above — same two-dispatcher-sync shape, applied to the findings_path
+    contract instead of the skip-rationale label set. Asserts presence per
+    token per file rather than block byte-equality: the surrounding prose
+    legitimately differs between a dispatcher-generic paragraph
+    (code-review/SKILL.md) and one scoped to reviewers carrying the
+    file-based-output contract (ROUTING.md), so
+    TestFileBasedOutputBlockConsistency's byte-identical-template approach
+    (test_agent_roster.py) does not transfer here.
+    """
+    code_review_text = _skill_body("code-review")
+    routing_text = _ROUTING_MD_PATH.read_text()
+
+    for token in _FINDINGS_PATH_RECIPE_TOKENS:
+        assert token in code_review_text, (
+            f"code-review/SKILL.md: findings_path contract token {token!r} missing."
+        )
+        assert token in routing_text, (
+            f"plan-review/ROUTING.md: findings_path contract token {token!r} "
+            "missing — ROUTING.md's findings_path wiring paragraph must reuse "
+            "code-review/SKILL.md's contract statement verbatim."
+        )
+
+
+def _routing_reviewer_agent_names() -> set[str]:
+    """Agent names in plan-review/ROUTING.md's Reviewer roles table (the
+    `| Domain | Agent | Focus |` table), read from the backtick-quoted
+    second column of each row between the header and the table's end.
+    """
+    header = "| Domain | Agent | Focus |"
+    lines = _ROUTING_MD_PATH.read_text().splitlines()
+    header_idx = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+    assert header_idx is not None, (
+        f"{_ROUTING_MD_PATH}: {header!r} not found — the Reviewer roles table may have moved."
+    )
+    names: set[str] = set()
+    for line in lines[header_idx + 2 :]:  # skip the header row and its `|---|` separator
+        if not line.startswith("|"):
+            break
+        match = re.match(r"^\|[^|]*\|\s*`([a-z0-9-]+)`\s*\|", line)
+        if match:
+            names.add(match.group(1))
+    assert names, f"{_ROUTING_MD_PATH}: extracted no agent names from the Reviewer roles table."
+    return names
+
+
+def test_routing_reviewer_table_agents_carry_file_based_output_contract() -> None:
+    """Every agent named in plan-review/ROUTING.md's Reviewer roles table
+    must carry `Write` and a `### File-based output` section.
+
+    This is a same-repo sync-drift backstop, not coverage of a downstream
+    project-layer `plan-review-*` skill's own table extension:
+    `_routing_reviewer_agent_names()` only ever reads this repo's own
+    ROUTING.md, so what it actually catches is ROUTING.md's table naming
+    an agent that `hooks/tests/test_agent_roster.py`'s `CANARY_AGENTS`
+    list, or the agent's own frontmatter, has drifted out of sync with.
+    The `findings_path` grant is conditioned on this contract, but as
+    prose it is backstopped only by `agent-review` checklist item 15 — a
+    point-in-time authoring check, not a dispatch-time one. A reviewer
+    lacking the contract that is nonetheless passed a `findings_path`
+    re-arms the heredoc-abort-on-large-findings failure, which for a
+    security reviewer means silently lost findings. `tools:` is read via
+    parse_frontmatter rather than a `^tools:` regex, mirroring
+    test_agent_roster.py's `_declared_tools` — a regex silently reports the
+    tool absent on YAML list form (`tools:\n  - Write`), which would turn
+    this assertion into a false pass on exactly the frontmatter shape it
+    exists to catch.
+    """
+    for name in sorted(_routing_reviewer_agent_names()):
+        agent_path = _AGENTS_DIR / f"{name}.md"
+        fm = parse_frontmatter(agent_path)
+        declared_tools = fm.get("tools")
+        assert declared_tools, f"{name}.md: no 'tools:' field found in frontmatter."
+        tools = (
+            {t.strip() for t in declared_tools.split(",")}
+            if isinstance(declared_tools, str)
+            else {str(t).strip() for t in declared_tools}
+        )
+        assert "Write" in tools, (
+            f"{name}.md: 'Write' not declared in tools: {tools!r} — plan-review/ROUTING.md's "
+            "Reviewer roles table names this agent, so it must carry the file-based-output "
+            "contract before it can safely receive a findings_path."
+        )
+        assert "### File-based output" in _agent_body(name), (
+            f"{name}.md: '### File-based output' section missing — plan-review/ROUTING.md's "
+            "Reviewer roles table names this agent, so it must carry the file-based-output "
+            "contract before it can safely receive a findings_path."
+        )
+
+
+# The three findings_path dispatchers, keyed by name for parametrize test-id
+# readability. plan-review is keyed on its ROUTING.md co-located file, not
+# SKILL.md, since that's where its findings_path wiring paragraph lives.
+_FINDINGS_PATH_DISPATCHER_BODIES: dict[str, Callable[[], str]] = {
+    "code-review": lambda: _skill_body("code-review"),
+    "plan-review/ROUTING.md": lambda: _ROUTING_MD_PATH.read_text(),
+    "ready-for-review": lambda: _skill_body("ready-for-review"),
+}
+
+
+@pytest.mark.parametrize("dispatcher_name", sorted(_FINDINGS_PATH_DISPATCHER_BODIES))
+def test_findings_path_dispatcher_calls_suffix_script(dispatcher_name: str) -> None:
+    """Each of the three findings_path dispatchers must call
+    findings-path-suffix.sh rather than restating the derivation inline.
+
+    Mirrors TestPrDescriptionCostSectionWiring.test_declares_account_scoped_mode_gate's
+    shape (asserting a body invokes a named script by its literal path), applied
+    to all three dispatchers instead of one.
+    """
+    body = _FINDINGS_PATH_DISPATCHER_BODIES[dispatcher_name]()
+    assert "~/.claude/scripts/findings-path-suffix.sh" in body, (
+        f"{dispatcher_name}: no longer calls findings-path-suffix.sh"
+    )
+
+
+# These three shell expressions must not appear in any skill body now that
+# findings-path-suffix.sh computes them. Absence is checked across the whole
+# skill corpus (below), not just the three known dispatchers — a copy-paste
+# of the retired recipe into a fourth skill would otherwise pass unseen. A
+# literal-substring check like this one can't catch an equivalent alternate
+# spelling (e.g. `date '+%s'`) — it only closes the copy-paste regression
+# shape, not every possible reimplementation.
+_RETIRED_FINDINGS_PATH_RECIPE_EXPRESSIONS = (
+    "$(date +%s)",
+    "$(git rev-parse --abbrev-ref HEAD | tr '/' '-' | cut -c1-20)",
+    "git rev-parse --git-path info/exclude",
+)
+
+
+def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body() -> None:
+    """None of the three retired findings_path derivation expressions may
+    appear in any SKILL.md (stowed or plugin) or in plan-review/ROUTING.md.
+
+    Modeled on test_ready_for_review_step3_never_produces_a_staged_diff's
+    present-AND-absent shape, but scoped to the whole corpus rather than one
+    file — this is the reachable half of the fourth-file regression: a new
+    dispatcher copy-pasting the retired recipe fails here rather than
+    silently forking the mechanism a second time.
+    """
+    for path in [*_all_skill_md_paths(), _ROUTING_MD_PATH]:
+        text = path.read_text()
+        for expr in _RETIRED_FINDINGS_PATH_RECIPE_EXPRESSIONS:
+            assert expr not in text, (
+                f"{path}: retired findings_path recipe expression {expr!r} still "
+                "present — call findings-path-suffix.sh instead of restating the "
+                "derivation inline"
+            )

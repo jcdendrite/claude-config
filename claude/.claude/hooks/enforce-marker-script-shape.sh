@@ -60,6 +60,11 @@
 #     execution context; if it is, every agent-identity-keyed hook shares it
 #     (deny-reviewer-tree-mutation.sh has the same dependency), so the fix
 #     belongs at the permission layer for the whole class rather than here.
+#   - MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip and
+#     _bash_marker_redirect_candidates's own _lib_split_fragments call both
+#     check their exit status and fail closed, matching
+#     deny-network-installs.sh's COMMAND_UNQUOTED_EXIT/FRAGMENTS_SPLIT_EXIT
+#     pattern.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -67,7 +72,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 16 single-command shapes, the marker.sh write chain to git
+# match one of the 19 single-command shapes, the marker.sh write chain to git
 # commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
 # (any op/target combination) — equivalent to running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
@@ -385,16 +390,30 @@ _bash_marker_fragment_candidates() {
 # _bash_marker_redirect_candidates COMMAND_UNQUOTED
 # Splits COMMAND_UNQUOTED into fragments (the same split _lib_split_fragments
 # gives deny-network-installs.sh) and emits every fragment's candidate
-# write-target words, one per line.
+# write-target words, one per line. Returns _lib_split_fragments's own exit
+# status on failure -- the caller checks it and denies at the top level;
+# see the comment below for why this function cannot emit_deny itself.
 _bash_marker_redirect_candidates() {
   local command_unquoted="$1" fragment
+  local fragments fragments_split_exit
+  # Checked and fail-closed, matching deny-network-installs.sh's
+  # FRAGMENTS_SPLIT_EXIT pattern. Surfaced via return rather than emit_deny:
+  # this function is invoked inside the caller's own $(...) command
+  # substitution, so an emit_deny here would exit only that subshell, not
+  # the hook process -- a silently-empty candidate list would fall through
+  # to this scan's normal "no match" allow with no bypass valve.
+  fragments=$(_lib_split_fragments "$command_unquoted")
+  fragments_split_exit=$?
+  if [ "$fragments_split_exit" -ne 0 ]; then
+    return "$fragments_split_exit"
+  fi
   # Here-string, not process substitution: _lib_split_fragments emits no
   # trailing newline, and `<<<` always appends exactly one, so `read` doesn't
   # silently drop a single/final fragment at EOF.
   while IFS= read -r fragment; do
     [ -n "$fragment" ] || continue
     _bash_marker_fragment_candidates "$fragment"
-  done <<< "$(_lib_split_fragments "$command_unquoted")"
+  done <<< "$fragments"
 }
 
 # _marker_write_candidate_mentions_claude CANDIDATE
@@ -450,7 +469,18 @@ _marker_write_candidate_mentions_claude() {
 # call should re-derive this
 # call-count accounting.
 MARKER_WRITE_COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+MARKER_WRITE_COMMAND_UNQUOTED_EXIT=$?
+if [ "$MARKER_WRITE_COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by marker-script-shape gate: could not quote-strip the command text (exit ${MARKER_WRITE_COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+  exit 0
+fi
 if printf '%s' "$MARKER_WRITE_COMMAND_UNQUOTED" | grep -qiF '.claude'; then
+  MARKER_WRITE_REDIRECT_CANDIDATES=$(_bash_marker_redirect_candidates "$MARKER_WRITE_COMMAND_UNQUOTED")
+  MARKER_WRITE_REDIRECT_CANDIDATES_EXIT=$?
+  if [ "$MARKER_WRITE_REDIRECT_CANDIDATES_EXIT" -ne 0 ]; then
+    emit_deny "Blocked by marker-script-shape gate: could not split the command into fragments (exit ${MARKER_WRITE_REDIRECT_CANDIDATES_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+    exit 0
+  fi
   MARKER_WRITE_AGENT_CHECKED=false
   MARKER_WRITE_REALPATH_BUDGET=10
   while IFS= read -r MARKER_WRITE_CANDIDATE; do
@@ -487,10 +517,11 @@ if printf '%s' "$MARKER_WRITE_COMMAND_UNQUOTED" | grep -qiF '.claude'; then
 $GATE_RELEASE_DENIAL_GUIDANCE"
       exit 0
     fi
-  # Here-string, matching _bash_marker_redirect_candidates's own inner loop:
-  # collects the candidate list fully before this loop starts, rather than
-  # streaming it through a live process-substitution pipe.
-  done <<< "$(_bash_marker_redirect_candidates "$MARKER_WRITE_COMMAND_UNQUOTED")"
+  # Here-string over the already-captured MARKER_WRITE_REDIRECT_CANDIDATES,
+  # not a nested command substitution: the split's exit status is checked
+  # above, before this loop starts, matching
+  # _bash_marker_redirect_candidates's own inner loop.
+  done <<< "$MARKER_WRITE_REDIRECT_CANDIDATES"
 fi
 
 # Strip leading/trailing whitespace — computed before the activation guards so
@@ -504,18 +535,40 @@ printf '%s' "$COMMAND" | grep -qF 'marker.sh' || exit 0
 # Stage 1 and BEFORE Stage 2, deliberately: Stage 2 fast-exits wrapped forms
 # (bash -c, env-var prefix, relative path) and leaves them to
 # permissions.allow, so a check placed after it would inherit that hole.
-# Matching the op keyword anywhere in the command catches tilde, absolute,
-# relative, chained, and wrapped invocations.
+# Two independent detectors, unconditionally OR'd together — neither
+# subsumes the other:
+#   - Raw-text substring match against unstripped $COMMAND, matching the op
+#     keyword anywhere in the command text. This is what catches a
+#     wrapper-hole invocation (`bash -c "marker.sh write code-review"`,
+#     `eval "marker.sh write ..."`) — general to any `<shell> -c "..."` /
+#     `eval "..."` wrapper, not bash-specific, since
+#     _lib_fragment_command_word's runner list excludes
+#     bash/sh/zsh/dash/ksh entirely and so cannot see inside any of them.
+#   - Command-word match via _lib_command_invokes_tool_subcmd, which
+#     resolves the fragment's actual command word after quote-stripping.
+#     This is what catches a quote-split evasion of a top-level invocation
+#     (`"marker.sh" write code-review`) that the raw-text check's
+#     unstripped $COMMAND misses.
+# _lib_command_invokes_tool_subcmd's SUBCMD... sequence-matches
+# positionally from index 0, so a single call passing both ops together
+# (`marker.sh write activate`) would require the literal two-word sequence
+# "write activate" and never match a real single-op invocation. Two
+# calls, one per op, are what its actual contract requires. Status 2
+# (could not determine, e.g. sed/tr missing) denies, matching this hook's
+# fail-closed posture rather than silently falling through as "no match."
 #
-# SCOPE LIMIT, stated rather than implied: this arm matches command TEXT, so it
-# only fires while `marker.sh` and the op keyword stay textually adjacent.
-# Shell-level indirection that breaks that adjacency — assigning the path to a
-# variable and invoking through it, or wrapping the call in a shell function —
-# is not matched here, the same carve-out Stage 2 already documents for wrapped
-# forms. Those forms are not pre-approved in permissions.allow either, so they
-# surface as a permission prompt rather than a silent allow. The path-based
-# Write/Edit arm above is what makes the overall property hold; do not read
-# this arm as a complete boundary on its own.
+# SCOPE LIMIT, stated rather than implied: both detectors match command TEXT,
+# so shell-level indirection that assigns the path to a variable and invokes
+# through it, or wraps the call in a shell function, is not matched here —
+# the same carve-out Stage 2 already documents for wrapped forms. Those
+# forms are not pre-approved in permissions.allow either, so they surface as
+# a permission prompt rather than a silent allow. The path-based Write/Edit
+# arm above is what makes the overall property hold; do not read this arm
+# as a complete boundary on its own.
+#
+# test_marker_script.py's TestMarkerScriptArgumentGrammarIsPositional is the
+# regression guard for the positional-argument-grammar invariant this arm's
+# command-word detector depends on.
 #
 # Accepted false-deny: a review-only agent grepping for the literal string
 # `marker.sh write` while reviewing this repo is denied. Matching the op
@@ -537,12 +590,33 @@ if ! AGENT_TYPE=$(printf '%s\n' "$INPUT" | _lib_jq -r '.agent_type // empty' 2>/
   exit 0
 fi
 
-if _lib_is_no_gate_release_agent "$AGENT_TYPE" \
-  && printf '%s' "$COMMAND" | grep -qE 'marker\.sh[[:space:]]+(write|activate)'; then
-  emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate.
+if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
+  MARKER_GATE_MATCHED=false
+  MARKER_GATE_INDETERMINATE=false
+
+  printf '%s' "$COMMAND" | grep -qE 'marker\.sh[[:space:]]+(write|activate)' \
+    && MARKER_GATE_MATCHED=true
+
+  for MARKER_GATE_OP in write activate; do
+    _lib_command_invokes_tool_subcmd "$COMMAND" marker.sh "$MARKER_GATE_OP"
+    MARKER_GATE_OP_STATUS=$?
+    if [ "$MARKER_GATE_OP_STATUS" -eq 0 ]; then
+      MARKER_GATE_MATCHED=true
+    elif [ "$MARKER_GATE_OP_STATUS" -ne 1 ]; then
+      MARKER_GATE_INDETERMINATE=true
+    fi
+  done
+
+  if $MARKER_GATE_MATCHED; then
+    emit_deny "Marker write denied: the '$AGENT_TYPE' agent cannot release a review gate.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
-  exit 0
+    exit 0
+  fi
+  if $MARKER_GATE_INDETERMINATE; then
+    emit_deny "Blocked by marker-script-shape gate: could not determine whether '${COMMAND:0:200}' invokes marker.sh write/activate (sed/tr may be missing, killed, or errored) — failing closed per this gate's documented fail-closed posture rather than letting an unscanned command bypass gate-release authority."
+    exit 0
+  fi
 fi
 
 # Reject path traversal sequences before the allowlist check. The VALID_PATTERN
@@ -573,7 +647,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status)'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status)'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -613,7 +687,7 @@ fi
 # Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
-# individually allowlisted (the 14 shapes in permissions.allow) or harmless
+# individually allowlisted (the 17 shapes in permissions.allow) or harmless
 # (clear-stale only evicts dead-PID bypass markers). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
@@ -637,14 +711,17 @@ Valid shapes:
   ~/.claude/scripts/marker.sh write skill-review
   ~/.claude/scripts/marker.sh write plan-review
   ~/.claude/scripts/marker.sh write ready-for-review
+  ~/.claude/scripts/marker.sh write cumulative-review
   ~/.claude/scripts/marker.sh activate plan-review
   ~/.claude/scripts/marker.sh activate ready-for-review
   ~/.claude/scripts/marker.sh activate respond-pr
   ~/.claude/scripts/marker.sh activate memory-skill
+  ~/.claude/scripts/marker.sh activate handoff
   ~/.claude/scripts/marker.sh deactivate plan-review
   ~/.claude/scripts/marker.sh deactivate ready-for-review
   ~/.claude/scripts/marker.sh deactivate respond-pr
   ~/.claude/scripts/marker.sh deactivate memory-skill
+  ~/.claude/scripts/marker.sh deactivate handoff
   ~/.claude/scripts/marker.sh clear-stale
   ~/.claude/scripts/marker.sh clear-stale --dry-run
   ~/.claude/scripts/marker.sh resolve-session-id

@@ -20,12 +20,17 @@
 # line with no hard-wrap, so trimming words never reduces the line count,
 # only removing a whole paragraph, heading, or blank line does.
 #
-# The "if" field in settings.json is unreliable — the internal grep is the
-# actual gate. See require-code-review.sh for the same pattern and rationale.
+# The "if" field in settings.json is unreliable — the internal
+# _lib_command_invokes_git_subcmd check is the actual gate. See
+# require-code-review.sh for the same pattern and rationale.
 #
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
 # git calls below uncapped, so a stalled git (locked index, network mount)
 # hangs this gate rather than degrading gracefully.
+#
+# The commit-detection, repo-root, growth-comparison, and deny-message logic
+# is shared with check-claude-md-length.sh via _lib_staged_length_gate in
+# _lib.sh — this file supplies only the staged-path pattern and limit_for.
 
 set -uo pipefail
 
@@ -56,14 +61,6 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
-  exit 0
-fi
-
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-[ -z "$REPO_ROOT" ] && exit 0
-
 # Per-skill limit override. Listed paths are repo-root-relative.
 limit_for() {
   case "$1" in
@@ -76,23 +73,9 @@ limit_for() {
   esac
 }
 
-FAIL=0
-MESSAGES=""
-while IFS= read -r f; do
-  new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
-  old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
-  limit=$(limit_for "$f")
-  if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
-    MESSAGES="${MESSAGES}  $f: $new lines (was $old, limit $limit)\n"
-    FAIL=1
-  fi
-# Path prefixes are repo-root-relative for this repo's layout.
-# Covers both stowed skills (claude/.claude/skills/) and project-scoped plugins (plugins/*/skills/),
-# plus the single hardcoded plan-review/ROUTING.md exception (see limit_for() above).
-# In other repos this grep matches nothing and the hook exits 0 silently.
-done < <(git diff --cached --name-only | grep -E '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^claude/\.claude/skills/plan-review/ROUTING\.md$')
-
-if [ "$FAIL" -eq 1 ]; then
-  REASON=$(printf 'Skill length gate: one or more SKILL.md files grew past their per-skill limit. Reduce to the limit or fewer lines before committing:\n%b' "$MESSAGES")
-  emit_deny "$REASON"
-fi
+# Path prefixes are repo-root-relative for this repo's layout. Covers both
+# stowed skills (claude/.claude/skills/) and project-scoped plugins
+# (plugins/*/skills/), plus the single hardcoded plan-review/ROUTING.md
+# exception (see limit_for() above). In other repos this pattern matches
+# nothing and the gate exits 0 silently.
+_lib_staged_length_gate '(claude/.claude/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^claude/\.claude/skills/plan-review/ROUTING\.md$' "Skill length gate: one or more SKILL.md files grew past their per-skill limit."

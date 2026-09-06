@@ -8,8 +8,8 @@
 # renders, breaking code-span formatting.
 #
 # NOTE — `if`-dispatch in settings.json is advisory; the authoritative
-# gate is the IS_GH_PR regex inside this script. Both surfaces must be
-# updated together when extending coverage.
+# gate is the IS_GH_PR_CREATE/IS_GH_PR_EDIT check inside this script. Both
+# surfaces must be updated together when extending coverage.
 #
 # Scope and limits:
 # - Covers: `gh pr create` and `gh pr edit`, including chained commands
@@ -49,13 +49,19 @@ emit_deny() { _lib_emit_deny "$1"; }
 
 _lib_parse_tool_input_or_deny "Blocked by backtick-escape gate: could not parse tool-input JSON. Refusing to evaluate PR body under malformed input."
 
-# Authoritative gate: only scan gh pr create / edit commands.
-IS_GH_PR=0
-if printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*gh\s+pr\s+(create|edit)(\s|$)'; then
-  IS_GH_PR=1
+# Authoritative gate: only scan gh pr create / edit commands. Checked and
+# fail-closed: an undetermined match (sed/tr missing, killed, or erroring
+# inside the helper) must not silently skip the scan.
+_lib_command_invokes_tool_subcmd "$COMMAND" gh pr create
+IS_GH_PR_CREATE_STATUS=$?
+_lib_command_invokes_tool_subcmd "$COMMAND" gh pr edit
+IS_GH_PR_EDIT_STATUS=$?
+if [ "$IS_GH_PR_CREATE_STATUS" -eq 2 ] || [ "$IS_GH_PR_EDIT_STATUS" -eq 2 ]; then
+  emit_deny "Blocked by backtick-escape gate: could not determine whether this command invokes gh pr create/edit — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned PR body bypass the backtick-escape scan."
+  exit 0
 fi
 
-if [ "$IS_GH_PR" -eq 0 ]; then
+if [ "$IS_GH_PR_CREATE_STATUS" -ne 0 ] && [ "$IS_GH_PR_EDIT_STATUS" -ne 0 ]; then
   exit 0
 fi
 
@@ -87,7 +93,10 @@ is_pseudo_file_path() {
 
 # Build the scan target: start with the full command string (which
 # contains any inline --body "..." value), then append the contents
-# of any referenced body-source files.
+# of any referenced body-source files. Deliberately NOT unioned with a
+# quote-stripped copy: the sole detector below is a literal backslash-
+# backtick match, and quote-stripping deletes backslashes -- a stripped
+# copy could only ever remove a match the raw copy still has, never add one.
 SCAN_TARGET=""
 SCAN_TARGET+=$'\n'"$COMMAND"
 

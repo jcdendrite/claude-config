@@ -15,7 +15,16 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from conftest import (
+from helpers import (
+    CONSULT_CLASSIFICATION_TABLE,
+    HOOKS_DIR,
+    SKILLS_DIR,
+    bash_input,
+    build_path_without,
+    run_hook_reason,
+)
+
+from .conftest import (
     _agent_use,
     _asst,
     _audit_routing_args,
@@ -37,7 +46,6 @@ from conftest import (
     _write_subagent_jsonl,
     _write_use,
 )
-from helpers import HOOKS_DIR, SKILLS_DIR, bash_input, run_hook_reason
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -76,6 +84,28 @@ def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_p
         total += int(ln.split()[col_idx])
     assert matched_any, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
     return total
+
+
+def _column_values_for_matching_rows(
+    out: str, *, header_contains: str, label: str, row_prefix: str
+) -> list[str]:
+    """Sibling to _sum_column_across_rows for a caller that needs each
+    matched row's own column value -- e.g. asserting several rows stayed
+    distinct rather than merging into a sum. Same header-token-anchored
+    column lookup, not a bare line.split()[N] index."""
+    lines = out.splitlines()
+    headers = [ln for ln in lines if header_contains in ln]
+    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
+    header_idx = lines.index(headers[0])
+    col_idx = headers[0].split().index(label)
+    values = []
+    for ln in lines[header_idx + 1:]:
+        if ln == "":
+            break
+        if ln.startswith(row_prefix):
+            values.append(ln.split()[col_idx])
+    assert values, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
+    return values
 
 
 def _extract_arm_dollars(out: str, arm_label: str) -> float:
@@ -380,6 +410,77 @@ class TestHelpers:
         with pytest.raises(argparse.ArgumentTypeError):
             _mod._iso_date("garbage")
 
+    def test_strip_task_notifications_multiline_envelope_removed(self):
+        text = "<task-notification>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"
+        assert _mod._strip_task_notifications(text) == " "
+
+    def test_strip_task_notifications_two_envelopes_both_removed(self):
+        text = "<task-notification>first</task-notification> and <task-notification>second</task-notification>"
+        assert _mod._strip_task_notifications(text) == "  and  "
+
+    def test_strip_task_notifications_adjacent_envelopes_both_removed(self):
+        text = "<task-notification>a</task-notification><task-notification>b</task-notification>"
+        assert _mod._strip_task_notifications(text) == "  "
+
+    def test_strip_task_notifications_envelope_free_string_unchanged(self):
+        text = "just a plain user prompt with no envelope"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_does_not_weld_words_across_envelope_boundary(self):
+        """Single-space substitution keeps 'try' and 'again' separated across a stripped envelope boundary."""
+        text = "...try <task-notification>still failing</task-notification>again..."
+        result = _mod._strip_task_notifications(text)
+        assert "try again" not in result
+        assert result == "...try  again..."
+
+    def test_strip_task_notifications_unterminated_opener_left_in_place(self):
+        text = "<task-notification><summary>no closing tag here"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_unterminated_opener_preserves_trailing_turn_content(self):
+        text = "<task-notification><summary>no closing tag here" + "\nuser: please retry the deploy"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_orphan_closer_with_no_opener_left_in_place(self):
+        text = "no opener here</task-notification>"
+        assert _mod._strip_task_notifications(text) == text
+
+    def test_strip_task_notifications_orphan_closer_adjacent_to_real_envelope(self):
+        """A match requires the opener literal first, so the stray closer with no preceding
+        opener is inert. Only the well-formed envelope after it is stripped to a single space."""
+        text = "stray</task-notification> then <task-notification><summary>real</summary></task-notification> after"
+        assert _mod._strip_task_notifications(text) == "stray</task-notification> then   after"
+
+    def test_strip_task_notifications_nested_self_quoting_stops_at_first_closer(self):
+        """A `<summary>` field quotes a full envelope inline. The non-greedy match stops at the
+        first `</task-notification>` (the inner envelope's own closer), leaving the outer envelope's
+        closing tags dangling in the remainder."""
+        text = (
+            "<task-notification><summary>Sample record: "
+            "<task-notification><summary>inner</summary></task-notification>"
+            "</summary></task-notification>"
+        )
+        assert _mod._strip_task_notifications(text) == " </summary></task-notification>"
+
+    def test_strip_task_notifications_preserves_non_ascii_text_around_envelope(self):
+        text = (
+            "café 🎉 —before "
+            "<task-notification><summary>結果: café</summary></task-notification>"
+            " after— 北京 😀"
+        )
+        result = _mod._strip_task_notifications(text)
+        assert result == "café 🎉 —before   after— 北京 😀"
+
+    def test_strip_task_notifications_empty_string_unchanged(self):
+        assert _mod._strip_task_notifications("") == ""
+
+    def test_strip_task_notifications_case_sensitive_uppercase_unchanged(self):
+        """Case-sensitive match is deliberate: an uppercase-tagged string is left in
+        place rather than trading a hypothetical miss for a real over-strip of
+        user-typed text."""
+        text = "<TASK-NOTIFICATION><summary>shout-cased</summary></TASK-NOTIFICATION>"
+        assert _mod._strip_task_notifications(text) == text
+
 
 class TestParseSinceNdArg:
     """The shared --since Nd parser behind cmd_audit_routing, _cost_report,
@@ -405,6 +506,37 @@ class TestParseSinceNdArg:
             _mod._parse_since_nd_arg(argparse.Namespace(since="not-a-window"), "cost")
         assert exc_info.value.code == 1
         assert "cost: --since: expected Nd like '35d'" in capsys.readouterr().err
+
+
+class TestParseAbsoluteWindowArgs:
+    """The shared inclusive-day absolute --since/--until DATE parser extracted
+    from cmd_user_input/cmd_review_trace/cmd_judgment_pair/cmd_subagent_mix's
+    identical six-line conversion."""
+
+    def test_default_attrs_parse_since_and_until_as_inclusive_day_bounds(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since="2026-05-01", until="2026-05-03"), "review-trace",
+        )
+        assert since_ts == _mod._parse_ts("2026-05-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-05-03T00:00:00Z") + 86400
+
+    def test_absent_since_and_until_returns_none_for_both(self):
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since=None, until=None), "review-trace",
+        )
+        assert since_ts is None
+        assert until_ts is None
+
+    def test_parameterized_attrs_read_subagent_mix_since_date_until_date(self):
+        """cmd_subagent_mix's own dest names (since_date/until_date) resolve
+        through the same helper as the default since/until attrs -- the
+        parameterized call cmd_subagent_mix's own call site uses."""
+        since_ts, until_ts = _mod._parse_absolute_window_args(
+            argparse.Namespace(since_date="2026-07-01", until_date="2026-07-02"), "subagent-mix",
+            since_attr="since_date", until_attr="until_date",
+        )
+        assert since_ts == _mod._parse_ts("2026-07-01T00:00:00Z")
+        assert until_ts == _mod._parse_ts("2026-07-02T00:00:00Z") + 86400
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +921,43 @@ class TestSubagentMix:
         out = capsys.readouterr().out
         assert "No data found." in out
 
+    def test_single_root_output_strips_control_characters_from_branch_and_subagent_type(
+        self, fake_projects, capsys
+    ):
+        """gitBranch and subagent_type are both transcript-sourced, not
+        validated, before this table prints them -- same invariant as
+        cmd_subagents' single-root branch sanitization, extended here to
+        subagent_type since this table has its own second raw-value column."""
+        branch_payload = "\x1b]0;PWNED-BRANCH\x07"
+        stype_payload = "\x1b[31mPWNED-TYPE\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch=branch_payload, content=[_agent_use("a1", stype_payload)]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-BRANCH" in out
+        assert "[31mPWNED-TYPE[0m(1)" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
+    def test_control_byte_differing_branches_do_not_merge_into_one_row(self, fake_projects, capsys):
+        """Two raw gitBranch values that differ only in a stripped control
+        byte sanitize to the same display label but must stay distinct
+        rows -- aggregating on the sanitized label instead of the raw value
+        would silently sum their session/spawn counts into one row."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="feat\x01", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        sess_values = _column_values_for_matching_rows(
+            out, header_contains="Sess", label="Sess", row_prefix="feat "
+        )
+        assert sess_values == ["1", "1"], f"expected two distinct 'feat' rows, each Sess=1: {sess_values}"
+
 
 def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str) -> None:
     """Write a minimal on-disk agent file with a `model:` frontmatter pin,
@@ -799,8 +968,9 @@ def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str)
 
 
 class TestSubagentMixModelMix:
-    """cmd_subagent_mix's second table: one case per method term from the
-    plan's requested/observed/declared/run/dangling definitions."""
+    """cmd_subagent_mix's second table: one test per column
+    (Runs/Dangling/Declared/Requested/Observed) in cmd_subagent_mix's own
+    docstring."""
 
     def test_declared_pin_violation_reports_opus_fraction_of_runs(self, fake_projects, tmp_path, capsys):
         """3 staff-sdet dispatches, declared pin sonnet: 2 observed opus (a
@@ -982,6 +1152,38 @@ class TestSubagentMixModelMix:
         _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
         out = capsys.readouterr().out
         assert "(1 meta.json files failed to parse, excluded)" in out
+
+    def test_control_byte_differing_subagent_types_do_not_merge_model_mix_rows(
+        self, fake_projects, capsys
+    ):
+        """Two raw subagent_type values that differ only in a stripped
+        control byte sanitize to the same AgentType label but must stay
+        distinct model-mix rows -- aggregating on the sanitized label
+        instead of the raw value would silently sum their Runs and dollar
+        figures into one row."""
+        session_id = "sess-collide"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                _agent_use("a1", "staff-sdet\x01"),
+                _agent_use("a2", "staff-sdet"),
+            ]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet\x01",
+        )
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-2", "a2",
+            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        runs_values = _column_values_for_matching_rows(
+            out, header_contains="Runs", label="Runs", row_prefix="staff-sdet "
+        )
+        assert runs_values == ["1", "1"], f"expected two distinct 'staff-sdet' rows, each Runs=1: {runs_values}"
 
 
 class TestSubagentMixDollars:
@@ -1333,8 +1535,211 @@ class TestSubagentMixSince:
         assert "No data found." in out
 
 
+class TestRootScopedDisplayLabel:
+    """Direct unit coverage of redaction._root_scoped_display_label --
+    cmd_subagents/cmd_subagent_mix exercise it only through their own
+    redacted/disclosed output, so this class pins the disclosed path and its
+    never-writes-into-redact_map invariant on their own."""
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_disclosed_label_is_account_prefixed_raw_value_and_leaves_map_empty(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=True)
+        assert label == "account-1/feat-x"
+        assert redact_map == {}
+
+    @pytest.mark.parametrize("kind", ["branch", "agent-type"])
+    def test_non_disclosed_label_delegates_to_assign_root_scoped_redact_label(self, kind):
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(kind, 1, "feat-x", redact_map, disclose=False)
+        assert label == _mod.redaction._assign_root_scoped_redact_label(kind, 1, "feat-x", {})
+        assert redact_map == {(1, "feat-x"): label}
+
+    def test_disclosed_call_interleaved_between_redacted_calls_does_not_shift_counter(self):
+        """The direct proof of the "never writes into redact_map" invariant
+        -- no integration test pins this unconditionally, since a real
+        multi-root corpus can't isolate the counter position from the data
+        it's built from."""
+        redact_map: dict[tuple[int, str], str] = {}
+        first = _mod.redaction._root_scoped_display_label("branch", 1, "a", redact_map, disclose=False)
+        _mod.redaction._root_scoped_display_label("branch", 1, "disclosed-b", redact_map, disclose=True)
+        second = _mod.redaction._root_scoped_display_label("branch", 1, "c", redact_map, disclose=False)
+        assert first == "account-1/branch-1"
+        assert second == "account-1/branch-2"
+
+    def test_disclosed_and_redacted_labels_share_the_account_prefix_format(self):
+        """Format-drift pin: a future change to either function's namespace
+        string must fail here, substituting for extracting the format
+        string into a third shared helper."""
+        redact_map: dict[tuple[int, str], str] = {}
+        disclosed = _mod.redaction._root_scoped_display_label("branch", 3, "feat-x", redact_map, disclose=True)
+        redacted = _mod.redaction._assign_root_scoped_redact_label("branch", 3, "feat-y", {})
+        assert disclosed.split("/", 1)[0] == redacted.split("/", 1)[0] == "account-3"
+
+    def test_disclosed_label_strips_control_characters(self):
+        """A gitBranch value is transcript-sourced, not git-validated -- an
+        OSC-injection payload (the same fixture shape used for
+        _format_cost_ledger_row's own control-character test) must not reach
+        the disclosed label raw."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label(
+            "branch", 1, "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m", redact_map, disclose=True
+        )
+        assert label == "account-1/]0;PWNED[2J[H[31mFAKE-ROW[0m"
+        assert not re.search(r"[\x00-\x1f\x7f]", label)
+
+    def test_disclosed_branch_value_containing_slash_stays_unambiguous(self):
+        """Git branch names legitimately contain "/" (e.g. feature/foo) --
+        the disclosed format itself uses "/" as the account-<K>/<value>
+        separator, so this pins that a "/"-bearing value composes without
+        truncation or reinterpretation."""
+        redact_map: dict[tuple[int, str], str] = {}
+        label = _mod.redaction._root_scoped_display_label("branch", 1, "feature/foo", redact_map, disclose=True)
+        assert label == "account-1/feature/foo"
+        assert label.split("/", 1) == ["account-1", "feature/foo"]
+
+
+class TestRepoTrackedAgentTypeNames:
+    """_repo_tracked_agent_type_names -- the --this-repo subagent_type
+    disclosure allowlist accessor."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        """lru_cache(maxsize=1) is process-global; cleared before and after
+        every test in this class so a monkeypatched _REPO_AGENT_DEFINITIONS_DIR
+        from one test can never leak a stale cached result into the next,
+        including the real-directory regression test below."""
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
+
+    def _init_agents_repo(self, tmp_path: Path, *, tracked: list[str], untracked: list[str] = ()) -> Path:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        for name in tracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        if tracked:
+            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
+        for name in untracked:
+            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
+        return agents_dir
+
+    def _patch_dir(self, monkeypatch, agents_dir: Path) -> None:
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+
+    def test_tracked_md_stem_is_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["my-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "my-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_untracked_md_file_in_same_directory_is_not_allowlisted(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "tracked-agent" in names
+        assert "scratch-agent" not in names
+
+    def test_differently_cased_query_against_tracked_stem_is_excluded(self, tmp_path, monkeypatch):
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["code-writer"])
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "code-writer" in names
+        assert "Code-Writer" not in names
+
+    def test_directory_outside_any_git_repo_yields_built_ins_alone(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "not-a-repo"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    @pytest.mark.parametrize("agents_dir_kind", ["tracked", "untracked", "not_a_repo"])
+    def test_built_ins_present_in_every_case(self, tmp_path, monkeypatch, agents_dir_kind):
+        if agents_dir_kind == "not_a_repo":
+            agents_dir = tmp_path / "not-a-repo"
+            agents_dir.mkdir()
+        elif agents_dir_kind == "tracked":
+            agents_dir = self._init_agents_repo(tmp_path, tracked=["tracked-agent"])
+        else:
+            agents_dir = self._init_agents_repo(tmp_path, tracked=[], untracked=["scratch-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert _mod._repo_tracked_agent_type_names().issuperset(_mod._BUILT_IN_AGENT_TYPES)
+
+    def test_git_binary_missing_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        """Matches TestRepoScopedProjectSlugsGuard's own FileNotFoundError
+        precedent for _repo_scoped_project_slugs, diverging in outcome: this
+        accessor deliberately fails closed to the built-ins frozenset rather
+        than sys.exit, since failing closed here means more redaction, and
+        an operator's report should not die because git is unavailable."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise FileNotFoundError("git")
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_git_call_timeout_falls_back_to_built_ins_only(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        self._patch_dir(monkeypatch, agents_dir)
+
+        def boom(cmd, *a, **k):
+            raise subprocess.TimeoutExpired(cmd, 10)
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert _mod._repo_tracked_agent_type_names() == _mod._BUILT_IN_AGENT_TYPES
+
+    def test_nested_tracked_agent_file_is_not_allowlisted(self, tmp_path, monkeypatch):
+        """_repo_tracked_agent_type_names matches top-level entries only
+        (no "/" in the path), matching _declared_pin's own flat
+        agents_dir / f"{agent_type}.md" resolution -- a nested tracked file
+        over-redacts, the safe direction."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["top-level-agent"])
+        nested_dir = agents_dir / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "nested-agent.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "nested/nested-agent.md"], cwd=agents_dir, check=True)
+        self._patch_dir(monkeypatch, agents_dir)
+        names = _mod._repo_tracked_agent_type_names()
+        assert "top-level-agent" in names
+        assert "nested-agent" not in names
+
+    def test_non_ascii_tracked_filename_is_allowlisted(self, tmp_path, monkeypatch):
+        """Pins the docstring's -z rationale: without -z, git quotes and
+        escapes unusual path names, corrupting the stem."""
+        agents_dir = self._init_agents_repo(tmp_path, tracked=["café-agent"])
+        self._patch_dir(monkeypatch, agents_dir)
+        assert "café-agent" in _mod._repo_tracked_agent_type_names()
+
+    def test_real_agents_directory_allowlists_code_writer(self):
+        """The ticket's own motivating scenario, against the real,
+        unmonkeypatched agents/ directory -- deriving the name dynamically
+        (next(dir.glob('*.md')).stem) would make both this test's intent
+        and its failure message unreadable, so the name is hardcoded; the
+        unit tests above already carry the "real derivation works" fact."""
+        assert "code-writer" in _mod._repo_tracked_agent_type_names()
+
+
 class TestSubagentMixMultiRoot:
     """Repeatable --config-dir on subagent-mix, and its disclosure controls."""
+
+    @pytest.fixture
+    def _isolated_staff_sdet_allowlist(self, tmp_path, monkeypatch):
+        """Points _REPO_AGENT_DEFINITIONS_DIR at a throwaway git-tracked
+        agents/ directory tracking staff-sdet.md, decoupling the two
+        --this-repo subagent_type disclosure tests below from this repo's
+        own real agents/ tree -- the same isolation TestRepoTrackedAgentTypeNames
+        applies to its own unit tests, via monkeypatch + cache_clear()."""
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
 
     def test_two_roots_yield_strictly_more_spawns_than_either_alone(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -1519,6 +1924,153 @@ class TestSubagentMixMultiRoot:
         # root's row.
         assert account_1["Spawns"] == "2"
         assert account_2["Spawns"] == "1"
+
+    def test_this_repo_with_explicit_config_dir_discloses_branch_and_allowlisted_agent_type(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """--this-repo plus subagent-mix's own repeatable --config-dir (not
+        only the declared-roots file) discloses a raw branch name and an
+        allowlisted subagent_type in both tables -- pins that the two flags
+        are not mutually exclusive. Both roots write identical branch and
+        subagent_type values, so the two disclosed labels are the same
+        regardless of which physical root resolves to account-1 vs. account-2."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)  # no SystemExit
+        out = capsys.readouterr().out
+        # Substring-on-combined-stdout, not a per-table _table_cols extract:
+        # _mix_branch_label/_stype_label are idempotent per (root_idx, value)
+        # key, so both tables render the same label for the same key even
+        # though each computes it independently at its own print time -- a
+        # future change breaking that idempotence would need this test
+        # tightened to catch a per-table divergence.
+        assert "account-1/feat" in out
+        assert "account-2/feat" in out
+        assert "account-1/staff-sdet" in out
+        assert "account-2/staff-sdet" in out
+
+    def test_this_repo_non_allowlisted_agent_type_counter_starts_at_one_despite_allowlisted_seen_first(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """A non-allowlisted subagent_type still renders as
+        account-<K>/agent-type-1, with its counter starting at 1 despite an
+        allowlisted type being seen first in the same session -- proves the
+        disclosed path never writes into subagent_type_redact_map, matching
+        TestRootScopedDisplayLabel's own unit-level pin at the integration
+        layer."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "staff-sdet"),  # allowlisted, dispatched first
+                _agent_use("a2", "acme-corp-internal-tool"),  # not allowlisted
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/staff-sdet", out)
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert "acme-corp-internal-tool" not in out
+
+    def test_this_repo_case_varied_spelling_of_allowlisted_type_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """Pin against a later .lower()-style "robustness" change disclosing
+        a private type that collides case-insensitively with a real
+        allowlisted name. Asserts both directions in the same run: the
+        mixed-case collision stays opaque, and the exact-case allowlisted
+        form still discloses -- without the positive control, an
+        accidentally-empty allowlist would pass this test for the wrong
+        reason."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[
+                _agent_use("a1", "Staff-Sdet"),  # mixed-case collision, not allowlisted verbatim
+                _agent_use("a2", "staff-sdet"),  # exact-case allowlisted form -- positive control
+            ]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "Staff-Sdet" not in out
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+        assert re.search(r"account-\d+/staff-sdet\b", out)
+
+    def test_this_repo_colliding_branch_names_across_accounts_stay_on_separate_rows(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Two accounts' identically-named "main" branch must not collapse
+        into one row under --this-repo disclosure either -- the table this
+        measurement actually reads."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
+        ])
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/main" in out
+        assert "account-2/main" in out
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_per_session_still_refused_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)], per_session=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_subagent_mix(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--per-session" in err
+
+    def test_this_repo_single_root_prints_raw_branch_and_raw_non_allowlisted_type_with_no_account_prefix(
+        self, fake_projects, capsys
+    ):
+        """Single-root path (no --config-dir, no declared roots): root_idx
+        is always None, so both fields print raw with no account-<K>/
+        prefix regardless of --this-repo or the allowlist. The
+        non-allowlisted type is the load-bearing half: it proves the
+        allowlist gate is never consulted at single root, catching a future
+        reordering that checks `disclose` before `root_idx is not None`."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "acme-corp-internal-tool")]),
+        ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "acme-corp-internal-tool" in out
+        assert "account-" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -2226,13 +2778,7 @@ def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | N
     """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
     boundary conversion, so a test calling _review_trace_session_events directly
     passes boundaries in the same form the CLI itself would compute."""
-    since_ts = _mod._parse_ts(f"{since}T00:00:00Z") if since else None
-    until_epoch = None
-    if until:
-        day_start = _mod._parse_ts(f"{until}T00:00:00Z")
-        if day_start is not None:
-            until_epoch = day_start + 86400
-    return since_ts, until_epoch
+    return _mod._parse_absolute_window_args(argparse.Namespace(since=since, until=until), "review-trace")
 
 
 class TestDropDenialCommandFlagValues:
@@ -2440,6 +2986,181 @@ class TestReviewTrace:
         )
         reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
         assert reviewer_types == {"comment-discipline-reviewer", "skill-fidelity-reviewer"}
+
+    # -----------------------------------------------------------------------
+    # architect-consult classification
+    # -----------------------------------------------------------------------
+
+    def test_architect_consult_mode_consult_first_line_emits_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=consult emits an architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nSome question.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_mode_plan_sections_first_line_emits_no_consult_event(self):
+        """A plan-architect dispatch whose prompt's first line is the literal
+        MODE=plan-sections emits no architect-consult event."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=plan-sections\n## Context")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert not any(e["kind"] == "architect-consult" for e in events)
+
+    def test_architect_consult_empty_prompt_emits_event_fail_safe(self):
+        """An empty-string prompt is not the MODE=plan-sections literal, so
+        the fail-safe direction classifies it as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    def test_architect_consult_missing_prompt_key_emits_event_fail_safe(self):
+        """A block whose `input` dict lacks the `prompt` key entirely also
+        classifies as a consult -- `_agent_use` always populates `prompt` and
+        can't build this shape, so this constructs the raw dict literal."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[{
+                      "type": "tool_use", "id": "a1", "name": "Agent",
+                      "input": {"subagent_type": "plan-architect", "description": "x"},
+                  }]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
+
+    @pytest.mark.parametrize(
+        "first_line,expect_consult",
+        [pytest.param(fl, ec, id=tid) for fl, ec, tid in CONSULT_CLASSIFICATION_TABLE],
+    )
+    def test_classification_matches_table(self, first_line, expect_consult):
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt=first_line)]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        emitted_consult = any(e["kind"] == "architect-consult" for e in events)
+        assert emitted_consult is expect_consult
+
+    def test_sidechain_architect_consult_excluded(self):
+        """A plan-architect consult dispatch inside a sidechain record must
+        not produce an architect-consult event -- review-trace's session_iter
+        never requests subagent records, so a consult dispatched from inside
+        a subagent is structurally invisible here."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  sidechain=True,
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events == []
+
+    def test_non_plan_architect_dispatch_never_misclassified_as_consult(self):
+        """A staff-backend-engineer dispatch with no MODE=plan-sections first
+        line still emits zero architect-consult events and exactly one
+        reviewer-spawn -- guards against the `stype ==` gate being dropped,
+        which would reclassify every ordinary reviewer dispatch as a consult."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer", prompt="Review this diff.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert sum(1 for e in events if e["kind"] == "architect-consult") == 0
+        assert sum(1 for e in events if e["kind"] == "reviewer-spawn") == 1
+
+    def test_architect_consult_event_attributed_to_own_branch_not_session_first_branch(self):
+        """Mirrors test_events_attributed_to_own_branch_not_session_first_branch
+        for the architect-consult kind: a session opening on one branch, then
+        moving to another before the consult dispatch, attributes the event
+        to its own (later) branch and model."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0]["branch"] == "feature-x"
+        assert consult_events[0]["model"] == "opus"
+
+    def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
+        """The blindness property pinned at the layer it is defined: the
+        event dict itself carries only the classification result plus the
+        metadata every event kind carries, never a prompt-derived field."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt="MODE=consult\nSecret rationale nobody should see.")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        consult_events = [e for e in events if e["kind"] == "architect-consult"]
+        assert len(consult_events) == 1
+        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model"}
+
+    def test_architect_consult_prompt_body_never_reaches_review_trace_output(self, fake_projects, capsys):
+        """The prompt string is never stored on the event dict, so it can
+        never leak into printed output -- a distinctive rationale substring
+        embedded in the prompt must not appear anywhere in review-trace's
+        stdout."""
+        secret_rationale = "UNIQUE_RATIONALE_MARKER_892"
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect",
+                                       prompt=f"MODE=consult\n{secret_rationale}")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert secret_rationale not in out
+        assert "consult-session.jsonl" in out
+
+    def test_architect_consults_header_count_renders(self, fake_projects, capsys):
+        """The per-session header line's architect-consults=<N> count reflects
+        the number of architect-consult events emitted for that session."""
+        _write_jsonl(fake_projects / "consult-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+
+    def test_session_holding_only_consult_event_emits_session_block(self, fake_projects, capsys):
+        """A session whose only review-relevant event is an architect-consult
+        dispatch still emits a session block -- consult-only sessions aren't
+        silently dropped like a session with zero events."""
+        _write_jsonl(fake_projects / "consult-only.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "consult-only.jsonl" in out
+        assert "consult      " in out
 
     def test_sidechain_skill_invocation_excluded(self):
         """A code-review Skill call inside a sidechain record must not produce a skill event."""
@@ -2666,11 +3387,11 @@ class TestReviewTrace:
     # GH-482: per-record branch/model attribution
     # -----------------------------------------------------------------------
 
-    def test_gh482_events_attributed_to_own_branch_not_session_first_branch(self):
+    def test_events_attributed_to_own_branch_not_session_first_branch(self):
         """A session opening on one branch, then moving to another before any review
         event fires, must attribute every event to its own (later) branch — and
-        branch_filter must select by that per-event value, not the session's first
-        record's branch (the 53-session class from row 4 of the GH-482 plan)."""
+        branch_filter must select by that per-event value, not the session's
+        first record's branch."""
         records = [
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T09:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
@@ -3255,6 +3976,23 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
         assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
+
+    def test_deny_summary_corpus_window_widened_by_consult_event_outside_denial_range(self):
+        """The corpus min/max window reads every event kind, not just denial.
+        An architect-consult event timestamped outside the range the
+        corpus's own denial events establish must move the window -- proving
+        the widening is real, not merely that the session registers."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-07-01T10:00:00.000Z",
+                  content=[_bash_use("b1", "git commit -m x")]),
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.",
+                                tool_id="b1", ts="2026-07-01T10:00:01.000Z"),
+            _asst("claude-opus-4-7", branch="main", ts="2026-07-20T09:00:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ]
+        data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-20T09:00:00.000Z")
 
     def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before
@@ -4017,6 +4755,58 @@ class TestPriceTurnSpeedGeoMultipliers:
         dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
+
+
+class TestReportableUnpricedModelIds:
+    """Direct unit tests for pricing._reportable_unpriced_model_ids, the
+    shared predicate TestExcludedSpendBanner's _cost_report fixtures also
+    exercise -- these pin its branches by direct call so a bug in the
+    predicate itself is distinguishable from a print-wording bug in the
+    banner that consumes it."""
+
+    def test_empty_dict_reports_nothing(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({}) == []
+
+    def test_priced_looking_key_with_nonzero_tokens_is_reportable(self):
+        assert _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 500}) == ["claude-example-9"]
+
+    def test_synthetic_at_zero_tokens_is_not_reportable(self):
+        """A corpus with no synthetic records at all still seeds this key at
+        0 in some callers -- a $0 entry is not spend excluded from anything."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 0}) == []
+
+    def test_synthetic_at_nonzero_tokens_is_reportable(self):
+        """Forward-looking guard, not a case observed in a real corpus (see
+        the production docstring) -- pins that a naive `!= _SYNTHETIC_MODEL_ID`
+        filter, which would silently drop this branch, is rejected."""
+        assert _mod.pricing._reportable_unpriced_model_ids({_mod.pricing._SYNTHETIC_MODEL_ID: 100}) == [
+            _mod.pricing._SYNTHETIC_MODEL_ID
+        ]
+
+    def test_multiple_unpriced_ids_all_reported(self):
+        result = _mod.pricing._reportable_unpriced_model_ids({"claude-example-9": 100, "claude-example-10": 200})
+        assert sorted(result) == ["claude-example-10", "claude-example-9"]
+
+
+class TestFormatDriftDetected:
+    """Direct unit tests for pricing._format_drift_detected, the OR of the
+    two module-level drift flags TestPricingIntegrityBanner's _cost_report
+    fixtures also exercise through the full report."""
+
+    def test_false_when_neither_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is False
+
+    def test_true_when_only_usage_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", False)
+        assert _mod.pricing._format_drift_detected() is True
+
+    def test_true_when_only_subagent_drift_flag_set(self, monkeypatch):
+        monkeypatch.setattr(_mod.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(_mod.pricing, "_subagent_format_drift_detected", True)
+        assert _mod.pricing._format_drift_detected() is True
 
 
 class TestDedupTurnsByRequestId:
@@ -6792,6 +7582,23 @@ class TestCacheRebuildExcessPricing:
         assert excess is None
         assert unpriced_tokens > 0
 
+    def test_fable_5_1_warm_read_leg_uses_reduced_cache_read_multiplier(self):
+        """This function re-derives rates["cache_read"] via its own
+        _model_rates(model) call, independent of _price_turn -- cache-
+        rebuild's entire thesis is a cache-read-vs-cache-write delta, the
+        exact axis Fable 5.1's reduced cache-read multiplier deviates on, so
+        this is the site most exposed to the Fable pricing change. Like
+        test_transcript_cost.py::TestFablePricing, this validates rate
+        arithmetic only -- it never confirms "claude-fable-5-1" is the exact
+        string Claude Code writes to message.model."""
+        usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
+        excess, unpriced_tokens = _mod._cache_rebuild_excess_dollars("claude-fable-5-1", usage)
+        # write: 1,000,000/1e6 * 10.00*1.25 = 12.50; warm read uses the
+        # 0.025x reduced multiplier, not the standard 0.1x: 1,000,000/1e6 *
+        # 10.00*0.025 = 0.25; excess = 12.25.
+        assert excess == pytest.approx(12.25)
+        assert unpriced_tokens == 0
+
 
 class TestCacheRebuildClassification:
     """Direct coverage for _cache_rebuild_report's per-call cause
@@ -7163,7 +7970,7 @@ def _reviewer_dispatch_records(
     ]
     _write_subagent_dispatch(
         proj, session_id, f"agent-{tool_id}", tool_id,
-        [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": verdict_text}])],
+        [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": verdict_text}])],
         agent_type=subagent_type,
     )
     return records
@@ -7247,7 +8054,20 @@ class TestCostLedgerReadMode:
         )
         assert _mod._format_cost_ledger_read_row(row) == (
             "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
-            "        7      -3.2pp  rolled out F3 fix"
+            "        7       -3.2pp  rolled out F3 fix"
+        )
+
+    def test_format_read_row_renders_insufficient_sentinel_in_gap_column(self):
+        """The insufficient sentinel fills the widened 12-char GapPP column
+        as a single whitespace-delimited token, same as a numeric gap."""
+        row = _cost_ledger_row(
+            week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
+            ge200k_pct=12.3, denials=7, reviewer_gap_pp=_mod._REVIEWER_YIELD_INSUFFICIENT,
+            note="rolled out F3 fix",
+        )
+        assert _mod._format_cost_ledger_read_row(row) == (
+            "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
+            "        7 insufficient  rolled out F3 fix"
         )
 
     def test_read_mode_still_returns_union_with_two_declared_roots(
@@ -7298,6 +8118,16 @@ class TestCostLedgerSerializationRoundTrip:
         round-trip through the markdown line format unchanged."""
         row = _cost_ledger_row(usd=0.0, context_pct=0.0, opus_pct=0.0, ge200k_pct=0.0,
                                 denials=0, reviewer_gap_pp=None, note="")
+        line = _mod._format_cost_ledger_row(row)
+        _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
+        assert rows == [row]
+
+    def test_insufficient_gap_sentinel_round_trips(self):
+        """The below-floor insufficient sentinel round-trips through the
+        markdown line format unchanged, distinct from an unmeasured (None)
+        gap -- both are non-numeric, but only one has a nonzero Active
+        denominator on either side."""
+        row = _cost_ledger_row(reviewer_gap_pp=_mod._REVIEWER_YIELD_INSUFFICIENT)
         line = _mod._format_cost_ledger_row(row)
         _preamble, rows = _mod._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
@@ -7376,6 +8206,29 @@ class TestCostLedgerParserHostility:
         with pytest.raises(_mod._CostLedgerParseError, match="malformed note"):
             _mod._parse_cost_ledger_file_text(self._table(row))
 
+    def test_gap_sentinel_case_variant_rejected(self):
+        """A case-variant near-miss of the "insufficient" sentinel doesn't
+        silently match it -- it falls through to the trailing-'pp' check and
+        is rejected like any other malformed value."""
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | Insufficient |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected a trailing 'pp'"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_missing_trailing_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | 5.0 |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="expected a trailing 'pp'"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_non_finite_after_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | nanpp |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-finite reviewer_gap_pp"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
+    def test_gap_empty_prefix_before_pp_suffix_rejected(self):
+        row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | pp |  |"
+        with pytest.raises(_mod._CostLedgerParseError, match="non-numeric reviewer_gap_pp"):
+            _mod._parse_cost_ledger_file_text(self._table(row))
+
     def test_unresolved_merge_conflict_marker_rejected(self):
         text = (
             _mod._COST_LEDGER_HEADER_LINE + "\n"
@@ -7388,6 +8241,46 @@ class TestCostLedgerParserHostility:
         )
         with pytest.raises(_mod._CostLedgerParseError, match="merge-conflict marker"):
             _mod._parse_cost_ledger_file_text(text)
+
+
+class TestReviewerGapPPFloor:
+    """_reviewer_gap_pp's under-floor guard, exercised directly on
+    agg2-shaped dicts rather than through a corpus fixture."""
+
+    @staticmethod
+    def _agg2(*, findings_active: int, findings_edited: int, zero_active: int, zero_edited: int) -> dict:
+        return {
+            ("staff-backend-engineer", _mod._REVIEWER_VERDICT_FINDINGS_FOUND): {
+                "cited": findings_active, "active": findings_active, "edited": findings_edited,
+            },
+            ("staff-backend-engineer", _mod._REVIEWER_VERDICT_ZERO_FINDING): {
+                "cited": zero_active, "active": zero_active, "edited": zero_edited,
+            },
+        }
+
+    def test_both_arms_below_floor_returns_insufficient(self):
+        agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=9, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_both_arms_at_floor_returns_a_numeric_gap(self):
+        agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=10, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == pytest.approx(100.0)
+
+    def test_zero_finding_arm_under_floor_returns_insufficient_even_when_findings_arm_clears_it(self):
+        agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=9, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_findings_arm_under_floor_returns_insufficient_even_when_zero_arm_clears_it(self):
+        agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=10, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) == _mod._REVIEWER_YIELD_INSUFFICIENT
+
+    def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_above_floor(self):
+        agg2 = self._agg2(findings_active=20, findings_edited=10, zero_active=0, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) is None
+
+    def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_below_floor(self):
+        agg2 = self._agg2(findings_active=5, findings_edited=2, zero_active=0, zero_edited=0)
+        assert _mod._reviewer_gap_pp(agg2) is None
 
 
 class TestCostLedgerRecordParity:
@@ -7404,18 +8297,25 @@ class TestCostLedgerRecordParity:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
             _hook_deny("require-code-review", ts="2026-06-02T10:00:00.000Z"),
         ]
-        records += _reviewer_dispatch_records(
-            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
-            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
-        )
-        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
-                              content=[_edit_use("ef1", path="src/foo.py")]))
-        records += _reviewer_dispatch_records(
-            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
-            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
-        )
-        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
-                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        # Below _REVIEWER_YIELD_ACTIVE_FLOOR (10) dispatches per arm, reviewer_gap_pp
+        # reports "insufficient" instead of a numeric gap -- this fixture uses ten
+        # per arm to clear the floor.
+        for i in range(10):
+            records += _reviewer_dispatch_records(
+                proj, session_id, f"f{i}", "staff-backend-engineer",
+                f"Found 1 issue in src/foo{i}.py needing a fix",
+                dispatch_ts=f"2026-06-01T09:{i:02d}:00.000Z", result_ts=f"2026-06-01T09:{i:02d}:30.000Z",
+            )
+            records.append(_asst("claude-opus-4-7", ts=f"2026-06-01T09:{i:02d}:40.000Z",
+                                  content=[_edit_use(f"ef{i}", path=f"src/foo{i}.py")]))
+        for i in range(10):
+            records += _reviewer_dispatch_records(
+                proj, session_id, f"z{i}", "staff-backend-engineer",
+                f"Found 0 issues in src/other{i}.py after review",
+                dispatch_ts=f"2026-06-01T10:{i:02d}:00.000Z", result_ts=f"2026-06-01T10:{i:02d}:30.000Z",
+            )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T10:15:00.000Z",
+                              content=[_edit_use("ez-final", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
 
         _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
@@ -7452,10 +8352,42 @@ class TestCostLedgerRecordParity:
         assert row["denials"] == sum(deny_data["hook_counts"].values())
         assert row["denials"] == 1
 
-        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
         assert row["reviewer_gap_pp"] == pytest.approx(_mod._reviewer_gap_pp(reviewer_data["agg2"]))
         assert row["reviewer_gap_pp"] == pytest.approx(100.0)  # findings-found 100% edited vs. zero-finding 0%
+
+    def test_record_row_carries_insufficient_sentinel_under_the_active_floor(
+        self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
+    ):
+        """A week with fewer than _REVIEWER_YIELD_ACTIVE_FLOOR Active
+        dispatches on either arm records the "insufficient" sentinel, not a
+        percentage-point figure computed from an underpowered sample."""
+        proj = fake_projects
+        session_id = "sess-parity-small"
+        records = [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ]
+        records += _reviewer_dispatch_records(
+            proj, session_id, "f1", "staff-backend-engineer", "Found 1 issue in src/foo.py needing a fix",
+            dispatch_ts="2026-06-01T09:00:00.000Z", result_ts="2026-06-01T09:00:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:05:00.000Z",
+                              content=[_edit_use("ef1", path="src/foo.py")]))
+        records += _reviewer_dispatch_records(
+            proj, session_id, "z1", "staff-backend-engineer", "Found 0 issues in src/other.py after review",
+            dispatch_ts="2026-06-01T09:10:00.000Z", result_ts="2026-06-01T09:10:30.000Z",
+        )
+        records.append(_asst("claude-opus-4-7", ts="2026-06-01T09:15:00.000Z",
+                              content=[_edit_use("ez1", path="src/unrelated.py")]))
+        _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        capsys.readouterr()
+
+        _preamble, rows = _mod._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        assert len(rows) == 1
+        assert rows[0]["reviewer_gap_pp"] == _mod._REVIEWER_YIELD_INSUFFICIENT
 
     def test_denial_at_next_weeks_monday_boundary_excluded_from_this_weeks_row(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
@@ -10093,6 +11025,45 @@ class TestCmdStruggle:
             f"'stale cache' should not register as a struggle signal; branch appeared in output: {out!r}"
         )
 
+    def test_task_notification_envelope_produces_no_struggle_signal(self, fake_projects, capsys):
+        """A forwarded <task-notification> record whose <summary> contains a struggle
+        phrase is the subagent's own prose, not human input — it must not register."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "<task-notification><status>completed</status>"
+                "<summary>Background task still failing, incorrect output</summary>"
+                "</task-notification>",
+                branch="feat",
+            ),
+        ])
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
+        _mod.cmd_struggle(args)
+        out = capsys.readouterr().out
+        assert "feat" not in out, (
+            f"a task-notification's forwarded <summary> should not register as a struggle signal; got {out!r}"
+        )
+
+    def test_task_notification_mixed_turn_struggle_phrase_outside_envelope_still_counts(self, fake_projects, capsys):
+        """A struggle phrase sitting outside the envelope in the same turn still counts,
+        even though the envelope in that same turn is excluded from matching."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "that's incorrect. also: "
+                "<task-notification><summary>still failing</summary></task-notification>",
+                branch="feat",
+            ),
+        ])
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": "feat"})()
+        _mod.cmd_struggle(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Opus", row_contains="feat")
+        total_signals = sum(int(cols[k]) for k in ["Opus", "Sonnet", "Haiku", "Other", "Unknown"])
+        assert total_signals == 1, (
+            f"expected exactly 1 struggle signal (from 'incorrect' outside the envelope); got cols={cols}"
+        )
+
     @pytest.mark.parametrize(
         "phrase,text",
         [
@@ -10185,6 +11156,64 @@ class TestCmdUserInput:
             '**[? · EXPLICIT_CORRECTION · sonnet]** (matched: "hallucinat")\n'
             "~~~text\nI think you hallucinated about this\n~~~"
         ) in out
+
+    def test_task_notification_not_explicit_correction_but_text_displayed_verbatim(self, fake_projects, capsys):
+        """A forwarded <task-notification> whose <summary> contains a struggle phrase is
+        not classified EXPLICIT_CORRECTION, since it's subagent prose rather than human
+        input. The ~~~text block still renders the full unstripped envelope. Display and
+        scoring are separate copies of the same string."""
+        envelope = (
+            "<task-notification><status>completed</status>"
+            "<summary>Background command still failing, incorrect output</summary>"
+            "</task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(envelope, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "EXPLICIT_CORRECTION" not in out
+        assert f"~~~text\n{envelope}\n~~~" in out
+
+    def test_task_notification_followup_leaves_fresh_prompt_and_followup_counts_unchanged(self, fake_projects, capsys):
+        """A task-notification record still counts as one fresh prompt and one followup,
+        same as any other non-matching FOLLOWUP. The phrase-matching exclusion affects
+        only EXPLICIT_CORRECTION classification, not the fresh-prompt/followup tally."""
+        envelope = (
+            "<task-notification><status>completed</status>"
+            "<summary>Background command still failing, incorrect output</summary>"
+            "</task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(envelope, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "- Fresh prompts: 2" in out
+        assert "- Followups (quiet redirects): 1" in out
+
+    def test_task_notification_mixed_turn_still_explicit_correction_on_outside_phrase(self, fake_projects, capsys):
+        """A struggle phrase outside the envelope in the same turn still classifies
+        EXPLICIT_CORRECTION, even though the envelope portion of that turn is excluded."""
+        text = (
+            "that's incorrect. also: <task-notification>"
+            "<summary>still failing</summary></task-notification>"
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("plain initial prompt", branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _ui_user(text, branch="feat"),
+            _asst("claude-sonnet-4-6", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert '**[? · EXPLICIT_CORRECTION · sonnet]** (matched: "incorrect")' in out
 
     def test_corrections_only_excludes_initial(self, fake_projects, capsys):
         """--corrections-only drops INITIAL prompts but keeps FOLLOWUP/EXPLICIT_CORRECTION."""
@@ -11478,6 +12507,19 @@ class TestSubagents:
         main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
 
+    def test_single_root_branch_output_strips_control_characters(self, fake_projects, capsys):
+        """gitBranch is transcript-sourced, not git-validated -- an
+        OSC-injection payload must not reach the single-root (no
+        --config-dir) table row raw, the same invariant
+        _root_scoped_display_label's disclose path enforces under multi-root."""
+        payload = "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch=payload)])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED[2J[H[31mFAKE-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
+
 
 class TestSubagentsToolResultBytes:
     """cmd_subagents' tool-result byte-count dimension: main vs. sidechain,
@@ -11628,6 +12670,24 @@ class TestSubagentsByteGroupingByTool:
         _mod.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "unknown" in out
+
+    def test_tool_name_output_strips_control_characters(self, fake_projects, capsys):
+        """tool_use.name is transcript-sourced, not validated -- an
+        OSC-injection payload must not reach the byte-by-tool table's Tool
+        column raw, the same invariant cmd_subagents' branch column already
+        enforces (test_single_root_branch_output_strips_control_characters)."""
+        payload = "\x1b]0;PWNED-TOOL\x07\x1b[31mFAKE-TOOL-ROW\x1b[0m"
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[
+                {"type": "tool_use", "id": "t1", "name": payload, "input": {}},
+            ]),
+            _user_msg([_tool_result("t1", "z" * 16)], branch="main"),
+        ])
+        _mod.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert "]0;PWNED-TOOL[31mFAKE-TOOL-ROW[0m" in out
+        assert "\x1b" not in out
+        assert "\x07" not in out
 
 
 class TestSubagentsSince:
@@ -12504,6 +13564,52 @@ class TestFrictionCount:
         signals = json.loads(capsys.readouterr().out)
         assert signals["struggle_turns"] == 1
 
+    def test_task_notification_only_transcript_zero_struggle_turns(self, fake_projects, capsys):
+        """A transcript containing only a forwarded <task-notification> record whose
+        <summary> has a struggle phrase counts zero struggle turns."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "<task-notification><summary>still failing, try again</summary></task-notification>",
+                branch="feat",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["struggle_turns"] == 0
+
+    def test_task_notification_mixed_turn_still_counts_outside_phrase(self, fake_projects, capsys):
+        """A struggle phrase outside the envelope in the same turn still counts one
+        struggle turn, even though the envelope portion is excluded from matching."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "no not that, try again. also: "
+                "<task-notification><summary>still failing</summary></task-notification>",
+                branch="feat",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["struggle_turns"] == 1
+
+    def test_unterminated_envelope_with_embedded_phrase_still_counts(self, fake_projects, capsys):
+        """A struggle phrase inside an envelope missing its closing tag still counts: the
+        unterminated opener is left in place rather than swallowing the rest of the turn."""
+        path = fake_projects / "sess.jsonl"
+        _write_jsonl(path, [
+            _asst("claude-sonnet-4-6", branch="feat"),
+            _user_msg(
+                "<task-notification><summary>still failing, try again",
+                branch="feat",
+            ),
+        ])
+        _mod.cmd_friction_count(_friction_count_args(str(path), json_output=True))
+        signals = json.loads(capsys.readouterr().out)
+        assert signals["struggle_turns"] == 1
+
     def test_isSidechain_records_skipped(self, fake_projects, capsys):
         """isSidechain denial/failed-test/struggle records are excluded from every signal."""
         path = fake_projects / "sess.jsonl"
@@ -13267,6 +14373,44 @@ class TestDenialHookLabelEnumerationRealHooks:
         assert message is not None
         assert _mod._denial_hook_label("", message) == "Skill length"
 
+    def test_claude_md_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-claude-md-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) now goes through the shared
+        _lib_staged_length_gate and shares check-claude-md-length.sh's
+        over-limit label "AGENTS.md length" — pinning the post-Phase-2
+        merged classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-claude-md-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "AGENTS.md length"
+
+    def test_skill_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
+        """check-skill-length.sh's commit-detection fail-closed path (sed
+        absent from PATH, same technique test_check_skill_length.py's
+        test_sed_absent_from_path_denies uses) now goes through the shared
+        _lib_staged_length_gate and shares check-skill-length.sh's
+        over-limit label "Skill length" — pinning the post-Phase-2 merged
+        classification so a future wording change is caught."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        message = run_hook_reason(
+            HOOKS_DIR / "check-skill-length.sh",
+            bash_input("git commit -m foo"),
+            cwd=tmp_path,
+            extra_env={"PATH": restricted_path},
+        )
+        assert message is not None
+        assert _mod._denial_hook_label("", message) == "Skill length"
+
 
 # ---------------------------------------------------------------------------
 # Multi-account scope (transcript-corpus-multi-account-scope plan) —
@@ -14021,6 +15165,173 @@ class TestSubagentsDeclaredRootsMultiRoot:
         assert "account-1/branch-1" in captured.out
         assert "account-2/branch-1" in captured.out
 
+    def test_this_repo_via_declared_roots_discloses_branch_raw(self, tmp_path, monkeypatch, capsys):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed"),
+            ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_subagent_mix_this_repo_via_declared_roots_discloses_branch_raw(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """cmd_subagent_mix's own --this-repo x declared-roots-file
+        coverage, mirroring test_this_repo_via_declared_roots_discloses_branch_raw
+        above for cmd_subagents -- closes the asymmetry where only
+        cmd_subagents' declared-roots path (as opposed to explicit
+        --config-dir, already covered by TestSubagentMixMultiRoot) had this
+        coverage."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        for idx, root in enumerate(roots):
+            proj = root / this_repo_slug
+            proj.mkdir(parents=True)
+            _write_jsonl(proj / f"sess-{idx}.jsonl", [
+                _asst("claude-opus-4-7", branch="feat-disclosed", content=[_agent_use(f"a{idx}", "staff-sdet")]),
+            ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        assert "account-1/feat-disclosed" in out
+        assert "account-2/feat-disclosed" in out
+
+    def test_this_repo_discloses_attested_main_thread_branch_but_not_sidechain_only_branch(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """One session's main-thread record attests branch 'alpha'; its own
+        sidechain record carries a different branch 'beta' with no
+        main-thread attestation anywhere in scope -- alpha discloses raw
+        and beta prints as account-<K>/branch-<N>, in the same run. Both
+        halves asserted together so the contrast is what fails."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="alpha"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="beta", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/alpha\b", out)
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "beta" not in out
+
+    def test_this_repo_attestation_is_corpus_wide_not_since_window_scoped(
+        self, fake_projects, fake_config_dir_factory, capsys, monkeypatch
+    ):
+        """main_thread_branches attestation runs before the --since filter
+        and is never narrowed by it -- a branch attested by a main-thread
+        record outside the --since window still discloses raw for an
+        in-window sidechain record on that same branch. Pins this as
+        intentional: the attestation question is whether a real
+        main-thread session ever used this branch, not whether the
+        attesting record itself appears in the displayed table."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        old_ts = datetime.fromtimestamp(fixed_now - 10 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        recent_ts = datetime.fromtimestamp(fixed_now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-attest-window"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="gamma", ts=old_ts),  # main-thread, outside --since 1d
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="gamma", sidechain=True, ts=recent_ts),  # in-window
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)], since="1d")
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/gamma\b", out)
+
+    def test_this_repo_branch_attestation_collision_residual_folds_unattested_sidechain_into_disclosed_row(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Accepted residual: attestation is keyed on (root_idx, branch) --
+        a same-account, same-string check, not a same-repo check. A
+        sidechain record that happens to carry the SAME branch name as a
+        genuine main-thread record in the same account -- e.g. a subagent
+        dispatched to a different repo whose own gitBranch coincidentally
+        also reads "main" -- still folds into that disclosed row. Pinned
+        here as a deliberate, tested tradeoff, not a silent consequence."""
+        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
+        session_id = "sess-collision"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)  # only one branch total, and it's disclosed
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "1"  # the coincidental sidechain's own data reached the disclosed row
+
+    def test_this_repo_cross_account_attestation_independence(self, tmp_path, monkeypatch, capsys):
+        """main_thread_branches keyed on (root_idx, branch), not a flat
+        set[str] -- account A's own main-thread attestation of a generic
+        branch name must not leak disclosure to account B's own unattested
+        (sidechain-only) copy of the same branch name."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        this_repo_slug = "-repo-main"
+        proj_a = roots[0] / this_repo_slug
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _asst("claude-opus-4-7", branch="main"),
+        ])
+        proj_b = roots[1] / this_repo_slug
+        proj_b.mkdir(parents=True)
+        session_id_b = "sess-b"
+        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
+            _asst("claude-opus-4-7", branch="other"),  # keeps proj_b's own top-level file non-empty
+        ])
+        _write_subagent_jsonl(proj_b, session_id_b, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+        ])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = [this_repo_slug]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/main\b", out)  # account A's attested row
+        assert re.search(r"account-\d+/branch-\d+", out)  # account B's unattested row stays opaque
+
+    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_this_repo_single_root_prints_raw_branch_with_no_account_prefix(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch="feat")])
+        args = _subagents_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "feat" in out
+        assert "account-" not in out
+
 
 class TestResolveScanRoots:
     """_resolve_scan_roots as a directly callable, unit-testable function --
@@ -14438,7 +15749,7 @@ class TestHookObservableBoundaries:
 
 
 class TestRampCurveFromCorpus:
-    def test_turn_index_bucket_edges_match_pr605_bands_including_the_gap(self):
+    def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
         """PR #605's own table never labeled turn index 10-19 (its bands jump
         from "5-10" to "20-40"); the cascading less-than lookup this reuses
         from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range
@@ -14606,6 +15917,122 @@ class TestParseNudgeLogEntries:
             {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
              "window": 1000000, "event": "PostToolBatch", "action": "block"},
         ]
+
+    def test_ignored_and_skills_fields_are_captured_when_present(self, tmp_path):
+        """A telemetry-era nudged line carries ignored=/skills= -- captured
+        as typed fields (ignored as int, skills as the raw comma-joined
+        string), the same optional-key style action= already uses."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch "
+            "ignored=3 skills=handoff,memory-skill action=block\n"
+        )
+        assert _mod._parse_nudge_log_entries(log_path) == [
+            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
+             "window": 1000000, "event": "PostToolBatch", "action": "block",
+             "ignored": 3, "skills": "handoff,memory-skill"},
+        ]
+
+    def test_pre_telemetry_line_parses_without_ignored_or_skills_keys(self, tmp_path):
+        """A `nudged` line written before the ignored=/skills= telemetry
+        addition carries neither field -- the returned dict has no
+        "ignored" or "skills" key at all, distinguishable from a live
+        session with nothing active (skills=-, ignored=0) rather than
+        conflated with it."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        assert "ignored" not in entries[0]
+        assert "skills" not in entries[0]
+
+    def test_malformed_ignored_field_drops_only_that_key(self, tmp_path):
+        """A non-integer ignored= value doesn't discard the whole entry --
+        only the "ignored" key is left unset, matching how a pre-telemetry
+        line (missing the key entirely) is already handled. skills= is
+        unaffected, confirming the malformed field is isolated from its
+        sibling."""
+        log_path = tmp_path / ".handoff-nudge.log"
+        log_path.write_text(
+            "nudged session=abc est=400000 model=x window=1000000 event=Stop "
+            "ignored=not-an-int skills=-\n"
+        )
+        entries = _mod._parse_nudge_log_entries(log_path)
+        assert len(entries) == 1
+        assert "ignored" not in entries[0]
+        assert entries[0]["skills"] == "-"
+
+
+class TestParseNudgeLogEntriesRealHookLineContract:
+    """Fires the real nudge-handoff-near-context-cap.sh hook and feeds its
+    emitted `nudged` line straight into _parse_nudge_log_entries, rather than
+    a hand-written fixture line on each side -- a field-ordering or delimiter
+    drift between the hook's printf format and this parser could otherwise
+    pass both suites while breaking the real pipeline."""
+
+    _NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
+
+    @staticmethod
+    def _usage_record(total: int, *, model: str = "claude-sonnet-5") -> dict:
+        """An assistant record whose four usage fields sum to `total`,
+        matching nudge-handoff-near-context-cap.sh's own ESTIMATE
+        computation (cache_read + cache_creation + input + output tokens)."""
+        rec = _asst(model)
+        rec["message"]["usage"] = {
+            "cache_read_input_tokens": total,
+            "cache_creation_input_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        return rec
+
+    def _fire(self, tmp_path: Path, transcript: Path, env: dict) -> subprocess.CompletedProcess:
+        payload = {
+            "session_id": "contract-session",
+            "transcript_path": str(transcript),
+            "hook_event_name": "PostToolBatch",
+        }
+        return subprocess.run(
+            [str(self._NUDGE_HOOK)], input=json.dumps(payload),
+            capture_output=True, text=True, env=env, check=False,
+        )
+
+    def test_real_hard_block_line_parses_with_ignored_and_skills_correctly_typed(self, tmp_path):
+        # claude-sonnet-5's 1M window caps its threshold at
+        # HANDOFF_NUDGE_ABS_CAP's shipped default (150000); block_at is one
+        # rearm-spacing hop past that, so the second fire is both a qualifying
+        # rearm and past the block point.
+        threshold = 150_000
+        block_at = threshold + 80_000
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        for var in ("HANDOFF_NUDGE_ABS_CAP", "HANDOFF_NUDGE_REARM_SPACING", "HANDOFF_NUDGE_BLOCK_AFTER"):
+            env.pop(var, None)
+        env["HANDOFF_NUDGE_BLOCK_AT"] = str(block_at)
+
+        transcript = tmp_path / "t.jsonl"
+        _write_jsonl(transcript, [self._usage_record(threshold)])
+        first = self._fire(tmp_path, transcript, env)
+        assert first.returncode == 0  # first-ever crossing: always advisory
+
+        with transcript.open("a") as f:
+            f.write(json.dumps(self._usage_record(block_at)) + "\n")
+        second = self._fire(tmp_path, transcript, env)
+        assert second.returncode == 2, f"estimate reaches HANDOFF_NUDGE_BLOCK_AT={block_at}"
+
+        log_path = tmp_path / ".claude" / ".handoff-nudge.log"
+        nudged_lines = [line for line in log_path.read_text().splitlines() if line.startswith("nudged")]
+        # Pre-parse sanity tripwire on the raw log line; the parser-based
+        # assertions below are what actually validate the contract.
+        assert nudged_lines[-1].endswith("action=block")
+
+        entries = _mod._parse_nudge_log_entries(log_path)
+        block_entry = entries[-1]
+        assert block_entry["action"] == "block"
+        assert block_entry["ignored"] == 1
+        assert isinstance(block_entry["ignored"], int)
+        assert block_entry["skills"] == "-"
 
 
 class TestOperatorResponseLagFromLog:
@@ -16029,6 +17456,89 @@ class TestGhDiscoverMergedPrsPagination:
         limit_value = int(argv[argv.index("--limit") + 1])
         assert limit_value == _mod._PR_COST_GH_PR_LIST_LIMIT
         assert limit_value > 30  # gh pr list's own truncating default
+
+
+class TestGhDiscoverClosedUnmergedPrBranches:
+    """_gh_discover_closed_unmerged_pr_branches: same gh pr list call shape
+    as _gh_discover_merged_prs, --state closed instead of --state merged --
+    workstream-cost's own sibling discovery call."""
+
+    def test_passes_state_closed_and_explicit_limit(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        argv = captured["cmd"]
+        assert argv[argv.index("--state") + 1] == "closed"
+        assert "--limit" in argv
+        assert int(argv[argv.index("--limit") + 1]) == _mod._PR_COST_GH_PR_LIST_LIMIT
+
+    def test_returns_headref_name_set_from_closed_prs(self, monkeypatch):
+        """Returns a set of branch names (headRefName), not the raw PR dict
+        list _gh_discover_merged_prs returns -- workstream-cost only needs
+        set membership for its merged/closed-unmerged/no-match classification."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2, "headRefName": "abandoned-b"},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a", "abandoned-b"}
+
+    def test_entry_with_no_headref_name_filtered_out_of_result(self, monkeypatch):
+        """An entry with no headRefName key (or an empty one) is dropped
+        from the returned set -- mirrors the `if pr.get("headRefName")`
+        truthy filter guarding each entry."""
+        payload = [
+            {"number": 1, "headRefName": "abandoned-a"},
+            {"number": 2},
+            {"number": 3, "headRefName": ""},
+        ]
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
+        )
+        result = _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        assert result == {"abandoned-a"}
+
+    def test_gh_call_failure_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A failed gh pr list (closed) call aborts the whole run via
+        _pr_cost_abort_on_gh_failure. Discovery has no per-row granularity
+        to degrade into, so it does not return a partial or empty set
+        silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {
+                "returncode": 1, "stdout": "", "stderr": "not logged into any GitHub hosts\n",
+            })()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "gh pr list (closed) failed" in capsys.readouterr().err
+
+    def test_malformed_json_stdout_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
+        """A successful gh call (returncode 0) whose stdout is not valid
+        JSON aborts via sys.exit(1) rather than raising JSONDecodeError
+        uncaught or returning a partial/empty set silently."""
+        def fake_run(cmd, *a, **kw):
+            return type("R", (), {"returncode": 0, "stdout": "not json", "stderr": ""})()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert "unparseable JSON" in capsys.readouterr().err
 
 
 class TestAppendPrCostLedgerRow:

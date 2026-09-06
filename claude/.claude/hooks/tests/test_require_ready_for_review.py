@@ -4,16 +4,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import textwrap
+import time
 from pathlib import Path
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     HOOKS_DIR,
     SKILLS_DIR,
     assert_gate_handles_traversal_session_id,
     bash_input,
+    build_path_without,
     edit_input,
     extract_skill_command,
     git_toplevel,
@@ -21,6 +24,8 @@ from helpers import (
     run_hook,
     run_skill_command,
 )
+
+from .conftest import _seed_session, assert_cap_engaged
 
 READY_FOR_REVIEW_HOOK = HOOKS_DIR / "require-ready-for-review.sh"
 READY_FOR_REVIEW_SKILL = SKILLS_DIR / "ready-for-review" / "SKILL.md"
@@ -175,6 +180,376 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push --tags origin feature",
+            "git -c user.name=x push --tags origin feature",
+            "git --git-dir=/wt/.git push --tags origin feature",
+        ],
+    )
+    def test_tags_with_branch_behind_a_git_global_flag_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A global flag between `git` and `push` (e.g. `-C`, `-c`) must not
+        let a tag-only-looking push arm exempt a fragment that also names a
+        branch ref."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push --tags origin",
+            "git -c user.name=x push --tags origin",
+            "git --git-dir=/wt/.git push --tags origin",
+        ],
+    )
+    def test_tags_only_push_behind_a_git_global_flag_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The don't-over-gate counterpart: once the global flag is
+        consumed, a genuinely tag-only push is still recognized as such."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push origin :old-branch new-feature:new-feature",
+            "git -c user.name=x push origin :old-branch new-feature:new-feature",
+            "git --git-dir=/wt/.git push origin :old-branch new-feature:new-feature",
+        ],
+    )
+    def test_colon_refspec_with_branch_behind_a_git_global_flag_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A global flag between `git` and `push` must not let a
+        delete-only-looking colon-refspec arm exempt a fragment that also
+        names a real refspec — the colon-refspec arm's own version of the
+        --tags guard above."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push origin :old-branch",
+            "git -c user.name=x push origin :old-branch",
+            "git --git-dir=/wt/.git push origin :old-branch",
+        ],
+    )
+    def test_colon_refspec_only_push_behind_a_git_global_flag_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The don't-over-gate counterpart: once the global flag is
+        consumed, a genuinely delete-only colon-refspec push is still
+        recognized as such."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --tags $(echo origin feature)",
+            "git push --tags `echo origin feature`",
+        ],
+    )
+    def test_tags_only_push_with_command_substitution_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Command substitution's output becomes real push arguments at
+        execution time, so a branch ref hidden inside $(...) or backticks
+        must not be exempted by the tag-only bypass."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_all_push_fragments_bypassable_still_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A command whose every push fragment independently qualifies for a
+        bypass (dry-run, delete) is allowed with no gated fragment remaining."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git push --dry-run && git push origin :feature", session_id="s"
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_colon_refspec_with_real_branch_ref_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """git's documented rename-on-remote idiom pairs a deletion refspec
+        with a real one in a single fragment. The deletion refspec alone
+        must not exempt the whole fragment from gating."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git push origin :old-branch new-feature:new-feature",
+                    session_id="s",
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_colon_refspec_multiple_deletes_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """The don't-over-gate counterpart: two pure deletion refspecs in one
+        fragment stay bypassed."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git push origin :old-branch :another-old-branch",
+                    session_id="s",
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin :old-branch $(echo new-feature:new-feature)",
+            "git push origin :old-branch `echo new-feature:new-feature`",
+        ],
+    )
+    def test_colon_refspec_with_command_substitution_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Command substitution's output becomes real push arguments at
+        execution time, so a branch ref hidden inside $(...) or backticks
+        must not be exempted by the delete-only bypass — the colon-refspec
+        arm's own version of the guard the --tags arm already has."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_colon_refspec_and_tags_in_one_fragment_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A fragment combining a deletion refspec with --tags gates, since
+        neither arm's allowlist recognizes the other arm's safe token. Pins
+        the current conservative behavior for this untested combination
+        rather than leaving it to silently move either direction later."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin :feature --tags", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --force origin --tags",
+            "git push --force-with-lease origin --tags",
+            "git push --force-with-lease=refs/heads/x:1234 origin --tags",
+            "git push --force-if-includes origin --tags",
+            "git push -u origin --tags",
+            "git push --set-upstream origin --tags",
+        ],
+    )
+    def test_tags_only_push_with_force_or_upstream_flag_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Each of the --tags arm's own allowlisted flags stays tag-only
+        when composed with --tags — the flags are passed through, not
+        mistaken for a branch ref."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --force origin :old-branch",
+            "git push --force-with-lease origin :old-branch",
+            "git push --force-with-lease=refs/heads/x:1234 origin :old-branch",
+            "git push --force-if-includes origin :old-branch",
+            "git push -u origin :old-branch",
+            "git push --set-upstream origin :old-branch",
+        ],
+    )
+    def test_colon_refspec_only_push_with_force_or_upstream_flag_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Each of the colon-refspec arm's own allowlisted flags stays
+        delete-only when composed with a deletion refspec — the flags are
+        passed through, not mistaken for a branch ref."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --force origin --tags feature",
+            "git push -u origin :old-branch new-feature:new-feature",
+        ],
+    )
+    def test_force_or_upstream_flag_does_not_mask_a_real_refspec(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A real branch ref alongside one of the allowlisted flags must
+        still gate — the flag's own allowlist entry doesn't widen to also
+        excuse an unrelated refspec in the same fragment."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin :dummy-ref origin",
+            "git push origin --tags origin",
+            "git push upstream :dummy upstream",
+        ],
+    )
+    def test_repeated_remote_name_in_refspec_position_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A bare `origin`/`upstream` token is only exempt in the
+        <repository> position. A second occurrence later in the fragment is
+        a refspec — it pushes the identically-named local branch — and must
+        not ride along on the remote-name exemption."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push upstream :dummy",
+            "git push upstream --tags",
+        ],
+    )
+    def test_upstream_only_push_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The don't-over-gate counterpart to the repeated-remote-name tests
+        above: a single, non-repeated `upstream` token in the <repository>
+        position is exempt, mirroring `origin`'s existing allow coverage."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push origin :dummy-ref origin",
+            "git -c user.name=x push origin :dummy-ref origin",
+            "git --git-dir=/wt/.git push origin :dummy-ref origin",
+        ],
+    )
+    def test_repeated_remote_name_behind_a_git_global_flag_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A global flag ahead of `push` must not change the repeated-remote-
+        name shape's outcome — global-flag stripping and the position-aware
+        exclusion are otherwise tested independently."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /wt push upstream :dummy",
+            "git -c user.name=x push upstream :dummy",
+            "git --git-dir=/wt/.git push upstream :dummy",
+        ],
+    )
+    def test_upstream_only_push_behind_a_git_global_flag_allowed(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The don't-over-gate counterpart: a global flag ahead of `push`
+        must not change the single, non-repeated `upstream` shape's
+        outcome either."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
     def test_default_branch_push_allowed(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
@@ -237,6 +612,32 @@ class TestRequireReadyForReview:
                 cwd=repo_on_feature_branch,
             )
             == "allow"
+        )
+
+    def test_active_marker_hit_advances_mtime(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """The hook is wired to the touch-refreshing wrapper, not the bare
+        liveness predicate -- a live-but-idle-window-aged marker's mtime must
+        advance on a gate hit, or a reverted call site would pass every
+        allow/deny assertion in this file silently."""
+        sid = "session-active-touch"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live marker must refresh its mtime"
         )
 
     def test_alive_pid_active_marker_bypasses(
@@ -381,6 +782,170 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
+    @pytest.mark.timing
+    def test_current_head_git_timeout_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """The CURRENT_HEAD `git rev-parse HEAD` call's _lib_capped exit
+        status must fail closed on timeout. This mirrors how an unresolvable
+        HEAD already denies per the completion-marker check's own
+        fail-closed comment. A stalled filesystem must not hang the gate
+        indefinitely. Seeds a completion marker for the branch's real HEAD,
+        so an uncapped, fully-resolved CURRENT_HEAD would match it and
+        allow. That seeding is what makes `decision == "deny"` actually
+        discriminate a working cap (empty CURRENT_HEAD, no match) from a
+        broken one, rather than passing on every path because no marker
+        exists at all."""
+        sid = "s"
+        marker = rfr_completion_marker(isolated_home, repo_on_feature_branch, sid)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(head_sha(repo_on_feature_branch) + "\n")
+
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id=sid),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_repo_root_git_timeout_allows(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Required regression test for a fail-open path: the header
+        documents REPO_ROOT's git-timeout as the only one of this hook's
+        rev-parse/symbolic-ref timeout paths that allows directly rather
+        than falling through to the gate below. A timed-out `git rev-parse
+        --show-toplevel` leaves REPO_ROOT empty, matching the
+        `[ -z "$REPO_ROOT" ]` early exit — inverting the baseline deny this
+        fixture combination otherwise produces."""
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_current_branch_git_timeout_arms_the_gate(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        Timing out CURRENT_BRANCH's `git rev-parse --abbrev-ref HEAD` leaves
+        it empty, withholding the default-branch bypass and falling through
+        to the gate below.
+
+        The match condition targets `$1 = "rev-parse"` and
+        `$2 = "--abbrev-ref"` specifically so it doesn't also shadow the
+        CURRENT_HEAD call's `git rev-parse HEAD`.
+
+        With an open PR and no completion marker, the gate then denies."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim('[ "$1" = "rev-parse" ] && [ "$2" = "--abbrev-ref" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_default_branch_symbolic_ref_timeout_still_allows_via_candidate_loop(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        Timing out DEFAULT_BRANCH's direct `git symbolic-ref --quiet
+        refs/remotes/origin/HEAD` lookup does not, by itself, withhold the
+        default-branch bypass. The candidate-loop fallback's `git rev-parse
+        --verify origin/main` still resolves quickly against the plain
+        `refs/remotes/origin/main` ref repo_on_feature_branch sets up, so
+        DEFAULT_BRANCH still gets set and the bypass still fires.
+
+        `fake_output` gives a broken cap a decision-flipping outcome: if the
+        cap fails, the full sleep completes and the shim emits this
+        un-stripped `refs/remotes/origin/...` value (the hook's own `sed`
+        strips the prefix afterward), producing `DEFAULT_BRANCH="wrong-branch"`
+        which mismatches CURRENT_BRANCH and withholds the bypass instead of
+        allowing — versus a working cap, where the shim is killed mid-sleep,
+        this call stays empty, and the candidate loop still recovers "main"."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim(
+            '[ "$1" = "symbolic-ref" ]', fake_output="refs/remotes/origin/wrong-branch"
+        )
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_candidate_loop_exhausted_arms_the_gate(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, git_timeout_shim
+    ):
+        """Checked out on `main`, the repo's default branch.
+
+        DEFAULT_BRANCH's direct `symbolic-ref` lookup already fails to
+        resolve on its own (repo_on_feature_branch configures no
+        `refs/remotes/origin/HEAD`), so timing out the candidate loop's
+        `git rev-parse --verify origin/main` — the only candidate with a ref
+        to resolve against, since `master` and `develop` have none — exhausts
+        the whole loop and leaves DEFAULT_BRANCH empty, withholding the
+        default-branch bypass.
+
+        With an open PR and no completion marker, the gate then denies."""
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        env = git_timeout_shim(
+            '[ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "origin/main" ]'
+        )
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin main", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_gh_pr_view_timeout_allows(
+        self, isolated_home, repo_on_feature_branch, gh_timeout_shim
+    ):
+        """The `gh pr view` network call's own `_lib_capped` cap must actually
+        engage.
+
+        A hung `gh` leaves PR_NUMBER empty, matching the `[ -z "$PR_NUMBER" ]`
+        fail-open check the same way an outright `gh` failure does (see
+        test_gh_failure_fails_open).
+
+        `fake_output` gives a broken cap a decision-flipping outcome: if the
+        cap fails, the full sleep completes and the shim emits a
+        plausible-but-wrong PR number instead of the real `gh` call's own
+        empty result, so PR_NUMBER is non-empty and the hook proceeds to the
+        completion-marker check — with no marker, that denies instead of
+        allowing."""
+        env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="999")
+        with assert_cap_engaged():
+            decision = run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                cwd=repo_on_feature_branch,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
     def test_other_sessions_completion_marker_authorizes_at_same_head(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):
@@ -507,6 +1072,32 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin --delete feature && gh pr ready",
+            "git push origin -d feature && gh pr ready",
+            "git push origin :feature && gh pr ready",
+            "git push origin --tags && gh pr ready",
+        ],
+    )
+    def test_bypassable_push_shapes_chained_before_pr_ready_deny(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """gh pr ready denies even when a bypassable push fragment is chained
+        ahead of it. This test exercises the fragment-loop's continue-
+        scanning behavior; push-shape classification itself is covered by
+        test_bypassable_push_does_not_exempt_a_chained_gated_fragment
+        (GH-773)."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
     # -- gh pr create -------------------------------------------------------
 
     def test_gh_pr_create_no_marker_denies(
@@ -596,18 +1187,11 @@ class TestRequireReadyForReview:
             == "deny"
         )
 
-    def test_gh_pr_create_chained_after_dry_run_push_bypasses_known_gap(
+    def test_gh_pr_create_chained_after_dry_run_push_denies(
         self, isolated_home, repo_on_feature_branch, fake_gh_no_pr
     ):
-        """Known, documented gap (see hook header): the --dry-run bypass
-        greps the WHOLE $COMMAND string before any per-fragment check runs,
-        so a --dry-run push chained ahead of gh pr create exits the gate
-        early regardless of the gh-pr-create arm. Pre-existing in the
-        --dry-run bypass block (unchanged by this diff — the identical shape
-        already bypasses a second real `git push` chained the same way);
-        inherited, not introduced, by the new arm. Pinned here as a known-bad
-        case so a future accidental fix or accidental worsening doesn't pass
-        silently — see the hook header and the plan's Part 3 residuals."""
+        """A --dry-run push exempts only its own fragment, so the chained
+        gh pr create still gates (GH-773)."""
         assert (
             run_hook(
                 READY_FOR_REVIEW_HOOK,
@@ -616,7 +1200,303 @@ class TestRequireReadyForReview:
                 ),
                 cwd=repo_on_feature_branch,
             )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin --delete feature && gh pr create",
+            "git push origin -d feature && gh pr create",
+            "git push origin :feature && gh pr create",
+            "git push origin --tags && gh pr create",
+        ],
+    )
+    def test_bypassable_push_shapes_chained_before_pr_create_deny(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
+    ):
+        """gh pr create denies even when a bypassable push fragment is
+        chained ahead of it. This test exercises the fragment-loop's
+        continue-scanning behavior; push-shape classification itself is
+        covered by test_bypassable_push_does_not_exempt_a_chained_gated_fragment
+        (GH-773)."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push --dry-run && git push origin feature",
+            "git push origin feature && git push --tags origin",
+            "git push origin --delete feature && git push origin feature",
+            "git push origin -d feature && git push origin feature",
+            "git push --dry-run && gh pr ready",
+            "git push origin :feature && git push origin feature",
+        ],
+    )
+    def test_bypassable_push_does_not_exempt_a_chained_gated_fragment(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A bypassable push fragment exempts only itself: a second, gated
+        fragment chained after it — a real push, or gh pr ready — still
+        gates. Per parametrize case:
+
+        - dry-run push chained before a real push: the real push still gates.
+        - real push chained before a tag-only push: pins a fragment-scoping
+          regression, since a real branch push must not be exempted just
+          because a tag-only push is chained after it.
+        - delete push (long form) chained before a real push: the real push
+          still gates.
+        - delete push (short form, -d) chained before a real push: the
+          short-flag form of the delete gate is covered too.
+        - dry-run push chained before gh pr ready: the gh pr ready arm
+          inherits the same fix.
+        - colon-refspec delete-only push chained before a real push: the
+          colon-refspec arm's own version of the same regression."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo --dry-run && git push origin feature",
+            "echo :note && git push origin feature",
+        ],
+    )
+    def test_bypass_token_outside_the_push_fragment_does_not_exempt(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """An exemption-shaped token in a non-push fragment must not release
+        the gate for a real push fragment chained after it."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo $(pwd) && git push --tags origin",
+            "echo $(pwd) && git push origin :feature",
+        ],
+    )
+    def test_unrelated_command_substitution_over_gates_a_safe_only_fragment(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """The command-substitution guard scans the whole command, not just
+        the push fragment: a $(...) anywhere in the chain disqualifies a
+        tags-only or colon-refspec-only fragment's bypass, even when the
+        substitution is unrelated to the push. Makes the documented
+        whole-command-scoped guard's behavior explicit rather than
+        implicit."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "eval git push --dry-run && gh pr create",
+            "GIT_DIR=/tmp/example.git git push --dry-run && gh pr create",
+        ],
+    )
+    def test_wrapped_dry_run_chained_before_pr_create_denies(
+        self, isolated_home, repo_on_feature_branch, fake_gh_no_pr, command
+    ):
+        """A wrapped --dry-run push (eval/env-prefixed) exempts only its own
+        fragment; the chained gh pr create still gates, same as the unwrapped
+        form. Uses a real repo with no completion marker, so the assertion
+        exercises the gh-pr-create arm's marker check rather than the hook's
+        not-a-git-repo fallback."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/usr/bin/gh pr create",
+            "/usr/bin/gh pr ready",
+        ],
+    )
+    def test_full_path_gh_invocation_bypasses_detection(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A full-path `gh` invocation is a documented gap (see hook
+        header). Both arms detect via plain-text regex on the literal
+        `gh pr ready`/`gh pr create` tokens. `/usr/bin/gh` doesn't match
+        because `gh` there isn't preceded by whitespace or start-of-string.
+
+        fake_gh_pr_exists (a real open PR) and no completion marker are the
+        strictest available inputs: if detection ever started matching this
+        shape, the same command would deny here instead of allow. Proves
+        this gap is risk-neutral by test, not only by header prose.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
             == "allow"
+        )
+
+    def test_git_invocation_before_a_bare_ampersand_defeats_push_detection(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """A documented gap (see hook header): a bare `&` isn't a fragment
+        boundary, so the git-word scan locks onto the earlier `git status`
+        instead of the real `git push` that follows it.
+
+        fake_gh_pr_exists (a real open PR) and no completion marker are the
+        strictest available inputs: if detection ever started matching this
+        shape, the same command would deny here instead of allow. Proves
+        this gap is risk-neutral by test, not only by header prose.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(
+                    "git status & git push origin feature", session_id="s"
+                ),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_full_path_git_push_invocation_detected(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """Unlike the gh-pr-ready/gh-pr-create arms above, the git-push arm
+        detects via `_lib_fragment_invokes_git`'s token-walking tokenizer,
+        not a plain-text regex on the literal `git push` tokens — so a
+        full-path `/usr/bin/git push` is still caught (see hook header).
+        Pins the header's documented asymmetry in both directions, not just
+        the gap side test_full_path_gh_invocation_bypasses_detection above
+        already covers.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("/usr/bin/git push origin feature", session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_quoted_git_word_push_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """GH-783: a quoted git word (`"git" push`) must still be detected
+        as a gated push. Bash word-splitting does not remove quote
+        characters, so without the hook's own COMMAND_UNQUOTED strip the
+        fragment word `"git` never matches _lib_fragment_invokes_git's bare
+        `git` comparison and the push sails through unreviewed."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input('"git" push origin feature', session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "deny"
+        )
+
+    def test_dash_capital_c_space_containing_quoted_value_allow_unchanged_by_strip(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
+    ):
+        """GH-783's word-count-invariance claim, exercised rather than only
+        hand-traced: a `-C` value containing a literal space is a
+        pre-existing, accepted misparse (the naive whitespace word-walk
+        splits inside the quotes both before and after
+        COMMAND_UNQUOTED's own quote-stripping, since stripping removes
+        only the quote characters, not the space) — the subcommand word
+        resolves to the value's second half ("dir"), never "push", so the
+        push goes undetected and the command allows. This pins that the
+        fix does not change that pre-existing outcome, not that the
+        outcome itself is desirable."""
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input('git -C "my dir" push origin feature', session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    def test_sed_absent_from_path_denied(self, tmp_path):
+        """GH-783: COMMAND_UNQUOTED is computed before any repo/gh state is
+        read, so a missing sed must deny (fail-closed) rather than let
+        _lib_strip_shell_quotes's failure silently collapse fragment
+        detection and fall through to this gate's normal allow path."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_fragments_split_sed_failure_denied(self, tmp_path):
+        """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
+        from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
+        sed binary, so a total sed-absent test (like the one above) can't
+        tell which of the two is actually catching the failure. A sed shim
+        fails on any invocation that isn't _lib_strip_shell_quotes's own
+        `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
+        while the later _lib_split_fragments call (a bare `sed -E
+        's/.../g'`, no `-e` token) fails on its own."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin feature", session_id="s"),
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
         )
 
     @pytest.mark.parametrize(

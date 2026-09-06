@@ -36,6 +36,14 @@ tied to a specific citation.
   overwrites the first, so compose multiple cleanup actions into one.
 - **`local` for all function-scoped variables** — an unset `local` leaks into
   or collides with the caller's scope.
+- **Never shadow a high-blast-radius environment variable with a test-scope
+  one:**
+  - A script needing an isolated home names it `TEST_HOME`, never `HOME`.
+  - Pass it per-command to the subprocess under test rather than as a
+    shell-wide `export`.
+  - Never combine such a variable with `rm -rf` — let the temp-directory
+    lifecycle clean up instead.
+  - The same applies to `PWD` and to credential-path variables.
 - **`"${VAR:?message}"` for required inputs** — fails loudly at the point of
   use instead of silently expanding to empty.
 - **Match CLAUDE.md's comment-length convention in every `#` block.** State

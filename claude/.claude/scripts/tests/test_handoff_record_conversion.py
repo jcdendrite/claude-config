@@ -63,10 +63,11 @@ def test_no_resolvable_session_exits_zero_with_no_side_effects(tmp_path: Path) -
     assert not (config_dir / ".handoff-nudge-fired.d").exists()
 
 
-def test_success_appends_log_line_and_removes_ignored_marker(tmp_path: Path) -> None:
-    """Both side effects of a resolvable session, asserted explicitly in the
-    same case: the log line is appended and this session's escalation-ladder
-    marker is removed."""
+def test_success_appends_log_line_and_leaves_ignored_marker_alone(tmp_path: Path) -> None:
+    """The log line is appended. The escalation-ladder marker is left alone:
+    the hard block is gated on an absolute token position, independent of
+    the ignored-re-arm count, so nothing in this script's success path
+    resets it."""
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     _seed_session(config_dir, "test-session-abc")
@@ -79,28 +80,24 @@ def test_success_appends_log_line_and_removes_ignored_marker(tmp_path: Path) -> 
 
     assert result.returncode == 0
     assert (config_dir / ".handoff-nudge.log").read_text() == "handoff session=test-session-abc\n"
-    assert not marker.exists()
+    assert marker.exists()
 
 
-def test_path_escaping_session_id_exits_zero_without_touching_paths_outside_marker_dir(
+def test_path_escaping_session_id_exits_zero_without_writing_log(
     tmp_path: Path,
 ) -> None:
-    """A session id containing '..' or '/' would escape
-    .handoff-nudge-fired.d/ once concatenated into the rm -f path -- the same
-    risk marker.sh's own _resolve_session_id chokepoint guards against.
-    Rejecting it before either side effect runs means neither the log gets a
-    line for it nor rm -f is ever invoked with the escaping path."""
+    """A session id containing '..' or '/' falls outside the guard's
+    conservative [A-Za-z0-9_-] allow-list -- the same allow-list that also
+    blocks whitespace from corrupting the log line's key=value tokenization.
+    Rejecting it before the log write means no line is appended for it."""
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     _seed_session(config_dir, "../evil")
-    canary = config_dir / "evil-ignored"
-    canary.write_text("do not touch")
 
     result = _run(config_dir)
 
     assert result.returncode == 0
     assert not (config_dir / ".handoff-nudge.log").exists()
-    assert canary.read_text() == "do not touch"
 
 
 def test_stray_argument_is_ignored_and_success_path_still_runs(tmp_path: Path) -> None:

@@ -86,16 +86,35 @@ parent hands its children the main checkout. Naming a working
 directory in the agent's prompt does not change where its commands
 run.
 
-Hold the anchor still for the life of any write-capable dispatch — the
-write check re-evaluates it for the whole dispatch, not just at
-launch, and re-anchoring mid-dispatch gets the subagent's Write/Edit
-calls denied outright (not redirected) unless pinned at launch via
-`isolation: worktree` or an explicit cwd.
+Hold the anchor still for the life of any dispatch, read-only ones
+included — the isolation check re-evaluates it for the whole dispatch,
+not just at launch. Re-anchoring mid-dispatch denies the subagent's
+Write/Edit calls outright, not redirected. Pin `isolation: worktree`
+or an explicit cwd at launch to avoid this denial. Its Bash calls are
+denied too, a bare `pwd` included, for the rest of the run.
 
 The anchor is session-scoped. A resumed session starts unanchored, so
 re-enter the worktree before running *any* other command or
 dispatching subagents — a read-only lookup counts too, since it's the
 `cd` that breaks the anchor described above.
+
+## Crossing to a different branch mid-session
+
+Worktree enforcement, where armed, denies `checkout`/`switch`/`stash`
+against the main tree. It's opt-in, and it doesn't stop those same
+commands inside a worktree you're already anchored in. Apply the
+discipline either way: when the next task is on another branch and the
+current tree holds uncommitted work, add a worktree instead of
+switching in place. A linked worktree leaves the main checkout
+untouched. Stashed work is easily left unpopped. `refs/stash` is
+shared across worktrees, so an earlier stash still pops from inside
+the new one.
+
+When another session may be running against this repo, use a worktree
+even when the destination branch matches current HEAD. State branch
+and PR facts from the remote (`git fetch`, then `origin/<branch>` or
+`gh pr view`), not from a local worktree snapshot — a sibling's
+commit-then-cleanup can be captured mid-window.
 
 ## Plan files go on the implementation branch
 

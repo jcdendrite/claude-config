@@ -32,15 +32,20 @@
 #     `cp -r ... && rm -rf ...`, `python3 -c "os.rename(...)"`, `ditto` plus
 #     a delete, or a GUI/Finder move — none of these are closable by a
 #     Bash-command-pattern hook.
-#   - Same alias/wrapper-script/quoted-command-name indirection gaps as
-#     deny-reviewer-tree-mutation.sh (which shares _lib_fragment_command_word's
-#     word-scan): a command reached only through an alias, a wrapper script,
-#     or a quoted command name (`bash -c "mv ..."`, `'mv' src dst`) is
-#     undecidable at this level.
+#   - Same alias/wrapper-script indirection gap as deny-reviewer-tree-
+#     mutation.sh (which shares _lib_fragment_command_word's word-scan): a
+#     command reached only through an alias, a wrapper script, or a nested
+#     shell boundary this scan never executes (`bash -c "mv ..."`) is
+#     undecidable at this level. A command name quoted directly in $COMMAND
+#     (`'mv' src dst`) IS caught — $COMMAND is quote-stripped before
+#     splitting into fragments.
 #   - `mv`/`rsync` flags that consume the following word as a value (e.g.
 #     `-t DIR`) are not specially recognized, so a flag's value word could be
 #     misjudged as a source. This can only over-deny, never miss a real
 #     relocation, so it is left unhandled.
+#   - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status
+#     is checked and denies with an explicit message rather than falling
+#     through to this hook's normal "no relocation matched" allow path.
 
 set -uo pipefail
 
@@ -87,6 +92,20 @@ fi
 # require-worktree-for-git-writes.sh's identical CWD read).
 CWD=$(_lib_jq -r '.cwd // empty' <<< "$INPUT" 2>/dev/null)
 [ -z "$CWD" ] && CWD="$PWD"
+
+# Quote-stripped so an adjacent-quote split (`'mv' "$REPO_ROOT" /tmp`) can't
+# dodge the word-walk detectors below — same helper as
+# deny-network-installs.sh. A quoted source path must still resolve via
+# readlink -f; unstripped, its literal quote characters fail resolution
+# and fall through to this hook's documented fail-open. Checked and
+# fail-closed, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by repo-relocation hook: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned mv/rsync."
+  exit 0
+fi
 
 # Given a fragment already confirmed to invoke mv/rsync, print every
 # positional (non-flag) argument after the command word, one per line,
@@ -155,6 +174,12 @@ _relocation_resolve_source() {
   printf '%s' "$resolved"
 }
 
+FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+FRAGMENTS_SPLIT_EXIT=$?
+if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by repo-relocation hook: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned relocation command."
+  exit 0
+fi
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
 
@@ -178,6 +203,6 @@ while IFS= read -r fragment; do
       exit 0
     fi
   done <<< "$(_relocation_positional_sources "$fragment")"
-done <<< "$(_lib_split_fragments "$COMMAND")"
+done <<< "$FRAGMENTS"
 
 exit 0

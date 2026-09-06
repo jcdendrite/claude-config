@@ -9,10 +9,13 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     run_hook,
     run_hook_reason,
 )
+
+from .conftest import assert_cap_engaged
 
 CHECK_SKILL_LENGTH_HOOK = HOOKS_DIR / "check-skill-length.sh"
 SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
@@ -21,15 +24,16 @@ SKILL_PATH = "claude/.claude/skills/my-skill/SKILL.md"
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
-    `grep` for the git-commit/path-filter matches, `awk` for the line
-    count, `git` for the _lib_capped-wrapped show calls), omitting both
-    timeout(1) and gtimeout(1). Mirrors
+    `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
+    (GH-783), `grep` for the path-filter match, `awk` for the line
+    count, `git` for the _lib_capped-wrapped show and diff --cached
+    --name-only calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
     shape; skips (does not silently under-symlink) when a needed real
     binary is itself absent from the test machine."""
     stub_bin = tmp_path / "_stub_bin"
     stub_bin.mkdir()
-    for tool in ("awk", "cat", "dirname", "git", "grep", "jq"):
+    for tool in ("awk", "cat", "dirname", "git", "grep", "jq", "sed", "tr"):
         real_path = shutil.which(tool)
         if not real_path:
             pytest.skip(f"{tool} not found in PATH")
@@ -142,6 +146,42 @@ class TestCheckSkillLength:
             )
             == "deny"
         )
+
+    def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
+        """A quote-adjacent split (`"git" commit -m x`) must reach the same
+        deny verdict as the unquoted form."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input('"git" commit -m foo'),
+                cwd=skill_repo,
+            )
+            == "deny"
+        )
+
+    def test_sed_absent_from_path_denies(self, isolated_home, skill_repo, tmp_path):
+        """Status-2 propagation: the matcher could not determine whether
+        this command invokes git commit, and this gate's own documented
+        fail-closed posture means an undetermined match denies rather than
+        silently falling through to allow. Asserts the distinguishing
+        reason text, not just the verdict, so this test cannot be
+        satisfied by an ordinary over-limit deny reaching "deny" for the
+        wrong reason."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        reason = run_hook_reason(
+            CHECK_SKILL_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=skill_repo,
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason
 
     def test_new_skill_over_limit_denies(self, isolated_home, new_skill_repo):
         """New file with no HEAD version staged at 201 lines — old defaults to 0 → deny."""
@@ -390,6 +430,40 @@ class TestCheckSkillLength:
             == "deny"
         )
 
+    def test_memory_files_skill_falls_to_default_limit(self, isolated_home, tmp_path):
+        """ai-instruction-and-memory-files/SKILL.md gets no per-skill override.
+
+        Regression test: guards against a future `limit_for()` edit re-adding
+        any override above the 200-line default for this path. 195 (init)
+        sits under the default; 201 (restage) is the minimal over-default,
+        growing value, so it denies here. A re-added override anywhere above
+        200 would put 201 back under that override's own ceiling and allow
+        instead, so 195/201 pins the default with no gap between the two
+        behaviors.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        memory_path = "claude/.claude/skills/ai-instruction-and-memory-files/SKILL.md"
+        (repo / "claude" / ".claude" / "skills" / "ai-instruction-and-memory-files").mkdir(
+            parents=True
+        )
+        (repo / memory_path).write_text(make_skill_content(195))
+        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / memory_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", memory_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, skill_repo
     ):
@@ -454,3 +528,54 @@ class TestCheckSkillLength:
             )
             == "allow"
         )
+
+    # --- Newly-capped `git diff --cached --name-only` and `git rev-parse
+    # --is-inside-work-tree` (_lib_staged_length_gate) ---
+
+    @pytest.mark.timing
+    def test_staged_diff_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git diff --cached --name-only`'s _lib_capped wrap (added to
+        _lib_staged_length_gate alongside the shared driver) must actually
+        engage its 5s cap rather than hang, mirroring the `git show` calls'
+        pre-existing _lib_capped wrap. A capped, empty file list means no
+        staged SKILL.md is scanned, so the gate degrades to allow rather
+        than hanging — same degrade-not-hang shape the header comment
+        documents for a machine lacking timeout(1)/gtimeout(1) entirely."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$1" = "diff" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_repo_detection_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git rev-parse --is-inside-work-tree`'s _lib_capped wrap (added to
+        _lib_staged_length_gate alongside the shared driver) must actually
+        engage its 5s cap rather than hang, mirroring the `git diff` cap
+        coverage immediately above it. A capped, empty result isn't the
+        literal string "true", so the gate degrades to allow rather than
+        hanging — same degrade-not-hang shape. One instance here suffices
+        for both check-skill-length.sh and check-claude-md-length.sh: the
+        capped call is caller-invariant, running identically for both hooks
+        before either caller's own logic."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim('[ "$1" = "rev-parse" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"

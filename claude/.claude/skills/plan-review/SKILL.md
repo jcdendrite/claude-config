@@ -253,7 +253,7 @@ Read `${CLAUDE_SKILL_DIR}/ROUTING.md` with the Read tool before any spawn decisi
 
 Start with which domains were detected and which plan sections/phases were reviewed. Then list spawned specialists with owned item IDs from ROUTING.md's Item ownership table (e.g., `staff-data-engineer: D1, D4; ciso-reviewer: S1, S3–S5, D4 co-ownership`); if none, write "No specialists spawned — generalist review only."
 
-**Every finding a spawned reviewer returns must appear in the rendered output.** Before writing the verdict, cross-check the assembled findings list against what each spawned reviewer actually returned — a finding that a reviewer returned and the final output omits is a defect in this step, not a judgment call. A finding folded into another under Reconciliation's dedup rule (ROUTING.md) counts as present only if both reviewers are attributed at the merged entry.
+**Every finding a spawned reviewer returns must appear in the rendered output.** Before writing the verdict, cross-check the assembled findings list against what each spawned reviewer actually returned — its findings file when one was written, its inline return otherwise — a finding present there and omitted from the final output is a defect in this step, not a judgment call. A finding folded into another under Reconciliation's dedup rule (ROUTING.md) counts as present only if both reviewers are attributed at the merged entry.
 
 For each finding, state:
 1. **Which checklist item** (ID and name, e.g., "B3 — Breaking intermediate states")

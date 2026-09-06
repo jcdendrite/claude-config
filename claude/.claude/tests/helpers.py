@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import yaml
@@ -199,6 +200,81 @@ def run_hook_reason(
         return None
     payload = json.loads(result.stdout)
     return payload["hookSpecificOutput"].get("permissionDecisionReason")
+
+
+def run_hook_context(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> str | None:
+    """Like `run_hook_reason` but returns the allow
+    `hookSpecificOutput.additionalContext` string (or `None` if the hook
+    allowed silently, with no additionalContext at all). Used by tests that
+    need to assert on the contents of an informational allow-path note.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return None
+    payload = json.loads(result.stdout)
+    return payload["hookSpecificOutput"].get("additionalContext")
+
+
+def run_hook_payload(
+    hook: Path,
+    tool_input: dict,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> dict | None:
+    """Like `run_hook` but returns the full `hookSpecificOutput` dict. Used
+    by tests that need to assert on more than one field from a single
+    invocation -- e.g. both `permissionDecision` and `additionalContext` --
+    without a second, branch-diverging call.
+
+    Empty stdout is ambiguous, so the return value branches on the exit code:
+
+    - Exit 0: returns `None`. There is no `hookSpecificOutput` to return.
+    - Exit 2: returns `{"permissionDecision": "deny"}`, a minimal
+      stand-in for the PreToolUse block signal (e.g. a gate hook's
+      jq-absent fallback) that omits the `hookEventName`/
+      `permissionDecisionReason` fields a real `_lib_emit_deny` payload
+      carries.
+
+    home: when set, overrides $HOME in the subprocess environment so the
+    hook writes into an isolated temp directory rather than real ~/.claude.
+    extra_env: additional environment variables merged on top of the base env
+    (applied after home override, so extra_env can also override HOME).
+    """
+    env = _build_subprocess_env(home, extra_env)
+    result = subprocess.run(
+        [str(hook)],
+        input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
+    if not result.stdout.strip():
+        return {"permissionDecision": "deny"} if result.returncode == 2 else None
+    payload = json.loads(result.stdout)
+    return payload["hookSpecificOutput"]
 
 
 def run_hook_stop(
@@ -418,7 +494,10 @@ def edit_input(
 
 
 def write_input(
-    file_path: str, agent_type: str | None = None, cwd: str | None = None, content: str = "x"
+    file_path: str,
+    agent_type: str | None = None,
+    cwd: str | None = None,
+    content: str = "x",
 ) -> dict:
     """`content` defaults to the prior hardcoded placeholder — existing call
     sites that don't care about content keep the same payload."""
@@ -502,14 +581,74 @@ def read_input(file_path: str, session_id: str | None = None) -> dict:
     return payload
 
 
-def agent_input(session_id: str | None = None) -> dict:
-    payload: dict = {
-        "tool_name": "Agent",
-        "tool_input": {"description": "test", "prompt": "test"},
-    }
+def agent_input(
+    session_id: str | None = None,
+    subagent_type: str | None = None,
+    prompt: str | None = None,
+    tool_name: str = "Agent",
+    cwd: str | None = None,
+) -> dict:
+    """Build an Agent (or Task) dispatch payload.
+
+    `tool_name` defaults to "Agent" (the harness's confirmed subagent-dispatch
+    tool name), overridable to "Task" for hooks registered on the Agent|Task
+    matcher union (require-architect-consult.sh, log-reviewer-round.sh).
+    `subagent_type` is omitted from tool_input when None, matching a
+    dispatch with no reviewer-persona target. `prompt` defaults to the
+    literal string "test" when None, preserving every pre-existing caller's
+    payload shape.
+    """
+    tool_input: dict = {"description": "test", "prompt": prompt if prompt is not None else "test"}
+    if subagent_type is not None:
+        tool_input["subagent_type"] = subagent_type
+    payload: dict = {"tool_name": tool_name, "tool_input": tool_input}
     if session_id is not None:
         payload["session_id"] = session_id
+    if cwd is not None:
+        payload["cwd"] = cwd
     return payload
+
+
+def skill_input(
+    skill_name: str, session_id: str | None = None, agent_type: str | None = None
+) -> dict:
+    """Build a Skill tool_use payload. `skill_name` lands under
+    `tool_input.skill` -- the field name pinned by capturing a real `Skill`
+    tool_use record from a local transcript (not documented in the harness's
+    hooks/tools-reference pages)."""
+    payload: dict = {"tool_name": "Skill", "tool_input": {"skill": skill_name}}
+    if session_id is not None:
+        payload["session_id"] = session_id
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    return payload
+
+
+# activate-handoff-bypass.sh wraps its marker.sh call in a 2s `_lib_capped_for`
+# cap that can be exceeded under parallel-test-worker contention -- see that
+# hook's own header comment. Retrying is safe because `marker.sh activate` is
+# idempotent (marker.sh:387-392 -- it just overwrites the same PID file).
+ACTIVATE_MARKER_RETRY_ATTEMPTS = 10
+
+
+def run_hook_until_marker_exists(
+    hook: Path,
+    tool_input: dict,
+    marker: Path,
+    attempts: int = ACTIVATE_MARKER_RETRY_ATTEMPTS,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> None:
+    """Retry `hook` against `tool_input` until `marker` exists, or fail."""
+    for _ in range(attempts):
+        run_hook(hook, tool_input, home=home, extra_env=extra_env)
+        if marker.exists():
+            return
+        time.sleep(0.5)
+    assert marker.exists(), (
+        f"marker never landed at {marker} after {attempts} attempts -- "
+        "not just a single cap-timeout miss"
+    )
 
 
 # -- Hostile session_id ------------------------------------------------------
@@ -759,6 +898,65 @@ def plan_review_pending_read_marker_path(home: Path, session_id: str) -> Path:
     return home / ".claude" / ".plan-review-pending-read.d" / session_id
 
 
+def reviewer_round_state_key(repo: Path) -> str:
+    """Shell out to the real _lib_reviewer_round_state_key against `repo`,
+    so a test's seeded state file lands at the exact path
+    require-architect-consult.sh/log-reviewer-round.sh will look under.
+
+    Uses git_toplevel(repo), not str(repo): the hooks resolve REPO_ROOT via
+    `git -C "$CWD" rev-parse --show-toplevel` before hashing it, which
+    normalizes a symlinked tmp prefix (e.g. macOS /tmp -> /private/tmp) that
+    the raw tmp_path string would not — passing the unnormalized path here
+    would key a test's seeded file under a different repo-hash than the
+    hook computes at runtime.
+
+    Returns "" (not raising) when the repo has no branch to key on (e.g.
+    detached HEAD), mirroring the function's own fail-open contract.
+    """
+    result = subprocess.run(
+        ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_key "$1"',
+         "_", git_toplevel(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def reviewer_round_state_value(repo: Path) -> str:
+    """Shell out to the real _lib_reviewer_round_state_value against `repo`
+    — see reviewer_round_state_key's docstring for the git_toplevel
+    normalization rationale, which applies identically here. Returns ""
+    (not raising) when HEAD is unresolvable (no commits yet)."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_reviewer_round_state_value "$1"',
+         "_", git_toplevel(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def reviewer_round_state_path(config_dir: Path, repo: Path) -> Path:
+    return config_dir / ".reviewer-round-state.d" / reviewer_round_state_key(repo)
+
+
+def architect_consult_latch_path(config_dir: Path, repo: Path) -> Path:
+    return config_dir / ".architect-consult-latch.d" / reviewer_round_state_key(repo)
+
+
+def write_reviewer_round_state(config_dir: Path, repo: Path, values: list[str]) -> Path:
+    """Seed the round-state file directly with `values` (each already a
+    "<head-sha> <staged-diff-sha256>" line), bypassing log-reviewer-round.sh
+    entirely — for tests that need a precondition (e.g. "at cap") set up
+    without exercising the recorder itself."""
+    state_file = reviewer_round_state_path(config_dir, repo)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text("".join(f"{v}\n" for v in values))
+    return state_file
+
+
 def _symlink_if_absent(link: Path, target: Path) -> Path:
     """Create link -> target if link doesn't already exist. Idempotent."""
     link.parent.mkdir(parents=True, exist_ok=True)
@@ -780,10 +978,26 @@ def install_resume_context_script(isolated_home: Path) -> Path:
     )
 
 
+def install_marker_script(isolated_home: Path) -> Path:
+    """Symlink the real marker.sh, and the _lib.sh it sources, into an
+    isolated $HOME/.claude/ -- so a hook or skill recipe invoking marker.sh
+    via `$CONFIG_DIR/scripts/marker.sh` resolves the real script rather than
+    a missing one. Idempotent, so a caller under the `isolated_home` fixture
+    (which already symlinks hooks/_lib.sh itself) can call this unconditionally.
+    """
+    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    return _symlink_if_absent(
+        isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh"
+    )
+
+
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
-    _symlink_if_absent(isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh")
-    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    install_marker_script(isolated_home)
+    _symlink_if_absent(
+        isolated_home / ".claude" / "scripts" / "ensure-account-dir.sh",
+        SCRIPTS_DIR / "ensure-account-dir.sh",
+    )
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,
@@ -921,3 +1135,23 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# (first_line, expect_consult, id) rows behind plan-architect consult
+# classification, reused by test_log_reviewer_round.py's bash-latch test and
+# test_transcript_analysis.py's Python-classifier test. Proves the two
+# runtimes agree on classification behaviorally, not that their source text
+# matches byte-for-byte -- a byte-equality assertion across the literal sites
+# would still pass with the Python `!=` comparison inverted to `==`. No
+# pytest import here (see module docstring), so each test file wraps these
+# rows in pytest.param(...) at its own @pytest.mark.parametrize call site.
+CONSULT_CLASSIFICATION_TABLE: list[tuple[str, bool, str]] = [
+    ("MODE=consult", True, "mode_consult"),
+    ("MODE=plan-sections", False, "mode_plan_sections"),
+    ("", True, "empty_first_line"),
+    ("MODE=plna-sections", True, "typo_mode_value"),
+    ("Just look at the plan and tell me if it's sound.", True, "no_mode_line"),
+    ("MODE=plan-sections ", True, "mode_plan_sections_trailing_space"),
+    ("Some preamble.\nMODE=plan-sections", True, "mode_plan_sections_not_first_line"),
+    ("MODE=plan-sections\r\n## Section A", True, "mode_plan_sections_crlf"),
+]

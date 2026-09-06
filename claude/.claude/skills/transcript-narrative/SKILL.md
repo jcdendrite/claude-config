@@ -1,14 +1,23 @@
 ---
 name: transcript-narrative
 description: Produce a narrative case study / annotated timeline from Claude Code session transcripts — verbatim prompts, phase buckets, quantitative metrics, extracted lessons. For raw quantitative metrics use transcript-analysis.
+context: fork
+background: false
+argument-hint: "[optional output path]"
 ---
+
+## Step 0 — Confirm Bash is available
+
+This skill runs as a forked context and depends on `Bash` for every step below. If `Bash` is unavailable, stop and report that this skill requires Claude Code v2.1.218 or later — an earlier version honors `context: fork` without honoring `background: false`, producing a background fork whose narrowed tool set may omit `Bash`.
+
+This skill never invokes `marker.sh` and never invokes a review skill, directly or by dispatching a subagent to do either on its behalf.
 
 ## Step 1 — Scope the analysis
 
 Identify the branches, session date-range, and repos in play. Use `buckets` to enumerate branches and per-branch models:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets --this-repo
+python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
 ```
 
 Note the branch names — you will pass them to later subcommands via `--branches <branch>`.
@@ -18,7 +27,7 @@ Note the branch names — you will pass them to later subcommands via `--branche
 Get the transcript file set and read only those files:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" sessions --paths --include-subagents
+python3 ~/.claude/scripts/transcript-analysis.py sessions --paths --include-subagents
 ```
 
 `sessions --paths` prints its resolved-scope header (`SESSIONS SOURCES (...)`) to stderr — record that line. This invocation passes no `--projects`, so its scope label is always `*`; the root-count clause is what tells you whether the corpus covers every declared account or just one.
@@ -53,26 +62,26 @@ Run these subcommands and include their output as a quantitative appendix that g
 
 ```bash
 # Test-failure convergence vs thrashing
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches <branch>
 
 # Active vs idle time
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" duration --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py duration --branches <branch>
 
 # Subagent vs main-thread split
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" subagents --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py subagents --branches <branch>
 
 # Branch → PR mapping
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" pr-link --repo owner/repo --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
 
 # Review-skill invocations, hook denials, reviewer-spawn timeline
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --this-repo
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo
 ```
 
 For `fail-seq` interpretation: a spike followed by zeros is convergent (expected); oscillation with no sustained run of zeros is thrashing (flag for the lessons step). See `transcript-analysis` for the full reading guide.
 
-## Step 5 — Redact before sharing
+## Step 5 — Redact before sharing or persisting
 
-Quoted prompts come from direct JSONL extraction in Step 2 — the CLI's `--redact` flag is available only on `audit-routing` and does not touch them. Before publishing to any shared or public surface:
+Quoted prompts come from direct JSONL extraction in Step 2 — the CLI's `--redact` flag is available only on `audit-routing` and does not touch them. Run this scan before Step 7 writes the artifact to disk, not only before publishing to a shared or public surface:
 
 - Manually scan every quoted prompt for customer PII and credentials
 - For the quantitative appendix, use `audit-routing --redact` to anonymize project-dir names when posting output to GitHub issues or external surfaces
@@ -82,4 +91,12 @@ Quoted prompts come from direct JSONL extraction in Step 2 — the CLI's `--reda
 Distill lessons from the annotated timeline. For each lesson:
 - Tie it to the verbatim prompt arc that surfaced it (cite the phase and the specific prompt)
 - Rank by how clearly the lesson appears in the evidence — lessons with a direct, traceable prompt arc rank above those inferred from metrics alone
+
+## Step 7 — Write the artifact and return the path
+
+Write the annotated timeline (Step 3), the quantitative appendix (Step 4), and the ranked lessons (Step 6) to the output path given as this skill's argument. When no path is given, create one under `mktemp -d` and write there instead — state plainly to the caller that this default location is temporary.
+
+Before writing to a caller-supplied path, confirm it does not resolve inside a git-tracked tree unless that tree's `.gitignore` covers it: `mktemp -d` creates its directory at mode `0700`, but a caller-supplied path carries no such guarantee, and a git-tracked destination without `.gitignore` coverage risks committing the file's content, including anything Step 5's manual scan missed.
+
+Return only the output path and the ranked lessons from Step 6 — not the annotated timeline or the quantitative appendix inline. A follow-up question that needs that detail re-opens the file at the returned path.
 

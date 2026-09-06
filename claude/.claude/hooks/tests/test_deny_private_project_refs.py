@@ -12,17 +12,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import stat
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     run_hook,
     run_hook_reason,
 )
+
+from .conftest import _write_conditional_sleep_shim, assert_cap_engaged
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 
@@ -476,6 +482,24 @@ class TestDenyPrivateProjectRefs:
     def test_gh_pr_inline_tracker_denied(self, claude_config_repo, command):
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
+    # GH-783: quoting any one of the three `gh pr create` words defeats
+    # fragment_gh_gated_surface's bare-word comparisons unless the command
+    # is quote-stripped first. All three quoted-word shapes are exercised
+    # independently: a *trailing*-only quote still matches even without
+    # the fix, so a single combined case would not prove all three are
+    # actually closed.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "\"gh\" pr create --body 'Fixes WIDGET-123'",
+            "gh \"pr\" create --body 'Fixes WIDGET-123'",
+            "gh pr \"create\" --body 'Fixes WIDGET-123'",
+        ],
+        ids=["quoted-gh-word", "quoted-pr-word", "quoted-create-word"],
+    )
+    def test_gh_pr_create_quoted_word_denied(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
     def test_gh_pr_create_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
         """The canonical leak pattern: --body-file pointing at a file whose
         contents never appear in the command string. The hook must read
@@ -593,6 +617,26 @@ class TestDenyPrivateProjectRefs:
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("gh pr comment 42 --body 'has WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_pr_help_flag_swallowing_create_is_allowed(self, claude_config_repo):
+        """Pins the accepted gap documented in _lib.sh's
+        _lib_tool_argv_from_subcmd header comment and this file's own
+        `fragment_gh_gated_surface` "Known gaps" comment: `-h` has no value
+        placeholder, so gh's cobra resolution over-consumes `create` as -h's
+        value while resolving the subcommand, and the pr surface is never
+        detected. This allow verdict is safe only because gh prints help and
+        exits before any create/comment/edit network call happens -- a
+        future gh release that made -h non-terminating would need this test
+        updated deliberately rather than silently reopening GH-559/GH-430's
+        bypass with green CI."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr -h create --body 'Fixes WIDGET-123'"),
                 cwd=claude_config_repo,
             )
             == "allow"
@@ -981,6 +1025,42 @@ class TestDenyPrivateProjectRefs:
                 == "deny"
             ), f"expected deny for {punct_form!r}"
 
+    def test_blocklist_quote_split_bypass_denied(self, claude_config_repo, private_projects_file):
+        """GH-783 regression: a blocklist entry split across an adjacent
+        quote boundary (no space) must still deny — `Acme"Corp"` (bash
+        reassembles this into the literal `AcmeCorp` when the command
+        actually runs) is caught because SCAN_TARGET_BOTH's stripped side
+        reassembles it before this tier's `grep -iw -F` match runs."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m \'Acme"Corp" release notes\''),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_word_adjacent_quote_split_denied(self, claude_config_repo, private_projects_file):
+        """Regression guard, mirroring test_word_adjacent_tracker_id_quote_split_denied
+        for the blocklist tier: a blocklisted entry whose only preceding word
+        boundary is an adjacent quote character (no space, e.g. `x"AcmeCorp"`)
+        must still deny under the raw+stripped union scan.
+        SCAN_TARGET_UNQUOTED alone would miss this — stripping the quote joins
+        `x` and `AcmeCorp` into `xAcmeCorp`, and grep -w's whole-word boundary
+        check fails on that merged run — but the raw $SCAN_TARGET side of the
+        SCAN_TARGET_BOTH union still has the quote providing the boundary and
+        still matches."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m \'copy x"AcmeCorp" into the release notes\''),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
     def test_blocklist_deny_message_names_matched_entry(self, claude_config_repo, private_projects_file):
         """Deny message must name the matched blocklist entry verbatim.
 
@@ -1268,6 +1348,251 @@ class TestDenyPrivateProjectRefs:
         assert "Acme Corp" in reason
         assert "private-projects.md" in reason
 
+    # -- gh issue create / gh issue comment / gh issue edit surfaces -------
+    # `gh issue create`/`gh issue comment`/`gh issue edit` bodies, titles,
+    # and body-source files must be scanned for tracker-ID content, the
+    # same as `gh pr create`/`gh pr edit` above.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh issue create --body 'Fixes WIDGET-123'",
+            "gh issue create --title 'Fix WIDGET-123'",
+            "gh issue comment 42 --body 'Fixes WIDGET-123'",
+            "gh issue edit 42 --body 'Fixes WIDGET-123'",
+            "gh issue edit 42 --title 'Fix WIDGET-123'",
+        ],
+        ids=[
+            "create-body-inline",
+            "create-title-inline",
+            "comment-body-inline",
+            "edit-body-inline",
+            "edit-title-inline",
+        ],
+    )
+    def test_gh_issue_inline_tracker_denied(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    # GH-783: quoting any one of the three `gh issue create` words defeats
+    # fragment_gh_gated_surface's bare-word comparisons unless the command
+    # is quote-stripped first. Mirrors test_gh_pr_create_quoted_word_denied
+    # above for the issue surface, plus the `comment`/`edit` subcommand
+    # words.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "\"gh\" issue create --body 'Fixes WIDGET-123'",
+            "gh \"issue\" create --body 'Fixes WIDGET-123'",
+            "gh issue \"create\" --body 'Fixes WIDGET-123'",
+            "gh issue \"comment\" 42 --body 'Fixes WIDGET-123'",
+            "gh issue \"edit\" 42 --body 'Fixes WIDGET-123'",
+        ],
+        ids=[
+            "quoted-gh-word",
+            "quoted-issue-word",
+            "quoted-create-word",
+            "quoted-comment-word",
+            "quoted-edit-word",
+        ],
+    )
+    def test_gh_issue_quoted_word_denied(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_issue_create_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
+        """--body-file pointing at a file whose contents never appear in the
+        command string — the hook must read and scan the file, not just the
+        command, same as the gh-pr body-source extractor it reuses."""
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("## Summary\n\nFixes FOOCORP-42 regression.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh issue create --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_issue_comment_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("Refs NULLPROJ-999.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh issue comment 42 --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_issue_edit_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("Updated scope: addresses EXAMPLECO-7.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh issue edit 42 --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "flag_form",
+        ["-F", "-F="],
+        ids=["dash-F-space", "dash-F-equals"],
+    )
+    def test_gh_issue_short_F_flag_with_tracker_denied(self, claude_config_repo, tmp_path, flag_form):
+        """`-F` is the documented short form of `--body-file`, mirroring
+        test_gh_pr_short_F_flag_with_tracker_denied above for the issue
+        surface."""
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("Fixes BARCORP-22.\n")
+        separator = "" if flag_form.endswith("=") else " "
+        cmd = f"gh issue create {flag_form}{separator}{body_file}"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "flag_form",
+        ["-F", "-F="],
+        ids=["dash-F-space", "dash-F-equals"],
+    )
+    def test_gh_issue_edit_short_F_flag_with_tracker_denied(self, claude_config_repo, tmp_path, flag_form):
+        """`-F` on `gh issue edit`, same short-form coverage as
+        test_gh_issue_short_F_flag_with_tracker_denied above for
+        `gh issue create`."""
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("Fixes BARCORP-22.\n")
+        separator = "" if flag_form.endswith("=") else " "
+        cmd = f"gh issue edit 42 {flag_form}{separator}{body_file}"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(cmd), cwd=claude_config_repo) == "deny"
+
+    # -- Pseudo-file paths fail closed (gh issue) --------------------------
+    # Same fail-closed posture as gh pr's pseudo-file branch above, across
+    # all three gated gh issue subcommands.
+
+    @pytest.mark.parametrize(
+        "pseudo_path",
+        ["-", "/dev/stdin", "/dev/fd/1", "/proc/self/fd/0"],
+        ids=["bare-dash", "dev-stdin", "dev-fd", "proc-fd"],
+    )
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "gh issue create --body-file {path}",
+            "gh issue comment 42 --body-file {path}",
+            "gh issue edit 42 --body-file {path}",
+        ],
+        ids=["create", "comment", "edit"],
+    )
+    def test_gh_issue_pseudo_file_body_source_denied(
+        self, claude_config_repo, command_template, pseudo_path,
+    ):
+        command = command_template.format(path=pseudo_path)
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(command)),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), f"expected deny on pseudo-file path {pseudo_path}"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "pseudo-file" in reason.lower()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh issue create --body 'Fixes CVE-2024-9999'",
+            "gh issue create --body 'Clean body, no refs at all'",
+            "gh issue comment 42 --body 'Looks good, thanks'",
+            "gh issue edit 42 --body 'Looks good, thanks'",
+            "gh issue edit 42 --add-label bug",
+        ],
+        ids=[
+            "create-body-cve-allowlisted",
+            "create-body-clean",
+            "comment-body-clean",
+            "edit-body-clean",
+            "edit-non-body-flag",
+        ],
+    )
+    def test_gh_issue_clean_or_allowlisted_allowed(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_gh_issue_body_file_allowlisted_only_allowed(self, claude_config_repo, tmp_path):
+        """A body file that references only allowlisted tokens passes,
+        mirroring test_gh_pr_body_file_allowlisted_only_allowed above for
+        the issue surface — proves the shared extract_body_source_paths/
+        _lib_capped-cat extractor doesn't false-positive on clean content,
+        not just that it denies tracker-bearing content."""
+        body_file = tmp_path / "issue-body.md"
+        body_file.write_text("Implements RFC-7231 and mitigates CVE-2024-1234.\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"gh issue create --body-file {body_file}"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_gh_issue_body_file_missing_fails_closed(self, claude_config_repo, tmp_path):
+        """Nonexistent --body-file path on the issue surface: hook must
+        deny, not silently treat as empty, mirroring
+        test_gh_pr_body_file_missing_fails_closed above. Standalone, unlike
+        test_gh_issue_body_file_extractor_reached_despite_concurrent_gh_api_denied
+        below, which exercises the same missing-file case only
+        incidentally while isolating a different, unrelated question
+        (which arm's deny message fired)."""
+        missing = tmp_path / "does-not-exist.md"
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"gh issue create --body-file {missing}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), "expected a deny verdict on unreadable body-file"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "body-source file" in reason
+        assert str(missing) in reason
+
+    def test_gh_issue_unrelated_remote_allowed(self, unrelated_remote_repo):
+        """Scoping short-circuit (origin URL doesn't contain `claude-config`)
+        must apply to gh issue too — the hook must not block issues in any
+        other repo even if they reference a tracker ID."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh issue create --body 'Fix WIDGET-123 regression'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_non_gated_gh_issue_subcommand_allowed(self, claude_config_repo):
+        """Only `gh issue create`, `gh issue comment`, and `gh issue edit`
+        are gated. Other gh issue subcommands (e.g., `gh issue view`) are
+        out of scope for this hook and must pass even when the command
+        carries tracker-shaped text — a tracker-free command would pass
+        whether or not `gh issue view` is correctly excluded from
+        dispatch."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh issue view 42 --comments 'mentions WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     # -- gh api mutating-call surfaces -------------------------------------
     # `gh api repos/.../pulls/N/comments`, `.../comments/M/replies`,
     # `.../issues/N/comments`, etc. carry user-authored bodies via
@@ -1329,6 +1654,20 @@ class TestDenyPrivateProjectRefs:
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("gh api repos/x/y/pulls/1/comments -X=POST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_X_quoted_method_value_with_tracker_denied(self, claude_config_repo):
+        """`-X "POST"` (method value quoted) must dispatch identically to
+        the unquoted form — the -X/-f detection greps read
+        COMMAND_UNQUOTED, same as the gh-pr word-walk and git-commit
+        surfaces (see their own quoted-word tests)."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/issues -X \"POST\" -f body='Fixes WIDGET-123'"),
                 cwd=claude_config_repo,
             )
             == "deny"
@@ -1966,6 +2305,20 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
+    def test_structural_ssh_key_word_adjacent_quote_split_denied(self, claude_config_repo):
+        """GH-783 regression: an SSH-key-path reference immediately adjacent to
+        a quote character (no space) must still deny — stripping shell
+        quotes would destroy the `"` that supplies this detector's leading
+        word boundary, but SCAN_TARGET_BOTH's raw side preserves it."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m \'copy x"id_rsa" into place\''),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
     # Home-rooted path
 
     def test_structural_home_rooted_path_no_reference_allowed(self, claude_config_repo):
@@ -2058,6 +2411,16 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    def test_structural_long_hex_identifier_quote_split_denied(self, claude_config_repo):
+        """GH-783 regression: a long-hex-identifier match split across an
+        adjacent quote boundary (no space) must still deny — a hex run
+        broken mid-string by an adjacent quote pair
+        (`...01234567'"89"'...`) is caught because SCAN_TARGET_BOTH's
+        stripped side reassembles it before the 32-char threshold check
+        runs."""
+        command = "git commit -m 'Session abcdef0123456789abcdef01234567'\"89\"' drove the spike'"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     # Internal hostname
 
@@ -2257,6 +2620,21 @@ class TestDenyPrivateProjectRefs:
                 bash_input(
                     "git commit -m 'Add [Permission-prompt tracking](#permission-prompt-tracking) to the TOC'"
                 ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_bash_array_length_syntax_allowed(self, claude_config_repo):
+        """Bash parameter-expansion-length syntax, `${#array[@]}`, is
+        excluded: the `{` immediately before `#` is what distinguishes this
+        common shell idiom from a real channel mention, mirroring the
+        markdown-inline-link exclusion's use of adjacency rather than
+        charset to disambiguate."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Guard the empty-array case: [ \"${#items[@]}\" -eq 0 ]'"),
                 cwd=claude_config_repo,
             )
             == "allow"
@@ -2870,15 +3248,27 @@ class TestDenyPrivateProjectRefs:
             "git -C /tmp commit -m 'Fix WIDGET-123'",
             "git --git-dir=/tmp/g --work-tree=/tmp/w commit -m 'Fix WIDGET-123'",
             "GIT_DIR=/tmp/g git commit -m 'Fix WIDGET-123'",
+            "\"git\" commit -m 'Fix WIDGET-123'",
+            "git \"commit\" -m 'Fix WIDGET-123'",
         ],
-        ids=["c-config-flag", "C-path-flag", "git-dir-equals-flag", "env-var-prefix"],
+        ids=[
+            "c-config-flag",
+            "C-path-flag",
+            "git-dir-equals-flag",
+            "env-var-prefix",
+            "quoted-git-word",
+            "quoted-subcommand-word",
+        ],
     )
     def test_git_commit_flag_evasion_forms_denied(self, claude_config_repo, command):
         """A commit with a global flag or env-var prefix between `git` and
         `commit` must still be detected and its message scanned. Detection
         keys on the command shape; for the `-C` form the staged-diff scan
         still targets the session repo, not the `-C` path (a documented
-        known gap), so these cases deny on the message token alone."""
+        known gap), so these cases deny on the message token alone. The
+        two quoted-word rows (GH-783) require BOTH _lib_fragment_invokes_git
+        and _lib_extract_git_subcmd to independently pass once stripped, so
+        each quotes a different one of the two words."""
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     def test_git_commit_config_flag_clean_message_allowed(self, claude_config_repo):
@@ -2923,6 +3313,59 @@ class TestDenyPrivateProjectRefs:
         so both are exercised."""
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "GH_TOKEN=ci gh issue create --body 'Fixes WIDGET-123'",
+            "/usr/bin/gh issue comment 1 --body 'Fixes WIDGET-123'",
+            "OUT=$(gh issue create --body 'Fixes WIDGET-123')",
+            "OUT=`gh issue create --body 'Fixes WIDGET-123'`",
+        ],
+        ids=["env-var-prefix", "absolute-path", "command-substitution", "backtick-substitution"],
+    )
+    def test_gh_issue_evasion_forms_denied(self, claude_config_repo, command):
+        """gh issue forms with an env-var prefix, an absolute path, or
+        wrapped in `$()` / backticks must still dispatch the issue-body
+        scan. Mirrors test_gh_pr_evasion_forms_denied above for the issue
+        surface."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_gh_pr_and_gh_issue_chained_in_one_command_denied(self, claude_config_repo):
+        """A single chained command touching both gated gh surfaces (`gh
+        pr create` then `gh issue create`) must deny, and the reason must
+        reference the offending tracker ID. This proves the fragment loop
+        can dispatch both IS_GH_PR and IS_GH_ISSUE from one command. It
+        does not prove IS_GH_ISSUE's own body-source extractor produced
+        the deny, since IS_GH_PR's own unconditional `SCAN_TARGET+=
+        $COMMAND` step already covers this test's inline `--body`
+        content — see
+        test_gh_issue_body_file_extractor_reached_despite_concurrent_gh_api_denied
+        below for a case that isolates the issue extractor."""
+        command = "gh pr create --title 'x' && gh issue create --body 'Fixes WIDGET-123'"
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None
+        assert "WIDGET-123" in reason
+
+    def test_gh_issue_body_file_extractor_reached_despite_concurrent_gh_api_denied(
+        self, claude_config_repo, tmp_path
+    ):
+        """The gh-pr and gh-issue body-source extractors both scan the
+        *whole* command string, not just their own fragment. Chaining a
+        `gh pr` call alongside `gh issue --body-file` would let the pr
+        arm's own extractor redundantly rediscover the issue's path too,
+        masking which arm actually caught it. `gh api` is used as the
+        co-occurring surface instead, since its own extractors key on
+        --input/-f/-F @path forms, not --body-file, and so cannot
+        rediscover this path. An unreadable `gh issue create --body-file`
+        path here can therefore only be caught by IS_GH_ISSUE's own
+        extractor, and its deny message is surface-specific — pinning
+        that IS_GH_ISSUE's dispatch, not IS_GH_API's, produced it."""
+        missing = tmp_path / "does-not-exist.md"
+        command = f"gh api repos/x/y/issues/1/comments -X POST -f body='clean' && gh issue create --body-file {missing}"
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None
+        assert reason.startswith("gh issue command references a body-source file")
+
     def test_gh_api_command_substitution_form_denied(self, claude_config_repo):
         """A mutating `gh api` call wrapped in `$()` is split into its own
         fragment and detected — the literal regex over the whole command
@@ -2960,9 +3403,14 @@ class TestDenyPrivateProjectRefs:
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     def test_gh_pr_flag_before_subcommand_denied(self, claude_config_repo):
-        """`gh pr create` accepts `--repo` written before the `pr create`
-        command path. A PR-body tracker token must still be detected — the
-        `pr`/`create` pair stays contiguous, so adjacency detection holds."""
+        """`gh pr create` accepts `--repo` hoisted ahead of the whole `pr
+        create` command path (before `pr`, not between `pr` and `create`).
+        A PR-body tracker token must still be detected. This pins only the
+        hoisted-before-`pr` case; the interposed-between-the-pair case is
+        covered separately by
+        test_gh_flag_interposed_between_surface_and_subcommand_denied
+        below, since that is what actually exercises
+        _lib_tool_argv_from_subcmd's flag-skip."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2972,18 +3420,376 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh issue --repo owner/repo create --body 'Fixes WIDGET-123'",
+            "gh issue --repo owner/repo comment 42 --body 'Fixes WIDGET-123'",
+            "gh issue --repo owner/repo edit 42 --body 'Fixes WIDGET-123'",
+            "gh pr --repo owner/repo create --body 'Fixes WIDGET-123'",
+            "gh pr --repo owner/repo edit 42 --body 'Fixes WIDGET-123'",
+            "gh issue -R owner/repo create --body 'Fixes WIDGET-123'",
+            "gh issue -R owner/repo edit 42 --body 'Fixes WIDGET-123'",
+            "gh pr -R owner/repo edit 42 --body 'Fixes WIDGET-123'",
+        ],
+        ids=[
+            "issue-create-interposed-repo",
+            "issue-comment-interposed-repo",
+            "issue-edit-interposed-repo",
+            "pr-create-interposed-repo",
+            "pr-edit-interposed-repo",
+            "issue-create-interposed-short-repo",
+            "issue-edit-interposed-short-repo",
+            "pr-edit-interposed-short-repo",
+        ],
+    )
+    def test_gh_flag_interposed_between_surface_and_subcommand_denied(self, claude_config_repo, command):
+        """A value-taking `--repo`/`-R` flag written *between* the surface
+        word (`pr`/`issue`) and its subcommand (`create`/`edit`/`comment`)
+        would defeat fragment_gh_gated_surface's adjacency test without
+        _lib_tool_argv_from_subcmd's flag-skip; this test pins that the
+        flag-skip closes it, for both the long (`--repo`) and short (`-R`)
+        two-word spellings."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr --repo=owner/repo create --body 'Fixes WIDGET-123'",
+            "gh pr -Rowner/repo create --body 'Fixes WIDGET-123'",
+            "gh issue --repo=owner/repo create --body 'Fixes WIDGET-123'",
+            "gh issue -Rowner/repo create --body 'Fixes WIDGET-123'",
+        ],
+        ids=[
+            "pr-equals-glued-form",
+            "pr-short-flag-glued-form",
+            "issue-equals-glued-form",
+            "issue-short-flag-glued-form",
+        ],
+    )
+    def test_gh_flag_interposed_glued_value_denied(self, claude_config_repo, command):
+        """The glued-value forms (`--repo=<val>`, `-R<val>`) of the
+        interposed flag must be skipped the same as the two-word form
+        covered above, for both the pr and issue arms."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr --title x create --body 'Fixes WIDGET-123'",
+            "gh pr --title x edit 42 --body 'Fixes WIDGET-123'",
+            "gh issue --title x create --body 'Fixes WIDGET-123'",
+            "gh issue --body placeholder comment 42 --body 'Fixes WIDGET-123'",
+            "gh issue --title x edit 42 --body 'Fixes WIDGET-123'",
+            "gh pr --title=x create --body 'Fixes WIDGET-123'",
+        ],
+        ids=[
+            "pr-title-create",
+            "pr-title-edit",
+            "issue-title-create",
+            "issue-body-comment",
+            "issue-title-edit",
+            "pr-title-equals-glued",
+        ],
+    )
+    def test_gh_leaf_flag_interposed_before_subcommand_denied(self, claude_config_repo, command):
+        """A leaf flag registered on the subcommand itself (`--title`,
+        `--body`), not a global flag like `--repo`, written between the
+        surface word and its subcommand -- GH-559/GH-430's interposed-flag
+        bypass class. gh's own cobra resolution consumes the flag and its
+        value while walking to the subcommand, so
+        _lib_tool_argv_from_subcmd must do the same or the pair splits and
+        the redaction gate never dispatches. Uses WIDGET-123, not PROJ-123:
+        PROJ is on OSS_ALLOWLIST (verified against the hook), so it cannot
+        produce a deny verdict and would silently defeat this regression
+        test."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr --repo owner/repo create --body 'Clean body, no refs at all'",
+            "gh issue --repo owner/repo create --body 'Clean body, no refs at all'",
+            "gh pr --repo=owner/repo create --body 'Clean body, no refs at all'",
+            "gh issue -Rowner/repo create --body 'Clean body, no refs at all'",
+            "gh pr --title x create --body 'Clean body, no refs at all'",
+            "gh issue --title x create --body 'Clean body, no refs at all'",
+        ],
+        ids=[
+            "pr-create-interposed-repo-clean",
+            "issue-create-interposed-repo-clean",
+            "pr-create-interposed-repo-equals-glued-clean",
+            "issue-create-interposed-short-repo-glued-clean",
+            "pr-title-create-clean",
+            "issue-title-create-clean",
+        ],
+    )
+    def test_gh_interposed_flag_clean_body_allowed(self, claude_config_repo, command):
+        """Allow-path sibling to the interposed-flag deny families above
+        (test_gh_flag_interposed_between_surface_and_subcommand_denied,
+        test_gh_flag_interposed_glued_value_denied,
+        test_gh_leaf_flag_interposed_before_subcommand_denied): the
+        flag-skip that makes those deny on a tracker token must not
+        over-block a clean body for the same interposed-flag shapes."""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_gh_issue_wrapper_form_denied(self, claude_config_repo):
+        """A `gh issue create` invocation wrapped in `sh -c "..."` still
+        denies. fragment_gh_gated_surface's substring fast-path and its
+        any-position `gh`-word scan see through the wrapper because
+        _lib_strip_shell_quotes flattens the wrapped string into bare
+        words before the walker ever runs. _lib_command_invokes_tool_subcmd's
+        command-word gate, by contrast, would resolve to `sh`, not `gh`,
+        and stop scanning inside this exact wrapper. Pins that
+        fragment_gh_gated_surface's any-position scan stays broader than
+        that gate for this hook's redaction purpose."""
+        command = "sh -c \"gh issue create --body 'Fixes WIDGET-123'\""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    @pytest.mark.timing
+    @pytest.mark.parametrize(
+        "command_template",
+        ["gh pr create --body-file {path}", "gh issue create --body-file {path}"],
+        ids=["pr", "issue"],
+    )
+    def test_body_file_cat_timeout_denies(self, claude_config_repo, tmp_path, command_template):
+        """The --body-file read's _lib_capped exit status must fail closed
+        on timeout rather than hang the hook — a FIFO with no writer would
+        otherwise block indefinitely past the readability check's `[ -r ]`
+        test, which a FIFO passes but never terminates a read from. Both
+        the gh pr and gh issue body-source reads share this fix, since
+        both arms call the same _lib_capped-wrapped cat idiom."""
+        real_cat = shutil.which("cat")
+        assert real_cat, "test host must have a real cat binary on PATH"
+        body_file = tmp_path / "body.md"
+        body_file.write_text("Fixes WIDGET-123\n")
+        shim_dir = tmp_path / "cat-timeout-shim"
+        shim_dir.mkdir()
+        _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(body_file))} ]")
+        command = command_template.format(path=body_file)
+        with assert_cap_engaged():
+            reason = run_hook_reason(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(command),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+        assert reason is not None
+        assert "did not finish reading within the timeout" in reason
+
+    @pytest.mark.timing
+    def test_git_commit_F_cat_timeout_denies(self, claude_config_repo, tmp_path):
+        """The git commit -F message-source read's _lib_capped exit status
+        must fail closed on timeout, the same FIFO-hang fix as the gh pr /
+        gh issue --body-file reads above, since all three sites share one
+        _lib_capped-wrapped cat call."""
+        real_cat = shutil.which("cat")
+        assert real_cat, "test host must have a real cat binary on PATH"
+        msg_file = tmp_path / "commit-msg.txt"
+        msg_file.write_text("Fixes WIDGET-123\n")
+        shim_dir = tmp_path / "cat-timeout-shim"
+        shim_dir.mkdir()
+        _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(msg_file))} ]")
+        command = f"git commit -F {msg_file}"
+        with assert_cap_engaged():
+            reason = run_hook_reason(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(command),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+        assert reason is not None
+        assert "did not finish reading within the timeout" in reason
+
+    @pytest.mark.timing
+    def test_gh_api_input_cat_timeout_denies(self, claude_config_repo, tmp_path):
+        """The gh api --input body read's _lib_capped exit status must fail
+        closed on timeout, the same FIFO-hang fix as the gh pr / gh issue
+        --body-file reads above, since all three sites share one
+        _lib_capped-wrapped cat call."""
+        real_cat = shutil.which("cat")
+        assert real_cat, "test host must have a real cat binary on PATH"
+        body_file = tmp_path / "comment.json"
+        body_file.write_text('{"body": "Fixes WIDGET-123"}\n')
+        shim_dir = tmp_path / "cat-timeout-shim"
+        shim_dir.mkdir()
+        _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(body_file))} ]")
+        command = f"gh api repos/x/y/pulls/1/comments -X POST --input {body_file}"
+        with assert_cap_engaged():
+            reason = run_hook_reason(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(command),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+        assert reason is not None
+        assert "did not finish reading within the timeout" in reason
+
+    @pytest.mark.timing
+    def test_gh_api_field_at_cat_timeout_denies(self, claude_config_repo, tmp_path):
+        """The gh api -f/-F key=@<path> field-value read's _lib_capped exit
+        status must fail closed on timeout, the same FIFO-hang fix as the
+        gh pr / gh issue --body-file reads above, since all three sites
+        share one _lib_capped-wrapped cat call."""
+        real_cat = shutil.which("cat")
+        assert real_cat, "test host must have a real cat binary on PATH"
+        leak_file = tmp_path / "leak.txt"
+        leak_file.write_text("Fixes WIDGET-123\n")
+        shim_dir = tmp_path / "cat-timeout-shim"
+        shim_dir.mkdir()
+        _write_conditional_sleep_shim(shim_dir, "cat", real_cat, f"[ \"$1\" = {shlex.quote(str(leak_file))} ]")
+        command = f"gh api repos/x/y/pulls/1/comments -X POST -F body=@{leak_file}"
+        with assert_cap_engaged():
+            reason = run_hook_reason(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(command),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+        assert reason is not None
+        assert "did not finish reading within the timeout" in reason
+
     def test_gh_non_gated_subcommand_mentioning_pr_allowed(self, claude_config_repo):
         """A non-gated gh subcommand whose argument text merely contains the
-        word `pr` (here `gh issue create`, with `pr` in the title) is not
+        word `pr` (here `gh release create`, with `pr` in the title) is not
         falsely gated — `gh pr` detection requires `pr` immediately followed
-        by `create`/`edit`, and here `create` precedes the stray `pr`."""
+        by `create`/`edit`, and here `create` precedes the stray `pr` rather
+        than being adjacent to it. `gh release create` is used here (not `gh
+        issue create`) because `gh issue create` is itself a gated surface
+        (`IS_GH_ISSUE`)."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("gh issue create --title 'open a pr' --body 'tracking WIDGET-123'"),
+                bash_input("gh release create --title 'open a pr' --notes 'tracking WIDGET-123'"),
                 cwd=claude_config_repo,
             )
             == "allow"
+        )
+
+    # GH-783: the tracker-ID scan reads SCAN_TARGET_BOTH, the union of
+    # $SCAN_TARGET and its quote-stripped copy SCAN_TARGET_UNQUOTED, so a
+    # quote-split tracker ID reassembles under the stripped side before the
+    # regex runs. Three independent tests, not one combined case: a
+    # regression in any one mechanism (the strip itself, its documented
+    # over-strip caveat, or the raw side of the union) should fail only its
+    # own test.
+
+    def test_quote_split_tracker_id_denied(self, claude_config_repo):
+        """A tracker ID split across an adjacent quote boundary (no
+        apostrophe present) must reassemble under SCAN_TARGET_UNQUOTED
+        and still be caught via the SCAN_TARGET_BOTH union — independent
+        of the over-strip-caveat test below."""
+        command = "gh pr create --body 'Fixes WIDG'\"ET-123\""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_apostrophe_bearing_benign_message_allowed(self, claude_config_repo):
+        """_lib_strip_shell_quotes's documented over-strip caveat (a literal
+        apostrophe is deleted along with real quote delimiters) must still
+        allow a clean message with no tracker ID present — proves the
+        strip's existing over-strip behavior, already proven safe for its
+        credential-substring consumers, is also safe for this scan's first
+        tracker-ID-regex consumer."""
+        command = 'gh pr create --body "clean body, don'"'"'t leak anything here"'
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_word_adjacent_tracker_id_quote_split_denied(self, claude_config_repo):
+        """Regression guard: a real tracker ID whose only preceding word
+        boundary is an adjacent quote character (no space, e.g.
+        `x"AB-123"`) must still deny under the raw+stripped union scan.
+        SCAN_TARGET_UNQUOTED alone would miss this — stripping the quote
+        joins `x` and `AB-123` into `xAB-123` with no \\b boundary between
+        them — but the raw $SCAN_TARGET side of the SCAN_TARGET_BOTH union
+        still has the quote and still matches."""
+        command = "gh pr create --body 'issue x\"AB-123\" was closed'"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_command_unquoted_sed_absent_from_path_denied(self, claude_config_repo, tmp_path):
+        """GH-783: COMMAND_UNQUOTED's sed/tr strip failure must fail closed
+        rather than let a missing sed silently collapse gated-surface
+        detection (IS_GH_PR/IS_GH_API) and fall through to this hook's
+        normal allow path."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_fragments_split_sed_failure_denied(self, claude_config_repo, tmp_path):
+        """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
+        from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
+        sed binary, so a total sed-absent test (like the one above) can't
+        tell which of the two is actually catching the failure. A sed shim
+        fails on any invocation that isn't _lib_strip_shell_quotes's own
+        `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
+        while the later _lib_split_fragments call (a bare `sed -E
+        's/.../g'`, no `-e` token) fails on its own."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_scan_target_unquoted_sed_failure_denied(self, claude_config_repo, tmp_path):
+        """GH-783: SCAN_TARGET_UNQUOTED's own strip failure (reached only
+        after COMMAND_UNQUOTED already succeeded and a gated surface was
+        found) must also fail closed, not just degrade to raw-only
+        scanning. A sed shim fails only when its stdin carries this
+        staged-diff-only marker, so COMMAND_UNQUOTED's own earlier strip
+        (which never sees staged-diff content) still succeeds -- isolating
+        this specific call site from the COMMAND_UNQUOTED case above."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+        marker = "SCAN-TARGET-UNQUOTED-SED-FAILURE-MARKER"
+        (claude_config_repo / "file.txt").write_text(f"first\nsecond\n// {marker}\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+
+        shim_dir = tmp_path / "sed-fails-on-scan-target-only"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            input=$(cat)
+            case "$input" in
+              *"{marker}"*) exit 1 ;;
+            esac
+            printf '%s' "$input" | "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Generic refactor'"),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
         )
 
     def test_missing_lib_sh_fails_closed(self, claude_config_repo, tmp_path):

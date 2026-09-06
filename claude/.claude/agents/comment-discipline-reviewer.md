@@ -56,9 +56,16 @@ back-reference inside a skill body. The fix is relocation, not deletion —
 name where the content belongs.
 
 **PR-defined terminology** — a label meaningful only inside this PR's own
-narrative ("Defense A", "Action 6", "Pattern C" and equivalents) used in a
-comment or doc without being defined in the code or named explicitly there.
-Flag every occurrence, not just the first.
+narrative, used in a comment or doc without being defined in the code or
+named explicitly there. Two shapes realize this:
+
+- A tracker ID carrying a phase or step qualifier, e.g. `<TICKET> Phase <N>`.
+- An invented codename ("Defense A", "Action 6", "Pattern C" and equivalents).
+
+A bare tracker ID on its own (e.g. `<TICKET>`) is a self-resolving citation
+and is fine. The phase/step qualifier is what turns the first shape into a
+PR-defined label, because the phase number only resolves against an
+external plan document. Flag every occurrence, not just the first.
 
 **"Used to be X" framing** — "used to be X" / "was Y before" / any
 prior-version comparison inside a comment or durable doc. That rationale
@@ -87,7 +94,11 @@ inside the PR.
 4. Exhaustive enumeration is the point: do not stop at the first or most
    obvious violation in a file. A partial sweep that catches the two most
    visible bullets and stops reproduces the exact failure mode this agent
-   exists to catch.
+   exists to catch. Once a candidate PR-defined label or "used to be X" /
+   prior-version phrase is found, search the diff's file set for that
+   literal token, enumerate every hit, and report the count — the sweep
+   isn't exhaustive until every site carrying the token is named, not
+   just the first one found.
 
 ## Output format
 

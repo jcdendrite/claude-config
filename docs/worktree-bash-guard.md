@@ -104,9 +104,10 @@ choreography in prose at each site, on four independent grounds:
 4. **It's more DRY.** A prose fallback dance restated at every site can silently drift
    out of sync between copies; a script is one tested, shellchecked artifact.
 
-This inherits `marker.sh`'s own known, already-accepted gap for a session running under a
-non-default `$CLAUDE_CONFIG_DIR` whose `~/.claude` isn't a live install (e.g. a secondary
-account container) — not a new gap this fix introduces.
+Every git-tracked file under `claude/.claude/` resolves into one shared stow checkout
+regardless of the active account, so a hardcoded `~/.claude/scripts/<name>` or
+`~/.claude/hooks/<name>` names the same file under every `$CLAUDE_CONFIG_DIR` — there is
+no non-default-account gap for a script or hook call site to inherit.
 
 For an ad-hoc orchestrator Bash call no script pre-covers, the fallback convention is:
 one double-quoted statement, no nested `$(...)`, no `$CLAUDE_CONFIG_DIR` reference — the
@@ -131,6 +132,12 @@ isolate — but that is not confirmed, only the leading guess.
 The script-first fix in this repo does not depend on the guard reliably reproducing:
 grounds 1–4 above hold regardless of whether the guard currently refuses anything, and a
 script the guard never has to parse for complexity closes the question either way.
+
+**2026-09-03:** from a linked worktree, the guard refused a compound `grep … "$(git
+rev-parse --git-path info/exclude)"` call with "names git in a form too complex to
+verify" — a single dated observation, not a repeatable check, against the zero-refusals
+finding above. It landed on the exact shape the `findings-path-suffix.sh` migration
+removes from every skill body that carried it.
 
 ## How to re-verify
 

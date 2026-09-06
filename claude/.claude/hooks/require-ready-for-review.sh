@@ -34,30 +34,78 @@
 #
 # Bypass cases (allow without checking marker):
 # - Not Bash tool, or not git push / gh pr ready / gh pr create.
-# - --dry-run pushes
-# - --tags-only pushes (no branch artifact change)
-# - Deletion pushes (--delete flag, or `origin :branch` source-empty form)
+# - The next three are judged per git-push fragment, so a bypassable push
+#   chained ahead of a gated fragment does not exempt it:
+#   - --dry-run pushes
+#   - --tags-only pushes (no branch artifact change)
+#   - Deletion pushes (--delete flag, or `origin :branch` source-empty form)
 # - Branch is the default branch (no PR semantics)
 # - Branch has no open PR (gh pr view returns empty) — not checked for
 #   gh pr create, since a PR being created does not exist yet.
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
 #   to keep the user unblocked; the skill's prose triggers still fire.
 #
-# Known gaps, inherited by gh pr create, not closed here (not yet filed as
-# a follow-up issue): the --dry-run bypass greps the whole $COMMAND, so
-# `git push --dry-run && gh pr create` exits 0 before the gh pr create arm
-# is evaluated (this shape already bypassed a second real `git push`
-# chained the same way, pre-existing and unchanged by this diff); the
-# default-branch bypass runs before any command-type check, so
-# `gh pr create` from the default branch is also exempted — believed inert
-# in practice, since gh errors on a same-branch PR regardless of this hook.
-# Separately, the settings.json `if`-dispatch entries are prefix globs
-# (`Bash(gh pr create *)`) while the in-script detection is fragment-based;
-# a disguised standalone invocation (`eval "gh pr create"`, an env-prefixed
-# form) not chained after a git-push/gh-pr-ready fragment may not match the
-# dispatch pattern, so the hook never runs at all for that shape — the same
-# dispatch-vs-internal-regex gap the git-push and gh-pr-ready arms already
-# have.
+# Known gaps:
+# - The default-branch bypass runs before any command-type check, so
+#   `gh pr create` from the default branch is also exempted — believed inert
+#   in practice, since gh errors on a same-branch PR regardless of this hook.
+# - The gh pr ready and gh pr create arms detect via plain-text regex on the
+#   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
+#   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
+#   create`) bypasses detection for those two arms.
+# - _lib_split_fragments doesn't split fragments on a bare `&` (the shell
+#   background operator).
+# - The git-word scan it feeds locks onto the first `git` occurrence in a
+#   fragment, so `git status & git push origin feature` misclassifies the
+#   subcommand and the real push goes undetected.
+# - Not closed here: the fix touches the fragment splitter or the git-word
+#   scan, both shared by other hooks and outside this gate's cooperative
+#   threat model.
+# - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
+#   checked and denies with an explicit message rather than falling through
+#   to this gate's normal "no gated command present" allow path.
+# Every git rev-parse/symbolic-ref call in this script, and the gh pr view
+# network call, are capped via _lib_capped, so a stalled filesystem, locked
+# index, or hanging gh fails fast (5s) instead of hanging indefinitely.
+# Two independent paths allow outright on timeout. A REPO_ROOT timeout
+# exits 0 immediately. A gh pr view timeout allows via the same
+# empty-output check that handles gh failing outright (see that call
+# site's own comment below).
+# A CURRENT_BRANCH timeout, or a candidate-loop timeout in isolation, does
+# not allow directly: it withholds the default-branch bypass and lets the
+# gate below decide, which can still deny.
+# DEFAULT_BRANCH resolves in two steps: a direct `git symbolic-ref` lookup,
+# then the main/master/develop candidate loop as fallback. A symbolic-ref
+# timeout alone only withholds the bypass if the candidate loop also fails
+# to resolve a value. If the loop still succeeds, DEFAULT_BRANCH is set
+# and the bypass still fires normally.
+# Only CURRENT_HEAD fails closed on that timeout (see its own comment below).
+#
+# Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —
+# intentional, because a prefix glob (`Bash(gh pr create *)`) cannot deliver
+# the wrapped, env-prefixed, and `git -C`-style forms the in-script fragment
+# tokenizer detects.
+# - The hook exits before any git, network, or marker work when no gated
+#   command is present.
+# - A command that merely mentions a gated command in free text is denied —
+#   fail-closed by design.
+# - A missing jq denies every Bash call, the posture every unconditional
+#   gate in this repo already has.
+# - This gate's threat model is cooperative, not adversarial — the same
+#   posture require-respond-pr.sh's header states for its own gate.
+# - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
+#   self-merge, plus CI rerunning the full suite on push. That backstop
+#   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
+#   - the `gh api .../pulls/N/merge` endpoint
+#   - an `eval`/`bash -c` subshell wrapper
+#   - a full-path `gh` invocation
+#   It also assumes branch protection requires CI to pass before merge, a
+#   GitHub setting this hook cannot itself verify.
+# - Unconditional dispatch means _lib_split_fragments et al. now run on
+#   every Bash call across every consumer's shell, not only
+#   push/pr-create/pr-ready commands, so any latent portability gap in that
+#   shared path is now fully exposed, not reached only by a narrow slice of
+#   commands.
 
 set -uo pipefail
 
@@ -87,23 +135,126 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
-CWD=$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty')
+[ -z "$COMMAND" ] && exit 0
+
+# Quote-stripped so an adjacent-quote split (`"git" push`, `gh pr
+# "create"`) can't dodge the fragment tokenizer below — same helper as
+# deny-network-installs.sh. The $(/backtick substitution checks further
+# down stay on raw $COMMAND — they detect substitution syntax, not words.
+# Checked and fail-closed, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by ready-for-review gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  exit 0
+fi
+
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
+CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
 [ -z "$CWD" ] && CWD="$PWD"
+
+# Strips a bare origin/upstream token only when it is the first non-flag word
+# (the <repository> slot per git-push's own grammar).
+# A later occurrence is a refspec, not the repository slot, so stripping it
+# would hide a real branch push behind a repeated remote name.
+push_fragment_args_after_repo() {
+  local fragment="$1"
+  local word seen_repo=false
+  while IFS= read -r word; do
+    [[ -z "$word" ]] && continue
+    case "$word" in
+      # These flag spellings never consume the repository-position slot
+      # (checked above), so each caller's own allowlist still decides which
+      # of its own arm-specific flags are safe. Any other flag is treated as
+      # the first non-flag word instead, which over-gates (fails closed)
+      # rather than opening a bypass.
+      --force | --force-with-lease | --force-with-lease=* | --force-if-includes | -u | --set-upstream | --tags)
+        printf '%s\n' "$word"
+        continue ;;
+    esac
+    if ! $seen_repo; then
+      seen_repo=true
+      if [[ "$word" == "origin" || "$word" == "upstream" ]]; then
+        continue
+      fi
+    fi
+    printf '%s\n' "$word"
+  done < <(_lib_extract_git_subcmd_args "$fragment")
+}
+
+# True when a `git push` fragment publishes a branch ref a reviewer would see.
+# --dry-run pushes nothing.
+# --delete/-d removes every listed ref rather than publishing one.
+# The colon refspec form (`origin :branch`) removes a ref only when every
+# refspec in the fragment is delete-shaped; a real refspec alongside it
+# publishes, so this arm also needs the exhaustive-remaining-args check.
+# --tags with no other refspec publishes only tags.
+push_fragment_publishes_reviewable_change() {
+  local fragment="$1"
+  local remaining
+  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--dry-run(\s|$)'; then
+    return 1
+  fi
+  if printf '%s\n' "$fragment" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
+    return 1
+  fi
+  if printf '%s\n' "$fragment" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
+    # Delete-only holds only when every refspec is a deletion form, since a
+    # real refspec alongside one is reviewable.
+    # A literal $( or backtick anywhere in $COMMAND disqualifies the
+    # delete-only bypass, since a runtime branch ref can hide inside a
+    # substitution that _lib_split_fragments treats as a fragment boundary.
+    if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
+      return 0
+    fi
+    remaining=$(push_fragment_args_after_repo "$fragment" \
+      | grep -vE '^(--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|:[A-Za-z0-9._/-]+)$' \
+      | grep -v '^$' || true)
+    if [[ -z "$remaining" ]]; then
+      return 1
+    fi
+  fi
+  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--tags(\s|$)'; then
+    # Tag-only holds only when --tags is the sole refspec hint, since a
+    # branch ref alongside it is reviewable.
+    # A literal $( or backtick anywhere in $COMMAND disqualifies the
+    # tags-only bypass, since a runtime branch ref can hide inside a
+    # substitution that _lib_split_fragments treats as a fragment boundary.
+    if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
+      return 0
+    fi
+    remaining=$(push_fragment_args_after_repo "$fragment" \
+      | grep -vE '^(--tags|--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream)$' \
+      | grep -v '^$' || true)
+    if [[ -z "$remaining" ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
 
 # Detect gated commands by tokenizing fragments, not regex. This handles:
 # git -C <path> push, git --git-dir=... push, GIT_DIR=... git push,
 # eval git push, xargs git push, git push; (trailing semicolon),
-# (cd /wt; git push) (paren group).
-is_git_push=false
+# (cd /wt; git push) (paren group). A push fragment that publishes nothing
+# reviewable is not a gated command.
+is_gated_git_push=false
 is_gh_pr_ready=false
 is_gh_pr_create=false
-FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+FRAGMENTS_SPLIT_EXIT=$?
+if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by ready-for-review gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  exit 0
+fi
 while IFS= read -r frag; do
   [ -z "$frag" ] && continue
   if _lib_fragment_invokes_git "$frag"; then
     subcmd=$(_lib_extract_git_subcmd "$frag")
-    [ "$subcmd" = "push" ] && is_git_push=true
+    if [[ "$subcmd" == "push" ]] && push_fragment_publishes_reviewable_change "$frag"; then
+      is_gated_git_push=true
+    fi
   fi
   if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
     is_gh_pr_ready=true
@@ -112,42 +263,12 @@ while IFS= read -r frag; do
     is_gh_pr_create=true
   fi
 done <<< "$FRAGMENTS"
-if ! $is_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
+if ! $is_gated_git_push && ! $is_gh_pr_ready && ! $is_gh_pr_create; then
   exit 0
 fi
 
-# git push bypass shapes — none of these publish a reviewable artifact change.
-if $is_git_push; then
-  # --dry-run: doesn't actually push.
-  if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)--dry-run(\s|$)'; then
-    exit 0
-  fi
-  # --delete or refspec source-empty (`origin :branch`): branch deletion.
-  if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
-    exit 0
-  fi
-  if printf '%s\n' "$COMMAND" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
-    exit 0
-  fi
-  # --tags with no explicit refspec other than tags: tag-only push.
-  # Conservative: only bypass when --tags is the only refspec hint. If the
-  # command also mentions a branch refspec, fall through to the gate.
-  if printf '%s\n' "$COMMAND" | grep -qE '(^|\s)--tags(\s|$)'; then
-    # If the only non-flag args after `git push` are `--tags` (and possibly
-    # a remote name), bypass. If a branch ref is also present, gate.
-    # [[:space:]], not \s: BSD/macOS sed -E has no \s and silently produces no match, leaving push_args empty and collapsing every --tags push into the tag-only bypass above.
-    push_args=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*git[[:space:]]+push[[:space:]]+(.*)/\1/p' | head -1)
-    # Strip flags and known-safe positional (a remote like "origin").
-    # If anything else remains, it's likely a branch ref → gate.
-    remaining=$(printf '%s\n' "$push_args" | tr ' ' '\n' | grep -vE '^(--tags|--force(-with-lease)?(=.*)?|--force-if-includes|-u|--set-upstream|origin|upstream)$' | grep -v '^$' || true)
-    if [ -z "$remaining" ]; then
-      exit 0
-    fi
-  fi
-fi
-
 # Are we in a git repo?
-REPO_ROOT=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+REPO_ROOT=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --show-toplevel 2>/dev/null)
 if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
@@ -159,11 +280,11 @@ fi
 # `rev-parse --abbrev-ref origin/HEAD`: the latter outputs the literal
 # string "origin/HEAD" (not empty) when origin/HEAD isn't a symbolic ref,
 # which defeats the fallback path.
-CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null)
-DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
+CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --abbrev-ref HEAD 2>/dev/null)
+DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
 if [ -z "$DEFAULT_BRANCH" ]; then
   for candidate in main master develop; do
-    if cd "$CWD" 2>/dev/null && git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+    if cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
       DEFAULT_BRANCH="$candidate"
       break
     fi
@@ -176,7 +297,7 @@ fi
 # Active-marker bypass: the skill is currently running. An absent or
 # path-escaping id withholds the bypass, which just means the
 # completion-marker check further down decides the gate instead.
-if _lib_active_bypass_marker_live ".ready-for-review-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".ready-for-review-active.d" "$SESSION_ID"; then
   exit 0
 fi
 
@@ -184,11 +305,14 @@ fi
 # Skipped for gh pr create — a PR being created by definition does not
 # exist yet, so this early-return would otherwise fail-open the one
 # command it needs to gate.
-# Network call — wrap in `timeout` so a hanging gh doesn't stall the
-# tool-call. On error/timeout, fail-open: the skill's prose triggers
-# still fire, and we don't want to brick offline / flaky-network work.
+# Network call, capped via _lib_capped so a hanging gh doesn't stall the tool-call.
+# On error or timeout, fail open — offline or flaky-network work must not brick.
+# Uses _lib_capped rather than a bare `timeout 5`: without GNU coreutils, bare
+# `timeout 5` is "command not found" (127), which silently fails this check open.
+# On a machine with neither timeout(1) nor gtimeout(1), _lib_capped runs this
+# call uncapped, governed only by the harness's own hook timeout.
 if ! $is_gh_pr_create; then
-  PR_NUMBER=$(cd "$CWD" 2>/dev/null && timeout 5 gh pr view --json number --jq '.number' 2>/dev/null)
+  PR_NUMBER=$(cd "$CWD" 2>/dev/null && _lib_capped gh pr view --json number --jq '.number' 2>/dev/null)
   if [ -z "$PR_NUMBER" ]; then
     exit 0
   fi
@@ -201,7 +325,7 @@ fi
 # reading across the filename's session key safe.
 # An unresolvable HEAD leaves CURRENT_HEAD empty, which never matches, so a
 # failed rev-parse denies rather than releasing the gate.
-CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && git rev-parse HEAD 2>/dev/null)
+CURRENT_HEAD=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse HEAD 2>/dev/null)
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the push/PR-ready command through.

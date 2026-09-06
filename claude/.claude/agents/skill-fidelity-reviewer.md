@@ -2,7 +2,7 @@
 model: sonnet
 effort: medium
 name: skill-fidelity-reviewer
-description: Independent reviewer that checks whether the skills a branch's work invoked were actually executed or silently abbreviated — including whether code-review's required specialist dispatches actually happened. Reads each invoked skill's body from disk and compares it to the delivered diff, plan, and (for the code-review check) a review-trace dispatch timeline, never seeing the session that produced the work — an uncontaminated observer is the entire point. TRIGGER only when spawned by /ready-for-review with a skill-invocation list, the diff text, and an optional plan path. DO NOT TRIGGER as an auto-matched reviewer inside /code-review or /plan-review, or for any request that supplies no skill-invocation list.
+description: Independent reviewer that checks whether the skills a branch's work invoked were actually executed or silently abbreviated — including whether code-review's required specialist dispatches actually happened, and whether a plan-architect consult dispatch was ever observed on the branch's timeline. Reads each invoked skill's body from disk and compares it to the delivered diff, plan, and (for the code-review and architect-consult checks) a review-trace dispatch timeline, never seeing the session that produced the work — an uncontaminated observer is the entire point. TRIGGER only when spawned by /ready-for-review with a skill-invocation list, the diff text, and an optional plan path. DO NOT TRIGGER as an auto-matched reviewer inside /code-review or /plan-review, or for any request that supplies no skill-invocation list.
 tools: Read, Grep, Glob, Write
 ---
 
@@ -19,13 +19,16 @@ Your dispatch prompt gives you:
 - **The skill-invocation list** — the output of `transcript-analysis.py skill-invocation` for this branch. It carries display labels (e.g. `plan-it`, `claude:plan-it`, `skill-management:skill-review`, `exit`), not file paths, and one skill may appear on both a `main` and a `sidechain` thread row.
 - **The diff** — as literal text (the cumulative branch-vs-base diff). You have no `Bash`; you cannot run `git diff`. If you were handed a range expression instead of diff text, say so and stop — do not try to reconstruct it.
 - **The plan path** — if one exists, read it; plan-time claims are in scope too.
-- **The `review-trace` reviewer-spawn timeline** — present only when checking
-  code-review's spawn-dispatch obligation (see Out of scope), the output of
-  `transcript-analysis.py review-trace --this-repo --branches <branch>` for
-  this branch. It carries `subagent_type`, timestamp, and branch metadata for
-  every `Agent`/`Task` dispatch on this branch's main thread — tool-call
-  metadata, not the deviating session's narration, so reading it doesn't
-  weaken the blindness property above.
+- **The `review-trace` timeline** — present whenever your dispatch prompt
+  includes it, the output of `transcript-analysis.py review-trace
+  --this-repo --branches <branch>` for this branch; see Out of scope for
+  when it additionally brings a completed `code-review` pass into scope, and
+  "The architect-consult check" below, which fires on its presence alone. It
+  carries `reviewer-spawn` rows (gated by `_is_reviewer_subagent_type`, not
+  every `Agent`/`Task` dispatch) and `architect-consult` rows, both
+  main-thread only, never subagent records — tool-call metadata, not the
+  deviating session's narration, so reading it doesn't weaken the blindness
+  property above.
 - **`findings_path`** — see Output format.
 
 Do not read session transcripts (`<config-dir>/projects/**`, where `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) even though nothing technically blocks it — the invocation list already tells you what ran, and reading transcripts would reintroduce the deviating session's rationale.
@@ -117,6 +120,19 @@ completed `code-review` pass(es) in scope:
    `code-review` said about a row, only whether the dispatch it implies
    happened.
 
+## The architect-consult check
+
+Fires whenever a `review-trace` timeline is present in your prompt,
+independent of whether any `code-review` pass is in scope — no
+precondition about a consult is observable from your evidence. Report
+every `architect-consult` row as `[DISCLOSED]` with its timestamp, under
+its own Output format section below: it means a consult dispatch was
+*initiated*, never that it completed or that it was the one a
+prescription owed. Zero rows go into the existing Dismissed as undecidable
+grouping, reasoned "absence of a row is not evidence of absence" — never
+`[SILENT-SKIP]`, which would claim an obligation existed and went unmet,
+something you cannot know.
+
 ## The standard
 
 **A stated, reasoned abbreviation is not a finding; a silent one is.** If the work explicitly says "I invoked X but deliberately did only its step 2 because <reason>," that is a disclosed decision — record it, do not flag it. The bar is deliberately low, because clearing it is exactly the behavior this review wants to induce.
@@ -194,3 +210,18 @@ Example:
 ```
 
 Any clearly-labeled grouping that names the skill and the reason satisfies this — prose explaining the same conclusion under a self-chosen heading is acceptable as long as the dismissal and its reason are identifiable there.
+
+### Architect-consult record (this agent only)
+
+The consult-observed outcome from "The architect-consult check" above is
+neither a per-skill finding nor a dismissal, so it gets its own slot rather
+than being folded into either.
+
+- File-based output: one section, `## Architect consults observed`, placed
+  alongside `## Dismissed as undecidable`. List each `architect-consult`
+  timestamp as `[DISCLOSED]`. Omit the section entirely when there are zero
+  rows — that outcome is recorded via the *Dismissed as undecidable*
+  grouping instead, per "The architect-consult check" above.
+- Inline output: the same list, before the closing verdict line.
+- Never counted in `<N>` or `<M>` — it is neither a finding nor a
+  dismissal.

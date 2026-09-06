@@ -24,8 +24,9 @@ set -uo pipefail
 # `marker.sh deactivate memory-skill`. While THIS session's marker exists AND
 # its stored PID is alive (kill -0), the hook allows through so the skill's
 # own Write/Edit calls during the memory-write session are not re-blocked.
-# Orphaned markers (session errored before cleanup) are evicted automatically:
-# dead PID → rm on next gate hit.
+# Eviction (dead PID, or a live PID whose mtime has idled past 60 minutes)
+# and the touch-on-use refresh that keeps a live marker from expiring
+# mid-run are documented in docs/hooks.md's "Gate deadlock recovery" section.
 #
 # Fail-closed on parse error — if the hook cannot parse its input it denies
 # rather than allowing through.
@@ -73,11 +74,6 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-REAL_PATH=$(_lib_realpath_m "$FILE_PATH")
-
-# Classify path — only proceed for memory files.
-IS_CANDIDATE=0
-
 # Fails open on an unresolvable config dir (empty/unset $HOME, no
 # CLAUDE_CONFIG_DIR), mirroring the SESSION_ID fail-open below — a
 # merely-missing-but-resolvable projects/ (fresh install) is fine since
@@ -88,7 +84,23 @@ IS_CANDIDATE=0
 # share a prefix with REAL_PATH.
 CONFIG_DIR=$(_lib_config_dir) && REAL_PROJECTS_DIR=$(_lib_realpath_m "$CONFIG_DIR/projects") || REAL_PROJECTS_DIR=""
 
-if [ -n "$REAL_PROJECTS_DIR" ]; then
+REAL_PATH=$(_lib_realpath_m "$FILE_PATH")
+REAL_PATH_STATUS=$?
+
+# Classify path — only proceed for memory files.
+IS_CANDIDATE=0
+
+# A failed REAL_PATH resolution must not fall through to an allow, since an
+# empty REAL_PATH matches neither candidate pattern below.
+# This check is scoped to the raw, unresolved FILE_PATH so an unrelated
+# dangling symlink elsewhere on disk isn't swept in just because it also
+# fails to resolve.
+if [ "$REAL_PATH_STATUS" -ne 0 ] && [ -n "$CONFIG_DIR" ] \
+   && [[ "$FILE_PATH" == "$CONFIG_DIR/projects/"* ]] && [[ "$FILE_PATH" == *"/memory/"* ]]; then
+  IS_CANDIDATE=1
+fi
+
+if [ "$IS_CANDIDATE" -eq 0 ] && [ -n "$REAL_PROJECTS_DIR" ]; then
   # Class (a): MEMORY.md index — always gated regardless of tool or existence.
   if [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"*"/memory/MEMORY.md" ]]; then
     IS_CANDIDATE=1
@@ -123,7 +135,7 @@ fi
 # (e.g. containing "../") withholds the bypass and falls through to the deny
 # below rather than being treated as absent — the point of validating it is
 # to never build that path, not to grant the allow anyway.
-if _lib_active_bypass_marker_live ".memory-skill-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".memory-skill-active.d" "$SESSION_ID"; then
   exit 0
 fi
 

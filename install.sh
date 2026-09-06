@@ -461,6 +461,7 @@ SENTINEL_INVENTORY=(
   ".consume-durable-continuity-disabled|machine|Durable-continuity auto-consume suppression||disabled|docs/hooks.md § Utility hooks"
   ".commit-stall-block-disabled|machine|Commit-stall auto-advance suppression||disabled|docs/commit-stall-block.md"
   ".session-title-disabled|machine|Branch-based session-title suppression (machine-wide)||disabled|docs/hooks.md § Utility hooks"
+  ".round-consult-gate-disabled|machine|Round-3 architect-consult gate suppression||disabled|docs/hooks.md § Gate hooks"
   ".claude/worktree-required|repo|Worktree enforcement (committed, this repo)||disabled|README.md § Worktree enforcement"
   ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
   ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
@@ -676,6 +677,9 @@ if [ -f "$SETTINGS_FILE" ]; then
     fi
     while read -r plugin; do
       [ -z "$plugin" ] && continue
+      if [ "$plugin" = "issue-triage@claude-config" ]; then
+        echo "  ! $plugin carries live gh credentials and unrestricted Bash — see its plugin.json description before running /issue-triage"
+      fi
       if _project_plugin_already_installed "$plugin" "$existing_project_plugins"; then
         echo "  ✓ $plugin (already installed)"
       else

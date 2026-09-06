@@ -36,6 +36,10 @@ through the following Monday 00:00:00 UTC (exclusive) ISO-week window as the
 other computed columns, not the corpus lifetime. `reviewer_gap_pp` is left
 empty when either the findings-found or zero-finding side has zero measured
 (Active) dispatches that week — an unmeasured comparison, not a 0pp gap.
+When either side's Active count is nonzero but below
+`_REVIEWER_YIELD_ACTIVE_FLOOR` (10), the cell reads `insufficient` instead
+of a number — the gap is too noisy at that sample size to report as a
+percentage-point figure.
 
 `denials` is a raw count and therefore volume-sensitive in the same way
 `usd` is; read it alongside the percentage columns, not as a standalone

@@ -2,13 +2,19 @@
   "enabledPlugins": {
     "skill-management@claude-config": true,
     "claude-hook-review@claude-config": true,
-    "plugin-semver@claude-config": true
+    "plugin-semver@claude-config": true,
+    "issue-triage@claude-config": true
   },
   "permissions": {
     "allow": [
       "Bash(ruff check claude/.claude/)",
-      "Bash(pytest claude/.claude/)",
+      "Bash(.venv/bin/python3 claude/.claude/scripts/select-tests.py)",
+      "Bash(../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py)",
       "Bash(pytest claude/.claude/scripts/tests/test_cleanup_merged_branches.py)"
     ]
-  }
+  },
+  "claudeMdExcludes": [
+    "**/claude/.claude/CLAUDE.md",
+    "**/.claude/worktrees/**/claude/.claude/rules/**"
+  ]
 }

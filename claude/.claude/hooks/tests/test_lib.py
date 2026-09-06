@@ -13,12 +13,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 import time
 from pathlib import Path
 
 import pytest
+from helpers import build_path_without
+
+from .conftest import _worktree_lock_reason
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -374,6 +378,116 @@ def test_missing_emit_deny_loud_fail() -> None:
     )
 
 
+def test_lib_emit_allow_with_context_emits_expected_envelope() -> None:
+    """Emits the PreToolUse allow envelope with additionalContext set to
+    the jq-encoded message, mirroring _lib_emit_deny's envelope shape but
+    with permissionDecision "allow" and no permissionDecisionReason."""
+    result = _run_lib_call('_lib_emit_allow_with_context "test message"', env=dict(os.environ))
+    assert result.returncode == 0, repr(result)
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "additionalContext": "test message",
+        }
+    }
+
+
+def test_lib_emit_allow_with_context_degrades_to_no_output_when_jq_absent(tmp_path: Path) -> None:
+    """No jq on PATH -> _lib_jq's degrade path returns empty, and the
+    caller-facing contract is a silent allow (no stdout). Unlike
+    _lib_emit_deny, which hard-blocks (exit 2) on this same jq-absent case,
+    losing an informational note is not the fail-closed case _lib_emit_deny
+    protects against."""
+    farm_dir = tmp_path / "path-farm"
+    farm_dir.mkdir()
+    restricted_path = build_path_without("jq", farm_dir)
+
+    env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+    result = _run_lib_call('_lib_emit_allow_with_context "test message"', env=env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "", repr(result.stdout)
+    assert result.stderr == "", repr(result.stderr)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+def test_lib_worktree_lock_absent_reports_absent_under_eacces(tmp_path: Path) -> None:
+    """`[ -e ... ]` can't distinguish "doesn't exist" from "exists but
+    unreadable". chmod 000 on the git-dir denies stat(2) on the lock file
+    inside it with EACCES. Empirically `[ -e ]` resolves that denial to
+    false, so _lib_worktree_lock_absent reports the lock "absent" (returns
+    0/true) even though it is actually present underneath. Pins this
+    resolution so a future change to the pre-check's implementation can't
+    silently flip it."""
+    git_dir = tmp_path / "git-dir"
+    git_dir.mkdir()
+    (git_dir / "locked").write_text("claude-code pid 1\n")
+    git_dir.chmod(0o000)
+    try:
+        result = _run_lib_call(f'_lib_worktree_lock_absent "{git_dir}"', env=dict(os.environ))
+    finally:
+        git_dir.chmod(0o755)
+    assert result.returncode == 0, (
+        f"expected _lib_worktree_lock_absent to report 'absent' (exit 0) under EACCES: {result!r}"
+    )
+
+
+def test_lib_worktree_lock_absent_stale_read_survives_opposite_race(
+    isolated_home: Path, opted_in_with_worktree: tuple[Path, Path]
+) -> None:
+    """Deterministic version of the "opposite-direction race" the header
+    comments document:
+
+    1. The pre-check reads "locked" (WAS_UNLOCKED=false).
+    2. The lock is then cleared, standing in for a genuinely concurrent
+       `git worktree unlock`.
+    3. The guard performs a real fresh acquisition.
+
+    WAS_UNLOCKED stays false, since the pre-check's stale read is never
+    corrected retroactively. So a caller wired this way emits no
+    fresh-lock message despite the real acquisition that just happened."""
+    opted_in_repo, worktree = opted_in_with_worktree
+    subprocess.run(
+        ["git", "-C", str(worktree), "worktree", "lock", str(worktree), "--reason", "pre-existing"],
+        check=True,
+    )
+    common_dir = subprocess.run(
+        ["git", "-C", str(opted_in_repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    git_dir = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    script = textwrap.dedent(f"""
+        . "{_LIB_SH}"
+        WAS_UNLOCKED=false
+        _lib_worktree_lock_absent "{git_dir}" && WAS_UNLOCKED=true
+        git -C "{worktree}" worktree unlock "{worktree}"
+        _lib_worktree_collision_guard "{worktree}" "{common_dir}" >/dev/null
+        printf '%s' "$WAS_UNLOCKED"
+    """)
+    env = {**os.environ, "HOME": str(isolated_home)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env=env, check=False
+    )
+    assert result.returncode == 0, repr(result)
+    assert result.stdout == "false", (
+        f"pre-check's stale WAS_UNLOCKED read must not be corrected by the "
+        f"guard's later real acquisition: {result!r}"
+    )
+    assert _worktree_lock_reason(worktree) is not None, (
+        "the guard's own call is expected to have genuinely re-locked the worktree"
+    )
+
+
 def test_null_literal_input_denied() -> None:
     """JSON null literal → DENY (empty TOOL_NAME after jq, path c).
 
@@ -676,10 +790,11 @@ def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -
 # --- _lib_active_bypass_marker_live ---------------------------------------
 #
 # The four bypass-shaped gates (require-{memory-skill,plan-review,
-# ready-for-review,respond-pr}.sh) share this helper, so the liveness,
+# ready-for-review,respond-pr}.sh), plus nudge-handoff-near-context-cap.sh's
+# hard-block suppression, share this helper, so the liveness,
 # orphan-eviction, and traversal properties are pinned once here rather than
-# four times over. Each hook's own test file still asserts the disposition its
-# gate produces when the helper returns false, which is what differs by gate.
+# five times over. Each caller's own test file still asserts the disposition
+# it produces when the helper returns false, which is what differs by caller.
 
 _MARKER_DIR_NAME = ".test-skill-active.d"
 
@@ -815,6 +930,192 @@ def test_active_bypass_marker_live_evicts_dead_pid_without_touching_sibling(
 # such test would pass with the guard deleted and pin nothing. Empty-id
 # rejection is pinned where it is discriminating: the parametrized rejection
 # table for _lib_valid_session_id_component above, which includes "".
+
+
+# --- _lib_active_bypass_marker_live_and_touch -------------------------------
+#
+# The idle-window expiry (60 minutes) is touch-on-use, not a hard age cap: the
+# four gating hooks (require-{memory-skill,plan-review,ready-for-review,
+# respond-pr}.sh) call this wrapper, which refreshes a live marker's mtime so
+# the window keeps sliding for as long as the owning skill keeps gating. The
+# base predicate above must never do that refresh itself, or a status-only
+# read (marker.sh status, nudge-handoff-near-context-cap.sh's enumeration)
+# would keep every marker artificially fresh just by observing it.
+
+
+def _active_bypass_marker_live_and_touch(home: Path, session_id: str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_active_bypass_marker_live_and_touch "$1" "$2"',
+            "bash",
+            _MARKER_DIR_NAME,
+            session_id,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def test_active_bypass_marker_live_and_touch_advances_mtime_on_live_check(tmp_path) -> None:
+    """A gating call that finds the marker live must refresh its mtime -- this
+    is what makes the idle window slide forward instead of expiring a
+    long-running skill mid-review."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-touch-live", str(os.getpid()))
+    old_time = time.time() - 300  # well within the 60-minute idle window
+    os.utime(marker, (old_time, old_time))
+
+    assert _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-live")
+    assert marker.stat().st_mtime > old_time + 1, (
+        "a live check through the wrapper must refresh the marker's mtime"
+    )
+
+
+def test_active_bypass_marker_live_and_touch_does_not_touch_dead_pid_eviction(tmp_path) -> None:
+    """A dead-PID marker's eviction propagates through the wrapper's own
+    short-circuit, not just the underlying predicate called directly --
+    the predicate evicts before the wrapper's touch line is ever reached."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-touch-dead", "99999999")
+    old_time = time.time() - 300
+    os.utime(marker, (old_time, old_time))
+
+    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-dead")
+    assert not marker.exists(), "a dead-PID marker must be evicted, not refreshed and kept"
+
+
+def test_active_bypass_marker_live_and_touch_evicts_idle_expired_live_pid(tmp_path) -> None:
+    """The wrapper must reach the same idle-expiry verdict as the base
+    predicate for a live PID whose mtime has aged past the 60-minute window --
+    this is the exact combination the idle window exists to handle when
+    reached through a gate hook's own call path, not just inferable by
+    composing the wrapper's fresh-marker test with the predicate's own
+    idle-expiry test."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-touch-idle", str(os.getpid()))
+    stale_time = time.time() - 3700  # just past the 60-minute idle window
+    os.utime(marker, (stale_time, stale_time))
+
+    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-idle")
+    assert not marker.exists(), (
+        "an idle-expired marker reached through the wrapper must be evicted"
+    )
+
+
+def test_active_bypass_marker_live_and_touch_false_when_no_marker(tmp_path) -> None:
+    """Mirrors test_active_bypass_marker_live_false_when_no_marker for the
+    wrapper's hottest real-world call shape: the overwhelming majority of
+    gate-hook invocations find no active-bypass marker at all."""
+    assert not _active_bypass_marker_live_and_touch(tmp_path, "sess-touch-absent")
+
+
+def test_active_bypass_marker_live_and_touch_toctou_stub_touch_deletes_marker_first(
+    tmp_path,
+) -> None:
+    """Regression test for the -c (no-create) contract under the exact race it
+    guards against: a concurrent eviction (clear-stale, deactivate, another
+    gate hit) removing the marker between the wrapper's liveness check and its
+    own touch call. Shadows touch on PATH with a stub that deletes the marker
+    immediately before exec'ing the real touch, forcing the race
+    deterministically -- the same PATH-stub technique
+    test_hung_jq_denied_within_timeout and
+    test_timeout_absent_fallback_valid_payload_returns_ok use above."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-toctou", str(os.getpid()))
+
+    real_touch = shutil.which("touch")
+    if not real_touch:
+        pytest.skip("touch not found in PATH")
+
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    stub_touch = stub_dir / "touch"
+    stub_touch.write_text(f'#!/bin/bash\nrm -f "{marker}"\nexec {real_touch} "$@"\n')
+    stub_touch.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_active_bypass_marker_live_and_touch "$1" "$2"',
+            "bash",
+            _MARKER_DIR_NAME,
+            "sess-toctou",
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        check=False,
+    )
+    assert result.returncode == 0, (
+        "the wrapper must still grant the verdict already committed before the race"
+    )
+    assert not marker.exists(), "touch -c must not resurrect a marker evicted mid-race"
+
+
+def test_active_bypass_marker_live_never_advances_mtime(tmp_path) -> None:
+    """Pins the gating/status-read split itself, not just the touch wrapper's
+    own behavior: the base predicate must stay side-effect-free on mtime
+    regardless of outcome, so status-only callers can safely share it."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-mtime-stable", str(os.getpid()))
+    old_time = time.time() - 300
+    os.utime(marker, (old_time, old_time))
+    before_mtime = marker.stat().st_mtime
+
+    assert _active_bypass_marker_live(tmp_path, "sess-mtime-stable")
+    assert marker.stat().st_mtime == before_mtime, "the base predicate must never refresh mtime"
+
+
+def test_marker_ages_out_despite_repeated_status_only_reads(tmp_path) -> None:
+    """Cross-hook-interference case: repeated status-only reads (the shape
+    marker.sh status and nudge-handoff-near-context-cap.sh's enumeration both
+    use) must neither refresh the marker's mtime nor prevent it from aging out
+    once the window has genuinely elapsed. Holds the marker in-window across
+    several reads first, then ages it past the boundary with no further gating
+    call, so the test actually exercises "idle detection survives repeated
+    reads while still in-window" rather than only "stays evicted once gone"."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-idle-ages-out", str(os.getpid()))
+    fresh_time = time.time() - 300  # well within the 60-minute idle window
+    os.utime(marker, (fresh_time, fresh_time))
+    before_mtime = marker.stat().st_mtime
+
+    for _ in range(3):
+        assert _active_bypass_marker_live(tmp_path, "sess-idle-ages-out")
+        assert marker.stat().st_mtime == before_mtime, (
+            "repeated status-only reads must not refresh the marker's mtime"
+        )
+
+    stale_time = time.time() - 3700  # just past the 60-minute idle window
+    os.utime(marker, (stale_time, stale_time))
+
+    assert not _active_bypass_marker_live(tmp_path, "sess-idle-ages-out")
+    assert not marker.exists(), (
+        "an idle-expired marker must be evicted even though prior status-only "
+        "reads left it untouched"
+    )
+
+
+def test_active_bypass_marker_live_at_3599_seconds_still_live(tmp_path) -> None:
+    """Brackets the 60-minute cutoff from the live side, 1 second inside the
+    window, rather than approaching it from a comfortable distance."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-boundary-live", str(os.getpid()))
+    boundary_time = time.time() - 3599
+    os.utime(marker, (boundary_time, boundary_time))
+
+    assert _active_bypass_marker_live(tmp_path, "sess-boundary-live")
+    assert marker.exists()
+
+
+def test_active_bypass_marker_live_at_3601_seconds_already_expired(tmp_path) -> None:
+    """Brackets the 60-minute cutoff from the expired side, 1 second past the
+    window."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-boundary-expired", str(os.getpid()))
+    boundary_time = time.time() - 3601
+    os.utime(marker, (boundary_time, boundary_time))
+
+    assert not _active_bypass_marker_live(tmp_path, "sess-boundary-expired")
+    assert not marker.exists()
 
 
 # --- Universal adoption of the session-id guard ----------------------------
@@ -1003,6 +1304,16 @@ class TestFragmentCommandWord:
     def test_empty_fragment_returns_empty(self) -> None:
         assert _fragment_command_word("") == ""
 
+    def test_quoted_command_word_not_matched_by_contract(self) -> None:
+        """Caller contract (GH-783): this function is quote-blind by
+        design -- bash word-splitting does not remove quote characters, so
+        a quoted command word is returned verbatim, quotes and all, never
+        matching the bare tool name a caller compares it against. The
+        caller is responsible for stripping via _lib_strip_shell_quotes
+        first; pinned here so a future "fix" inside this function isn't
+        mistaken for closing a real gap."""
+        assert _fragment_command_word('"black" src/x.py') != "black"
+
 
 class TestFragmentInvokesTool:
     def test_exact_match(self) -> None:
@@ -1020,6 +1331,11 @@ class TestFragmentInvokesTool:
     def test_runner_wrapped_match(self) -> None:
         assert _fragment_invokes_tool("sudo env X=1 rsync -a /a /b", "rsync")
 
+    def test_quoted_tool_name_not_matched_by_contract(self) -> None:
+        """Caller contract (GH-783): inherits _lib_fragment_command_word's
+        quote-blindness."""
+        assert not _fragment_invokes_tool('"mv" /a /b', "mv")
+
 
 class TestFragmentHasToken:
     def test_standalone_token_matches(self) -> None:
@@ -1036,6 +1352,770 @@ class TestFragmentHasToken:
 
     def test_missing_token_does_not_match(self) -> None:
         assert not _fragment_has_token("rsync -a /a /b", "--remove-source-files")
+
+    def test_quoted_token_not_matched_by_contract(self) -> None:
+        """Caller contract (GH-783): a quoted token is a different literal
+        string than its bare form, so the boundary-match regex never
+        matches it -- quote-blind by design, same as the other matchers
+        in this family."""
+        assert not _fragment_has_token('rsync "--remove-source-files" /a /b', "--remove-source-files")
+
+
+# --- _lib_git_argv_from_subcmd / _lib_extract_git_subcmd /
+#     _lib_extract_git_subcmd_args -----------------------------------------
+#
+# Direct coverage arrives now because a second consumer of the word walk
+# (_lib_extract_git_subcmd_args) means _lib_extract_git_subcmd's contract can
+# no longer be inferred from its callers' black-box tests, the same
+# rationale as the _lib_fragment_command_word banner above.
+
+
+def _extract_git_subcmd(fragment: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_extract_git_subcmd "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _extract_git_subcmd_args(fragment: str) -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_extract_git_subcmd_args "$1"', "bash", fragment],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
+
+
+@pytest.mark.parametrize(
+    "fragment, expected",
+    [
+        ("git push", "push"),
+        ("git -C /wt push", "push"),
+        ("git -c user.name=x commit", "commit"),
+        ("git --git-dir=/wt/.git push", "push"),
+        ("git --git-dir /wt/.git push", "push"),
+        ("git --work-tree /wt push", "push"),
+        ("git --namespace ns push", "push"),
+        ("git --super-prefix /pre push", "push"),
+        ("git --config-env foo=BAR push", "push"),
+        ("git -c push.default=simple push origin feature", "push"),
+        ("git -C /wt -c user.name=x push --tags origin", "push"),
+        ("GIT_DIR=x git push", "push"),
+        ("/usr/bin/git status", "status"),
+        ("git push)", "push"),
+        ("git --version", ""),
+        ("", ""),
+    ],
+)
+class TestExtractGitSubcmd:
+    """Characterization tests: they pin _lib_extract_git_subcmd's observable
+    contract independent of its implementation."""
+
+    def test_extract_git_subcmd(self, fragment: str, expected: str) -> None:
+        assert _extract_git_subcmd(fragment) == expected
+
+
+@pytest.mark.parametrize(
+    "fragment, expected",
+    [
+        ("git push --tags origin", ["--tags", "origin"]),
+        ("git -C /wt push --tags origin feature", ["--tags", "origin", "feature"]),
+        ("git -c user.name=x push origin feature", ["origin", "feature"]),
+        ("git -c push.default=simple push origin feature", ["origin", "feature"]),
+        (
+            "git --git-dir=/wt/.git push --tags origin feature",
+            ["--tags", "origin", "feature"],
+        ),
+        (
+            "git -C /wt -c user.name=x push --tags origin",
+            ["--tags", "origin"],
+        ),
+        (
+            "git -C /wt push origin :old-branch new-feature:new-feature",
+            ["origin", ":old-branch", "new-feature:new-feature"],
+        ),
+        ("git push --tags origin feature)", ["--tags", "origin", "feature)"]),
+        ("git push", []),
+        ("git --version", []),
+        ("", []),
+    ],
+)
+class TestExtractGitSubcmdArgs:
+    def test_extract_git_subcmd_args(self, fragment: str, expected: list[str]) -> None:
+        assert _extract_git_subcmd_args(fragment) == expected
+
+
+# --- _lib_fragment_invokes_git ------------------------------------------
+#
+# Parametrized over _lib_fragment_invokes_git's own Accepts/Rejects doc
+# comment in _lib.sh, turning that comment into an executable spec rather
+# than inventing new cases.
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "git log",
+        "sudo git commit",
+        "GIT_DIR=x git push",
+        "/usr/bin/git status",
+    ],
+)
+def test_lib_fragment_invokes_git_accepts_documented_invocations(fragment: str) -> None:
+    result = _run_lib_call(f'_lib_fragment_invokes_git "{fragment}"', env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "ls .github/",
+        "cat .gitignore",
+        "grep github.com",
+        "./git-foo",
+    ],
+)
+def test_lib_fragment_invokes_git_rejects_documented_look_alikes(fragment: str) -> None:
+    result = _run_lib_call(f'_lib_fragment_invokes_git "{fragment}"', env=dict(os.environ))
+    assert result.returncode != 0, result.stderr
+
+
+# --- GH-783: caller-contract quote-blindness + composition -------------
+#
+# Not added to the Accepts list above: that list mirrors _lib.sh's own doc
+# comment, and _lib_fragment_invokes_git's quote-blind behavior is
+# unchanged by GH-783 -- the fix is at each caller's own input boundary
+# (COMMAND_UNQUOTED), not inside this function. These rows pin the
+# quote-blindness as an intentional caller contract and prove the
+# strip-then-match composition every caller now uses actually works.
+
+
+def test_lib_fragment_invokes_git_is_quote_blind_by_contract() -> None:
+    """A quoted git word matches nothing here by design -- bash
+    word-splitting does not remove quote characters. GH-783's fix strips
+    via _lib_strip_shell_quotes before calling this function, not inside
+    it; pinned here so a future "fix" placed inside this function isn't
+    mistaken for closing a real gap."""
+    result = _run_lib_call('_lib_fragment_invokes_git \'"git" log\'', env=dict(os.environ))
+    assert result.returncode != 0, result.stderr
+
+
+def test_lib_strip_shell_quotes_composed_with_invokes_git_detects_quoted_git_word() -> None:
+    """Composition test for the GH-783 caller idiom: strip once at the
+    hook's input boundary, then match -- proves `"git" log` is detected
+    once stripped, closing the bypass _lib_fragment_invokes_git's own
+    quote-blindness would otherwise leave open."""
+    call = "stripped=$(_lib_strip_shell_quotes '\"git\" log'); _lib_fragment_invokes_git \"$stripped\""
+    result = _run_lib_call(call, env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_strip_shell_quotes_composed_with_extract_git_subcmd_detects_quoted_subcommand() -> None:
+    """Composition test for the subcommand-quoted shape: the subcommand
+    word itself is quoted (`git "commit"`), not just the git word --
+    proves the same strip-then-match idiom closes it too."""
+    call = "stripped=$(_lib_strip_shell_quotes 'git \"commit\"'); _lib_extract_git_subcmd \"$stripped\""
+    result = _run_lib_call(call, env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "commit"
+
+
+# --- _lib_command_invokes_git_subcmd / _lib_command_invokes_tool_subcmd -
+#
+# Composed tri-state matchers (0 matched / 1 did not / 2 could not
+# determine) built from the fragment-matcher primitives above.
+# Characterization tests, including the status-2 path each of the eight
+# gate hooks depends on to decide its own fail posture.
+
+
+def _command_invokes_git_subcmd(command: str, subcmd: str, env: dict | None = None) -> int:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "$1" "$2"', "bash", command, subcmd],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+# --- _lib_tool_argv_from_subcmd -------------------------------------------
+#
+# _lib_tool_argv_from_subcmd has two independent consumers
+# (_lib_command_invokes_tool_subcmd and deny-private-project-refs.sh's
+# fragment_gh_gated_surface), so its contract needs its own direct test
+# coverage rather than relying on either consumer's black-box tests -- the
+# same rationale as the _lib_extract_git_subcmd_args banner above.
+
+
+def _tool_argv_from_subcmd(fragment: str, tool: str) -> list[str]:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_tool_argv_from_subcmd "$1" "$2"', "bash", fragment, tool],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
+
+
+class TestToolArgvFromSubcmd:
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "gh pr --repo o/r create",
+            "gh --repo o/r pr create",
+            "gh pr --repo=o/r create",
+            "gh pr -Ro/r create",
+            "gh pr -R o/r create",
+        ],
+        ids=["repo-between", "repo-before", "repo-equals-glued", "repo-short-glued", "repo-short-between"],
+    )
+    def test_repo_flag_variants_yield_same_leading_stream(self, fragment: str) -> None:
+        """All five -R/--repo spellings and positions must be skipped
+        identically, leaving the same `pr`, `create` leading stream -- the
+        shared test that ties both consumers (_lib_command_invokes_tool_subcmd
+        and deny-private-project-refs.sh's own walker) to one flag grammar."""
+        assert _tool_argv_from_subcmd(fragment, "gh")[:2] == ["pr", "create"]
+
+    def test_leaf_flag_registered_at_root_scope_consumes_the_next_word(self) -> None:
+        """A long flag not glued with "=" consumes the next token per gh's
+        cobra resolution: `--web` (a leaf flag, unregistered at gh's root
+        scope) takes `pr` as its value while gh resolves the subcommand,
+        so only `create` remains in the stream -- gh itself never reaches
+        `pr create` in this form."""
+        assert _tool_argv_from_subcmd("gh --web pr create", "gh") == ["create"]
+
+    @pytest.mark.parametrize(
+        "fragment, want_leading_pair",
+        [
+            ("gh pr --title x create", ("pr", "create")),
+            ("gh pr --title x edit 42", ("pr", "edit")),
+            ("gh pr --body x merge 42", ("pr", "merge")),
+            ("gh issue --title x create", ("issue", "create")),
+            ("gh issue --body placeholder comment 42", ("issue", "comment")),
+            ("gh issue --title x edit 42", ("issue", "edit")),
+            ("gh pr -t x create", ("pr", "create")),
+        ],
+        ids=[
+            "pr-title-create",
+            "pr-title-edit",
+            "pr-body-merge",
+            "issue-title-create",
+            "issue-body-comment",
+            "issue-title-edit",
+            "pr-short-flag-create",
+        ],
+    )
+    def test_leaf_flag_interposed_before_subcommand_leads_the_stream(
+        self, fragment: str, want_leading_pair: tuple[str, str]
+    ) -> None:
+        """A leaf flag written between the surface word and its subcommand
+        is consumed by gh, along with its value, while gh resolves the
+        subcommand -- so the pair still leads the emitted stream.
+        `pr merge` is included here, not only in test_block_gh_pr_merge.py,
+        since nothing else in this matrix exercised the `merge` verb at
+        the shared-helper level before this addition."""
+        assert tuple(_tool_argv_from_subcmd(fragment, "gh")[:2]) == want_leading_pair
+
+    def test_two_sequential_leaf_flags_interposed_before_subcommand_leads_the_stream(self) -> None:
+        """Two leaf flags in a row, each consuming its own value, must both
+        be skipped before the subcommand still leads the emitted stream --
+        not just a single interposed flag."""
+        assert tuple(_tool_argv_from_subcmd("gh pr --title x --body y create", "gh")[:2]) == ("pr", "create")
+
+    def test_leaf_flag_value_shaped_like_a_flag_is_still_consumed_as_a_value(self) -> None:
+        """A leaf flag's value is skipped unconditionally by position, even
+        when the value word itself starts with "-" and would otherwise be
+        read as a flag of its own."""
+        assert tuple(_tool_argv_from_subcmd("gh pr --title -x create", "gh")[:2]) == ("pr", "create")
+
+    def test_leaf_help_flag_swallows_the_subcommand_word(self) -> None:
+        """Pins the accepted gap _lib.sh's _lib_tool_argv_from_subcmd header
+        comment documents: -h has no value placeholder, so gh's cobra
+        resolution consumes `create` as -h's value while resolving the
+        subcommand. This is a safe gap, not a bug, because gh prints help
+        and exits before any create/comment/edit network call happens."""
+        assert _tool_argv_from_subcmd("gh pr -h create", "gh") == ["pr"]
+
+    @pytest.mark.parametrize(
+        "fragment, want",
+        [
+            ("gh pr --title=x create", ["pr", "create"]),
+            ("gh issue --title=x create", ["issue", "create"]),
+        ],
+        ids=["pr-equals-glued", "issue-equals-glued"],
+    )
+    def test_equals_glued_flag_does_not_consume_the_next_word(self, fragment: str, want: list[str]) -> None:
+        """A flag containing "=" carries its value in the same word, the
+        first of cobra's three non-consuming shapes -- the next word stays
+        a genuine positional rather than being skipped as a flag's value."""
+        assert _tool_argv_from_subcmd(fragment, "gh") == want
+
+    @pytest.mark.parametrize(
+        "fragment, want",
+        [
+            ("gh pr -tx create", ["pr", "create"]),
+            ("gh pr -tx merge", ["pr", "merge"]),
+        ],
+        ids=["pr-short-glued-create", "pr-short-glued-merge"],
+    )
+    def test_short_flag_longer_than_two_characters_does_not_consume_the_next_word(
+        self, fragment: str, want: list[str]
+    ) -> None:
+        """A short flag longer than two characters (its value glued into
+        the same word, e.g. -tx) is dropped whole -- the second of cobra's
+        three non-consuming shapes."""
+        assert _tool_argv_from_subcmd(fragment, "gh") == want
+
+    @pytest.mark.parametrize(
+        "fragment, want",
+        [
+            ("gh pr -- create", ["pr"]),
+            ("gh issue -- comment 42", ["issue"]),
+        ],
+        ids=["pr-double-dash", "issue-double-dash"],
+    )
+    def test_bare_double_dash_ends_the_stream(self, fragment: str, want: list[str]) -> None:
+        """A bare "--" ends cobra's positional scan entirely, so no word
+        after it -- including the subcommand -- is ever emitted; the third
+        of cobra's three non-consuming shapes."""
+        assert _tool_argv_from_subcmd(fragment, "gh") == want
+
+    def test_no_subcommand_words_yields_empty(self) -> None:
+        assert _tool_argv_from_subcmd("gh --repo o/r", "gh") == []
+
+    def test_unrecognized_tool_has_no_pinned_flags(self) -> None:
+        """A TOOL other than gh falls to the never-consume default, so
+        every "-*" word is dropped as a bare flag rather than having its
+        value skipped. `dir` is never treated as --chdir's value and is
+        emitted as a positional word. This can miss a real subcommand
+        match but never over-consumes a positional word as a flag's
+        value. This is the executable proof that the gh-only cobra grammar
+        (gated on `tool = gh`) leaves every other TOOL's never-consume
+        default untouched, which is what keeps
+        enforce-marker-script-shape.sh's fail-closed `marker.sh` gate from
+        regressing."""
+        assert _tool_argv_from_subcmd("terraform --chdir dir apply", "terraform") == ["dir", "apply"]
+
+    def test_repo_shaped_flag_against_non_gh_tool_is_not_skipped(self) -> None:
+        """Demonstrates the documented non-gh-tool limitation as a real
+        boundary, not merely an assertion that happens not to contradict
+        it: an -R/--repo-shaped flag against a non-gh tool drops the flag
+        word itself (the never-consume default), but does NOT skip its
+        would-be value (`fake`) as gh's grammar would. `fake` lands as a
+        stray positional ahead of `write`, which would make a caller
+        checking for a leading `write` subcommand miss a real invocation.
+        This is the exact miss shape enforce-marker-script-shape.sh's
+        marker.sh consumer would hit if marker.sh ever grew a leading flag
+        of its own."""
+        assert _tool_argv_from_subcmd("faketool -R fake write", "faketool") == ["fake", "write"]
+
+
+def _command_invokes_tool_subcmd(command: str, tool: str, *subcmd: str, env: dict | None = None) -> int:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_command_invokes_tool_subcmd "$1" "$2" "${{@:3}}"',
+            "bash",
+            command,
+            tool,
+            *subcmd,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestCommandInvokesGitSubcmd:
+    def test_bare_match(self) -> None:
+        assert _command_invokes_git_subcmd("git commit -m x", "commit") == 0
+
+    def test_chained_match(self) -> None:
+        assert _command_invokes_git_subcmd("git add . && git commit -m x", "commit") == 0
+
+    def test_quote_split_match(self) -> None:
+        """A quote-adjacent split (`"git" commit`) must not evade this
+        matcher, unlike a raw regex over unstripped $COMMAND."""
+        assert _command_invokes_git_subcmd('"git" commit -m x', "commit") == 0
+
+    def test_no_match(self) -> None:
+        assert _command_invokes_git_subcmd("git status", "commit") == 1
+
+    def test_different_subcommand_prefix_does_not_match(self) -> None:
+        """Word-boundary, not substring: `commit-tree` must not match a
+        `commit` subcommand query."""
+        assert _command_invokes_git_subcmd("git commit-tree x", "commit") == 1
+
+    def test_empty_command_does_not_match(self) -> None:
+        assert _command_invokes_git_subcmd("", "commit") == 1
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "git commit"'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_sed_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        """Tri-state status 2: the underlying quote-strip fork failed, so
+        the matcher could not evaluate the command at all -- distinct from
+        status 1 (evaluated, no match). Every checked caller must deny on
+        this status rather than silently treating it as "no match"."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_git_subcmd("git commit -m x", "commit", env=env) == 2
+
+    def test_tr_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-tr"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tr", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_git_subcmd("git commit -m x", "commit", env=env) == 2
+
+
+def _words_start_with(words: tuple[str, ...], prefix: tuple[str, ...]) -> int:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_words_start_with "$@"', "bash", *words, "--", *prefix],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode
+
+
+class TestWordsStartWith:
+    """Direct unit tests of _lib_words_start_with through the harness above,
+    unit-speed and bypassing _lib_command_invokes_tool_subcmd's own
+    fragment-parsing machinery."""
+
+    def test_full_length_exact_match(self) -> None:
+        assert _words_start_with(("pr", "merge"), ("pr", "merge")) == 0
+
+    def test_mismatch_at_interior_index(self) -> None:
+        """Mismatch at a non-zero index, not index 0 -- exercises the loop
+        continuing past an already-matched leading word before it finds
+        the disagreement."""
+        assert _words_start_with(("pr", "merge", "291"), ("pr", "edit")) == 1
+
+    def test_empty_prefix_always_matches(self) -> None:
+        """An empty PREFIX gives the while loop nothing to disagree on, so
+        it returns success without ever comparing a word."""
+        assert _words_start_with(("pr", "merge"), ()) == 0
+
+    def test_words_shorter_than_prefix_returns_no_match(self) -> None:
+        """WORDS having fewer words than PREFIX is a normal, safe case: the
+        function bounds-checks WORDS against PREFIX's length itself and
+        returns 1 before the comparison loop can index out of bounds."""
+        assert _words_start_with(("pr",), ("pr", "merge")) == 1
+
+    def test_words_shorter_than_prefix_is_safe_under_set_dash_u(self) -> None:
+        """Every real caller sources _lib.sh under set -uo pipefail, where
+        indexing an array past its length aborts the script instead of
+        returning 1 -- this reproduces that shell option directly, unlike
+        the harness above which sources _lib.sh with no set -u at all."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_words_start_with "$@"',
+                "bash",
+                "pr",
+                "--",
+                "pr",
+                "merge",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert "unbound variable" not in result.stderr
+
+    def test_full_length_exact_match_is_safe_under_set_dash_u(self) -> None:
+        """The match branch is the one that actually fires emit_deny in a
+        calling gate hook like block-gh-pr-merge.sh -- this reproduces the
+        set -uo pipefail shell options every real caller runs under, unlike
+        the harness above which sources _lib.sh with no set -u at all."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_words_start_with "$@"',
+                "bash",
+                "pr",
+                "merge",
+                "--",
+                "pr",
+                "merge",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "unbound variable" not in result.stderr
+
+
+class TestCommandInvokesToolSubcmd:
+    def test_bare_match(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr merge 291 --squash", "gh", "pr", "merge") == 0
+
+    def test_chained_match(self) -> None:
+        assert _command_invokes_tool_subcmd("git push && gh pr merge 291", "gh", "pr", "merge") == 0
+
+    def test_no_match_different_subcommand(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr mergefoo", "gh", "pr", "merge") == 1
+
+    def test_no_match_different_verb(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr create --title x", "gh", "pr", "edit") == 1
+
+    def test_command_word_resolution_rejects_quoted_wrapper(self) -> None:
+        """WHY command-word, not any-word: on the quote-stripped fragment
+        `echo gh pr merge`, the command word resolves to `echo`, not `gh` --
+        preserving block-gh-pr-merge.sh's documented `echo "gh pr merge"`
+        allow, but via command-word resolution rather than quote
+        preservation (see block-gh-pr-merge.sh's header)."""
+        assert _command_invokes_tool_subcmd('echo "gh pr merge"', "gh", "pr", "merge") == 1
+
+    def test_quote_split_subcommand_word_matches(self) -> None:
+        """Closes a real gap the prior raw regex missed: `gh pr "merge"`
+        quote-strips to a bare `merge` token, which this word-sequence
+        match now catches."""
+        assert _command_invokes_tool_subcmd('gh pr "merge"', "gh", "pr", "merge") == 0
+
+    def test_full_path_invocation_matches(self) -> None:
+        assert _command_invokes_tool_subcmd("/usr/bin/gh pr merge 291", "gh", "pr", "merge") == 0
+
+    def test_value_taking_global_flag_before_subcommand(self) -> None:
+        """Row 4's exact naive-implementation failure case: without
+        skipping -R/--repo's own value, `o/r` would misread as the
+        subcommand and the match would miss."""
+        assert _command_invokes_tool_subcmd("gh --repo o/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_value_taking_global_flag_between_subcommand_words(self) -> None:
+        assert _command_invokes_tool_subcmd("gh pr --repo o/r merge", "gh", "pr", "merge") == 0
+
+    def test_glued_repo_flag_value_before_subcommand(self) -> None:
+        assert _command_invokes_tool_subcmd("gh --repo=o/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_glued_short_repo_flag_value_before_subcommand(self) -> None:
+        """The short-flag glued form (-Rowner/repo, no '='), distinct
+        from --repo=owner/repo -- a dropped or mistyped -R?* arm would
+        misread the glued value as the subcommand word and silently miss
+        a real self-merge attempt."""
+        assert _command_invokes_tool_subcmd("gh -Ro/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_short_flag_with_space_value_before_subcommand(self) -> None:
+        """The short-flag space-separated form (-R o/r), distinct from
+        both --repo=o/r and the glued -Ro/r form above -- exercises the
+        skip_next branch that consumes the separate value word."""
+        assert _command_invokes_tool_subcmd("gh -R o/r pr merge", "gh", "pr", "merge") == 0
+
+    def test_shorter_subcommand_sequence_does_not_match(self) -> None:
+        """Covers the untested `[ "${#got_subcmd[@]}" -lt "${#want_subcmd[@]}" ]
+        && continue` guard: a fragment whose subcommand sequence is shorter
+        than the wanted sequence must not match, even though every word it
+        does have agrees with the wanted sequence's prefix."""
+        assert _command_invokes_tool_subcmd("gh pr", "gh", "pr", "merge") == 1
+
+    def test_literal_double_dash_in_words_misaligns_the_prefix_sentinel(self) -> None:
+        """A literal `--` inside WORDS collides with the caller's own `--`
+        sentinel, truncating WORDS and shifting PREFIX. This produces a
+        silent wrong answer rather than a crash: WORDS actually starts with
+        `foo`, but the collision misreports it as a mismatch. See
+        _lib_words_start_with's own header comment for why this is
+        unreachable via _lib_command_invokes_tool_subcmd today."""
+        assert _words_start_with(("foo", "--", "bar"), ("foo",)) == 1
+
+    def test_literal_double_dash_in_a_real_gh_command_still_matches(self) -> None:
+        """End-to-end lock on the invariant the test above documents as
+        currently unreachable: _lib_tool_argv_from_subcmd strips a literal
+        `--` before it reaches got_subcmd, so it never collides with
+        _lib_words_start_with's own `--` sentinel. A future change to that
+        stripping that lets `--` through would regress this rather than
+        the isolated helper test."""
+        assert _command_invokes_tool_subcmd("gh pr merge -- 291", "gh", "pr", "merge") == 0
+
+    def test_wrong_arity_returns_could_not_determine(self) -> None:
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_tool_subcmd "gh pr merge" gh'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+
+    def test_sed_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_tool_subcmd("gh pr merge 291", "gh", "pr", "merge", env=env) == 2
+
+    def test_tr_absent_returns_could_not_determine(self, tmp_path: Path) -> None:
+        farm_dir = tmp_path / "path-without-tr"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tr", farm_dir)
+        env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+        assert _command_invokes_tool_subcmd("gh pr merge 291", "gh", "pr", "merge", env=env) == 2
+
+
+# --- gh --help drift guard -----------------------------------------------
+#
+# The only way _lib_tool_argv_from_subcmd can silently drop a real surface
+# word is a future gh flag with no value placeholder, registered at a
+# traversal scope gh actually walks while resolving a gated leaf (root,
+# `pr`, or `issue`). INHERITED FLAGS is exactly that scope's flagset for a
+# leaf; FLAGS is that scope's flagset for the root. A failure here means a
+# new gh flag has reopened GH-559/GH-430's interposed-flag bypass, not a
+# routine CI flake.
+
+
+def _require_gh() -> str:
+    """Resolve gh, failing rather than skipping when running in CI.
+
+    Skipping locally is right for a contributor who has not installed gh.
+    Skipping in CI is not: this is the only test in the suite whose entire
+    purpose is catching a future gh flag with no value placeholder at a
+    gated traversal scope, so a silently-absent gh would leave that
+    residual unguarded in practice while the job still reports green.
+    """
+    gh_path = shutil.which("gh")
+    if gh_path is None:
+        if os.environ.get("CI"):
+            pytest.fail(
+                "gh is not on PATH in CI -- this is the only test guarding "
+                "against a future gh flag with no value placeholder at a "
+                "gated traversal scope reopening GH-559/GH-430's "
+                "interposed-flag bypass; failing rather than skipping so "
+                "this cannot silently degrade to a no-op."
+            )
+        pytest.skip("gh not found in PATH")
+    return gh_path
+
+
+def test_require_gh_fails_in_ci_when_gh_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_require_gh` is a small test-infrastructure helper, not production
+    logic -- this pins that its CI branch actually calls pytest.fail rather
+    than silently skipping, which would degrade every gh-drift-guard test
+    below to a silent no-op in CI."""
+    monkeypatch.setenv("CI", "1")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(pytest.fail.Exception):
+        _require_gh()
+
+
+def _gh_help_flags_by_section(help_text: str, section_heading: str) -> tuple[set[str], set[str]]:
+    """Parses a `gh help ...` section (INHERITED FLAGS or FLAGS) into
+    (value_taking_flags, no_value_placeholder_flags) -- distinguished by
+    whether the flag-spec column carries an extra non-flag token before the
+    2+-space gap that starts the description column (e.g. `-R, --repo
+    [HOST/]OWNER/REPO` has the placeholder `[HOST/]OWNER/REPO`; `--help` has
+    none). "No value placeholder" names gh help's own observable property --
+    the underlying cobra mechanism (NoOptDefVal) also covers count-style
+    flags, not only bool-typed ones."""
+    in_section = False
+    section_lines: list[str] = []
+    for line in help_text.splitlines():
+        if line.strip() == section_heading:
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if line.strip() == "":
+            break
+        section_lines.append(line)
+    value_taking_flags: set[str] = set()
+    no_value_placeholder_flags: set[str] = set()
+    for line in section_lines:
+        spec = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
+        tokens = spec.split()
+        flag_tokens = {t.rstrip(",") for t in tokens if t.startswith("-")}
+        has_value_placeholder = any(not t.startswith("-") for t in tokens)
+        if has_value_placeholder:
+            value_taking_flags |= flag_tokens
+        else:
+            no_value_placeholder_flags |= flag_tokens
+    return value_taking_flags, no_value_placeholder_flags
+
+
+@pytest.mark.parametrize(
+    "gh_help_args",
+    [
+        ("pr", "create"),
+        ("pr", "edit"),
+        ("pr", "merge"),
+        ("issue", "create"),
+        ("issue", "comment"),
+        ("issue", "edit"),
+    ],
+    ids=["pr-create", "pr-edit", "pr-merge", "issue-create", "issue-comment", "issue-edit"],
+)
+def test_gh_gated_leaf_inherited_no_value_placeholder_flags_stay_within_help(
+    gh_help_args: tuple[str, str],
+) -> None:
+    """Each gated leaf's INHERITED FLAGS section is the flagset cobra scans
+    with while resolving that leaf -- a flag there with no value
+    placeholder is exactly the shape _lib_tool_argv_from_subcmd's grammar
+    would over-consume. See the module-level comment above for what a
+    failure here means."""
+    gh_path = _require_gh()
+    result = subprocess.run(
+        [gh_path, "help", *gh_help_args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    _, no_value_placeholder_flags = _gh_help_flags_by_section(result.stdout, "INHERITED FLAGS")
+    gh_help_command = " ".join(("gh", "help", *gh_help_args))
+    assert no_value_placeholder_flags, (
+        f"parsed no flags from `{gh_help_command}`'s INHERITED FLAGS section "
+        "-- gh's help output format may have changed (e.g. a different "
+        "'INHERITED FLAGS' heading), silently degrading this test's subset "
+        "check below to a no-op; update _gh_help_flags_by_section's parser."
+    )
+    assert no_value_placeholder_flags <= {"-h", "--help"}, (
+        f"{gh_help_command}'s INHERITED FLAGS lists a flag with no value "
+        f"placeholder outside {{-h, --help}}: "
+        f"{no_value_placeholder_flags - {'-h', '--help'}} -- gh has reopened "
+        "GH-559/GH-430's interposed-flag bypass: this flag would be "
+        "over-consumed by _lib_tool_argv_from_subcmd's cobra grammar, "
+        "swallowing a real subcommand word."
+    )
+
+
+def test_gh_help_root_no_value_placeholder_flags_stay_within_help_and_version() -> None:
+    """The root traversal step's own FLAGS section (INHERITED FLAGS is
+    empty at the root) -- see the gated-leaf test above for what property
+    this guards and what a failure here means."""
+    gh_path = _require_gh()
+    result = subprocess.run([gh_path, "help"], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    _, no_value_placeholder_flags = _gh_help_flags_by_section(result.stdout, "FLAGS")
+    assert no_value_placeholder_flags, (
+        "parsed no flags from `gh help`'s FLAGS section -- gh's help output "
+        "format may have changed; update _gh_help_flags_by_section's parser."
+    )
+    assert no_value_placeholder_flags <= {"-h", "--help", "--version"}, (
+        "`gh help`'s FLAGS section lists a flag with no value placeholder "
+        f"outside {{-h, --help, --version}}: "
+        f"{no_value_placeholder_flags - {'-h', '--help', '--version'}} -- gh "
+        "has reopened GH-559/GH-430's interposed-flag bypass at the root "
+        "traversal scope."
+    )
 
 
 # --- _lib_realpath_m ---------------------------------------------------
@@ -1114,6 +2194,23 @@ class TestLibRealpathM:
             f"got stdout={result.stdout!r} rc={result.returncode}"
         )
 
+    def test_forced_fallback_fails_closed_on_dangling_symlink(self, tmp_path: Path) -> None:
+        """A dangling symlink's own leaf is `[ -e ]`-false, so the fallback's
+        ancestor walk would otherwise skip past it and reattach its name as
+        a literal, unresolved suffix component -- letting a same-prefix
+        boundary check (require-plan-review.sh's plan-file and
+        agent-reviews/ exemptions) treat the symlink's own path as if it
+        resolved inside the boundary, when its real target does not. Fails
+        closed (empty output, exit 1) instead."""
+        symlink_path = tmp_path / "plans" / "evil.md"
+        symlink_path.parent.mkdir(parents=True)
+        symlink_path.symlink_to(tmp_path / "outside" / "target.py")
+        result = _run_realpath_m(str(symlink_path), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0 or not result.stdout.strip(), (
+            f"expected fail-closed (empty/nonzero) for a dangling symlink, "
+            f"got stdout={result.stdout!r} rc={result.returncode}"
+        )
+
     def test_forced_fallback_no_double_slash_when_ancestor_is_root(self, tmp_path: Path) -> None:
         """Required regression test: when the nearest existing ancestor is
         `/` itself, the reattached suffix must not produce a doubled
@@ -1171,6 +2268,101 @@ class TestLibConfigDir:
         result = _run_config_dir({"HOME": "", "PATH": os.environ["PATH"]})
         assert result.returncode != 0
         assert result.stdout == ""
+
+
+# _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
+# sentinel-presence check only, not the full autonomous-shipping-active
+# verdict.
+# The per-repo optout is covered separately by TestAutonomousShippingActive
+# below, which calls through this helper.
+
+
+def _autonomous_shipping_sentinel_present(home: Path, config_dir: str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1"',
+            "bash",
+            config_dir,
+        ],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestAutonomousShippingSentinelPresent:
+    def test_absent_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert not _autonomous_shipping_sentinel_present(home, str(config_dir))
+
+    def test_absent_when_home_empty_and_neither_location_has_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors test_absent_when_neither_location_has_sentinel above with
+        HOME empty instead of populated. Covers the unguarded $HOME-empty
+        case documented on the helper itself."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert not _autonomous_shipping_sentinel_present("", str(config_dir))
+
+    def test_present_when_config_dir_has_sentinel(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        (config_dir / "autonomous-shipping-required").touch()
+        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+
+    def test_present_when_only_legacy_home_claude_sentinel_present(
+        self, tmp_path: Path
+    ) -> None:
+        """GH-793: a config dir differentiated from $HOME/.claude, holding no
+        sentinel of its own, must not mask a sentinel armed at the legacy
+        $HOME/.claude location before CLAUDE_CONFIG_DIR adoption — union, not
+        swap."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+
+    def test_absent_on_empty_config_dir_argument(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        assert not _autonomous_shipping_sentinel_present(home, "")
+
+    def test_absent_on_wrong_arity(self, tmp_path: Path) -> None:
+        """Extra positional so $2 stays bound under set -u, isolating the
+        [ "$#" -eq 1 ] guard itself — mirrors
+        TestAutonomousShippingActive.test_inactive_on_wrong_arity below."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -u; . {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1" "$2"',
+                "bash",
+                str(tmp_path / "profile"),
+                "unexpected-extra-arg",
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "unbound variable" not in result.stderr
 
 
 # _lib_autonomous_shipping_active — direct unit coverage.
@@ -1798,6 +2990,33 @@ def test_lib_strip_shell_quotes_over_strips_double_quoted_literal_apostrophe() -
     unconditionally regardless of whether they're delimiters or literal
     content, joining `id_r` and `sa` across the apostrophe into `id_rsa`."""
     assert _strip_shell_quotes("""~/.ssh/id_r"'"sa""") == "~/.ssh/id_rsa"
+
+
+def test_lib_strip_shell_quotes_sed_absent_returns_nonzero(tmp_path: Path) -> None:
+    """Pins the fail-closed contract at the layer that actually owns it:
+    every downstream caller (_lib_command_invokes_git_subcmd,
+    _lib_command_invokes_tool_subcmd, and every hook's own
+    COMMAND_UNQUOTED computation) relies on _lib_strip_shell_quotes itself
+    returning non-zero when its sed stage fails, not on the shape of
+    whatever pipeline composes it. Without pipefail (deliberately absent
+    from this file), a naive `sed ... | tr ...` pipeline's exit status is
+    tr's, not sed's -- tr still runs (on empty stdin from the broken pipe)
+    and exits 0 even though sed failed, so this must be checked at this
+    function's own two-stage boundary, not inferred from a caller's
+    pipeline shape."""
+    farm_dir = tmp_path / "path-without-sed"
+    farm_dir.mkdir()
+    restricted_path = build_path_without("sed", farm_dir)
+    env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_strip_shell_quotes "$1"', "bash", "id_r'sa'"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 # --- _lib_strip_env_file_flag_args ------------------------------------------

@@ -5,24 +5,36 @@ description: Write a cross-session handoff file at ~/.claude/handoffs/<descripti
 
 Write a cross-session handoff file at `<config-dir>/handoffs/<descriptive-slug>-handoff.md`
 (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
-using the structure below. Run the command below before writing — the
-directory is not guaranteed to exist yet.
+using the structure below.
+
+## Before writing: activate the handoff bypass marker
+
+<!-- HOOK_TEST_FIXTURE: activate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker layout. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh activate handoff
+```
+
+Run this first, before the warrant check below: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session from the moment this skill loads, closing the window between skill load and reaching the warrant check itself. Failure is non-fatal; continue to the warrant check regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below. If the warrant check below finds a handoff is not warranted, deactivate the marker before stopping — see that section's closing note.
+
+## Before writing: create the handoffs directory
+
+Run the command below before writing — the directory is not guaranteed to exist yet.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
-mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"
+~/.claude/scripts/ensure-account-dir.sh handoffs
 ```
 
 ## Before writing: is a handoff warranted?
 
-A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check` rather than inferring:
+A handoff resets context, and the fresh session re-pays for what this one already holds — that rebuild dominates its first several turns. A handoff written *only* to shed context usually costs more than continuing until the session is actually past its threshold. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check` rather than inferring:
 
-- `"status":"ok"` — write the handoff when `over_threshold` is `true` or `already_fired` is `true`, and report `estimate` and `threshold`.
+- `"status":"ok"` — the session is past its threshold when `over_threshold` is `true` or `already_fired` is `true`; report `estimate` and `threshold` either way.
 - `nudge_disabled` is `true` — say so; the measurement still holds but no nudge will arrive on its own.
-- `"model_recognized":false` — also report `model` and `context_window`: the window fell back to the 1M default, so the threshold may not match the running model and the engineer needs both to judge how far off it is.
-- `"status":"cannot-resolve"` or `"status":"schema-drift"` — name the `reason` and fall back to judgment: session length, how much of the task remains, whether this is a natural seam.
+- `"model_recognized":false` — the window fell back to the 1M default, so also report `model`/`context_window` and treat the result as a soft number; those two fields are what let the engineer judge how far off it is.
+- `"status":"cannot-resolve"` or `"status":"schema-drift"` — name the `reason` and fall back to judgment.
 
-`docs/handoff-nudge.md` carries the contract. A §2 reason that applies on its own terms, an explicit engineer request, or a session ending anyway each warrant a handoff without a cost argument at all. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file.
+`docs/handoff-nudge.md` § "Querying the current estimate (`--check`)" carries the full JSON field list. Write the handoff when the measurement above says the session is past its threshold. When `--check` can't resolve a measurement, weigh session length, how much of the task remains, and whether this is a natural seam. Any of these warrant a handoff without a cost argument at all: a §2 reason that applies on its own terms; an explicit engineer request; or the session ending anyway. Do not quote the raw `session_id` into prose that may reach a commit, PR body, or handoff file. If none of the above warrant writing, run `~/.claude/scripts/marker.sh deactivate handoff` before stopping — the marker activated above has no further purpose once the write itself doesn't happen.
 
 ## Before writing: collect in-flight background dispatches
 
@@ -32,7 +44,7 @@ A dispatch still running when you check does not require staying in this turn: t
 
 This step applies only to `/handoff` run in a main interactive session — a subagent never reaches it as remediation for its own hard block, since the nudge hook's subagent gate exits before any escalation logic runs.
 
-If the hard block fires again before or during this wait, that also just ends the current turn (the same mechanism) — it is expected, not a new problem: it means this session is still past its threshold while already following the block's own remediation. Resume the collect step on the next turn exactly as described above.
+If the hard block fires again during this wait, that's expected, not a new problem — it just means the session is still past its threshold while following the block's own remediation. It ends the current turn the same way. Resume the collect step on the next turn.
 
 ## Verify the handoff file with Bash, never Read
 
@@ -110,7 +122,7 @@ Header line: working directory + current git branch. Derive both from the worktr
 
 ## §5 Gates / markers
 
-Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
+Run `~/.claude/scripts/marker.sh status` and paste its output verbatim — it reports every completion marker (code-review, skill-review, plan-review, ready-for-review) for this repo and every active-bypass marker (plan-review, ready-for-review, respond-pr, memory-skill, handoff) for this session, each labeled live, historical, or absent, and flags a live code-review or skill-review marker whose covered state has uncommitted changes overlapping it.
 
 A live marker whose reconciliation flag fired means finished work is one incidental edit away from a full re-review on resume; commit it *before* writing this file. When the work is not commit-ready, say so here and name in §3 the review skill the resuming session must re-run first.
 
@@ -128,24 +140,21 @@ delete the file. Can be aliased for convenience.
 
 ## You may drop
 
-- Successful tool output already acted on
-- Exploratory dead-ends that didn't inform the final approach
-- Verbatim file contents already on disk (paths suffice)
+- Successful tool output already acted on.
+- Exploratory dead-ends that didn't inform the final approach.
+- Verbatim file contents already on disk (paths suffice).
 
 ## Slug naming
 
 The slug names the task, not the date. Examples: `respond-pr-skill-edge-case-handoff.md`, `claude-md-redaction-handoff.md`. Never use `<task>-handoff.md` literally.
 
-Reference files by path; do not inline contents. Aim for the smallest set of
-high-signal tokens that fully capture state — not a line budget. If the file runs
-past ~500 lines, that is a signal to check for content recoverable from disk
-(inlined diffs, tool output, file bodies) and cut that — not a mandate to cut
-continuity. Never drop a populated section or a load-bearing claim to hit a line
-count; completeness of state beats brevity here.
+Reference files by path; do not inline contents. Aim for the smallest set of high-signal tokens that fully capture state — not a line budget.
+If the file runs past ~500 lines, that is a signal to check for content recoverable from disk (inlined diffs, tool output, file bodies) and cut that — not a mandate to cut continuity.
+Never drop a populated section or a load-bearing claim to hit a line count; completeness of state beats brevity here.
 
 ## Pre-write checklist
 
-Run `<config-dir>/scripts/check-handoff.py <path>` against the draft file.
+Run `~/.claude/scripts/check-handoff.py <path>` against the draft file.
 It fails on: preamble mismatch, a missing/empty §1–§7 section,
 placeholder text ("TBD", "TODO", "fill in later"), an unresolved
 `<config-dir>`/`<slug>` token in §7, or §7 naming the wrong file. It
@@ -161,7 +170,7 @@ The script cannot check these — verify them yourself before writing:
 - §2.5 names what was mid-flight at the time of the handoff, regardless of handoff reason — including any background subagent dispatch this session spawned, by its `agent-<agentId>`, marked collected or stranded
 - §2.6 is populated — a faithful task-list serialization with per-item ordinal, status, and blocking edges, or "None." — and carries the resume directive
 - §5's script output shows no unresolved reconciliation flag; where one fired, §3 names the review skill the resuming session must re-run to commit the covered work first
-- If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file
+- If this session pushed commits to a branch with an open PR and `/ready-for-review` did not run this session, run the `pr-description` skill before writing this file. Its report ends that skill, not this checklist — finish the remaining items and write the handoff file in the same turn
 - Every load-bearing claim in §2/§3/§6 carries a confidence tag — the script only checks that a section isn't entirely untagged, not that each individual claim is
 - A §3 step the script did *not* warn on can still belong in §3.5 — it only pattern-matches the named anchor shapes, not the underlying principle (mutates shared state irreversibly, or has externally-visible side effects outside this repo). A cited justification ("per repo convention", "per memory") never downgrades a step's irreversibility on its own; a step claiming a convention must name the file that states it
 - If §3's next step implements an approved plan, it names `code-writer` as the dispatch rather than describing the work to do inline
@@ -172,13 +181,18 @@ The script cannot check these — verify them yourself before writing:
 Once the handoff file is written and verified:
 
 - Append the session id to `nudge-handoff-near-context-cap.sh`'s own log (pairs with that hook's `nudged` lines for a future nudge→handoff conversion report).
-- Remove that session's escalation-ladder marker, so a successful handoff resets the ignored-re-arm count.
 
 ```bash
 ~/.claude/scripts/handoff-record-conversion.sh
 ```
 
-Best-effort: silently skips the log append and marker removal if this session's id can't be
-resolved — a conversion metric and a defense-in-depth reset, not a gate. Recipes across this repo
-route through a dedicated script like this one instead of an inline multi-statement Bash call;
-see `docs/worktree-bash-guard.md` for why.
+Best-effort: silently skips the log append if this session's id can't be resolved — a conversion metric, not a gate. Recipes across this repo route through a dedicated script like this one instead of an inline multi-statement Bash call; see `docs/worktree-bash-guard.md` for why.
+
+## After writing: deactivate the handoff bypass marker
+
+<!-- HOOK_TEST_FIXTURE: deactivate-gate — the hook-alignment test suite reads this block from claude/.claude/skills/handoff/SKILL.md to verify it matches nudge-handoff-near-context-cap.sh's active-marker cleanup. Do not duplicate elsewhere; the test re-reads it from here. -->
+```
+~/.claude/scripts/marker.sh deactivate handoff
+```
+
+Run this after `handoff-record-conversion.sh` above. If the session halts before reaching this step, the marker is evicted once the session's process ends — the hook checks PID liveness on each gate hit.

@@ -16,6 +16,7 @@ argument-hint: "[optional PR context]"
 Run steps in order. Halt on failures unless the step is marked **warn
 only**. After fixes produced by step 3 or step 4, re-run
 step 2 — do not re-run either on its own output.
+A halt on step 2, 3, 4, or 7 re-runs the context-budget check from step 1 and restates it in the halt report, per the Completion section's restatement bullet below.
 
 ## 0. Activate gate session
 
@@ -33,17 +34,18 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 ## 1. Preconditions (halt on fail)
 
 - **Session is anchored in the branch's worktree.** Confirm the working directory is this branch's linked worktree, not the main checkout — an unanchored session silently runs every later check against the wrong tree. Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
-- Current branch is not the default branch (`main` / `master` / `develop`).
+- Current branch is not the default branch (`main` / `master` / `develop`). Also derive `<TICKET-ID>` here, once, for steps 5 and 6 to consume: split the branch name on `/`; if the first segment matches `^[A-Za-z]+-[0-9]+$`, that's the `<TICKET-ID>`, else there is none.
 - Working tree is clean: no unstaged or uncommitted changes.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
 - If no PR exists, step 5 authors the body and step 6 opens the PR from it,
   after verification and review.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
+- **Context budget (warn only, never halts).** Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On `"status":"ok"` with `over_threshold` or `already_fired` true, warn the user with `estimate` and `threshold`. Also name `nudge_disabled` inline when it is true — the measurement still holds, but no nudge will arrive on its own. See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields. This bullet substitutes its own warn-and-continue action for that section's write decision. Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## 2. Verification (halt on fail)
 
-If the repo's CLAUDE.md has a Testing or Verification section, use those
-commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
+If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use
+those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
 test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
@@ -64,24 +66,21 @@ the existing owner or open a separate branch. Rebase once the default branch is 
 
 ## 3. Code review (halt on findings)
 
-Run `/code-review` against the **cumulative** PR-vs-default-branch
-diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this
-resolves through a dedicated script rather than an inline multi-statement Bash call):
+Compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
-~/.claude/scripts/pr-diff-against-base.sh
+~/.claude/scripts/pr-diff-against-base.sh --record
 ```
 
-Review the cumulative PR-vs-base diff, not per-commit deltas — that's what reviewers actually see; per-commit findings feed in as inputs, not substitutes.
+<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache start -->
+Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: if its `cumulative-review` line reads `live`, this diff content already passed a full unnarrowed cumulative review — skip the invocation below, report the cache hit in the Completion summary, and continue to step 4. Content type is never a skip reason on its own — on `historical` or `absent`, markdown, skill, and config diffs get the same pass as everything else.
+<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
 
-Because the reviewed diff is not the staged diff, do NOT write the
-review-completion marker (per `/code-review`'s own rule). If findings
-are produced, fix them in a new commit; that commit goes through the
-normal staged-diff `/code-review` + marker gate, then return to
-step 2 and re-run fast checks. Do not re-run `/code-review` on its
-own output (loop risk).
+<!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
+This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
+<!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Unskippable — markdown, skill, and config diffs benefit from the same pass.
+On a cache miss, run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -94,11 +93,11 @@ Check that skills this branch invoked were executed, not silently abbreviated �
 `skill-invocation` defaults to this repo (omit `--projects`); `review-trace` defaults machine-wide, so `--this-repo` is required — branch names aren't unique across repos, and omitting it leaks another repo's same-named branch in as false spawn evidence.
 
 - Empty list → state no skills were invoked on this branch and continue (an affirmative no-op, not a silent skip).
-- Otherwise, before dispatch, add `agent-reviews/` to `$(git rev-parse --git-path info/exclude)` idempotently (grep-check before appending). Spawn `skill-fidelity-reviewer` **synchronously** with: the list; the literal diff **output** step 3's `git diff` already produced (paste that output — never the command that produced it, and never a range expression: the agent has no `Bash` to resolve either); the plan path if one exists; the `review-trace` output; and `findings_path: agent-reviews/skill-fidelity-reviewer-<epoch>-<slug>.md` (same convention as `/code-review`). `Read` the findings file after it returns.
+- Otherwise, before dispatch, run `~/.claude/scripts/findings-path-suffix.sh` and take its printed `<suffix>` (the script's last line of output, so ignore any earlier warning line) — the script also adds `agent-reviews/` to the repo's ignore list (see `docs/design-decisions.md` §12 for the append's duplicate-tolerance). Spawn `skill-fidelity-reviewer` **synchronously** with: the list; the literal diff **output** step 3's `git diff` already produced (paste that output — never the command that produced it, and never a range expression: the agent has no `Bash` to resolve either); the plan path if one exists; the `review-trace` output; and `findings_path: agent-reviews/skill-fidelity-reviewer-<suffix>.md`. `Read` the findings file after it returns.
 
 Name the pipeline's own skills **out of scope** in the prompt (the agent body also excludes them) — `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `agent-review`, plus still-executing invocations — else the reviewer audits the gate running it. Exception: `code-review`'s Ripple effect triage spawn-dispatch obligation, checked only against the `review-trace` timeline, never `code-review`'s own reasoning.
 
-**Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar. Fix findings in a new commit (normal staged-diff `/code-review` + marker gate), then return to step 2; don't re-run this step on its own output.
+**Halt on a silent-abbreviation finding.** The escape hatch is stating the deviation with a rationale — a low bar; that fix stays inline, prose only. A finding needing an actual code change follows step 3's `code-writer` route, not a separate dispatch. Fix it in a new commit (staged-diff `/code-review` + marker gate), return to step 2, and do not re-run this step on its own output.
 
 ## 5. PR description (unconditional; warn + fix)
 
@@ -106,16 +105,18 @@ Invoke the `pr-description` skill via the Skill tool. It owns body content in
 both directions and runs the same checks either way; the standard lives there,
 not here — don't restate it.
 Never skipped — markdown, skill, and config diffs benefit from the same pass.
-Pass it this run's `$ARGUMENTS`, plus the `## Deferred review findings` block
+Pass it this run's `$ARGUMENTS`, step 1's derived `<TICKET-ID>` (if any), plus the `## Deferred review findings` block
 if step 3's `/code-review` returned one (≥1 DEFER, no open PR). With a PR open
 it applies the fix itself via `gh pr edit --body-file`; with none, it writes the
-body to a temp file and ends its report with a `BODY_FILE: <path>` line.
+body to a temp file and ends its report with a `BODY_FILE: <path>` line. Neither ending is this gate's stopping point — continue to the next step in the same turn.
 
 ## 6. Create PR if missing (skip if PR already exists)
 
-Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." TICKET-ID: split branch on `/`; if first segment matches `^[A-Za-z]+-[0-9]+$`, use as title prefix; else omit. Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars.
+Skip if PR found in step 1. Halt if no remote tracking — "Branch is not pushed. Push with `git push -u origin <branch>` then re-run." Title: `<TICKET-ID>: <slug-hyphens-as-spaces>` ≤70 chars, using step 1's derived `<TICKET-ID>` (omit the prefix if step 1 found none).
 
 The body is step 5's file; this step composes none of its own. Substitute step 5's reported path and the title derived above as **literal text** in one Bash call — write out the real path, not a `$VAR` holding it. `gh pr create --body-file` is scanned by a redaction gate that resolves the flag's argument statically; a shell variable is opaque to that scan, so it fails closed and refuses the call. Guard, then create: `[ -f "<path>" ] && [ -n "$(tr -d '[:space:]' < "<path>")" ] || { echo "step 5 produced no body — halting"; exit 1; }` and `gh pr create --title "<title>" --body-file <path>`. Guard with both `-f` (path exists) and a whitespace check (a truncated write can leave an empty file); an empty-bodied PR is unrepairable because step 5's sync path only checks body-vs-branch state once a PR exists, it doesn't re-author. Capture the PR number for step 7, then launch the CI watch now (see "CI watch (out-of-band)" below).
+
+Create it ready for review, not `--draft`: this gate has already verified the work, and CI running against a non-draft PR is normal. A plan or handoff file saying "open a draft PR" recorded a prior agent's default, not the engineer's instruction — reserve draft for genuinely incomplete work.
 
 ## 7. Final hygiene recheck (halt on fail)
 
@@ -162,10 +163,11 @@ Removes only this session's file. If the skill errors before reaching this step,
 Summarize for the user, then (and only then) signal that the branch is ready for human review:
 
 - Verification: commands run and their results.
-- Code review: findings fixed, or "none."
+- Code review: findings fixed, "none," or "skipped — cache hit."
 - PR description: authored for a new PR, or updated / "already in sync."
 - CI: watch still running — it will report when checks resolve, or check `gh pr checks <n>` yourself. If it already resolved, report that result instead.
 - Branch: clean, pushed, PR #N ready for review.
+- Context budget: re-run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. Report the fresh `estimate`/`threshold` with a handoff recommendation when `over_threshold` or `already_fired` is true, naming `nudge_disabled` inline when it is also true. Omit this line entirely when under threshold. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## CI watch (out-of-band)
 
@@ -191,6 +193,6 @@ Steps 1 and 6 launch this; it resolves after the gate has finished, possibly hou
    | `skipping` / `cancel` only | Nothing ran: report neutrally — no diagnosis, no "passed" claim. Done. |
    | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — same as `CI_RESULT: none`, not a failure. Done. |
 
-3. **Diagnose.** Dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
+3. **Diagnose.** Per `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one", dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
 4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again.
 5. **Land the fix.** Step 8 removed this session's active marker and `require-ready-for-review.sh` denies a push without one, so re-run step 0's `marker.sh activate` command, land the fix through step 3's pattern (new commit → staged-diff `/code-review` + marker gate → push), then re-run step 8's `marker.sh deactivate` command.

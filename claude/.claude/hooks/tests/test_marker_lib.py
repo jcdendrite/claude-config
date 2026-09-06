@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,16 @@ def _run_lib_fn(fn_call: str) -> str:
     return result.stdout.strip()
 
 
+def _hash_diff_text(text: str) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_hash_diff_text against `text`, positional
+    (not string-interpolated) so arbitrary diff text needs no shell quoting."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_hash_diff_text "$1"', "_hash_diff_text", text],
+        capture_output=True,
+        text=True,
+    )
+
+
 def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
     """Shell out to the real _lib_active_plan_hash against `repo`."""
     result = subprocess.run(
@@ -33,6 +45,29 @@ def _active_plan_hash(repo: Path, env_overrides: dict | None = None) -> str:
         env={**os.environ, **(env_overrides or {})},
     )
     return result.stdout.strip()
+
+
+def _active_plan_files(repo: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_active_plan_files against `repo`, returning
+    the raw CompletedProcess so callers can assert on exit status and stdout
+    together."""
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_active_plan_files "$1"', "_active_plan_files", str(repo)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env_overrides or {})},
+    )
+
+
+def _is_repo_plan_file(repo_root: Path, abs_path: Path) -> bool:
+    """Shell out to the real _lib_is_repo_plan_file."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_is_repo_plan_file "$1" "$2"',
+         "_is_repo_plan_file", str(repo_root), str(abs_path)],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
 
 
 def _find_case_insensitive_collation_locale() -> str | None:
@@ -105,6 +140,164 @@ class TestMarkerLibRepoHash:
         ).stdout.strip()
         assert from_lib == from_inline, (
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
+        )
+
+
+class TestLibHashDiffText:
+    """Direct coverage for _lib_hash_diff_text -- the shared sha256 recipe
+    marker.sh's `write cumulative-review` arm and _lib_cumulative_diff_hash's
+    own post-hash step both call, so a read-side and write-side digest for
+    the same text always agree by construction (see _lib.sh's header on
+    byte-identical output across the read and write sides)."""
+
+    def test_known_text_matches_python_sha256(self):
+        text = "diff --git a/f b/f\n+line\n"
+        expected = hashlib.sha256(text.encode()).hexdigest()
+        result = _hash_diff_text(text)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_empty_text_is_not_a_failure(self):
+        """sha256 of an empty string is itself a valid, non-empty digest --
+        TEXT emptiness is a business-rule concern for marker.sh's own [ -z ]
+        precondition on the read subject text, not a failure this helper
+        reports."""
+        expected = hashlib.sha256(b"").hexdigest()
+        result = _hash_diff_text("")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_digest_emptiness_guard_exercised_directly(self):
+        """The post-hash [ -n "$digest" ] guard, exercised without going
+        through _lib_cumulative_diff_hash's own subprocess-produced diff --
+        a broken sha256sum must exit nonzero with empty stdout rather than
+        silently succeed."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; sha256sum() {{ :; }}; _lib_hash_diff_text "some text"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
+
+
+class TestLibRepoRoot:
+    """Direct coverage for _lib_repo_root -- the raw resolution recipe shared
+    by marker.sh's _resolve_repo_root and pr-diff-against-base.sh --record,
+    so both sides resolve a given tree to the identical REPO_ROOT string."""
+
+    def test_matches_git_rev_parse_show_toplevel(self, tmp_path):
+        repo = tmp_path / "repo-root-repo"
+        _init_repo(repo)
+        expected = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        actual = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert actual == expected
+
+    def test_fails_closed_outside_a_git_repository(self, tmp_path):
+        outside = tmp_path / "not-a-repo"
+        outside.mkdir()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=outside,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.timing
+    def test_hung_git_is_bounded_by_lib_capped(self, tmp_path):
+        """A locked .git/index or a stale NFS mount can make `git
+        rev-parse` block indefinitely -- _lib_repo_root must route through
+        _lib_capped so callers (marker.sh's _resolve_repo_root,
+        pr-diff-against-base.sh --record) fail fast instead of hanging for
+        however long the harness's own outer Bash-tool timeout allows."""
+        timeout_path = shutil.which("timeout")
+        if not timeout_path:
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        fake_git.write_text(
+            "#!/bin/sh\n"
+            # 30s, well past _lib_capped's 5s cap -- avoids a race against
+            # the cap firing at the same instant a shorter sleep would end.
+            'if [ "$1" = "rev-parse" ]; then sleep 30; fi\n'
+        )
+        fake_git.chmod(0o755)
+
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+        start = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode != 0
+        assert elapsed < 8, f"_lib_repo_root took {elapsed:.1f}s — the git call is not capped"
+
+
+class TestLibActivePlanFiles:
+    def test_git_enumeration_failure_fails_closed(self, tmp_path):
+        """A failed `git ls-files` call must exit 1 with .claude/plans/
+        itself named on stdout, not silently report an empty (clean) active
+        set -- this function now backs both _lib_active_plan_hash and
+        require-plan-review.sh's fast-path guard, so an undetected fail-open
+        regression here would disarm both call sites at once. Mirrors
+        test_failed_worktree_enumeration_fails_closed in
+        test_require_plan_review.py, which pins the same fail-closed
+        direction for a sibling git call."""
+        repo = tmp_path / "enum-failure-repo"
+        _init_repo(repo)
+        # A HEAD commit routes _lib_active_plan_files through its `git diff`
+        # branch rather than its no-HEAD `git ls-files` fallback, so the stub
+        # below exercises the `ls-files --others` (untracked-plans) call in
+        # isolation rather than also tripping the fallback's own guard.
+        (repo / "README.md").write_text("seed\n")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "active-plan.md").write_text("# active\n")
+
+        real_git = shutil.which("git")
+        assert real_git, "test host must have a real git binary on PATH"
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "ls-files" ]; then exit 1; fi\n'
+            "done\n"
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        result = _active_plan_files(
+            repo, env_overrides={"PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}"}
+        )
+        assert result.returncode == 1, (
+            f"expected exit 1 on a failed git enumeration, got {result.returncode}"
+        )
+        assert result.stdout.strip() == str(plans_dir), (
+            f"stdout must name .claude/plans/ on enumeration failure, got {result.stdout!r}"
         )
 
 
@@ -313,3 +506,73 @@ class TestLibActivePlanHash:
         second = _active_plan_hash(repo)
         assert first != ""
         assert first == second
+
+
+class TestLibIsRepoPlanFile:
+    """A relational drift test. _lib_is_repo_plan_file's contract is
+    that it agrees with _lib_active_plan_hash on exactly the file set the
+    hash covers -- an agreement property asserted only in a comment is one
+    edit from being false."""
+
+    def test_agrees_with_active_plan_hash_on_covered_file_set(self, tmp_path):
+        repo = tmp_path / "drift-repo"
+        _init_repo(repo)
+        plans_dir = repo / ".claude" / "plans"
+        (plans_dir / "sub").mkdir(parents=True)
+        candidates = {
+            "a.md": plans_dir / "a.md",
+            "b.txt": plans_dir / "b.txt",
+            "c.rst": plans_dir / "c.rst",
+            "sub/d.md": plans_dir / "sub" / "d.md",
+        }
+        for name, path in candidates.items():
+            path.write_text(f"# {name}\n")
+
+        baseline_hash = _active_plan_hash(repo)
+
+        for name, path in candidates.items():
+            content = path.read_text()
+            path.unlink()
+            hash_without_file = _active_plan_hash(repo)
+            path.write_text(content)
+
+            hash_changed = hash_without_file != baseline_hash
+            predicate_result = _is_repo_plan_file(repo, path)
+            assert predicate_result == hash_changed, (
+                f"_lib_is_repo_plan_file disagreed with _lib_active_plan_hash "
+                f"for {name}: predicate={predicate_result} "
+                f"hash_changed={hash_changed}"
+            )
+
+    def test_inactive_on_wrong_arity(self, tmp_path: Path) -> None:
+        """Extra/missing positional so $1 stays bound under set -u -- mirrors
+        _lib_autonomous_shipping_active's test_inactive_on_wrong_arity in
+        test_lib.py, which this function's own arity-guard comment says it
+        copies the shape of. The extra-argument case uses a REPO_ROOT/ABS_PATH
+        pair that would otherwise satisfy the function's own match (a real
+        plan file directly under REPO_ROOT/.claude/plans), so the guard is
+        the only thing standing between an extra, ignored argument and a
+        false positive -- isolating the `[ "$#" -eq 2 ] || return 1` guard
+        itself rather than a coincidental mismatch on placeholder args."""
+        repo = tmp_path / "arity-repo"
+        plans_dir = repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        plan_file = plans_dir / "a.md"
+        plan_file.write_text("# plan\n")
+
+        for args in ([str(repo)], [str(repo), str(plan_file), "unexpected-extra-arg"]):
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'set -u; . "{LIB_SH}"; _lib_is_repo_plan_file "$@"',
+                    "bash",
+                    *args,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0, (
+                f"_lib_is_repo_plan_file with {len(args)} args must return non-zero, "
+                f"got {result.returncode}"
+            )

@@ -17,7 +17,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from conftest import (
+
+from .conftest import (
     _base_test_env,
     _commit,
     _curated_path_without_direnv,

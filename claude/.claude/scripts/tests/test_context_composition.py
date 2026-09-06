@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
+
+from .conftest import _agent_use, _asst, _bash_use, _tool_result, _user_msg, _write_jsonl
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 _spec = importlib.util.spec_from_file_location("transcript_analysis_context_composition", _SCRIPT)

@@ -12,7 +12,7 @@ work.
 
 <!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
 ```bash
-mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/briefs"
+~/.claude/scripts/ensure-account-dir.sh briefs
 ```
 
 ## When to use this vs `/handoff`

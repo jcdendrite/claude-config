@@ -1,6 +1,11 @@
 """Rate tables, per-turn pricing, token counts, context windows, and
 requestId-run deduplication -- no dependency on any cmd_* subcommand, scope
 resolution, or redaction.
+
+Assumes a one-shot-per-process caller (the transcript-analysis CLI exits
+after one report): module-level state such as _usage_drift_warned and
+_subagent_format_drift_detected is set once and never reset except by test
+fixtures.
 """
 from __future__ import annotations
 
@@ -13,13 +18,22 @@ from transcript_analysis.corpus import SUBAGENT_SUBDIR
 _TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
 
 _PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
-_PRICING_FETCH_DATE = date(2026, 8, 2)
+_PRICING_FETCH_DATE = date(2026, 9, 5)
 
 # Multipliers vs. a model's base input rate, per the pricing page's stated ratios.
 _OUTPUT_RATE_MULTIPLIER = 5
 _CACHE_WRITE_5M_MULTIPLIER = 1.25
 _CACHE_WRITE_1H_MULTIPLIER = 2
 _CACHE_READ_MULTIPLIER = 0.1
+
+# Cache-read multiplier for the model IDs the pricing page states a reduced
+# cache-hit rate for (0.025x base input, vs. every other model's 0.1x) --
+# every other class still derives from _CACHE_READ_MULTIPLIER's siblings
+# above via _model_rates. Claude Mythos 5.1 shares this exception on the
+# pricing page too but has no row in _MODEL_BASE_INPUT_RATES, so it stays
+# unpriced rather than gaining a cache-read-only entry here.
+_REDUCED_CACHE_READ_MULTIPLIER = 0.025
+_REDUCED_CACHE_READ_MODEL_IDS: frozenset[str] = frozenset({"claude-fable-5-1"})
 
 # Multipliers applied to every dollar class when usage.speed/usage.inference_geo
 # report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
@@ -44,6 +58,18 @@ _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     # "claude-sonnet-4-5-20260115" still 200k-buckets correctly but prices as
     # unpriced here.
     "claude-sonnet-4-5": 3.00,
+    # claude-fable-5 / claude-fable-5-1: the vendor's published claude-api
+    # platform model ID for each generation (platform.claude.com/docs/en/
+    # models/fable-5/overview and .../fable-5-1/overview). [unverified] that
+    # this is the exact string Claude Code writes to message.model -- no
+    # claude-fable-* string has been observed in this account's own declared
+    # corpus (see _reportable_unpriced_model_ids for the loud-on-miss
+    # backstop this leans on until one is observed). Pricing this family also
+    # means its usage now appears by name in every published --summary Cost
+    # block, the same as every other priced model, instead of folding into an
+    # anonymous unpriced-ID count.
+    "claude-fable-5": 10.00,
+    "claude-fable-5-1": 10.00,
 }
 
 # Re-verify-by date per model ID: fetch-date+90d for every model, since none
@@ -114,17 +140,50 @@ def _context_window_for_model(model: str) -> int:
 
 
 def _model_rates(model: str) -> dict[str, float] | None:
-    """Return per-MTok dollar rates for one model ID, or None if unpriced."""
+    """Return per-MTok dollar rates for one model ID, or None if unpriced.
+
+    Every class but cache_read derives from one base rate for every model.
+    cache_read uses _REDUCED_CACHE_READ_MULTIPLIER instead of
+    _CACHE_READ_MULTIPLIER for the model IDs in _REDUCED_CACHE_READ_MODEL_IDS
+    -- the one class the pricing page states a per-model exception for.
+    """
     base = _MODEL_BASE_INPUT_RATES.get(model)
     if base is None:
         return None
+    cache_read_multiplier = (
+        _REDUCED_CACHE_READ_MULTIPLIER if model in _REDUCED_CACHE_READ_MODEL_IDS else _CACHE_READ_MULTIPLIER
+    )
     return {
         "input": base,
         "output": base * _OUTPUT_RATE_MULTIPLIER,
         "cache_write_5m": base * _CACHE_WRITE_5M_MULTIPLIER,
         "cache_write_1h": base * _CACHE_WRITE_1H_MULTIPLIER,
-        "cache_read": base * _CACHE_READ_MULTIPLIER,
+        "cache_read": base * cache_read_multiplier,
     }
+
+
+# The model-ID key _price_turn's unpriced path (cost.py's unpriced_tokens
+# dict) uses for a turn whose real model was never recorded, e.g. a
+# synthesized/error record with no message.model of its own.
+_SYNTHETIC_MODEL_ID = "<synthetic>"
+
+
+def _reportable_unpriced_model_ids(unpriced_tokens: dict[str, int]) -> list[str]:
+    """Every unpriced model-ID key that represents real excluded spend a PR
+    reader should be told about, from cost.py's per-model unpriced_tokens
+    accumulator.
+
+    Every key qualifies except _SYNTHETIC_MODEL_ID at exactly zero tokens --
+    a corpus with no synthetic records at all still seeds that key at 0 in
+    some callers, and a $0 entry is not spend excluded from anything. This is
+    a forward-looking guard: no observed real corpus has produced a
+    nonzero-token synthetic record, so this branch is contract-pinning, not a
+    regression reproduction.
+    """
+    return [
+        model_id for model_id, tokens in unpriced_tokens.items()
+        if model_id != _SYNTHETIC_MODEL_ID or tokens != 0
+    ]
 
 
 def _cache_write_split(usage: dict) -> tuple[int, int]:
@@ -405,6 +464,15 @@ def _count_subagent_spawns(records: list[dict]) -> int:
     return count
 
 
+# Records that _warn_if_subagent_format_drift's drift signature fired this
+# process, mirroring _usage_drift_warned's role for the other drift canary --
+# consulted (never set) by _format_drift_detected below. Unlike
+# _usage_drift_warned, this flag does not gate the warning print: the
+# function is called once per corpus scan (not once per requestId run), so
+# no per-process rate-limiting is needed here.
+_subagent_format_drift_detected = False
+
+
 def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int) -> None:
     """Emit a stderr warning when the drift signature is detected.
 
@@ -417,7 +485,9 @@ def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int
       - Contract test (CI): pins what our code expects from fixtures.
       - This canary (runtime): validates expectation against live on-disk data.
     """
+    global _subagent_format_drift_detected
     if total_spawns > 0 and total_sidechain_turns == 0:
+        _subagent_format_drift_detected = True
         print(
             "WARNING: subagent spawns detected in main thread but zero isSidechain "
             f"assistant turns were read from '{SUBAGENT_SUBDIR}/' subdirectories. "
@@ -426,6 +496,14 @@ def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int
             "and that records still carry 'isSidechain': true.",
             file=sys.stderr,
         )
+
+
+def _format_drift_detected() -> bool:
+    """True once either runtime drift canary has fired this process --
+    _usage_drift_warned (a requestId run's usage disagreed with itself) or
+    _subagent_format_drift_detected (spawns recorded with no isSidechain
+    turns read) -- the single flag cost.py's PRICING INTEGRITY banner reads."""
+    return _usage_drift_warned or _subagent_format_drift_detected
 
 
 def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:

@@ -90,6 +90,7 @@ entry. These close gaps the classifier's default block list doesn't cover:
 | `Read(**/credentials.json)`, `Read(**/.credentials.json)` | Cloud provider credential files (AWS CLI, GCP service accounts, etc.) |
 | `Bash(brew install *)`, `Bash(brew tap *)`, `Bash(brew reinstall *)`, `Bash(gem install *)`, `Bash(cargo install *)`, `Bash(go install *)`, `Bash(gh extension install *)`, `Bash(mas install *)`, `Bash(pipx install *)`, `Bash(apt-get install *)`, `Bash(apt install *)`, `Bash(yum install *)`, `Bash(dnf install *)`, `Bash(apk add *)`, `Bash(zypper install *)` | Package installs — hard-blocked (unlike the soft-blocked `curl \| bash` rule, these can't be cleared by user intent) |
 | `EnterPlanMode` | Agent-initiated plan mode entry — escalates downstream subagent dispatches to Opus regardless of `model:` pins; removes the tool from the session entirely rather than blocking a call pattern (human `Shift+Tab`/`/plan`/`defaultMode` paths unaffected) |
+| `ScheduleWakeup` | Out-of-`/loop` wakeup scheduling used as a wait/poll mechanism while backgrounded work runs; removes the tool from the session entirely rather than blocking a call pattern (fixed-interval `/loop <interval> <prompt>` via `CronCreate` unaffected — see `docs/design-decisions.md` §49) |
 
 The `deny-env-reads.sh` PreToolUse hook covers `.env.*` variants not listed
 above. It allows the three conventional non-secret template suffixes
@@ -190,7 +191,7 @@ treat the table below as what each agent *asks for*:
 | `Explore` | Sonnet | `claude/.claude/agents/Explore.md` override |
 | `staff-*`, `ciso-reviewer` | Sonnet | `model: sonnet` frontmatter in `~/.claude/agents/` |
 | `code-writer` | Sonnet | `model: sonnet` frontmatter |
-| `plan-architect` | Opus | `model: opus` frontmatter + explicit `model: "opus"` param from `/plan-it` Step 5 |
+| `plan-architect` | Opus | `model: opus` frontmatter + explicit `model: "opus"` param from its dispatching caller |
 | `general-purpose` | **Inherited from parent** | No model of its own — falls through to the parent |
 
 If the session is anchored to Opus (`claude-auto --model opus`, or a

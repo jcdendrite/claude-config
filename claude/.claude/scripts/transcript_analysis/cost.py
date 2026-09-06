@@ -22,6 +22,14 @@ from transcript_analysis import corpus, pricing, redaction, render, scope
 # not a claim about which branch the dispatched work belongs to.
 _WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
 
+# Printed as both render paths' first content line (see _cost_report). Two-part
+# because readers span subscription, API-billed, and contracted-rate accounts,
+# which have three different notions of "what I'm billed."
+_LIST_PRICE_CAVEAT = (
+    "Computed locally at API list price — this is a compute estimate, not an"
+    " invoice, and may not match what your plan or contract actually bills."
+)
+
 
 def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
     """Build one session's sorted (timestamp, gitBranch) index from its own
@@ -76,6 +84,195 @@ def _attributed_branch(rec: dict, branch_index: Sequence[tuple[float, str]]) -> 
             break
         resolved = entry_branch
     return resolved
+
+
+def _new_pr_cost_agg() -> dict:
+    """Zero-valued per-branch aggregate shape accumulated by
+    _compute_pr_cost_branch_totals, and reused as the zero-cost default for
+    a merged PR whose branch carries no local corpus activity at all."""
+    return {
+        "dollars": dict.fromkeys(pricing._TOKEN_CLASSES, 0.0),
+        "tokens": dict.fromkeys(pricing._TOKEN_CLASSES, 0),
+        "unpriced_turns": 0, "unpriced_tokens": 0,
+        "turn_count": 0, "sessions": set(), "opus_dollars": 0.0, "sum_context_at_turn": 0,
+        "session_starts": [], "session_starts_seen": set(), "last_activity_ts": 0.0,
+    }
+
+
+def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]:
+    """Single local corpus pass: every main+subagent turn's dollars/tokens,
+    grouped by _attributed_branch, over the whole scan -- run exactly once
+    per invocation regardless of how many PRs end up in scope. Mirrors
+    _cost_report's own dedup-then-price sequence so pr-cost's numbers are
+    derived the same way cost's are.
+
+    Returns (branch_totals, unbranched_totals): branch_totals is keyed by
+    each session's raw attributed branch string (never None); a record whose
+    _attributed_branch resolves to None (no gitBranch anywhere in the
+    session, not merely a worktree-agent carry-forward miss) accumulates
+    into the single unbranched_totals aggregate instead of being dropped,
+    unlike `buckets`, which silently skips records with no gitBranch.
+
+    Each agg's "session_starts" gets one (timestamp, session_id) entry the
+    first time that session contributes a turn to this branch -- timestamped
+    by that turn's own record, not a separate "session start" concept --
+    and "last_activity_ts" tracks the latest turn timestamp seen for that
+    branch. A record with no parseable timestamp contributes to neither
+    field (mirrors _session_branch_index's own exclusion) but still counts
+    toward every other aggregate below.
+    """
+    branch_totals: dict[str, dict] = defaultdict(_new_pr_cost_agg)
+    unbranched_totals: dict = _new_pr_cost_agg()
+
+    for jsonl, records in session_iter:
+        records = pricing.dedup_turns_by_request_id(records)  # dedup before pricing (must run first, see pricing.py)
+        branch_index = _session_branch_index(records)
+        session_id = jsonl.stem
+        for rec in records:
+            if rec.get("type") != "assistant":
+                continue
+            usage = (rec.get("message") or {}).get("usage")
+            if not usage:
+                continue
+            model = (rec.get("message") or {}).get("model", "")
+            dollars_by_class, context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
+
+            branch = _attributed_branch(rec, branch_index)
+            agg = branch_totals[branch] if branch is not None else unbranched_totals
+
+            rec_ts = corpus._parse_ts(rec.get("timestamp"))
+            if rec_ts is not None:
+                if session_id not in agg["session_starts_seen"]:
+                    agg["session_starts"].append((rec_ts, session_id))
+                    agg["session_starts_seen"].add(session_id)
+                if rec_ts > agg["last_activity_ts"]:
+                    agg["last_activity_ts"] = rec_ts
+
+            agg["turn_count"] += 1
+            agg["sessions"].add(session_id)
+            agg["sum_context_at_turn"] += context_at_turn
+
+            if dollars_by_class is None:
+                agg["unpriced_turns"] += 1
+                agg["unpriced_tokens"] += unpriced_tokens
+                continue
+
+            token_counts = pricing._token_counts(usage)
+            for cls in pricing._TOKEN_CLASSES:
+                agg["dollars"][cls] += dollars_by_class[cls]
+                agg["tokens"][cls] += token_counts[cls]
+            if render._fam(model) == "opus":
+                agg["opus_dollars"] += sum(dollars_by_class.values())
+
+    return dict(branch_totals), unbranched_totals
+
+
+def _first_main_thread_turns_dollars_by_branch(
+    deduped_records: Sequence[dict], branch_index: Sequence[tuple[float, str]], until_first_n_turns: int,
+) -> dict[str, float]:
+    """Per-branch summed dollars of a session's first `until_first_n_turns`
+    main-thread turns with a usage block, the ingredient _compute_workstream_dollars
+    sums into "startup burn". A turn's branch is resolved via _attributed_branch,
+    so a branch switch mid-session never lets one branch's early turns inflate
+    another's count. A turn whose branch resolves to None (no gitBranch anywhere in the
+    session) is excluded, mirroring unbranched_totals' exclusion from this
+    function's per-branch result. Mirrors _extract_rearm_session_turns' own
+    main_thread_turns filter (main-thread, usage-bearing) without building that
+    function's full per-turn tuple list, which this computation doesn't need.
+    `deduped_records` must already be pricing.dedup_turns_by_request_id's
+    output. Sums fewer than `until_first_n_turns` turns per branch, never
+    padded or scaled, when a branch has fewer main-thread turns than that
+    within this session.
+    """
+    totals: dict[str, float] = defaultdict(float)
+    counted_by_branch: dict[str, int] = defaultdict(int)
+    for rec in deduped_records:
+        if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+            continue
+        usage = (rec.get("message") or {}).get("usage")
+        if not usage:
+            continue
+        branch = _attributed_branch(rec, branch_index)
+        if branch is None or counted_by_branch[branch] >= until_first_n_turns:
+            continue
+        model = (rec.get("message") or {}).get("model", "")
+        dollars_by_class, _context_at_turn, _unpriced_tokens = pricing._price_turn(model, usage)
+        if dollars_by_class is not None:
+            totals[branch] += sum(dollars_by_class.values())
+        counted_by_branch[branch] += 1
+    return dict(totals)
+
+
+def _compute_workstream_dollars(session_iter, until_first_n_turns: int = 5) -> dict[str, dict]:
+    """Per-branch session count and continuation "startup burn" -- the
+    handoff-overhead mediator instrument `workstream-cost` reports.
+
+    session_iter is a single-pass generator (corpus.iter_sessions' own
+    contract), so every value this function needs -- _compute_pr_cost_branch_totals's
+    branch totals plus each session's own first `until_first_n_turns`
+    main-thread turns' dollars, per branch -- must come out of the one pass
+    _compute_pr_cost_branch_totals already makes over it; a second pass over
+    the same generator would silently see zero sessions. session_iter is
+    therefore wrapped so each session's per-branch startup-turn dollars are
+    captured as a side effect while _compute_pr_cost_branch_totals consumes
+    it, keyed by session id then by branch. A session that switches
+    branches mid-session gets one startup-dollars figure per branch it
+    touches, not one figure applied to every branch it touches.
+
+    iter_sessions yields sessions in file-path sort order, not chronological
+    order (corpus.py's own iteration contract) -- each branch's
+    session_starts list is re-sorted by timestamp (ascending) here, once,
+    before "first"/"non-first" is determined; trusting append order would
+    misclassify a branch's actual first session.
+
+    Returns one entry per branch with local corpus activity (never
+    unbranched_totals, which has no branch name to key by): "session_count",
+    "total_dollars" (every priced turn attributed to the branch, main-thread
+    and subagent alike -- the same total pr-cost itself reports),
+    "startup_burn_dollars" (summed across every non-first session's first
+    `until_first_n_turns` main-thread turns), and "last_activity_ts" (the
+    latest turn timestamp seen anywhere on the branch). A branch whose every
+    turn carries an unparseable timestamp reports session_count 0 despite
+    having corpus activity (mirrors _session_branch_index's own exclusion).
+    This session_count is derived from session_starts (timestamp-gated),
+    unlike pr-cost's own session_count field (derived from the sessions set
+    of every session contributing a priced turn, regardless of timestamp) --
+    the two can differ for the same branch.
+    """
+    session_startup_dollars_by_branch: dict[str, dict[str, float]] = {}
+
+    def _tracked_session_iter():
+        # dedup_turns_by_request_id runs again on these same records inside
+        # _compute_pr_cost_branch_totals below -- a known, deliberate double-dedup
+        # (DEFERred: below current scale, and a fix would need to change
+        # _compute_pr_cost_branch_totals's shared contract with its other caller).
+        for jsonl, records in session_iter:
+            deduped = pricing.dedup_turns_by_request_id(records)
+            # Derived from `deduped`, not `records` -- mirrors
+            # _compute_pr_cost_branch_totals's own branch_index (computed
+            # from its already-deduped records), so the same rec resolves to
+            # the same branch in both places.
+            branch_index = _session_branch_index(deduped)
+            session_startup_dollars_by_branch[jsonl.stem] = _first_main_thread_turns_dollars_by_branch(
+                deduped, branch_index, until_first_n_turns
+            )
+            yield jsonl, records
+
+    branch_totals, _unbranched_totals = _compute_pr_cost_branch_totals(_tracked_session_iter())
+
+    result: dict[str, dict] = {}
+    for branch, agg in branch_totals.items():
+        sorted_starts = sorted(agg["session_starts"])
+        non_first_session_ids = [session_id for _ts, session_id in sorted_starts[1:]]
+        result[branch] = {
+            "session_count": len(sorted_starts),
+            "total_dollars": sum(agg["dollars"].values()),
+            "startup_burn_dollars": sum(
+                session_startup_dollars_by_branch.get(sid, {}).get(branch, 0.0) for sid in non_first_session_ids
+            ),
+            "last_activity_ts": agg["last_activity_ts"],
+        }
+    return result
 
 
 def cmd_cost(args: argparse.Namespace) -> None:
@@ -155,33 +352,54 @@ def _print_thread_table(main_total: float, subagent_total: float, grand_total: f
     print(f"{'subagent':<10} {subagent_total:>14,.2f} {render._pct_of(subagent_total, grand_total):>7}")
 
 
+def _print_excluded_spend_banner(unpriced_tokens: dict[str, int], total_unpriced_tokens: int, *, markdown: bool) -> None:
+    """Loud excluded-spend signal -- shape mirrors STALE PRICING
+    (all-caps token, em-dash, fact, action). No-op when
+    pricing._reportable_unpriced_model_ids finds nothing to report (e.g. an
+    all-priced corpus, or a corpus whose only unpriced entry is
+    <synthetic> at zero tokens).
+
+    markdown=True (--summary, the automated public-PR-body path) names a
+    count of unrecognized model IDs, never the ID strings themselves -- a
+    message.model string can carry an account-identifying pre-announcement
+    codename, so it stays on the maintainer-only full-report path, which
+    prints every ID by name.
+    """
+    reportable_ids = pricing._reportable_unpriced_model_ids(unpriced_tokens)
+    if not reportable_ids:
+        return
+    if markdown:
+        print(
+            f"\nEXCLUDED SPEND — the dollar figures below leave out {total_unpriced_tokens:,} tokens across"
+            f" {len(reportable_ids)} unrecognized model IDs. Ask the PR author to run the full report"
+            " locally to name them, then report the missing rate to claude-config's pricing.py maintainer.\n"
+        )
+    else:
+        labeled_ids = sorted(model_id or "(no model field)" for model_id in reportable_ids)
+        print(
+            f"\nEXCLUDED SPEND — the dollar figures below leave out {total_unpriced_tokens:,} tokens on"
+            f" unpriced model IDs: {', '.join(labeled_ids)}. Add each ID's base rate"
+            f" (source: {pricing._PRICING_SOURCE_URL}) and re-run.\n"
+        )
+
+
 def _print_branch_exclusion_diagnostic(
     excluded_turns_by_branch: dict[str, int],
     excluded_transcript_ids: set[str],
     *,
     redact: bool,
-    markdown: bool = False,
 ) -> None:
     """Surface --branches's record-drop path (see _attributed_branch) instead of
     leaving an excluded branch silently invisible in the report.
 
-    No-op when nothing was excluded.
-    markdown=True (--summary's always-redacted shape) prints one aggregate line only --
-    no branch names, no transcript ids.
-    Non-summary mode prints a full per-branch turn-count table: raw branch names under
+    No-op when nothing was excluded. Never called under --summary (see
+    _cost_report's call site); that mode drops the diagnostic entirely.
+    Prints a full per-branch turn-count table: raw branch names under
     --no-redact, or deterministic sequential "branch-N" labels (sorted real-name order,
     mirroring project_repr_label's convention above) under the redact=True default.
     "?" (unresolved branch) is never assigned a sequential label.
     """
     if not excluded_turns_by_branch:
-        return
-
-    total_excluded_turns = sum(excluded_turns_by_branch.values())
-    if markdown:
-        print(
-            f"\nBranch-filter exclusions: {total_excluded_turns:,} turns excluded across"
-            f" {len(excluded_transcript_ids):,} transcript files (branch names redacted)"
-        )
         return
 
     # "?" (the unresolved-branch sentinel) carries no identifying information,
@@ -305,6 +523,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     )
 
     total_transcripts_scanned = 0
+    # Folded into --summary's scope line as a conditional clause, printed
+    # only when nonzero -- not disclosed per-root the way the
+    # (summary-mode-pruned) scan line below discloses it.
+    total_transcripts_skipped = 0
     if roots is not None:
         glob = scope._projects_glob(args)
         # --this-repo's slugs were already resolved (and cached on args) by
@@ -325,8 +547,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 detail = str(exc) if not redact else "permission denied"
                 print(f"cost: {root_label}: cannot scan ({detail}) — treating as 0 transcripts", file=sys.stderr)
                 scanned, skipped = 0, 0
-            print(f"cost: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
+            if not summary_mode:
+                print(f"cost: {root_label}: scanned {scanned:,} transcripts, {skipped:,} skipped (unreadable)")
             total_transcripts_scanned += scanned
+            total_transcripts_skipped += skipped
             if scanned == 0:
                 print(
                     f"WARNING: cost: {root_label}: no transcripts found for this scope"
@@ -572,37 +796,58 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             )
 
     title_since = f"last {since_label}" if since_label else "all time"
+    # unpriced_tokens is fully populated by here; the EXCLUDED SPEND banner
+    # below (printed alongside the title block, not after the per-model
+    # tables) needs the total computed before that print.
+    total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
-        print(f"\nCost summary ({title_since})\n")
+        # The caveat is the block's first printed line, verbatim -- no
+        # leading blank line, since pr-cost-section.sh embeds this stdout
+        # as the PR body's Cost section body with no separator of its own.
+        print(_LIST_PRICE_CAVEAT)
+        unreadable_clause = f", {total_transcripts_skipped:,} unreadable" if total_transcripts_skipped else ""
         print(
-            f"Scope: this account only ({total_transcripts_scanned:,} transcripts scanned, "
-            f"{priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
+            f"\nScope: this account only, {title_since} ({total_transcripts_scanned:,} transcripts scanned"
+            f"{unreadable_clause}, {priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
             " — dropping --summary reports every declared account too"
         )
     else:
         print(f"\n## Cost report ({title_since})\n")
+        print(_LIST_PRICE_CAVEAT)
 
     if stale_models:
         print(
-            "STALE PRICING — today is past the re-verify-by date for: "
+            "\nSTALE PRICING — today is past the re-verify-by date for: "
             + ", ".join(sorted(stale_models))
             + f". Re-check rates at {pricing._PRICING_SOURCE_URL} before publishing the figures below.\n"
         )
 
+    if pricing._format_drift_detected():
+        if summary_mode:
+            print(
+                "\nPRICING INTEGRITY — this tool detected a transcript-format change it does not"
+                " recognize, so the figures below may be incomplete or wrong. Ask the PR author to"
+                " re-run the report locally before relying on them.\n"
+            )
+        else:
+            print(
+                "\nPRICING INTEGRITY — the transcript format may have drifted, so the figures below"
+                " may be structurally wrong. Re-run the report directly (not through"
+                " pr-cost-section.sh) to read the drift diagnostic on stderr.\n"
+            )
+
+    _print_excluded_spend_banner(unpriced_tokens, total_unpriced_tokens, markdown=summary_mode)
+
     _print_token_class_table(class_totals, class_token_totals, grand_total, markdown=summary_mode)
     _print_model_id_table(model_totals, grand_total, markdown=summary_mode)
-    total_unpriced_tokens = sum(unpriced_tokens.values())
-    if summary_mode:
-        # A dedicated, always-present line rather than the full report's
-        # per-model breakdown below — an unrecognized model ID must never
-        # silently understate a published figure with no marker, even at $0.
-        print(f"\nUnpriced tokens: {total_unpriced_tokens:,} tokens across {len(unpriced_tokens)} model IDs")
-    else:
+    if not summary_mode:
+        # An unrecognized model ID must never silently understate a published figure.
+        # This per-model breakdown is the maintainer's detail view; EXCLUDED SPEND
+        # above is the loud headline shared by both render paths.
         for model, tok in sorted(unpriced_tokens.items()):
             print(f"{model:<28} {'unpriced':>14} {tok:>10,} tokens")
         print(f"\nUnpriced tokens (unknown model IDs): {total_unpriced_tokens:,}")
 
-    if not summary_mode:
         print(
             f"\n## Cost by context-at-turn bucket (input_tokens + cache_read_input_tokens"
             f" + ephemeral_1h + ephemeral_5m tokens, {pricing._CONTEXT_BUCKET_THRESHOLD:,} boundary)\n"
@@ -614,10 +859,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     _print_thread_table(main_total, subagent_total, grand_total, markdown=summary_mode)
 
-    if branch_filter is not None:
-        _print_branch_exclusion_diagnostic(
-            excluded_turns_by_branch, excluded_transcript_ids, redact=redact, markdown=summary_mode
-        )
+    if branch_filter is not None and not summary_mode:
+        _print_branch_exclusion_diagnostic(excluded_turns_by_branch, excluded_transcript_ids, redact=redact)
 
     if summary_mode:
         return

@@ -6,7 +6,6 @@ import os
 import subprocess
 
 import pytest
-from conftest import _seed_session
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
@@ -19,6 +18,8 @@ from helpers import (
     skill_review_marker_path,
     write_skill_review_marker,
 )
+
+from .conftest import _seed_session
 
 _PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
 SKILL_REVIEW_HOOK = _PLUGINS_DIR / "skill-management" / "hooks" / "require-skill-review.sh"

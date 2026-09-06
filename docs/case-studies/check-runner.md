@@ -80,6 +80,8 @@ What check-runner still does that the harness truncation does not: the harness p
 
 This verdict did not hold — see ## Retirement (2026-06-23) below.
 
+The `30,720`-byte threshold cited above was superseded 2026-09-02 — see ## Addendum: harness threshold re-probed (2026-09-02) below.
+
 ## Sources
 
 - **`claude/.claude/agents/check-runner.md`** — the agent definition (now deleted): `tools: Bash` only, `maxTurns: 20`, the checks-only charter, the cwd-anchoring rule, and the one-call-per-command spool protocol.
@@ -101,3 +103,16 @@ A follow-on measurement (649 sessions, 2026-05-22 – 2026-06-23, via `transcrip
 Decision: retire. The parent now runs checks inline via the parent Bash tool. The harness truncation handles the rare large suite; the failure tail is visible directly with no spool or follow-up read. The live agent, hook wiring (`check-runner-bash-guard.sh`), and dispatch-id contract are deleted. The `transcript-analysis.py` corpus tooling retains check-runner recognition for historical sessions.
 
 Resolves jcdendrite/claude-config#352.
+
+## Addendum: harness threshold re-probed (2026-09-02)
+
+The `30,720`-byte truncation figure in the Re-grounding section above was
+back-computed from the harness's binary-KB "Output too large" message and is
+superseded. The live, as-of figure — measured directly rather than
+back-computed — lives in
+`claude/.claude/skills/subagent-delegation/REFERENCES.md` §
+"Heavy command output — harness truncation and check-suite sizes".
+
+- **`/measure-check-output`** — the repeatable procedure that produced this
+  re-probe: bisecting the harness truncation threshold, then measuring this
+  repo's own documented check commands against it.

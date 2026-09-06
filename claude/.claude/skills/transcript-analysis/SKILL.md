@@ -13,7 +13,7 @@ description: >
   already produced by this toolkit earlier in the session.
 ---
 
-The toolkit lives at `scripts/transcript-analysis.py` under the active Claude Code config dir (`$CLAUDE_CONFIG_DIR`, or `~/.claude`). Run it directly from the shell.
+The toolkit lives at `~/.claude/scripts/transcript-analysis.py`. Run it directly from the shell.
 
 ## Scope confirmation
 
@@ -90,6 +90,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis, `--deny-only` to isolate sessions that hit an enforcement hook, and `--deny-summary` for a corpus-wide census by hook, by command shape, and their cross-tab, plus a friction-kind breakout — a distinct axis from denials — see `docs/transcript-analysis.md`'s `review-trace` section for the full output shape.
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
+- `--corrections-only` and `struggle` false-flag forwarded `<task-notification>` subagent-summary text as human corrections (see GH-752) — verify a flagged turn is inside an actual human message before treating it as one.
 - `user-input` prints raw prompt text verbatim regardless of `--redact` — that flag anonymizes project labels and session IDs only, matching every other `--redact` implementation in this file (none scrub message content). Review output before pasting it anywhere public.
 - `audit-routing --redact` remaps project names to anonymized labels for public reporting — use this flag when posting output to GitHub issues.
 - `cost` redacts project names and session IDs by default (the opposite of `audit-routing`'s opt-in `--redact`) — pass `--no-redact` only for local use, never for output headed to a public issue.
@@ -101,23 +102,23 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ```bash
 # Survey all branches
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets
+python3 ~/.claude/scripts/transcript-analysis.py buckets
 
 # Check if a branch's debugging loop converged
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches feat-TICKET-101
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET-101
 
 # Compare two branches side by side
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches feat-TICKET-101,feat-TICKET-202
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches feat-TICKET-101,feat-TICKET-202
 
 # Link branches to PRs and count one author's review comments
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" pr-link \
+python3 ~/.claude/scripts/transcript-analysis.py pr-link \
   --repo owner/repo --branches feat-TICKET-101,feat-TICKET-202 --author alice
 
 # Find sessions that hit an enforcement-hook denial
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --deny-only
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --deny-only
 
 # Review activity in a date window (e.g. before vs after a skill landed)
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --since 2026-01-01 --until 2026-03-31
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --since 2026-01-01 --until 2026-03-31
 ```
 
 For narrative case studies and annotated timelines built on top of these metrics, use `transcript-narrative`.

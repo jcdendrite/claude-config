@@ -57,11 +57,14 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 
 # 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
 # needed) half of the full _lib_autonomous_shipping_active check at step 9
-# below. Absent on the vast majority of non-adopting sessions, so checking
-# it here skips spawning jq for the common case. The full check (this file
-# plus the per-repo optout) still runs at step 9, once REPO_ROOT is known —
-# this is a redundant, cheaper pre-filter, not a replacement for it.
-[ -f "$CONFIG_DIR/autonomous-shipping-required" ] || exit 0
+# below. This fast path delegates to _lib_autonomous_shipping_sentinel_present,
+# which unions the resolved config dir with the legacy ~/.claude location the
+# same way step 9's full check does. Absent on the vast majority of
+# non-adopting sessions, so checking it here skips spawning jq for the
+# common case. The full check (this file plus the per-repo optout) still
+# runs at step 9, once REPO_ROOT is known. This is a redundant, cheaper
+# pre-filter, not a replacement for it.
+_lib_autonomous_shipping_sentinel_present "$CONFIG_DIR" || exit 0
 
 # Six fields in a single jq pass (nudge-handoff-near-context-cap.sh:29-49
 # pattern). Pre-initialized so a failed read leaves empty strings, not
