@@ -64,6 +64,10 @@
 # - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
 #   checked and denies with an explicit message rather than falling through
 #   to this gate's normal "no gated command present" allow path.
+# - The default-branch bypass's candidate-loop fallback can land on a real,
+#   verified-but-wrong branch name when origin/HEAD dangles (the
+#   "wrong-but-verified guess" tradeoff — see docs/design-decisions.md §54
+#   for the full explanation).
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.
@@ -74,11 +78,15 @@
 # A CURRENT_BRANCH timeout, or a candidate-loop timeout in isolation, does
 # not allow directly: it withholds the default-branch bypass and lets the
 # gate below decide, which can still deny.
-# DEFAULT_BRANCH resolves in two steps: a direct `git symbolic-ref` lookup,
-# then the main/master/develop candidate loop as fallback. A symbolic-ref
-# timeout alone only withholds the bypass if the candidate loop also fails
-# to resolve a value. If the loop still succeeds, DEFAULT_BRANCH is set
-# and the bypass still fires normally.
+# DEFAULT_BRANCH resolves via _lib_default_branch_or_guess: a direct `git
+# symbolic-ref` lookup on origin/HEAD, verified with a `git rev-parse
+# --verify --quiet` on the resolved target
+# (_lib_default_branch_from_origin_head's own two-outcome contract,
+# documented in _lib.sh), then the main/master/develop candidate loop as
+# fallback. A symbolic-ref or verify timeout alone only withholds the
+# bypass if the candidate loop also fails to resolve a value. If the loop
+# still succeeds, DEFAULT_BRANCH is set and the bypass still fires
+# normally.
 # Only CURRENT_HEAD fails closed on that timeout (see its own comment below).
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —
@@ -274,21 +282,12 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # Default-branch bypass: pushing main/master/develop has no PR review
-# semantics. Resolve the local default via the symbolic ref refs/remotes/
-# origin/HEAD; fall back to a small set of conventional names when origin/
-# HEAD isn't configured. Use `git symbolic-ref --quiet` rather than
-# `rev-parse --abbrev-ref origin/HEAD`: the latter outputs the literal
-# string "origin/HEAD" (not empty) when origin/HEAD isn't a symbolic ref,
-# which defeats the fallback path.
+# semantics. Resolve the local default via _lib_default_branch_or_guess,
+# which reads origin/HEAD and falls back to a small set of conventional
+# names when origin/HEAD isn't configured.
 CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --abbrev-ref HEAD 2>/dev/null)
-DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-if [ -z "$DEFAULT_BRANCH" ]; then
-  for candidate in main master develop; do
-    if cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
-      DEFAULT_BRANCH="$candidate"
-      break
-    fi
-  done
+if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$REPO_ROOT"); then
+  DEFAULT_BRANCH=""
 fi
 if [ -n "$CURRENT_BRANCH" ] && [ -n "$DEFAULT_BRANCH" ] && [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
   exit 0
