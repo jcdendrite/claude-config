@@ -710,20 +710,15 @@ class TestNudgeHandoffNearContextCap:
         ["bootstrap_filter", "bootstrap_extract", "cached_filter", "cached_extract"],
     )
     def test_newly_capped_sites_killed_by_2s_cap_not_5s_default(self, tmp_path, case):
-        """The four bare-`jq` sites the bare-jq sweep wrapped in
-        `_lib_capped_for 2 jq` (:199, :208, :294, :303) each get their own
-        case here. :199/:294 share one filter string (_USAGE_BLOCK_JQ_FILTER,
-        the usage_block `-s` call); :208/:303 share the other (the
-        four-field extraction `-r` call) -- a jq shim keyed on filter
-        content can't tell the bootstrap call from the incremental-scan call
-        using the same filter, so each case instead arranges which of the
-        two code paths (bootstrap vs incremental) is reachable, and the
-        shared filter content only ever fires inside that one path. Killed
-        at the 2s cap each site's own `_lib_capped_for 2 jq` call uses, the
-        hook stays silent; left to run to completion under a
-        silently-widened 5s default, the slow call succeeds and produces a
-        real fire -- the same discriminating idiom as the tail/jq timing
-        tests above.
+        """The four bare-`jq` sites wrapped in `_lib_capped_for 2 jq`
+        (:199, :208, :294, :303) each get their own case here. :199/:294
+        share one filter string (_USAGE_BLOCK_JQ_FILTER, the usage_block
+        `-s` call); :208/:303 share the other (the four-field extraction
+        `-r` call). A jq shim keyed on filter content can't tell the
+        bootstrap call from the incremental-scan call sharing that filter,
+        so each case instead arranges which of the two code paths
+        (bootstrap vs incremental) is reachable, and the shared filter
+        content only ever fires inside that one path.
         """
         real_jq = shutil.which("jq")
         if not real_jq:

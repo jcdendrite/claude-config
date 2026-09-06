@@ -23,8 +23,8 @@ static shape checks, scoped to claude/.claude/hooks/*.sh:
   reads as a literal `s`.
 
 The first two carry a small, named exemption dict for a structural holdout
-the sweep didn't convert; the `\\s` check has none, since this phase
-converts every live occurrence and leaves no holdout.
+that resisted conversion. The `\\s` check has none: no `\\s` occurrence
+remains in claude/.claude/hooks/*.sh, so no exemption is needed.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -434,10 +434,10 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
 # ------------------------------------------------------------------ #
 
 # Filename -> structural reason a bare-`jq` call at this hook stays
-# unwrapped rather than converted to a _lib_* wrapper. A dict (not a
-# frozenset/tuple) so the reason travels with the entry, and each test below
-# asserts a listed hook still violates, so a stale entry fails loudly
-# instead of outliving its reason.
+# unwrapped rather than converted to a _lib_* wrapper. A dict, not a
+# frozenset/tuple, so the reason travels with the entry.
+# Each test below asserts a listed hook still violates, so a stale entry
+# fails loudly instead of outliving its reason.
 _BARE_JQ_EXEMPT_HOOKS: dict[str, str] = {
     "check-branch-divergence.sh": (
         "does not source _lib.sh; carries its own TIMEOUT_CMD probe applied "
@@ -467,8 +467,12 @@ def _strip_comment(line: str) -> str:
     """Strip a full-line or same-line trailing `#` comment from a shell
     line, for the three detectors below.
 
-    Naive substring split on " #", not shell-aware: no line in the current
-    hook set has a literal " #" inside a string.
+    Naive substring split on " #", not shell-aware.
+
+    Blind spot: no line in the current hook set has a literal " #" inside
+    a string. A future line that legitimately needs one would have its
+    trailing content truncated -- a false negative in all three detectors
+    below, not just a missed comment.
     """
     if line.lstrip().startswith("#"):
         return ""
@@ -518,9 +522,10 @@ def _bare_jq_hits(hook: Path) -> list[str]:
 
     Blind spot: only catches the anchor set documented on
     _BARE_JQ_COMMAND_POSITION_RE above, plus a hand-rolled `timeout [N] jq`.
-    Misses `xargs jq` and `command jq` (bypassing a same-named function
-    without `command -v`), and any jq reached through a variable-held
-    command name.
+    - Misses `xargs jq`.
+    - Misses `command jq` (bypasses a same-named function without
+      `command -v`).
+    - Misses jq reached through a variable-held command name.
     """
     hits = []
     for line in hook.read_text().splitlines():
@@ -557,7 +562,10 @@ def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
     `;`, `&`, `(`, `$(`, `{`, and each of the then/else/elif/do keywords),
     plus the separate hand-rolled `timeout N jq` pattern. Each fixture line
     must be flagged before relying on the detector as a regression guard
-    across 40+ hook files.
+    across 40+ hook files. Two negative-control lines (compliant `_lib_jq`
+    and `_lib_capped_for N jq` calls) must stay unflagged, proving the
+    detector distinguishes a wrapped call from a bare one rather than
+    matching on the bare `jq` substring alone.
     """
     fixture = tmp_path / "fixture.sh"
     fixture.write_text(
@@ -574,9 +582,11 @@ def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
         "if false; then :; elif jq -e . f >/dev/null; then :; fi\n"
         "for i in 1; do jq -n '{}'; done\n"
         "timeout 5 jq -n '{}'\n"
+        "_lib_jq -n '{}'\n"
+        "x=$(_lib_capped_for 2 jq -s \"$FILTER\")\n"
     )
     hits = _bare_jq_hits(fixture)
-    assert len(hits) == 12, f"expected all 12 fixture lines flagged, got {hits!r}"
+    assert len(hits) == 12, f"expected exactly the 12 positive fixture lines flagged, got {hits!r}"
 
 
 # grep-family invocation: -q/-c/-l among the flags, broad enough to catch
@@ -586,8 +596,12 @@ _GREP_FAMILY_RE = re.compile(r"grep\s+-[a-zA-Z]*[qcl][a-zA-Z]*\b")
 # `\s` or POSIX `[[:space:]]` -- the shape is hand-rolled command matching
 # either way, independent of which atom form is used. `marker\\?\.sh` also
 # catches an unescaped-dot `marker.sh` (still valid ERE), not only the
-# backslash-escaped form.
-_TOOL_TOKEN_WHITESPACE_ATOM_RE = re.compile(r"(?:git|gh|marker\\?\.sh)(?:\\s|\[\[:space:\]\])")
+# backslash-escaped form. A leading `\b` on `git`/`gh` keeps this from
+# matching as a substring of an unrelated word (`digit`, `high`).
+# `marker\\?\.sh` accepts the same substring risk unguarded (e.g.
+# `bookmarker.sh`), a gap accepted rather than closed, since a collision is
+# far less likely against this multi-character coined identifier.
+_TOOL_TOKEN_WHITESPACE_ATOM_RE = re.compile(r"(?:\bgit|\bgh|marker\\?\.sh)(?:\\s|\[\[:space:\]\])")
 
 
 def _inline_command_matcher_hits(hook: Path) -> list[str]:
@@ -597,10 +611,11 @@ def _inline_command_matcher_hits(hook: Path) -> list[str]:
     `_lib_command_invokes_tool_subcmd` and `_lib_fragment_invokes_git` exist
     to replace.
 
-    Blind spot: misses a pattern hoisted into a variable before being
-    passed to grep (require-respond-pr.sh's PATTERN_* family), and a
-    grep-family call piped through `[ -n ... ]` rather than using -q/-c/-l
-    directly.
+    Blind spot:
+    - Misses a pattern hoisted into a variable before being passed to grep
+      (e.g. require-respond-pr.sh's PATTERN_* family).
+    - Misses a grep-family call piped through `[ -n ... ]` rather than
+      using `-q`/`-c`/`-l` directly.
     """
     hits = []
     for line in hook.read_text().splitlines():
@@ -640,10 +655,13 @@ def test_inline_command_matcher_detector_flags_known_variants(tmp_path: Path) ->
     form (GNU `\\s`, POSIX `[[:space:]]`), and grep flag ordering (`-q`,
     `-Eq`, `-cE`, `-lE`) the detector claims to catch must actually be
     flagged before relying on it as a regression guard across 40+ hook
-    files. A negative-control line (a tool token present but not
-    immediately followed by a whitespace-class atom) must stay unflagged,
-    proving atom-adjacency drives the match rather than token presence
-    alone.
+    files. Two negative-control lines must stay unflagged:
+    - A tool token present but not immediately followed by a whitespace-
+      class atom, proving atom-adjacency drives the match, not token
+      presence alone.
+    - A tool token embedded as a substring of an unrelated word immediately
+      followed by an atom, one per `\\b`-guarded alternative (`git`, `gh`),
+      proving the match requires a standalone token, not a substring.
     """
     fixture = tmp_path / "fixture.sh"
     fixture.write_text(
@@ -653,6 +671,8 @@ def test_inline_command_matcher_detector_flags_known_variants(tmp_path: Path) ->
         "grep -cE 'marker.sh\\s'\n"
         "grep -lE 'marker\\.sh[[:space:]]'\n"
         "grep -q 'git status'\n"
+        "grep -qE 'digit[[:space:]]count'\n"
+        "grep -qE 'high[[:space:]]five'\n"
     )
     hits = _inline_command_matcher_hits(fixture)
     assert len(hits) == 4, f"expected exactly the 4 positive fixture lines flagged, got {hits!r}"

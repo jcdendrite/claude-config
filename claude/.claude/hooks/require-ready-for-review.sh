@@ -62,8 +62,8 @@
 #   fragment, so `git status & git push origin feature` misclassifies the
 #   subcommand and the real push goes undetected.
 # - Not closed here: the fix touches the fragment splitter or the git-word
-#   scan, both shared by other hooks and outside this gate's cooperative
-#   threat model.
+#   scan, both shared by other hooks, so a change of that scope is out of
+#   bounds for this gate alone.
 # - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
 #   checked and denies with an explicit message rather than falling through
 #   to this gate's normal "no gated command present" allow path.
@@ -98,8 +98,10 @@
 #   fail-closed by design.
 # - A missing jq denies every Bash call, the posture every unconditional
 #   gate in this repo already has.
-# - This gate's threat model is cooperative, not adversarial — the same
-#   posture require-respond-pr.sh's header states for its own gate.
+# - This gate's threat model includes adversarial input, not only a
+#   knowingly evasive engineer. Untrusted content ingested mid-session can
+#   persuade the agent's own tool call into an evasive shape without the
+#   agent intending to evade anything.
 # - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
 #   self-merge, plus CI rerunning the full suite on push. That backstop
 #   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
@@ -265,8 +267,8 @@ while IFS= read -r frag; do
   fi
   # These two matchers scan the whole fragment rather than resolving its
   # command word, so a `bash -c` or `eval` wrapper stays covered, matching
-  # the git arm above; the cost is that a flag interposed before the
-  # subcommand is missed.
+  # the git arm above.
+  # Cost: a flag interposed before the subcommand is missed.
   if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+ready([[:space:]]|;|$)'; then
     is_gh_pr_ready=true
   fi

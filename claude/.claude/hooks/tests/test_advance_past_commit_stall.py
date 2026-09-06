@@ -651,12 +651,12 @@ def _fake_jq_failing_on_flag(fake_bin: Path, flag: str) -> str:
 
 
 def test_reason_encode_failure_degrades_to_silent_exit(armed_home, dirty_repo, tmp_path):
-    """The six-field read (:87, `_lib_jq -r`) succeeds normally, but the
-    reason-encode call (:220, `_lib_jq -Rs .`) fails — pins that the guard
-    added around that printf degrades to silent-allow rather than emitting
-    the malformed `{"decision":"block","reason":}` a bare printf would.
-    test_jq_absent_exits_zero_empty_stdout above removes jq from PATH
-    entirely, which exits at the earlier six-field-read gate and never
+    """The six-field read (:87, `_lib_jq -r`) succeeds normally; the
+    reason-encode call (:220, `_lib_jq -Rs .`) fails. This pins that the
+    guard around that printf degrades to silent-allow instead of emitting
+    the malformed `{"decision":"block","reason":}` a bare printf would
+    produce. test_jq_absent_exits_zero_empty_stdout above removes jq from
+    PATH entirely, which exits at the earlier six-field-read gate and never
     reaches this line at all.
     """
     fake_bin = tmp_path / "fake-bin"
