@@ -763,17 +763,19 @@ class TestSkillFidelityReviewerNameResolutionOrdering:
 
 
 class TestSkillFidelityReviewerArchitectConsultCheck:
-    """Pin the architect-consult check's mandatory-emission contract and the
-    Input-contract correction it depends on.
+    """Pin the architect-consult check's narrowed two-case emission contract
+    and the Input-contract correction it depends on.
 
-    The check can never legitimately emit [SILENT-SKIP] -- a reviewer that
-    reverted to treating zero rows as an unmet obligation would silently
-    reintroduce the false-claim risk this forecloses. And the Input
-    contract's two stale clauses must stay corrected:
-    a future edit that reintroduced either -- "every Agent/Task dispatch" or
-    "present only for code-review's obligation" -- would make the agent
-    believe absence of a row proves absence of a dispatch, which the new
-    step's own reasoning depends on being false.
+    The check emits [SILENT-SKIP] in exactly one case -- a gate-deny row with
+    no later consult row on the timeline -- and forecloses it everywhere
+    else: a reviewer that reverted to treating zero `architect-consult` rows
+    alone as an unmet obligation would silently reintroduce the false-claim
+    risk the no-deny case forecloses. And the Input contract's two stale
+    clauses must stay corrected: a future edit that reintroduced either --
+    "every Agent/Task dispatch" or "present only for code-review's
+    obligation" -- would make the agent believe absence of a row proves
+    absence of a dispatch, which the no-deny case's own reasoning depends on
+    being false.
     """
 
     def _body(self):
@@ -795,19 +797,49 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
         assert "## The architect-consult check" in body
         assert "independent of whether any `code-review` pass is in scope" in self._section(body)
 
-    def test_silent_skip_named_inapplicable(self):
-        """[SILENT-SKIP] must be explicitly ruled out for this check, with
-        the absence-is-not-evidence reason -- not merely omitted."""
+    def test_silent_skip_named_inapplicable_in_no_deny_case(self):
+        """[SILENT-SKIP] must be explicitly ruled out for the no-deny case,
+        with the absence-is-not-evidence reason -- not merely omitted.
+        Scoped to the no-deny sub-heading alone, not the whole section span,
+        so this can't pass on text that now lives in the gate-deny
+        sub-heading instead."""
         section = self._section(self._body())
-        assert "never `[SILENT-SKIP]`" in section
-        assert "absence of a row is not evidence of absence" in section
+        no_deny_start = section.index("### No gate deny on the branch's timeline")
+        gate_deny_start = section.index("### A gate deny with no later consult")
+        assert no_deny_start < gate_deny_start, (
+            "the no-deny sub-heading is expected to precede the gate-deny sub-heading"
+        )
+        no_deny_section = section[no_deny_start:gate_deny_start]
+        assert "never `[SILENT-SKIP]`" in no_deny_section
+        assert "absence of a row is not evidence of absence" in no_deny_section
 
-    def test_states_two_outcome_verdict_set(self):
-        """The check's two honest outcomes -- consult-observed [DISCLOSED]
-        and the dismissed-as-undecidable fallback -- must both appear."""
+    def test_states_three_outcome_verdict_set(self):
+        """The check's three honest outcomes -- consult-observed [DISCLOSED],
+        the dismissed-as-undecidable fallback, and the narrowed
+        [SILENT-SKIP] exception -- must all appear. This method is the
+        class's single enumeration of the verdict set."""
         section = self._section(self._body())
         assert "[DISCLOSED]" in section
         assert "Dismissed as undecidable" in section
+        gate_deny_start = section.index("### A gate deny with no later consult")
+        assert "[SILENT-SKIP]" in section[gate_deny_start:]
+
+    def test_gate_deny_exception_named_in_gate_deny_case(self):
+        """The one case that earns [SILENT-SKIP] -- a denial row naming the
+        architect-consult gate with no later consult row -- must be pinned
+        in its own sub-heading, keyed on the message text rather than the
+        hook field."""
+        section = self._section(self._body())
+        no_deny_start = section.index("### No gate deny on the branch's timeline")
+        gate_deny_start = section.index("### A gate deny with no later consult")
+        assert no_deny_start < gate_deny_start, (
+            "the no-deny sub-heading is expected to precede the gate-deny sub-heading"
+        )
+        gate_deny_section = section[gate_deny_start:]
+        assert "is the one exception that earns `[SILENT-SKIP]`:" in gate_deny_section
+        assert "Blocked by architect-consult gate:" in gate_deny_section
+        assert "no later `architect-consult` row on the same branch's timeline" in gate_deny_section
+        assert "never on the row's `hook=` field" in gate_deny_section
 
     def test_initiation_not_completion_wording(self):
         """The check must state a consult dispatch was initiated, never that
@@ -827,10 +859,18 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
 
     def test_input_contract_names_architect_consult_rows(self):
         """The Input contract must say what the timeline does contain --
-        reviewer-spawn rows plus architect-consult rows, main thread only."""
+        reviewer-spawn rows and architect-consult rows, both sourced from
+        the main thread and every dispatched subagent, marked by a `thread`
+        field, with the widening's safety rationale pinned at its single
+        source rather than restated here. Each assertion pins a distinct
+        clause of the split sentence, not overlapping substring slices of
+        one unbroken sentence -- an innocuous rewording of one clause can
+        trip at most one of these."""
         body = self._body()
         assert "`architect-consult` rows" in body
-        assert "main-thread only, never subagent records" in body
+        assert "Both row types are sourced from the main thread and every dispatched subagent's own transcript" in body
+        assert "marked with a `thread` field" in body
+        assert "design-decisions.md` §58" in body
 
     def test_description_names_architect_consult_check(self):
         """The frontmatter description must name the third check for a
@@ -937,9 +977,11 @@ class TestPrDescriptionCostSectionWiring:
     that script rather than in this skill body (docs/worktree-bash-guard.md),
     so pinning their exact source shape a second time here would be
     redundant with that behavioral suite -- same reasoning this class
-    already applies to install.sh's own _report_account_sentinel. This class
-    only proves the delimiters, the script-call wiring, and the raw-markdown
-    embedding rule are present in the skill body's source text.
+    already applies to install.sh's own _report_account_sentinel. The
+    delimiters, the heading, and the reproducibility trailer are emitted by
+    pr-cost-section.sh and pinned byte-exactly by test_pr_cost_section.py.
+    This class only proves the skill body still names the script, both
+    delimiters, the heading, and the raw-markdown rule.
     """
 
     def _body(self):
@@ -2236,6 +2278,21 @@ def test_handoff_and_brief_warn_against_read_to_verify(skill_name: str) -> None:
     assert pin in body, (
         f"{skill_name}/SKILL.md must warn that a Read of its continuity file "
         f"consumes it — expected the shared fragment {_READ_CONSUMES_FILE_PIN!r}"
+    )
+
+
+@pytest.mark.parametrize("skill_name", sorted(_DURABLE_WRITE_TARGETS))
+def test_handoff_and_brief_reference_find_consumed_continuity_file(skill_name: str) -> None:
+    """Content-consistency check only, not a behavioral test (test_resume_context.py
+    and test_find_consumed_continuity_file.py cover the script's actual
+    behavior) — the only guard previously named for the "does not name where
+    the file went" clause was the line-count ceiling, which says nothing
+    about whether the replacement prose itself references the new lookup
+    script."""
+    body = _skill_file(skill_name).read_text()
+    assert "find-consumed-continuity-file" in body, (
+        f"{skill_name}/SKILL.md must reference find-consumed-continuity-file "
+        "as the recovery path for an already-consumed continuity file"
     )
 
 

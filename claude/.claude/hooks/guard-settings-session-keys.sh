@@ -81,8 +81,8 @@ fi
 # that empty baseline, a staged guarded key denies same as always; a staged
 # file with none of the guarded keys still allows.
 # Latency tradeoff: see docs/design-decisions.md's entry for
-# _lib_resolve_default_branch (#54).
-DEFAULT_BRANCH=$(_lib_resolve_default_branch "$CWD")
+# _lib_default_branch_or_guess (#54).
+if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$CWD"); then DEFAULT_BRANCH=""; fi
 STAGED_CONTENT=$(_lib_capped git -C "$CWD" show :"$SETTINGS_REPO_PATH" 2>/dev/null)
 if [ -z "$DEFAULT_BRANCH" ] || ! _lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" >/dev/null 2>&1; then
   MAIN_CONTENT=""

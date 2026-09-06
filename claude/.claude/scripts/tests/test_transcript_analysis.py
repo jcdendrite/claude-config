@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -3058,11 +3059,9 @@ class TestReviewTrace:
         emitted_consult = any(e["kind"] == "architect-consult" for e in events)
         assert emitted_consult is expect_consult
 
-    def test_sidechain_architect_consult_excluded(self):
-        """A plan-architect consult dispatch inside a sidechain record must
-        not produce an architect-consult event -- review-trace's session_iter
-        never requests subagent records, so a consult dispatched from inside
-        a subagent is structurally invisible here."""
+    def test_sidechain_architect_consult_now_detected(self):
+        """A plan-architect consult dispatch inside a sidechain record
+        produces an architect-consult event, tagged thread=sidechain."""
         records = [
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   sidechain=True,
@@ -3071,7 +3070,9 @@ class TestReviewTrace:
         events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
             records, None, None, None,
         )
-        assert events == []
+        assert len(events) == 1
+        assert events[0]["kind"] == "architect-consult"
+        assert events[0]["thread"] == "sidechain"
 
     def test_non_plan_architect_dispatch_never_misclassified_as_consult(self):
         """A staff-backend-engineer dispatch with no MODE=plan-sections first
@@ -3109,7 +3110,10 @@ class TestReviewTrace:
     def test_architect_consult_event_key_set_carries_no_prompt_derived_field(self):
         """The blindness property pinned at the layer it is defined: the
         event dict itself carries only the classification result plus the
-        metadata every event kind carries, never a prompt-derived field."""
+        metadata every event kind carries, never a prompt-derived field.
+        thread is record-structural -- derived from the record's own
+        isSidechain flag, never from the prompt -- so its presence here
+        does not weaken the pin."""
         records = [
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect",
@@ -3120,7 +3124,7 @@ class TestReviewTrace:
         )
         consult_events = [e for e in events if e["kind"] == "architect-consult"]
         assert len(consult_events) == 1
-        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model"}
+        assert consult_events[0].keys() == {"kind", "ts", "line_no", "branch", "model", "thread"}
 
     def test_architect_consult_prompt_body_never_reaches_review_trace_output(self, fake_projects, capsys):
         """The prompt string is never stored on the event dict, so it can
@@ -3162,8 +3166,9 @@ class TestReviewTrace:
         assert "consult-only.jsonl" in out
         assert "consult      " in out
 
-    def test_sidechain_skill_invocation_excluded(self):
-        """A code-review Skill call inside a sidechain record must not produce a skill event."""
+    def test_sidechain_skill_invocation_now_detected(self):
+        """A code-review Skill call inside a sidechain record produces a
+        skill event, tagged thread=sidechain."""
         records = [
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z",
@@ -3173,7 +3178,220 @@ class TestReviewTrace:
         events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
             records, None, None, None,
         )
-        assert events == []
+        assert len(events) == 1
+        assert events[0]["kind"] == "skill"
+        assert events[0]["thread"] == "sidechain"
+
+    # -----------------------------------------------------------------------
+    # GH-896: merge/sort of main and subagent records
+    # -----------------------------------------------------------------------
+
+    def test_review_trace_end_to_end_detects_consult_dispatched_from_subagent_file(
+        self, fake_projects, capsys
+    ):
+        """End to end through cmd_review_trace's own scope resolution (not
+        just the direct _review_trace_session_events call the other tests in
+        this class use): a plan-architect consult dispatched from inside a
+        subagent's own <session_id>/subagents/*.jsonl file is detected now
+        that include_subagents=True is the default, and its timeline row
+        prints thread=sidechain with its line number suppressed as n/a,
+        since a sidechain event's line_no indexes no real file."""
+        session_id = "sess-subagent-consult"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-backend-engineer")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:05:00.000Z",
+                  content=[_agent_use("a2", "plan-architect", prompt="MODE=consult\nquestion")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert "architect-consults=1" in out
+        assert "thread=sidechain" in out
+        assert "line   n/a" in out
+
+    def test_merged_stream_interleaves_main_and_sidechain_chronologically(self):
+        """Main and subagent records are merged into one chronological
+        stream before detection, not left in main-then-subagent
+        concatenation order: a subagent record timestamped between two
+        main-thread records lands between their events in the emitted
+        timeline."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s3", "ready-for-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "ready-for-review", "plan-review"]
+        assert [e["thread"] for e in events] == ["main", "sidechain", "main"]
+
+    def test_line_no_still_resolves_to_main_file_line_after_sort(self):
+        """A thread=main event's line_no still equals its position in the
+        main transcript after the merge sort reorders it relative to a
+        later-positioned but earlier-timestamped subagent record."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),  # main file line 1, later ts
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T09:00:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),  # subagent record, earlier ts
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert events[0]["thread"] == "sidechain"
+        assert events[1]["thread"] == "main"
+        assert events[1]["line_no"] == 1
+
+    def test_interior_unparseable_timestamp_forward_fills_and_stays_adjacent(self):
+        """An interior record whose timestamp fails to parse forward-fills
+        the immediately preceding record's effective_ts, so it sorts
+        adjacent to that neighbour rather than raising TypeError or
+        drifting elsewhere in the stream."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="not-a-timestamp",
+                  content=[_skill_use("s2", "plan-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
+                  content=[_skill_use("s3", "ready-for-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "plan-review", "ready-for-review"]
+
+    def test_leading_unparseable_timestamp_sorts_to_head_not_typeerror(self):
+        """A leading record whose timestamp fails to parse has no preceding
+        record to forward-fill from -- it falls back to float("-inf") and
+        sorts to the head of the stream instead of raising TypeError
+        against its neighbour's float key, a distinct case from an interior
+        unparseable timestamp above."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="feat", ts="not-a-timestamp",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s2", "plan-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["skill"] for e in events] == ["code-review", "plan-review"]
+
+    def test_same_timestamp_main_sidechain_tie_break_main_first(self):
+        """Two records sharing one timestamp, one main and one sidechain,
+        place the main event first -- the tie-break is a stated choice
+        (cause before effect), not inherited from the records' own list
+        position, which here has the sidechain record listed ahead of the
+        main one."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s1", "code-review")]),
+            _asst("claude-sonnet-4-6", branch="feat",
+                  ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s2", "plan-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["thread"] for e in events] == ["main", "sidechain"]
+        assert [e["skill"] for e in events] == ["plan-review", "code-review"]
+
+    def test_sidechain_event_inherits_main_threads_branch_not_its_own(self):
+        """A sidechain event's branch is the carried-forward value from the
+        preceding main-thread record, never the sidechain record's own
+        gitBranch -- the isSidechain guard on the carry-forward trackers
+        (docs/design-decisions.md §58) is load-bearing specifically because
+        lifting it would attribute a sidechain event to its own record's
+        branch instead of the dispatching main thread's. Every other
+        sidechain fixture in this file sets the sidechain record's own
+        branch equal to the preceding main record's, so only a fixture with
+        a genuinely differing sidechain gitBranch can catch a regression
+        that reads it directly."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="A", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="B", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["branch"] == "A"
+
+    def test_denial_dedup_by_tool_use_id_survives_sort_reorder(self):
+        """A denial recorded as both a sidechain attachment record and its
+        earlier-timestamped main-thread current-format twin still collapses
+        to one event once the merge sort reorders them ahead of their
+        original list position -- dedup runs against the sorted stream, not
+        the pre-sort one."""
+        attach = _hook_deny("worktree", ts="2026-05-19T10:05:00.000Z")  # toolUseID == toolu_worktree
+        attach["isSidechain"] = True
+        twin = _hook_deny_current(
+            "Blocked by worktree-enforcement hook: 'git add' not allowed.",
+            tool_id="toolu_worktree", ts="2026-05-19T10:00:00.000Z",
+        )
+        # attach (sidechain, later ts) is listed first; twin (main, earlier
+        # ts) is listed second -- pre-sort order is the reverse of
+        # chronological order, so this exercises the merge sort as well as
+        # dedup.
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            [attach, twin], None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["kind"] == "denial"
+        # hook_name=="" (rather than "worktree") proves the sort actually ran
+        # twin (main, earlier ts) ahead of attach before dedup, not merely
+        # that dedup collapsed whichever one happened to be processed first.
+        assert events[0]["hook_name"] == ""
+        assert events[0]["thread"] == "main"
+
+    def test_forward_fill_does_not_cross_subagent_file_boundary(self, fake_projects, capsys):
+        """An unparseable-timestamp record that is the first record of its
+        own subagent file resets to the earliest sort position instead of
+        forward-filling from a different subagent file's last record --
+        filename-sorted subagent files carry no chronological relationship
+        to each other, so a global (rather than per-source-group)
+        forward-fill would wrongly inherit agent-1's late timestamp into
+        agent-2's own first record. Exercised end to end through
+        cmd_review_trace, since the per-file group boundary this needs only
+        exists once records are read via real subagent files, not via a
+        hand-built flat records list."""
+        session_id = "sess-cross-file-forward-fill"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T15:00:00.000Z",
+                  content=[_skill_use("s-main", "skill-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T20:00:00.000Z",
+                  content=[_skill_use("s-a1", "code-review")]),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-2", [
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="not-a-timestamp",
+                  content=[_skill_use("s-a2-bad", "plan-review")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True,
+                  ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s-a2-good", "ready-for-review")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        # agent-2's own unparseable-ts record (plan-review) must sort ahead
+        # of agent-2's own later, real-ts record (ready-for-review), and
+        # both ahead of main (skill-review, 15:00) and agent-1 (code-review,
+        # 20:00, the last record of the *other*, filename-earlier-sorted
+        # subagent file) -- not fall back to agent-1's 20:00 timestamp,
+        # which would instead sort plan-review last.
+        assert (
+            out.index("plan-review") < out.index("ready-for-review")
+            < out.index("skill-review") < out.index("code-review")
+        )
 
     def test_since_boundary_inclusive_record_included(self):
         """A record whose timestamp matches exactly --since is included."""
@@ -4259,6 +4477,33 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
         assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+
+
+class TestComputeDenySummaryDataGroupBoundaryFreshRead:
+    """_compute_deny_summary_data must derive group_boundaries from the same
+    read that produces its records, not from session_iter's own records
+    paired with an independent, later _read_session_file_partitioned call --
+    the two reads can observe a growing transcript file differently."""
+
+    def test_stale_session_iter_records_are_replaced_by_the_fresh_disk_read(self, fake_projects):
+        """session_iter hands in a deliberately empty records list for this
+        session -- simulating a read taken before the main and subagent
+        files carried their denials -- while the real on-disk files already
+        have one denial each. Both denials must still surface, proving
+        detection runs against a fresh read of the files, not the stale,
+        empty tuple session_iter provided."""
+        session_id = "sess-toctou"
+        jsonl = fake_projects / f"{session_id}.jsonl"
+        _write_jsonl(jsonl, [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="b2"),
+        ])
+
+        data = _mod._compute_deny_summary_data([(jsonl, [])])
+
+        assert dict(data["hook_counts"]) == {"code-review": 1, "ready-for-review": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -7612,6 +7857,35 @@ def _extract_cache_rebuild_row(out: str, row_label: str) -> tuple[int, str]:
     raise AssertionError(f"row not found for {row_label!r}")
 
 
+def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
+    """Read cache-rebuild's 'Subagent per-dispatch dispersion' block's
+    labeled stat lines and its own coverage-disclosure line -- neither
+    _extract_cache_rebuild_row (label + 1-2 numeric cells) nor _table_cols
+    (fixed-width table rows) can parse these, since each is its own
+    free-text sentence, not a table row. Matches on exact sentence wording,
+    not header position like _table_cols -- a wording-only edit to the
+    dispersion block's own print statements, with no behavior change,
+    breaks every test using this extractor."""
+    eligible = re.search(r"Subagent dispatches \(dispatches with any 5m-tier write\): ([\d,]+)", out)
+    clearing = re.search(r"Dispatches individually clearing their own break-even ratio: ([\d,]+)", out)
+    share = re.search(r"Their share of per-dispatch subagent W5m \(not the pooled row above\): ([\d.]+%)", out)
+    net = re.search(r"Net \$ restricted to clearing dispatches: (-?[\d,]+\.\d\d)", out)
+    uncovered = re.search(r"\(([\d,]+) of ([\d,]+) pooled subagent W5m tokens landed in no dispatch group", out)
+    assert eligible is not None, "'Subagent dispatches' line not found in output"
+    assert clearing is not None, "'Dispatches individually clearing' line not found in output"
+    assert share is not None, "'Their share of per-dispatch subagent W5m' line not found in output"
+    assert net is not None, "'Net $ restricted to clearing dispatches' line not found in output"
+    assert uncovered is not None, "dispersion coverage-disclosure line not found in output"
+    return {
+        "eligible": int(eligible.group(1).replace(",", "")),
+        "clearing": int(clearing.group(1).replace(",", "")),
+        "share": share.group(1),
+        "net": net.group(1).replace(",", ""),
+        "uncovered_w5m": int(uncovered.group(1).replace(",", "")),
+        "pooled_subagent_w5m": int(uncovered.group(2).replace(",", "")),
+    }
+
+
 class TestCacheRebuildExcessPricing:
     """Direct unit coverage for _cache_rebuild_excess_dollars -- new pricing
     logic (the counterfactual warm-read leg) not exercised by any of
@@ -7666,21 +7940,24 @@ class TestCacheRebuildClassification:
     def test_dedup_synthetic_exclusion_cause_classification_and_priced_excess(
         self, fake_projects, capsys
     ):
-        """One transcript combining: a multi-record requestId run (must
-        dedup to one small, non-tail call), a requestId-less <synthetic>
-        entry (must be excluded from both pricing and the i/prev_ts/
-        prev_model bookkeeping), the transcript's own first call (must
-        classify session start, never an idle bucket), a flat-field
-        cache_creation fallback (classifies unexplained at a sub-5-minute
-        gap; its pricing-as-5m-only is covered separately by
-        test_flat_cache_creation_fallback_priced_as_5m_only), a record with
-        no timestamp at all and,
-        separately, a negative-gap clock-skew pair and a genuinely garbled
-        (non-empty) timestamp string (all three must classify as the
-        explicit timestamp-anomaly bucket, never silently folded into idle
-        or unexplained), a 6-minute gap (idle 5m-1h, with its priced excess
-        hand-computed below), and a model switch at a sub-5-minute gap
-        (classifies model switch, not unexplained)."""
+        """One transcript exercising every classification case:
+        - a multi-record requestId run (dedups to one small, non-tail call)
+        - a requestId-less <synthetic> entry (excluded from both pricing and
+          the i/prev_ts/prev_model bookkeeping)
+        - the transcript's own first call (session start, never an idle
+          bucket)
+        - a flat-field cache_creation fallback (unexplained at a sub-5-minute
+          gap; its pricing-as-5m-only is covered separately by
+          test_flat_cache_creation_fallback_priced_as_5m_only)
+        - a record with no timestamp at all (timestamp-anomaly bucket)
+        - a negative-gap clock-skew pair (timestamp-anomaly bucket)
+        - a genuinely garbled, non-empty timestamp string (timestamp-anomaly
+          bucket -- none of these three anomalies is silently folded into
+          idle or unexplained)
+        - a 6-minute gap (idle 5m-1h, priced excess hand-computed below)
+        - a model switch at a sub-5-minute gap (model switch, not
+          unexplained)
+        """
         run_ts = "2026-08-01T10:01:00.000Z"
         records = [
             # i=0: first call ever -- session start, regardless of tail size.
@@ -7804,6 +8081,538 @@ class TestCacheRebuildGroupBoundary:
         assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
         assert _extract_cache_rebuild_row(out, "model switch")[0] == 0
         assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
+
+
+class TestCacheRebuildSwitchDeltaPricing:
+    """Direct unit coverage for _cache_rebuild_switch_delta_dollars, mirroring
+    TestCacheRebuildExcessPricing's three cases -- the new helper's own
+    fast-mode/US-geo/unpriced-model parity is exercised nowhere else, since
+    the pooled-report fixtures below use only claude-sonnet-5 with no
+    speed/inference_geo variation."""
+
+    def test_fast_mode_multiplier_applies_to_both_switch_cost_and_rescue_legs(self):
+        """Mirrors _price_turn's own fast-mode multiplier: a wholly
+        idle-5m-1h-cause call's switch delta is the negation of that same
+        call's own _cache_rebuild_excess_dollars value (write $5.00, warm
+        read $0.40, excess $4.60 -- see TestCacheRebuildExcessPricing's own
+        fast-mode case)."""
+        usage = _priced("claude-sonnet-5", ephemeral_5m=1_000_000, speed="fast")["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_switch_delta_dollars(
+            "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(-4.60)
+        assert unpriced_tokens == 0
+
+    def test_unpriced_model_returns_none_delta_not_a_silent_zero(self):
+        """A model absent from _MODEL_BASE_INPUT_RATES must not silently
+        price its delta as $0 -- callers distinguish 'unpriced' from 'priced
+        at zero' via the None sentinel, matching _price_turn's own
+        unpriced-model contract."""
+        usage = _priced("claude-unknown-model", ephemeral_5m=1_000_000, input=10, output=5)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_switch_delta_dollars(
+            "claude-unknown-model", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta is None
+        assert unpriced_tokens > 0
+
+    def test_fable_5_1_uses_reduced_cache_read_multiplier_not_hardcoded_1_9(self):
+        """A hardcoded (2 - 0.1) = 1.9 coefficient would price this call's
+        rescue leg at 1,000,000/1e6 * 10.00*1.9 = 19.00, giving a delta of
+        -11.50; the correct, per-model-resolved coefficient uses Fable
+        5.1's own reduced 0.025x cache-read multiplier ((2 - 0.025) = 1.975,
+        rescue $19.75), giving -12.25 -- identical to that same call's own
+        _cache_rebuild_excess_dollars value."""
+        usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_switch_delta_dollars(
+            "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(-12.25)
+        assert unpriced_tokens == 0
+
+
+class TestCacheRebuildNegateSwitchDeltaForDisplay:
+    """Direct unit coverage for _negate_switch_delta_for_display's own
+    sign-bit guard -- exercised elsewhere only indirectly, through a full
+    report run and a regex-parsed "Net$" cell
+    (test_exact_break_even_boundary_nets_zero_and_the_strict_inequality_holds)."""
+
+    def test_a_tiny_positive_residual_negates_to_positive_zero_not_negative_zero(self):
+        """A +1e-16 floating-point residual at an exact break-even point
+        must not print as the misleading "-0.00" once negated: round(0.0 -
+        1e-16, 2) underflows to -0.0 without the function's own + 0.0
+        guard."""
+        result = _mod._negate_switch_delta_for_display(1e-16)
+        assert result == 0.0
+        assert math.copysign(1.0, result) == 1.0
+
+    def test_negates_and_rounds_a_genuine_nonzero_delta(self):
+        """-4.567 mirrors the sign _cache_rebuild_switch_delta_dollars
+        actually accumulates (see TestCacheRebuildSwitchDeltaPricing's own
+        negative deltas); negation makes it a positive savings figure."""
+        assert _mod._negate_switch_delta_for_display(-4.567) == pytest.approx(4.57)
+
+
+class TestCacheRebuildOriginSplit:
+    """Verification items 1-2 (.claude/plans/subagent-idle-gap-cache-rebuild-split.md):
+    origin classification must be per-record via isSidechain, not by which
+    source file (group) a record came from, and the sequential gap-chain
+    used for cause classification must be keyed per (group, origin), not
+    per group alone."""
+
+    def test_main_and_subagent_idle_gap_rebuilds_each_land_in_their_own_origin_row(
+        self, fake_projects, capsys
+    ):
+        """One main-thread and one subagent idle-5m-1h rebuild in the same
+        fixture session: each origin's rebuild lands in its own row of the
+        new origin-split block, and the corpus-wide cause-breakdown and
+        concurrency-split totals this instrument already printed are
+        unchanged by adding the split."""
+        session_id = "sess-origin-split"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 2
+        assert _extract_cache_rebuild_row(out, "Everything idle (a break)") == (2, "0.69")
+
+        assert _extract_cache_rebuild_row(out, "main") == (1, "0.23")
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+
+    def test_inline_sidechain_record_in_main_file_counts_as_subagent_origin_and_own_gap_chain(
+        self, fake_projects, capsys
+    ):
+        """A record carrying isSidechain: true, written into the MAIN
+        transcript file (not a subagents/*.jsonl file), must count as
+        subagent origin -- a group_index > 0 classifier would misfile this
+        record's tokens under "main" instead. It must also be classified
+        against its OWN origin's prior call, not whichever record precedes
+        it in file order: a chain keyed per group alone would compare this
+        record to the immediately preceding main-thread record instead of
+        treating it as its own chain's first-ever call."""
+        main_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z", request_id="main-1",
+        )
+        # 350s after main-1. Correctly classified: the SUBAGENT chain's own
+        # first-ever call (session start), regardless of the elapsed time
+        # from main-1 -- a chain shared with the main thread would instead
+        # see this as the group's 2nd record and classify idle 5m-1h.
+        sidechain_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=150_000, ts="2026-08-01T10:05:50.000Z", request_id="sub-inline-1",
+        )
+        sidechain_first["isSidechain"] = True
+        # Main thread's own 2nd call: 355s after main-1, but only 5s after
+        # the inline sidechain record above. Correctly classified against
+        # main-1 (idle 5m-1h) -- a chain shared across origins would instead
+        # compare it to the sidechain record 5s earlier and classify
+        # unexplained.
+        main_second = _priced(
+            "claude-sonnet-5", ephemeral_5m=150_000, ts="2026-08-01T10:05:55.000Z", request_id="main-2",
+        )
+        _write_jsonl(fake_projects / "sess.jsonl", [main_first, sidechain_first, main_second])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        # Two session starts (main's own, and the sidechain's own first
+        # call), one idle-5m-1h (main's 2nd call), zero unexplained -- a
+        # group-level (not per-origin) chain would instead produce one
+        # session start, one idle-5m-1h (the sidechain record, wrongly),
+        # and one unexplained (main's 2nd call, wrongly). The idle-5m-1h
+        # COUNT is coincidentally 1 either way, which is why the
+        # session-start/unexplained counts, and the per-origin X split
+        # below, are this test's real assertions.
+        assert _extract_cache_rebuild_row(out, "session start")[0] == 2
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        assert _extract_cache_rebuild_row(out, "unexplained")[0] == 0
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "150,000"
+        assert subagent_row["X"] == "0"
+        main_row = _table_cols(out, header_contains="Ratio", row_contains="main")
+        assert main_row["W5m"] == "250,000"
+        assert main_row["X"] == "150,000"
+
+
+class TestCacheRebuildSwitchDeltaThresholdIndependence:
+    """Verification item 3: W5m and X must be threshold-independent -- both
+    accumulate over every in-scope call, not just tail (>= threshold) ones."""
+
+    def test_sub_threshold_calls_count_toward_w5m_and_x_but_stay_invisible_in_tail_cause_table(
+        self, fake_projects, capsys
+    ):
+        """Three sub-threshold subagent calls: none crosses the 100,000-token
+        tail threshold, so none appears in the cause-breakdown table or the
+        'Calls writing >= ... tokens' tail count -- but their own 5m-tier
+        write tokens still accumulate into W5m, and the one classified idle
+        5m-1h still accumulates into X. The likelier implementer mistake
+        this pins: gating X's own accumulation on the same in_tail check
+        that gates the cause table, rather than accumulating it
+        unconditionally."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=10_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            # 400s gap -- idle 5m-1h, but sub-threshold (30,000 < 100,000).
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=30_000,
+                ts="2026-08-01T10:06:40.000Z", request_id="sub-2",
+            ),
+            # 10s gap -- not idle, also sub-threshold.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=20_000,
+                ts="2026-08-01T10:06:50.000Z", request_id="sub-3",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_cache_rebuild_summary(out)
+        assert summary["tail"] == "0"
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
+        assert _extract_cache_rebuild_row(out, "session start")[0] == 0
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "60,000"
+        assert subagent_row["X"] == "30,000"
+
+
+class TestCacheRebuildSwitchDeltaNumeratorBoundaries:
+    """Verification item 4: X excludes idle >1h (a 1-hour cache is also
+    cold past 3600s) and pure-1h-tier writes (can't have been forced by a
+    <1h gap) -- extends TestCacheRebuildCacheTierGapMismatch's fixture shape
+    to a subagent-origin record."""
+
+    def test_idle_over_1h_and_pure_1h_tier_subagent_writes_stay_out_of_x(self, fake_projects, capsys):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            # 3,900s gap -- idle >1h. Excluded from X despite carrying
+            # 5m-tier write tokens (it still counts toward W5m).
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=150_000,
+                ts="2026-08-01T11:05:00.000Z", request_id="sub-2",
+            ),
+            # 6-minute gap, but a PURE ephemeral_1h-tier write (no
+            # ephemeral_5m at all) -- the 1h-TTL cache can't have expired
+            # inside 6 minutes, so this reclassifies unexplained and
+            # contributes nothing to either W5m or X (no eph_5m tokens).
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=200_000,
+                ts="2026-08-01T11:11:00.000Z", request_id="sub-3",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "150,100"
+        assert subagent_row["X"] == "0"
+
+
+class TestCacheRebuildSwitchDeltaArithmetic:
+    """Verification items 5-6: the printed net dollar figure for the
+    subagent origin row is savings-positive and uses the correct, per-model
+    coefficients, and the break-even boundary is exact, not a
+    rounded-decimal approximation."""
+
+    def test_default_rate_model_break_even_arithmetic(self, fake_projects, capsys):
+        """X = 500,000, W5m = 1,000,000 on claude-sonnet-5 ($2.00/MTok
+        base): net = (1.9 x 500,000 - 0.75 x 1,000,000) / 1e6 * $2.00 =
+        $0.40, savings-positive per the report's negation step -- a fixture
+        that instead asserted the helper's own pre-negation per-call sum
+        would expect -$0.40."""
+        records = [
+            # Session start: contributes 500,000 to W5m only (not X).
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            # 6-minute gap -- idle 5m-1h: contributes 500,000 to both W5m
+            # and X.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "1,000,000"
+        assert subagent_row["X"] == "500,000"
+        assert subagent_row["Net$"] == "0.40"
+
+    def test_exact_break_even_boundary_nets_zero_and_the_strict_inequality_holds(
+        self, fake_projects, capsys
+    ):
+        """X = 150,000, W5m = 380,000 is the exact rational break-even
+        (150,000/380,000 = 15/38 = 0.75/1.9), not the rounded 0.3947 display
+        figure -- a fixture built at the rounded decimal would sit
+        measurably off the true boundary and couldn't discriminate '>'
+        from '>='. Net must print exactly $0, not the "-0.00" a raw,
+        un-rounded floating-point cancellation could otherwise leave."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=230_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=150_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "380,000"
+        assert subagent_row["X"] == "150,000"
+        assert subagent_row["Net$"] == "0.00"
+
+        # The fixture's single subagent group sits exactly at the break-even
+        # ratio -- it must not count as "clearing" under the strict '>' this
+        # test's own docstring pins, which a '>=' off-by-one would flip.
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["clearing"] == 0
+
+
+class TestCacheRebuildSwitchDeltaZeroState:
+    def test_no_sidechain_records_prints_zero_valued_subagent_row(self, fake_projects, capsys):
+        """A corpus with no sidechain records at all still renders a
+        zero-valued subagent row in every new block, matching the
+        per-account zero-seeding convention, rather than vanishing -- and
+        the dispersion block's own share-of-zero division doesn't raise."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (0, "0.00")
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "0"
+        assert subagent_row["X"] == "0"
+        assert subagent_row["Net$"] == "0.00"
+
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["eligible"] == 0
+        assert dispersion["clearing"] == 0
+        assert dispersion["share"] == "0.0%"
+        assert dispersion["net"] == "0.00"
+
+
+class TestCacheRebuildSubagentDispersion:
+    """Verification item 8: per-dispatch dispersion is computed against each
+    subagent group's OWN X and W5m, not the pooled corpus-wide denominator --
+    the mechanism Phase 0c's Outcome 2 (a selective lever not excluded)
+    would read off."""
+
+    def test_per_group_ratios_dispersion_excludes_zero_w5m_group_and_counts_sub_threshold_calls(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-dispersion"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+
+        # This dispatch's own ratio (150,000/200,000 = 0.75) clears the
+        # default-rate break-even (0.3947) with margin.
+        clearing_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=50_000, ts="2026-08-01T10:00:00.000Z", request_id="c-1"),
+            # Sub-threshold (10,000 < 100,000 default threshold) but idle
+            # 5m-1h -- must still count toward THIS group's own X/W5m
+            # (per-group threshold independence, mirroring the pooled fix
+            # above).
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=10_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="c-2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=140_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="c-3",
+            ),
+        ]
+        for rec in clearing_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-clearing", clearing_records)
+
+        # This dispatch's own ratio (10,000/200,000 = 0.05) does not clear.
+        non_clearing_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=190_000, ts="2026-08-01T10:00:00.000Z", request_id="n-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=10_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="n-2",
+            ),
+        ]
+        for rec in non_clearing_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-non-clearing", non_clearing_records)
+
+        # No 5-minute-tier writes at all -- undefined ratio, excluded from
+        # both the clearing count and the W5m-share denominator, and must
+        # not raise a division error.
+        zero_w5m_record = _priced(
+            "claude-sonnet-5", ephemeral_1h=100_000, ts="2026-08-01T10:00:00.000Z", request_id="z-1",
+        )
+        zero_w5m_record["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-zero-w5m", [zero_w5m_record])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["eligible"] == 2
+        assert dispersion["clearing"] == 1
+        assert dispersion["share"] == "50.0%"
+        assert dispersion["net"] == "0.27"
+
+    def test_unpriced_model_call_inside_a_priced_group_is_excluded_from_that_groups_own_w5m_and_x(
+        self, fake_projects, capsys
+    ):
+        """A group's own W5m/X reflect only its priced calls -- per-group
+        accumulation happens exclusively inside the priced branch of the
+        report's accumulation block, by design (an unpriced call has no
+        delta_dollars to fold into group_delta_dollars, and a group's
+        "clears/doesn't clear" verdict must be computed over the same
+        population as its own ratio). agent-1's own priced calls (40,000
+        session-start + 100,000 idle-5m-1h) clear the default-rate
+        break-even at ratio 100,000/140,000 = 0.714. A second,
+        unambiguously non-clearing group (agent-2, own ratio 10,000/200,000
+        = 0.05) sits alongside it so the dispersion block has two eligible
+        groups -- with only one eligible group, "share" reduces to
+        w5m/w5m = 100% regardless of what that group's own w5m actually is,
+        so a regression that folds the unpriced call's tokens into
+        agent-1's own group_w5m_tokens too (e.g. moving that accumulator
+        line outside the price-gated branch) would leave "share" unchanged
+        at 100% and go undetected; with agent-2 present, the same
+        regression inflates agent-1's numerator and denominator by
+        different amounts (agent-1 alone is the numerator, both groups sum
+        to the denominator), so "share" moves from 41.2% to 85.1% and the
+        assertion below catches it. The unpriced call's tokens still count
+        toward the POOLED subagent W5m (price-independent there, by
+        design), which is exactly what the dispersion block's own
+        coverage-disclosure line reports as uncovered, and its excluded
+        turn/token count is exactly what the switch-delta table's own
+        unpriced-model disclosure line reports."""
+        session_id = "sess-unpriced-in-group"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=40_000, ts="2026-08-01T10:00:00.000Z", request_id="u-1"),
+            # 6-minute gap -- idle 5m-1h, priced.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="u-2",
+            ),
+            # 6-minute gap -- also idle 5m-1h, but an unpriced model: no
+            # price-table entry, so this call's tokens can never reach
+            # group_delta_dollars/group_w5m_tokens/group_x_tokens.
+            _priced(
+                "claude-unknown-model", ephemeral_5m=1_000_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="u-3",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", records)
+
+        # A second, unambiguously non-clearing group -- gives the dispersion
+        # block two eligible groups so "share" is a genuine weighted value
+        # (see docstring above for why a single-group fixture can't
+        # discriminate the regression this test guards against).
+        other_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=190_000, ts="2026-08-01T10:00:00.000Z", request_id="o-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=10_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="o-2",
+            ),
+        ]
+        for rec in other_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-2", other_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        dispersion = _extract_cache_rebuild_dispersion(out)
+        assert dispersion["eligible"] == 2
+        assert dispersion["clearing"] == 1
+        assert dispersion["share"] == "41.2%"
+        assert dispersion["net"] == "0.17"
+        assert dispersion["uncovered_w5m"] == 1_000_000
+        assert dispersion["pooled_subagent_w5m"] == 1_340_000
+
+        unpriced_switch_delta = re.search(
+            r"\((\d[\d,]*) 5m-tier write calls / (\d[\d,]*) tokens"
+            r" excluded from the switch-delta figures above", out,
+        )
+        assert unpriced_switch_delta is not None, "unpriced switch-delta disclosure line not found in output"
+        assert unpriced_switch_delta.group(1) == "1"
+        assert unpriced_switch_delta.group(2) == "1,000,000"
+
+
+class TestCacheRebuildCrossInstrumentReconciliation:
+    """Verification item 10: cache-rebuild's new sidechain W5m accumulator
+    must agree exactly with cache-efficiency's own sidechain Write5m column
+    on an identical fixture -- both dedup by requestId per group and
+    classify origin off the identical isSidechain expression, so a
+    disagreement means the new accumulator has a bug, not that the corpus
+    is odd."""
+
+    def test_sidechain_w5m_matches_cache_efficiency_sidechain_write5m_on_identical_fixture(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-reconcile"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+        ])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=75_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=125_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in subagent_records:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        rebuild_out = capsys.readouterr().out
+        rebuild_row = _table_cols(rebuild_out, header_contains="Ratio", row_contains="subagent")
+
+        _mod._cache_efficiency_report(_cache_efficiency_args(), roots=[fake_projects.parent])
+        efficiency_out = capsys.readouterr().out
+        efficiency_row = _table_cols(efficiency_out, header_contains="Write5m", row_contains="sidechain")
+
+        assert rebuild_row["W5m"] == efficiency_row["Write5m"]
 
 
 class TestCacheRebuildCacheTierGapMismatch:
@@ -8347,7 +9156,16 @@ class TestCostLedgerRecordParity:
         """--record's row values equal what _compute_cost_trend_data,
         _compute_deny_summary_data, and _compute_reviewer_yield_data compute
         independently for the same week — the parity check that catches
-        drift between the recorder and the report subcommands it reuses."""
+        drift between the recorder and the report subcommands it reuses.
+
+        The fixture carries one main-thread denial and one subagent-sourced
+        denial. The two use different hook names because _hook_deny derives
+        its toolUseID from the hook name, and a same-named second denial
+        would collapse under dedup. The deny oracle below is widened to
+        include_subagents=True to match its two cost/reviewer siblings. That
+        widening is what exercises agreement between the recorder's denials
+        column and the oracle's own subagent-inclusive count, rather than
+        only the main-thread-only count both would otherwise report."""
         proj = fake_projects
         session_id = "sess-parity"
         records = [
@@ -8374,6 +9192,10 @@ class TestCostLedgerRecordParity:
         records.append(_asst("claude-opus-4-7", ts="2026-06-01T10:15:00.000Z",
                               content=[_edit_use("ez-final", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
+
+        subagent_denial = _hook_deny("worktree", ts="2026-06-02T11:00:00.000Z")
+        subagent_denial["isSidechain"] = True
+        _write_subagent_jsonl(proj, session_id, "denial-agent", [subagent_denial])
 
         _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
         capsys.readouterr()
@@ -8404,10 +9226,10 @@ class TestCostLedgerRecordParity:
 
         week_start = _mod.datetime(2026, 6, 1, tzinfo=_mod.UTC).timestamp()
         week_end = week_start + 7 * 86400
-        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger")
+        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         deny_data = _mod._compute_deny_summary_data(deny_iter, since_ts=week_start, until_ts=week_end)
         assert row["denials"] == sum(deny_data["hook_counts"].values())
-        assert row["denials"] == 1
+        assert row["denials"] == 2
 
         reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
         reviewer_data = _mod._compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)

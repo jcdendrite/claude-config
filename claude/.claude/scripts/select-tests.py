@@ -415,9 +415,10 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
-# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py
-# (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
-# picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
+# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
+# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
+# recursively glob claude/.claude/ for *.sh files, picking up
+# claude/.claude/hooks/ in addition to their own SCRIPTS_DIR.
 # _is_plugin_hooks_change, _is_plugin_skills_change, and
 # _is_plugin_agents_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the

@@ -151,8 +151,9 @@ class TestGhPrViewFailureFallback:
         assert "defaulting base to trunk" in result.stderr
 
     def test_gh_pr_view_failure_resolves_slash_containing_default_branch(self, tmp_path):
-        # ${origin_head#*/} strips only through the first "/", so a
-        # multi-segment default branch name must survive intact.
+        # _lib_default_branch_from_origin_head strips the literal
+        # refs/remotes/origin/ prefix, so a multi-segment default branch
+        # name must survive intact.
         local, _bare = _make_repo_with_remote(tmp_path, default_branch="release/1.0")
         _make_feature_branch(local, "feat/on-release", return_to="release/1.0")
         subprocess.run(["git", "checkout", "-q", "feat/on-release"], cwd=local, check=True)
@@ -213,6 +214,28 @@ class TestCandidateLoopFallback:
         assert result.returncode == 0
         assert "+work on feat/multi-candidate" in result.stdout
         assert "defaulting base to main" in result.stderr
+
+    def test_dangling_origin_head_target_falls_back_to_live_candidate(self, tmp_path):
+        # origin/HEAD's symref still resolves to refs/remotes/origin/main, but
+        # that target ref is gone locally while origin/develop stays live --
+        # _lib_default_branch_from_origin_head's verify step rejects the
+        # dangling target, and the candidate loop must recover "develop".
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "develop"], cwd=local, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "develop"], cwd=local, check=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/main"], cwd=local, check=True
+        )
+        _make_feature_branch(local, "feat/dangling-target", return_to="main")
+        subprocess.run(["git", "checkout", "-q", "feat/dangling-target"], cwd=local, check=True)
+
+        env = _env_with_gh_shim(tmp_path, None)
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "+work on feat/dangling-target" in result.stdout
+        assert "defaulting base to develop" in result.stderr
 
 
 class TestReportedBaseOverridesDefaultBranch:

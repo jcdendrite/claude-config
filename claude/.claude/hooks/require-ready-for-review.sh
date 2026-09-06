@@ -53,17 +53,26 @@
 #   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
 #   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
 #   create`) bypasses detection for those two arms.
+# - Same two arms match by strict word adjacency, so a flag interposed
+#   before the subcommand (`gh --repo o/r pr create`, `gh --repo o/r pr
+#   ready`) also bypasses detection — tracked by GH-897.
 # - _lib_split_fragments doesn't split fragments on a bare `&` (the shell
 #   background operator).
 # - The git-word scan it feeds locks onto the first `git` occurrence in a
 #   fragment, so `git status & git push origin feature` misclassifies the
 #   subcommand and the real push goes undetected.
 # - Not closed here: the fix touches the fragment splitter or the git-word
-#   scan, both shared by other hooks and outside this gate's cooperative
-#   threat model.
+#   scan, both shared by other hooks, so a change of that scope is out of
+#   bounds for this gate alone.
 # - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
 #   checked and denies with an explicit message rather than falling through
 #   to this gate's normal "no gated command present" allow path.
+# - The default-branch bypass's candidate-loop fallback can land on a real,
+#   verified-but-wrong branch name when origin/HEAD dangles (the
+#   "wrong-but-verified guess" tradeoff — see docs/design-decisions.md §54
+#   for why that guess is accepted rather than closed). For this hook
+#   specifically, a coincidental branch-name match can skip the entire
+#   review/test/lint gate on a push, tracked as GH-899.
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.
@@ -74,11 +83,9 @@
 # A CURRENT_BRANCH timeout, or a candidate-loop timeout in isolation, does
 # not allow directly: it withholds the default-branch bypass and lets the
 # gate below decide, which can still deny.
-# DEFAULT_BRANCH resolves in two steps: a direct `git symbolic-ref` lookup,
-# then the main/master/develop candidate loop as fallback. A symbolic-ref
-# timeout alone only withholds the bypass if the candidate loop also fails
-# to resolve a value. If the loop still succeeds, DEFAULT_BRANCH is set
-# and the bypass still fires normally.
+# DEFAULT_BRANCH resolves via _lib_default_branch_or_guess (see _lib.sh for
+# the resolution recipe). A symbolic-ref or verify timeout alone only
+# withholds the bypass if the candidate loop also fails.
 # Only CURRENT_HEAD fails closed on that timeout (see its own comment below).
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —
@@ -91,8 +98,10 @@
 #   fail-closed by design.
 # - A missing jq denies every Bash call, the posture every unconditional
 #   gate in this repo already has.
-# - This gate's threat model is cooperative, not adversarial — the same
-#   posture require-respond-pr.sh's header states for its own gate.
+# - This gate's threat model includes adversarial input, not only a
+#   knowingly evasive engineer. Untrusted content ingested mid-session can
+#   persuade the agent's own tool call into an evasive shape without the
+#   agent intending to evade anything.
 # - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
 #   self-merge, plus CI rerunning the full suite on push. That backstop
 #   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
@@ -193,13 +202,13 @@ push_fragment_args_after_repo() {
 push_fragment_publishes_reviewable_change() {
   local fragment="$1"
   local remaining
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--dry-run(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--dry-run([[:space:]]|$)'; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])(-d|--delete)([[:space:]]|$)'; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '[[:space:]]:[A-Za-z0-9._/-]+([[:space:]]|$)'; then
     # Delete-only holds only when every refspec is a deletion form, since a
     # real refspec alongside one is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
@@ -215,7 +224,7 @@ push_fragment_publishes_reviewable_change() {
       return 1
     fi
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--tags(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--tags([[:space:]]|$)'; then
     # Tag-only holds only when --tags is the sole refspec hint, since a
     # branch ref alongside it is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
@@ -256,10 +265,14 @@ while IFS= read -r frag; do
       is_gated_git_push=true
     fi
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
+  # These two matchers scan the whole fragment rather than resolving its
+  # command word, so a `bash -c` or `eval` wrapper stays covered, matching
+  # the git arm above.
+  # Cost: a flag interposed before the subcommand is missed.
+  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+ready([[:space:]]|;|$)'; then
     is_gh_pr_ready=true
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+create(\s|;|$)'; then
+  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|;|$)'; then
     is_gh_pr_create=true
   fi
 done <<< "$FRAGMENTS"
@@ -274,21 +287,12 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # Default-branch bypass: pushing main/master/develop has no PR review
-# semantics. Resolve the local default via the symbolic ref refs/remotes/
-# origin/HEAD; fall back to a small set of conventional names when origin/
-# HEAD isn't configured. Use `git symbolic-ref --quiet` rather than
-# `rev-parse --abbrev-ref origin/HEAD`: the latter outputs the literal
-# string "origin/HEAD" (not empty) when origin/HEAD isn't a symbolic ref,
-# which defeats the fallback path.
+# semantics. Resolve the local default via _lib_default_branch_or_guess,
+# which reads origin/HEAD and falls back to a small set of conventional
+# names when origin/HEAD isn't configured.
 CURRENT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --abbrev-ref HEAD 2>/dev/null)
-DEFAULT_BRANCH=$(cd "$CWD" 2>/dev/null && _lib_capped git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-if [ -z "$DEFAULT_BRANCH" ]; then
-  for candidate in main master develop; do
-    if cd "$CWD" 2>/dev/null && _lib_capped git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
-      DEFAULT_BRANCH="$candidate"
-      break
-    fi
-  done
+if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$REPO_ROOT"); then
+  DEFAULT_BRANCH=""
 fi
 if [ -n "$CURRENT_BRANCH" ] && [ -n "$DEFAULT_BRANCH" ] && [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
   exit 0

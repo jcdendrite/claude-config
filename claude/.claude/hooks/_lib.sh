@@ -588,37 +588,59 @@ _lib_cumulative_diff_hash() {
   _lib_hash_diff_text "$diff_output"
 }
 
-# _lib_resolve_default_branch REPO_ROOT
-# Resolve REPO_ROOT's default branch name: first via the local symbolic ref
-# refs/remotes/origin/HEAD, then by probing conventional candidate names
-# (main, master, develop) against existing origin/<candidate> refs. Designed
-# to be shared by every caller that needs "the branch a commit is normally
-# compared against" rather than a hardcoded "main" literal.
+# _lib_default_branch_from_origin_head REPO_ROOT
+# Resolve REPO_ROOT's default branch from the local symbolic ref
+# refs/remotes/origin/HEAD alone, verifying the target actually resolves to
+# a commit before returning it.
+# Local refs only, never the network -- callers use the result as a local ref immediately.
+# `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
+# latter never returns empty, which would mask an unset origin/HEAD.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the resolved default branch name.
+#   - exit 1, empty stdout: origin/HEAD is unset, dangling, or the call
+#     timed out. Callers decide their own fallback.
+_lib_default_branch_from_origin_head() {
+  local repo_root="$1"
+  local ref default_branch
+  ref=$(_lib_capped git -C "$repo_root" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)
+  [ -n "$ref" ] || return 1
+  _lib_capped git -C "$repo_root" rev-parse --verify --quiet "$ref" >/dev/null 2>&1 || return 1
+  default_branch="${ref#refs/remotes/origin/}"
+  [ -n "$default_branch" ] || return 1
+  printf '%s' "$default_branch"
+}
+
+# _lib_default_branch_or_guess REPO_ROOT
+# Resolve REPO_ROOT's default branch: first via
+# _lib_default_branch_from_origin_head, then, on its failure, by falling
+# through to probing conventional candidate names (main, master, develop)
+# against existing origin/<candidate> refs. Designed to be shared by every
+# caller whose wrong-answer consequence is a diff, a message, or a withheld
+# gate rather than the base it fetches, rebases onto, or deletes against
+# (docs/design-decisions.md §54).
+# Local refs only, never the network -- callers use the result as a local ref immediately.
 # Candidate order is a prior, not a guarantee: with origin/HEAD unset and
 # several candidate refs present, the first match wins even when it is stale.
-# `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
-# latter never returns empty, which would skip the candidate-loop fallback.
-# Two-outcome contract:
-#   - Non-empty stdout: the resolved default branch name.
-#   - Empty stdout: neither the symbolic ref nor any candidate resolved.
-#     Callers decide their own fallback -- this helper does not pick a fail
-#     posture (same call-site contract as _lib_command_invokes_git_subcmd).
-# Asymmetry: the symbolic-ref path doesn't verify origin/<name> exists, so a
-# dangling origin/HEAD can return a name that still fails to resolve.
-# Callers must verify it themselves (see guard-settings-session-keys.sh).
-_lib_resolve_default_branch() {
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the resolved default branch name.
+#   - exit 1, empty stdout: neither the symbolic ref nor any candidate
+#     resolved. Callers decide their own fallback -- this helper does not
+#     pick a fail posture (same call-site contract as
+#     _lib_command_invokes_git_subcmd).
+_lib_default_branch_or_guess() {
   local repo_root="$1"
   local default_branch candidate
-  default_branch=$(_lib_capped git -C "$repo_root" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-  if [ -z "$default_branch" ]; then
-    for candidate in main master develop; do
-      if _lib_capped git -C "$repo_root" rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
-        default_branch="$candidate"
-        break
-      fi
-    done
+  if default_branch=$(_lib_default_branch_from_origin_head "$repo_root"); then
+    printf '%s' "$default_branch"
+    return 0
   fi
-  printf '%s' "$default_branch"
+  for candidate in main master develop; do
+    if _lib_capped git -C "$repo_root" rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # _lib_is_repo_plan_file REPO_ROOT ABS_PATH
@@ -2528,4 +2550,111 @@ _lib_append_line_locked() {
     return 0
   fi
   printf '%s\n' "$line" >> "$file"
+}
+
+# _lib_resume_context_tmpdir_root
+# The one home for resume-context.sh's temp-dir-root formula
+# (${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}), shared by the move itself and
+# by _lib_resume_context_index_dir below -- a second independent copy of
+# this formula would silently split the index from the destinations it
+# indexes on any future rename.
+_lib_resume_context_tmpdir_root() {
+  printf '%s\n' "${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
+}
+
+# _lib_resume_context_index_dir
+# Prints the path to the per-uid consumed-continuity-file index directory
+# (<tmpdir-root>/resume-context-index-$EUID), creating and
+# permission-guarding it first. Rows live in day-files named
+# consumed.<UTC YYYY-MM-DD>.tsv inside it:
+#   - the writer composes today's name
+#   - the reader globs consumed.*.tsv in name order (chronological, since
+#     the names are fixed-width ASCII digits)
+#   - retention deletes whole files by mtime
+# That naming contract is stated once, here, and enforced across the
+# writer/reader boundary by their shared end-to-end test rather than by a
+# third helper.
+# Returns 1, printing nothing, if the directory is a symlink or not owned
+# by $EUID. /tmp's predictable per-uid path makes it plantable by another
+# local user, so ownership -- not the chmod below -- is the actual control.
+# mkdir(2)'s atomicity plus the -O check closes the race. A successful call
+# always yields a directory owned by the calling EUID. A failed call is
+# caught by `[ -O ]` evaluating false, since forging EUID ownership needs
+# privilege an attacker doesn't have. The different-owner pre-creation case
+# this closes can't be reproduced in single-uid CI -- see
+# TestLibResumeContextIndexDir's docstring in test_lib.py for the full
+# POSIX argument, recorded there rather than as an executable test.
+# Also returns 1 if the tmpdir root is other- or group-writable without the
+# sticky bit -- see the guard below for why.
+_lib_resume_context_index_dir() {
+  local dir tmpdir_root
+  tmpdir_root="$(_lib_resume_context_tmpdir_root)"
+  dir="$tmpdir_root/resume-context-index-$EUID"
+  # A world- or group-writable tmpdir root needs the sticky bit to stop
+  # another local user from unlinking/renaming our directory entry in the
+  # mkdir-to-chmod window below.
+  # This is verified here rather than assumed, since
+  # RESUME_CONTEXT_TMPDIR/TMPDIR can point anywhere, not only at a sticky
+  # production /tmp.
+  # A root writable by neither the "other" nor the "group" permission class
+  # has no other uid able to race this entry in the first place, sticky bit
+  # or not.
+  # That is also what keeps this guard from rejecting pytest's private
+  # tmp_path fixture, which is writable by neither class.
+  if [ -n "$(find "$tmpdir_root" -maxdepth 0 \( -perm -0002 -o -perm -0020 \) 2>/dev/null)" ] && [ ! -k "$tmpdir_root" ]; then
+    return 1
+  fi
+  # EEXIST here is the expected steady state from the second call onward;
+  # left unguarded by design — safe under `set -e` only because this
+  # function always runs inside a command substitution (`$(...)`), never
+  # called directly. A future direct call would need its own `|| true`.
+  ( umask 077; mkdir -- "$dir" ) 2>/dev/null
+  [ ! -L "$dir" ] && [ -d "$dir" ] && [ -O "$dir" ] || return 1
+  # The repair chmod below closes a check-then-act window against another
+  # local user racing our directory entry, now that the guard above has
+  # confirmed $tmpdir_root is not other- or group-writable without the
+  # sticky bit.
+  chmod 700 -- "$dir" 2>/dev/null
+  printf '%s\n' "$dir"
+}
+
+# _lib_print_recovery_hint DEST
+# Prints, to stderr, the reload command a human would run to load a moved
+# continuity file back into a session's system prompt. Shared by
+# resume-context.sh (after a launch-mode move) and
+# find-consumed-continuity-file.sh (after resolving a slug to a still-live
+# destination), so the reload string can't drift between the two callers.
+# Uses the literal `claude`, not $RESUME_CONTEXT_LAUNCHER: this is a hint
+# for a human to run manually, potentially in a later shell/session where
+# that override won't be set.
+_lib_print_recovery_hint() {
+  local dest="$1"
+  printf 'reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
+}
+
+# _lib_sanitize_for_terminal VALUE
+# Prints VALUE with raw control bytes (0x01-0x08, 0x0a-0x1f, 0x7f) stripped.
+# Tab (0x09) is preserved: it is a legitimate field separator in at least
+# one caller's format, not a byte that caller needs guarding against. See
+# docs/scripts.md's find-consumed-continuity-file.sh entry for the shared
+# callers, threat model, and the C1/bidi/zero-width residual-scope
+# rationale.
+# Pure-bash loop, not `tr -d`, so a PATH missing `tr` can't abort this
+# always-on-success-path sanitizer.
+# `local LC_ALL=C` forces byte-wise indexing (`${value:i:1}`, `${#value}`)
+# over VALUE, which need not be valid UTF-8: every UTF-8 continuation and
+# lead byte is >=0x80, so this byte-wise indexing never splits a multi-byte
+# sequence at a strip point.
+_lib_sanitize_for_terminal() {
+  local value="$1" out="" i len char
+  local LC_ALL=C
+  len=${#value}
+  for (( i = 0; i < len; i++ )); do
+    char="${value:i:1}"
+    case "$char" in
+      [$'\x01'-$'\x08']|[$'\x0a'-$'\x1f']|$'\x7f') continue ;;
+    esac
+    out+="$char"
+  done
+  printf '%s' "$out"
 }

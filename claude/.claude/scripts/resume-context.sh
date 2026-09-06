@@ -35,18 +35,30 @@
 #                            auto mode.
 #   RESUME_CONTEXT_TMPDIR    temp-dir root instead of ${TMPDIR:-/tmp}. Tests
 #                            only — never touch the real shared /tmp otherwise.
+#                            Local-filesystem precondition: the lock-free
+#                            append in record_consumed_destination below
+#                            assumes O_APPEND is atomic under a single
+#                            write(2) -- true on local filesystems (strace-
+#                            verified) but not guaranteed on NFS, per the
+#                            Linux open(2) man page's O_APPEND section. A
+#                            network-backed override here risks interleaved or
+#                            corrupted index rows under concurrent appends,
+#                            not merely slower ones.
 #
 # Destination visibility:
 # - Launch mode prints the move and a reload hint to stderr before exec'ing
 #   the launcher. This is best-effort UX, not the recovery guarantee: it may
 #   not survive `exec` into an alt-screen TUI, and is lost entirely under a
-#   piped or `-p` invocation. It's fine either way — a successful exec means
-#   you're already resuming, and the not-found branch below is the
-#   dependable recovery path if you need to look back later. This line
-#   includes the original source path (which can embed the continuity
-#   file's slug), so it assumes the invoking terminal/session isn't itself
-#   being captured to a shared or lower-trust log (script(1), tmux/terminal
-#   logging, CI log capture on a shared runner).
+#   piped or `-p` invocation. That's fine either way — a successful exec
+#   means you're already resuming, and the not-found branch below is the
+#   dependable recovery path if you need to look back later.
+# - This line includes the original source path, which can embed the
+#   continuity file's slug. Printing it assumes the invoking
+#   terminal/session isn't itself being captured to a shared or
+#   lower-trust log, such as:
+#     - script(1)
+#     - tmux/terminal logging
+#     - CI log capture on a shared runner
 # - Consume-only mode's stdout contract is exactly the destination path and
 #   nothing else (a single line, no trailing content) — a downstream
 #   PostToolUse hook parses this via command substitution.
@@ -56,6 +68,23 @@
 #   reads as "nothing recoverable").
 # - The legacy-location fallback (below) prints the resolved legacy path to
 #   stderr on use — same sensitivity class as the not-found hint above.
+# - Every stderr print of $SRC, $LEGACY_SRC, and $LAUNCH_CWD uses a sanitized
+#   display copy (computed once, right after each is set, via
+#   _lib_sanitize_for_terminal) rather than the raw value — a raw OSC/CSI
+#   escape from a crafted continuity-file path or --cwd argument must not
+#   reach the invoking terminal unmodified, a more dangerous injection
+#   surface here than a chat pane. Only the display copies are sanitized:
+#   file-path operations below (`[ -f "$SRC" ]`, `mv`, `cd`) always use the
+#   raw value.
+# - A third, durable-enough channel: every successful move also appends a
+#   <timestamp, destination, source> row to a per-uid index under the same
+#   temp-dir root (_lib_resume_context_index_dir), sharded one file per UTC
+#   day, so a *different* session can resolve the destination later — see
+#   find-consumed-continuity-file.sh's own header for why and how.
+#   Best-effort only, per record_consumed_destination's own doc comment
+#   below. Whole day-files older than 30 days are swept by mtime after each
+#   append, the same retention idiom this repo's other self-managed state
+#   directories use.
 #
 # Known limitations:
 # - Shell *aliases* for `claude` are not visible here (aliases aren't
@@ -79,8 +108,13 @@
 #   `chmod 700 "$HOME/.claude"` (see install.sh for scope and the
 #   symlink-skip caveat) — enforced at install time, not by this script,
 #   and only if that step actually ran.
-#   Content exposure is still a strict improvement over the pre-fix
-#   /tmp/<slug>-handoff.md, which carried no permission hardening at all.
+# - The per-uid consumed-continuity index (the "third, durable-enough
+#   channel" below) does not extend the non-goal above past this uid: its
+#   rows carry the original, descriptive source path, not the
+#   destination's opaque name. Any process at this EUID can therefore
+#   enumerate every recently-consumed slug in one
+#   find-consumed-continuity-file.sh call. Accepted, scoped tradeoff — see
+#   docs/design-decisions.md §56.
 # - A symlink at a glob-matching path inside the durable directory is
 #   rejected outright (see the check below), not moved-then-chmodded: `mv`
 #   preserves symlink-ness on a same-filesystem rename, and `chmod` (unlike
@@ -89,6 +123,9 @@
 #   not on the continuity file itself.
 set -euo pipefail
 
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "$0")/../hooks/_lib.sh"
+
 usage() {
   cat >&2 <<'EOF'
 Usage: resume-context.sh [--cwd <dir>] <continuity-file-path>
@@ -96,15 +133,66 @@ Usage: resume-context.sh [--cwd <dir>] <continuity-file-path>
 EOF
 }
 
-# Prints the reload command a human would run to load a moved continuity
-# file back into a session's system prompt. Kept in one place (rather than
-# inlined at each call site) so the reload string can't drift between the
-# launch-mode announcement and any future caller. Uses the literal `claude`,
-# not $LAUNCHER: this is a hint for a human to run manually, potentially in a
-# later shell/session where $RESUME_CONTEXT_LAUNCHER won't be set.
+# Delegates to the shared implementation in _lib.sh so the reload string
+# can't drift between this script's launch-mode announcement and
+# find-consumed-continuity-file.sh's own reload hint.
 print_recovery_hint() {
-  local dest="$1"
-  printf 'resume-context.sh: reload with: claude --append-system-prompt-file %s\n' "$dest" >&2
+  _lib_print_recovery_hint "$1"
+}
+
+# record_consumed_destination SRC DEST
+# Best-effort append of a <timestamp, destination, source> row to today's
+# UTC day-file in the per-uid index, run after a successful move and before
+# the mode-fixing chmod below so the index still names the destination even
+# if that chmod later fails. Any guard failure below skips the write
+# entirely and never falls back to a looser path -- the move is the
+# contract, not the index.
+record_consumed_destination() {                 # invoked as `... || true`
+  local src="$1" dest="$2" dir stamp row row_bytes day_file
+  case "$src" in *$'\n'*) return 0 ;; esac      # a newline would forge a row
+  # $dest gets no equivalent guard: it is always a mktemp-produced path
+  # under $TMPDIR_ROOT, never attacker-reachable input, unlike $src above.
+  dir=$(_lib_resume_context_index_dir) || return 0
+  stamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 0
+  # One file per UTC day, so retention below is a whole-file mtime sweep
+  # rather than a rewrite of a file other processes are appending to.
+  # ${stamp%%T*} is the date half of the stamp already computed above, so
+  # this costs no second `date` fork.
+  day_file="$dir/consumed.${stamp%%T*}.tsv"
+  [ -L "$day_file" ] && return 0
+  [ -e "$day_file" ] && chmod 600 -- "$day_file" 2>/dev/null
+  row="$stamp"$'\t'"$dest"$'\t'"$src"
+  # Byte count, not ${#row}: bash counts characters under a multi-byte
+  # locale, so a non-ASCII $src can pass a character cap while the bytes
+  # actually written exceed it. `wc -c` counts exactly what the printf
+  # below writes, trailing newline included.
+  # Only a single write(2) call is atomic under O_APPEND, and bash's printf
+  # chunks output into multiple write(2) calls past roughly 4096 bytes
+  # (empirically confirmed). 2048 leaves headroom below that ceiling for
+  # cross-platform/shell-version variance.
+  row_bytes=$(printf '%s\n' "$row" | wc -c | tr -d '[:space:]') || return 0
+  # A missing `wc`/`tr` on PATH can leave $row_bytes non-numeric even though
+  # the pipeline above still exits 0, and a numeric `-gt` comparison against
+  # that fails open (prints "integer expression expected" but evaluates
+  # false), silently disabling the cap instead of skipping the write.
+  # Reject non-digit $row_bytes first so this path fails closed instead.
+  case "$row_bytes" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$row_bytes" -gt 2048 ] && return 0
+  ( umask 077; printf '%s\n' "$row" >> "$day_file" ) 2>/dev/null
+  chmod 600 -- "$day_file" 2>/dev/null
+  # 30-day retention, the same sweep every other self-sweeping state
+  # directory in this repo uses. Unlinking a whole file is not a
+  # read-modify-write, so concurrent sweeps cannot lose a row. Runs after
+  # the append so a `find` failure never costs the row, and tolerates a
+  # racing sweep that already unlinked the same file.
+  # `-mtime +30` truncates age to whole 24-hour periods, so a day-file
+  # backdated to exactly 30 days is not yet matched. Survival at that exact
+  # boundary is the intended contract, not an off-by-one. Only a file past a
+  # full 31st day is swept.
+  find "$dir" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
+  return 0
 }
 
 CONSUME_ONLY=0
@@ -121,6 +209,7 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       LAUNCH_CWD=$2
+      LAUNCH_CWD_DISPLAY=$(_lib_sanitize_for_terminal "$LAUNCH_CWD")
       shift 2
       ;;
     --)
@@ -143,6 +232,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 SRC=$1
+SRC_DISPLAY=$(_lib_sanitize_for_terminal "$SRC")
 
 if [ -n "$LAUNCH_CWD" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
   printf 'resume-context.sh: --cwd is not valid with --consume-only (that mode never launches)\n' >&2
@@ -150,7 +240,7 @@ if [ -n "$LAUNCH_CWD" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
 fi
 
 if [ -n "$LAUNCH_CWD" ] && [ ! -d "$LAUNCH_CWD" ]; then
-  printf 'resume-context.sh: --cwd target is not a directory: %s\n' "$LAUNCH_CWD" >&2
+  printf 'resume-context.sh: --cwd target is not a directory: %s\n' "$LAUNCH_CWD_DISPLAY" >&2
   exit 1
 fi
 
@@ -158,7 +248,7 @@ fi
 # invocation documented by both GNU coreutils and BSD/macOS mktemp(1) — no
 # GNU-only extension relied on here. Hoisted above the not-found check so
 # both the not-found hint and the move below share one definition.
-TMPDIR_ROOT="${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}"
+TMPDIR_ROOT=$(_lib_resume_context_tmpdir_root)
 
 # Also check the legacy $HOME/.claude path before giving up, mirroring this
 # repo's "union, not swap" guard-config fallbacks. Trailing slash stripped
@@ -169,19 +259,22 @@ if [ ! -f "$SRC" ] && [ "$CONFIG_DIR" != "$HOME/.claude" ]; then
   case "$SRC" in
     "$CONFIG_DIR"/handoffs/*|"$CONFIG_DIR"/briefs/*)
       LEGACY_SRC="$HOME/.claude${SRC#"$CONFIG_DIR"}"
+      LEGACY_SRC_DISPLAY=$(_lib_sanitize_for_terminal "$LEGACY_SRC")
       if [ -f "$LEGACY_SRC" ]; then
-        printf 'resume-context.sh: not found under %s; found it at the legacy location instead: %s\n' "$CONFIG_DIR" "$LEGACY_SRC" >&2
+        printf 'resume-context.sh: not found under %s; found it at the legacy location instead: %s\n' "$CONFIG_DIR" "$LEGACY_SRC_DISPLAY" >&2
         SRC="$LEGACY_SRC"
+        SRC_DISPLAY="$LEGACY_SRC_DISPLAY"
       fi
       ;;
   esac
 fi
 
 if [ ! -f "$SRC" ]; then
-  printf 'resume-context.sh: source file not found: %s\n' "$SRC" >&2
+  printf 'resume-context.sh: source file not found: %s\n' "$SRC_DISPLAY" >&2
   printf 'resume-context.sh: it may already have been consumed — moved copies are at\n' >&2
   printf 'resume-context.sh:   %s/resume-context.* (newest first: ls -t)\n' "$TMPDIR_ROOT" >&2
   printf 'resume-context.sh: those are cleared on reboot; if none remain, it is unrecoverable.\n' >&2
+  printf 'resume-context.sh: or look it up: %s/scripts/find-consumed-continuity-file.sh %s\n' "$CONFIG_DIR" "${SRC_DISPLAY##*/}" >&2
   exit 1
 fi
 
@@ -191,7 +284,7 @@ fi
 # would then dereference it — silently narrowing permissions on whatever
 # arbitrary file the symlink points to, not on a continuity file at all.
 if [ -L "$SRC" ]; then
-  printf 'resume-context.sh: refusing to move a symlink: %s\n' "$SRC" >&2
+  printf 'resume-context.sh: refusing to move a symlink: %s\n' "$SRC_DISPLAY" >&2
   exit 1
 fi
 
@@ -208,9 +301,15 @@ fi
 DEST=$(mktemp "$TMPDIR_ROOT/resume-context.XXXXXX")
 
 if ! mv -- "$SRC" "$DEST"; then
-  printf 'resume-context.sh: failed to move %s to %s\n' "$SRC" "$DEST" >&2
+  printf 'resume-context.sh: failed to move %s to %s\n' "$SRC_DISPLAY" "$DEST" >&2
   exit 1
 fi
+
+# Best-effort: `|| true` disables `set -e` for record_consumed_destination's
+# whole body by design, so an index-write failure can never abort a move
+# that has already succeeded. See that function's own doc comment for why
+# it runs before the chmod below.
+record_consumed_destination "$SRC" "$DEST" || true
 
 # mv/rename(2) replaces DEST's inode with SRC's, so DEST ends up with SRC's
 # permissions (whatever the writing skill left them at), not mktemp's 0600
@@ -227,7 +326,7 @@ if [ "$CONSUME_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-printf 'resume-context.sh: moved %s -> %s\n' "$SRC" "$DEST" >&2
+printf 'resume-context.sh: moved %s -> %s\n' "$SRC_DISPLAY" "$DEST" >&2
 print_recovery_hint "$DEST"
 
 # Applied after the move, not before: SRC/DEST are already resolved (SRC may
@@ -235,7 +334,7 @@ print_recovery_hint "$DEST"
 # against $TMPDIR_ROOT), so changing directory here cannot affect either.
 if [ -n "$LAUNCH_CWD" ]; then
   cd -- "$LAUNCH_CWD" || {
-    printf 'resume-context.sh: failed to cd into %s\n' "$LAUNCH_CWD" >&2
+    printf 'resume-context.sh: failed to cd into %s\n' "$LAUNCH_CWD_DISPLAY" >&2
     exit 1
   }
 fi

@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "$0")/../hooks/_lib.sh"
+
 SCRIPT_NAME="branch-divergence-status.sh"
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -19,12 +22,18 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! DEFAULT_REF=$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null); then
+# The origin/HEAD pointer only, with no conventional-name fallback: a guessed
+# name here would select the branch this fetches and reports divergence
+# against. A dangling origin/HEAD whose target is still live on the remote
+# is not recovered here either — this script fails outright rather than
+# self-healing via its own fetch below, the same tradeoff
+# check-branch-divergence.sh's header documents for its hook call site. This
+# is the higher-stakes of the two call sites, since it backs
+# /ready-for-review and /respond-pr's precheck.
+if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$PWD"); then
   echo "$SCRIPT_NAME: could not resolve origin/HEAD -- no 'origin' remote, or its default branch is unset (try 'git remote set-head origin -a')" >&2
   exit 1
 fi
-ORIGIN_HEAD_PREFIX="refs/remotes/origin/"
-DEFAULT_BRANCH=${DEFAULT_REF#"$ORIGIN_HEAD_PREFIX"}
 
 # Portable timeout wrapper: same detection as check-branch-divergence.sh's hook script.
 TIMEOUT_CMD=""

@@ -39,8 +39,8 @@ content, and the file is gone from the canonical path by the next tool call.
 If it already happened, that successful `Read` reports the temp path the file
 moved to. `cp` it back to `<config-dir>/briefs/<slug>-task.md` before any
 further `Edit`, which still targets the canonical path. A later `Read` of the
-now-empty canonical path reports only that the file does not exist — it does not
-name where the file went.
+now-empty canonical path reports only that the file does not exist — recover
+the destination with `~/.claude/scripts/find-consumed-continuity-file.sh <slug>`.
 
 ## Artifact preamble (required — open this file with this block verbatim)
 

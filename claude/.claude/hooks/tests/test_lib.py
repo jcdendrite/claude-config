@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import textwrap
 import time
@@ -1595,21 +1596,23 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
     assert result.stdout == ""
 
 
-# --- _lib_resolve_default_branch ------------------------------------------
+# --- _lib_default_branch_from_origin_head / _lib_default_branch_or_guess --
 #
-# guard-settings-session-keys.sh calls this to pick its git-show comparison
-# branch. require-ready-for-review.sh resolves its own default branch the
-# same way, inline, to decide its default-branch push bypass.
+# guard-settings-session-keys.sh calls _lib_default_branch_or_guess to pick
+# its git-show comparison branch. require-ready-for-review.sh resolves its
+# own default branch the same way, inline, to decide its default-branch push
+# bypass.
 
 
-def _resolve_default_branch(repo_root: Path) -> str:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; _lib_resolve_default_branch "$1"', "bash", str(repo_root)],
+def _resolve_default_branch(
+    repo_root: Path, func: str = "_lib_default_branch_or_guess"
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; {func} "$1"', "bash", str(repo_root)],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
-    return result.stdout
 
 
 def _init_repo_on_branch(path: Path, branch: str) -> None:
@@ -1636,7 +1639,10 @@ def test_resolve_default_branch_via_symbolic_ref_for_non_main_name(tmp_path: Pat
         cwd=repo, check=True,
     )
 
-    assert _resolve_default_branch(repo) == "trunk"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "trunk"
 
 
 def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
@@ -1652,17 +1658,43 @@ def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == "develop"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "develop"
+
+
+def test_resolve_default_branch_candidate_probe_reads_remote_ref_not_local_branch(
+    tmp_path: Path,
+) -> None:
+    """Local checked-out branch is `feature`, not one of the probed
+    candidates, and origin/develop is the only live candidate ref (no
+    origin/HEAD) -- the candidate probe must still return develop by
+    reading the remote-tracking ref, not by reporting whatever branch
+    happens to be checked out locally."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "feature")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
+    )
+
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "develop"
 
 
 def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
     """No origin/HEAD symbolic ref and no origin/{main,master,develop} ref at
     all (e.g. a repo with no configured remote) — the helper reports "could
-    not resolve" as empty stdout rather than guessing."""
+    not resolve" as empty stdout and a non-zero exit rather than guessing."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "main")
 
-    assert _resolve_default_branch(repo) == ""
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
@@ -1670,22 +1702,26 @@ def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
 ) -> None:
     """origin/trunk exists, but no origin/HEAD symbolic ref and none of the
     probed candidates (main, master, develop) do -- the candidate loop must
-    report unresolvable rather than matching trunk by some other means."""
+    report unresolvable, with a non-zero exit, rather than matching trunk by
+    some other means."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == ""
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
     tmp_path: Path,
 ) -> None:
     """A default branch name containing "/" (e.g. release/v2) must come back
-    unmangled -- the sed strip removes only the "refs/remotes/origin/"
-    prefix, not every slash in the string."""
+    unmangled -- the "refs/remotes/origin/" strip is a literal anchored
+    prefix strip, not a strip of every slash in the string."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "release/v2")
     subprocess.run(
@@ -1696,7 +1732,10 @@ def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
         cwd=repo, check=True,
     )
 
-    assert _resolve_default_branch(repo) == "release/v2"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "release/v2"
 
 
 def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
@@ -1714,7 +1753,10 @@ def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == "master"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "master"
 
 
 def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
@@ -1734,17 +1776,20 @@ def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
         ["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True
     )
 
-    assert _resolve_default_branch(repo) == "main"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "main"
 
 
-def test_resolve_default_branch_symbolic_ref_does_not_verify_target(
+def test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected(
     tmp_path: Path,
 ) -> None:
     """origin/HEAD points at origin/main via a symbolic ref, but
-    origin/main itself was never created — the symbolic-ref path returns
-    "main" anyway, unlike the candidate loop, because it never verifies the
-    target ref resolves. Pins this asymmetry as the helper's current
-    contract rather than leaving it undefended."""
+    origin/main itself was never created. The symbolic-ref path verifies
+    the target resolves to a commit before trusting it, so a dangling
+    target reports unresolvable, with a non-zero exit, exactly like any
+    other unverified origin/HEAD (docs/design-decisions.md #54)."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "main")
     subprocess.run(
@@ -1752,7 +1797,80 @@ def test_resolve_default_branch_symbolic_ref_does_not_verify_target(
         cwd=repo, check=True,
     )
 
-    assert _resolve_default_branch(repo) == "main"
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_default_branch_from_origin_head_resolves_verified_target_in_isolation(
+    tmp_path: Path,
+) -> None:
+    """_lib_default_branch_from_origin_head in isolation (not through the
+    guessing layer): a valid origin/HEAD symbolic ref pointing at a verified
+    target resolves, with no candidate-probe fallback involved at all."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "trunk")
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+        cwd=repo, check=True,
+    )
+
+    result = _resolve_default_branch(repo, func="_lib_default_branch_from_origin_head")
+
+    assert result.returncode == 0
+    assert result.stdout == "trunk"
+
+
+def test_default_branch_from_origin_head_rejects_dangling_target_in_isolation(
+    tmp_path: Path,
+) -> None:
+    """_lib_default_branch_from_origin_head in isolation (not through the
+    guessing layer): origin/HEAD points at refs/remotes/origin/main, but
+    that target was never created (dangling), and no candidate ref exists
+    either. Proves the narrow layer's own target-verification failure
+    directly, rather than inferring it through _lib_default_branch_or_guess's
+    separate candidate-loop failure, as
+    test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected
+    does."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "main")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+
+    result = _resolve_default_branch(repo, func="_lib_default_branch_from_origin_head")
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_develop(
+    tmp_path: Path,
+) -> None:
+    """origin/HEAD points at origin/main via a symbolic ref, but origin/main
+    was never created (dangling) -- so the narrow layer fails -- while
+    origin/develop is a real, resolvable ref. Proves
+    _lib_default_branch_or_guess falls through to the candidate probe on the
+    narrow layer's failure rather than returning empty outright."""
+    repo = tmp_path / "repo"
+    _init_repo_on_branch(repo, "develop")
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo, check=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
+    )
+
+    result = _resolve_default_branch(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == "develop"
 
 
 # --- _lib_fragment_command_word / _lib_fragment_invokes_tool /
@@ -2787,6 +2905,214 @@ class TestLibConfigDir:
         result = _run_config_dir({"HOME": "", "PATH": os.environ["PATH"]})
         assert result.returncode != 0
         assert result.stdout == ""
+
+
+def _run_resume_context_tmpdir_root(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_tmpdir_root"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestLibResumeContextTmpdirRoot:
+    def test_uses_resume_context_tmpdir_when_set(self) -> None:
+        result = _run_resume_context_tmpdir_root(
+            {"RESUME_CONTEXT_TMPDIR": "/custom-root", "TMPDIR": "/other-tmp", "PATH": os.environ["PATH"]}
+        )
+        assert result.stdout.strip() == "/custom-root"
+
+    def test_falls_back_to_tmpdir_when_resume_context_tmpdir_unset(self) -> None:
+        result = _run_resume_context_tmpdir_root({"TMPDIR": "/other-tmp", "PATH": os.environ["PATH"]})
+        assert result.stdout.strip() == "/other-tmp"
+
+    def test_falls_back_to_slash_tmp_when_both_unset(self) -> None:
+        result = _run_resume_context_tmpdir_root({"PATH": os.environ["PATH"]})
+        assert result.stdout.strip() == "/tmp"
+
+
+def _run_resume_context_index_dir(env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_resume_context_index_dir"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+class TestLibResumeContextIndexDir:
+    """Different-owner pre-creation can't be reproduced in single-uid CI:
+    mkdir(2)'s atomicity plus the `[ -O ]` check closes the race regardless
+    (see `_lib_resume_context_index_dir`), so it's recorded here rather than
+    exercised. A future edit weakening the guard (e.g. `[ -O ]` -> `[ -w ]`)
+    should break this documented intent instead of silently reopening the
+    gap."""
+
+    def test_creates_0700_directory_and_prints_it(self, tmp_path: Path) -> None:
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert result.stdout.strip() == str(expected_dir)
+        assert stat.S_IMODE(expected_dir.stat().st_mode) == 0o700
+
+    def test_returns_1_when_tmpdir_root_is_world_writable_without_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """A world-writable, non-sticky root breaks the mkdir-to-chmod
+        race-closure argument the guard rests on: another local user could
+        unlink/rename the directory entry in that window. See the guard's
+        own comment in _lib_resume_context_index_dir for the mechanism."""
+        tmp_path.chmod(0o777)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_succeeds_when_tmpdir_root_is_world_writable_with_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors production /tmp's 1777 mode -- the sticky bit is what
+        keeps a world-writable root safe for this guard."""
+        tmp_path.chmod(0o1777)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert result.stdout.strip() == str(expected_dir)
+
+    def test_returns_1_when_tmpdir_root_is_group_writable_without_sticky_bit(
+        self, tmp_path: Path
+    ) -> None:
+        """A group-writable, non-sticky root presents the same
+        unlink/rename race to a same-group different-uid attacker as the
+        world-writable case above. See the guard's own comment in
+        _lib_resume_context_index_dir for the mechanism."""
+        tmp_path.chmod(0o770)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_returns_1_and_prints_nothing_when_directory_is_a_symlink(self, tmp_path: Path) -> None:
+        real_dir = tmp_path / "elsewhere"
+        real_dir.mkdir()
+        symlinked = tmp_path / f"resume-context-index-{os.geteuid()}"
+        symlinked.symlink_to(real_dir)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_repairs_a_preexisting_0755_directory_to_0700(self, tmp_path: Path) -> None:
+        """Mirrors the file-level 0644->0600 repair pass a pre-existing
+        looser-mode day-file gets from record_consumed_destination -- the
+        directory's own `chmod 700` is unconditional, not gated on the mode
+        already being wrong, so it needs the same symmetric coverage."""
+        preexisting_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        preexisting_dir.mkdir()
+        preexisting_dir.chmod(0o755)
+        result = _run_resume_context_index_dir(
+            {"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]}
+        )
+        assert result.returncode == 0, result.stderr
+        assert stat.S_IMODE(preexisting_dir.stat().st_mode) == 0o700
+
+    def test_second_call_under_set_e_does_not_abort_via_command_substitution(self, tmp_path: Path) -> None:
+        """The function's doc comment states its unguarded `mkdir` is safe
+        under `set -e` only because every call happens inside a `$(...)`
+        command substitution, never called directly -- the second call's
+        expected EEXIST must not abort the calling script. Calls the
+        function twice via `x=$(...)` under `set -euo pipefail`, matching
+        resume-context.sh's own `set -euo pipefail` then `. _lib.sh` order,
+        and asserts both calls succeed."""
+        script = (
+            "set -euo pipefail\n"
+            f". {_LIB_SH}\n"
+            "first=$(_lib_resume_context_index_dir)\n"
+            'printf "first:%s\\n" "$first"\n'
+            "second=$(_lib_resume_context_index_dir)\n"
+            'printf "second:%s\\n" "$second"\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env={"RESUME_CONTEXT_TMPDIR": str(tmp_path), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        expected_dir = tmp_path / f"resume-context-index-{os.geteuid()}"
+        assert f"first:{expected_dir}" in result.stdout
+        assert f"second:{expected_dir}" in result.stdout
+
+
+def test_lib_print_recovery_hint_prints_reload_command_to_stderr_only() -> None:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_print_recovery_hint "$1"', "bash", "/tmp/some-dest-path"],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    assert result.stdout == ""
+    assert result.stderr.strip() == "reload with: claude --append-system-prompt-file /tmp/some-dest-path"
+
+
+# _lib_sanitize_for_terminal — direct unit coverage of all three documented
+# stripped ranges (0x01-0x08, 0x0a-0x1f, 0x7f) plus the tab exemption. The
+# channel-level tests in test_resume_context.py and
+# test_find_consumed_continuity_file.py only exercise \x1b (middle range);
+# this pins the other two ranges' boundary bytes and the tab carve-out
+# directly against the helper, independent of any caller.
+def test_lib_sanitize_for_terminal_strips_all_three_ranges_and_preserves_tab() -> None:
+    result = _run_lib_call(
+        r"_lib_sanitize_for_terminal $'a\x01b\x08c\x0ad\x1fe\x7ff\tg'",
+        env=dict(os.environ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "abcdef\tg"
+
+
+# Multi-byte UTF-8 must pass through unchanged -- the property that makes
+# the byte-wise C0/DEL strip safe on a filesystem path that isn't
+# guaranteed to be valid UTF-8. See _lib_sanitize_for_terminal's own header
+# comment for why `local LC_ALL=C` byte-wise indexing never splits a
+# multi-byte sequence at a strip point.
+def test_lib_sanitize_for_terminal_passes_through_multibyte_utf8() -> None:
+    result = _run_lib_call(
+        "_lib_sanitize_for_terminal 'café-handoff.md'",
+        env=dict(os.environ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "café-handoff.md"
+
+
+# _lib_sanitize_for_terminal's C1 range (0x80-0x9f) pass-through is an
+# accepted residual, not an oversight -- see docs/scripts.md's
+# find-consumed-continuity-file.sh entry for the full rationale.
+# Pinned here so a future edit that starts (or stops) stripping it shows up
+# as a visible test diff instead of a silent behavior change.
+# A raw 0x9b byte is not valid standalone UTF-8, so this bypasses
+# _run_lib_call's text-mode decoding (which would raise UnicodeDecodeError
+# on it) and captures stdout as bytes instead.
+def test_lib_sanitize_for_terminal_does_not_strip_c1_bytes() -> None:
+    result = subprocess.run(
+        ["bash", "-c", rf". {_LIB_SH}; _lib_sanitize_for_terminal $'a\x9bb'"],
+        capture_output=True,
+        env=dict(os.environ),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == b"a\x9bb"
 
 
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
