@@ -90,7 +90,7 @@
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
 #  - A chained `git add ... && git commit` staging content after this hook's
-#    staged-diff scan is now denied outright by deny-invisible-commit-content.sh,
+#    staged-diff scan is denied outright by deny-invisible-commit-content.sh,
 #    so that shape never reaches this hook's PII/credential scan at all.
 #  - Credit-card detection matches contiguous 13-19 digit runs only;
 #    space- or dash-separated card numbers are not caught.
@@ -99,6 +99,10 @@
 #    session's current repository, not the `-C` target. `-C` into a
 #    subdirectory of the same repo is unaffected (the scan pathspecs are
 #    repo-root-relative).
+#  - Every _lib_strip_shell_quotes/_lib_split_fragments call site in this
+#    hook checks its exit status and fails closed: the command's own
+#    fragment split, each fragment's git_fragment_unquoted strip, and the
+#    SCAN_TARGET strip that feeds the credential-value/PII scan buffer.
 #
 # The `-F`/`--file` unreadable-source and pseudo-file checks below run for every commit, armed or not — fail-closed on content the hook cannot verify, independent of which scan tier triggered the commit-detection path.
 #
@@ -148,15 +152,40 @@ fi
 # so `git -c key=val commit` and `GIT_DIR=x git commit` are recognised.
 GIT_COMMIT_FOUND=0
 HEAD_SCAN_NEEDED=0
+# Raw $COMMAND by design — see RAW_SPLIT_BY_DESIGN in
+# test_hook_command_normalization.py: the raw copy must survive for
+# _lib_commit_fragment_has_worktree_target's xargs tokenizer.
+GIT_FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+GIT_FRAGMENTS_SPLIT_EXIT=$?
+# Checked and fail-closed, matching deny-invisible-commit-content.sh's own
+# SPLIT_EXIT pattern.
+if [ "$GIT_FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Commit blocked by PII/credential guard: could not split the command into fragments (exit ${GIT_FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+  exit 0
+fi
 while IFS= read -r git_fragment; do
   [ -z "$git_fragment" ] && continue
-  _lib_fragment_invokes_git "$git_fragment" || continue
-  [ "$(_lib_extract_git_subcmd "$git_fragment")" = "commit" ] || continue
+  # Per-fragment strip, matcher calls only: an adjacent-quote split
+  # (`"git" "commit"`) can't dodge _lib_fragment_invokes_git /
+  # _lib_extract_git_subcmd, which are quote-blind by contract. Checked and
+  # fail-closed, matching deny-invisible-commit-content.sh's own
+  # COMMAND_UNQUOTED computation.
+  git_fragment_unquoted=$(_lib_strip_shell_quotes "$git_fragment")
+  git_fragment_unquoted_exit=$?
+  if [ "$git_fragment_unquoted_exit" -ne 0 ]; then
+    emit_deny "Commit blocked by PII/credential guard: could not quote-strip a command fragment (exit ${git_fragment_unquoted_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+    exit 0
+  fi
+  _lib_fragment_invokes_git "$git_fragment_unquoted" || continue
+  [ "$(_lib_extract_git_subcmd "$git_fragment_unquoted")" = "commit" ] || continue
   GIT_COMMIT_FOUND=1
+  # Raw fragment, not the stripped copy: xargs below tokenizes quotes
+  # itself, and pre-stripping splits a quoted -m message into words the
+  # pathspec check reads as a worktree target.
   if _lib_commit_fragment_has_worktree_target "$git_fragment"; then
     HEAD_SCAN_NEEDED=1
   fi
-done <<< "$(_lib_split_fragments "$COMMAND")"
+done <<< "$GIT_FRAGMENTS"
 
 if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0
@@ -268,14 +297,12 @@ for exclude_glob in "${EXCLUDE_GLOBS[@]:-}"; do
   PATHSPEC_EXCLUDES+=(":(top,exclude)${exclude_glob}")
 done
 
-# The command string carries the commit message (`-m "..."`). Quote-stripped
-# so an adjacent-quote split (e.g. `git commit -m "gh""p_<token>"`, which
-# bash reassembles into one literal before executing) can't slip a
-# credential-value or user PII pattern past the scan below -- see
-# _lib_strip_shell_quotes. The staged/HEAD diff and message-file content
-# appended below are real file content, never shell-quoted, so only this
-# component needs stripping.
-SCAN_TARGET=$(_lib_strip_shell_quotes "$COMMAND")
+# The command string carries the commit message (`-m "..."`). Kept raw
+# here. The raw+stripped union (SCAN_TARGET_BOTH, below) is computed once
+# all diff and message-file content is appended, since a quote-adjacent
+# token's word boundary survives only in the raw copy once quotes are
+# stripped -- see _lib_strip_shell_quotes.
+SCAN_TARGET="$COMMAND"
 
 added_lines_of() {
   # Keep real `+` content lines, drop `+++` file headers.
@@ -337,6 +364,21 @@ if [ -n "$COMMIT_MSG_SOURCES" ]; then
   done <<< "$COMMIT_MSG_SOURCES"
 fi
 
+# Raw+stripped union that every scan below reads instead of raw
+# $SCAN_TARGET alone. A quote-adjacent digit run (e.g. `x"4111111111111111"`)
+# loses the `\b` word boundary the SSN/credit-card regexes below need once
+# quotes are stripped, so only the raw copy still matches it -- same fix
+# shape as deny-private-project-refs.sh's SCAN_TARGET_BOTH. Checked and
+# fail-closed on a strip failure, matching deny-invisible-commit-content.sh's
+# own COMMAND_UNQUOTED computation.
+SCAN_TARGET_UNQUOTED=$(_lib_strip_shell_quotes "$SCAN_TARGET")
+SCAN_TARGET_UNQUOTED_EXIT=$?
+if [ "$SCAN_TARGET_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Commit blocked by PII/credential guard: could not quote-strip the scan target (exit ${SCAN_TARGET_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+  exit 0
+fi
+SCAN_TARGET_BOTH=$(printf '%s\n%s' "$SCAN_TARGET" "$SCAN_TARGET_UNQUOTED")
+
 # --- Luhn checksum for credit-card candidates ----------------------------
 luhn_valid() {
   # Assignments are split across statements: a `local` builtin expands all
@@ -357,24 +399,25 @@ luhn_valid() {
 }
 
 # --- Scan -----------------------------------------------------------------
-# Each match test reads SCAN_TARGET via a here-string, not `printf | grep`.
-# `grep -q` exits on the first match; in a pipeline that SIGPIPEs the
-# `printf`, and under `set -o pipefail` a large SCAN_TARGET could then make
-# the pipeline report non-zero — dropping a real match. A here-string is
-# not a pipeline, so the test reflects only grep's own exit status.
+# Each match test reads SCAN_TARGET_BOTH via a here-string, not
+# `printf | grep`. `grep -q` exits on the first match; in a pipeline that
+# SIGPIPEs the `printf`, and under `set -o pipefail` a large SCAN_TARGET_BOTH
+# could then make the pipeline report non-zero — dropping a real match. A
+# here-string is not a pipeline, so the test reflects only grep's own exit
+# status.
 MATCHED_LABELS=()
 
 # Unconditional, armed or not — see "Two independent tiers" in the header comment.
-if grep -qE "$_LIB_CREDENTIAL_VALUE_REGEX" <<< "$SCAN_TARGET"; then
+if grep -qE "$_LIB_CREDENTIAL_VALUE_REGEX" <<< "$SCAN_TARGET_BOTH"; then
   MATCHED_LABELS+=("Credential value (API token or private key)")
 fi
 
 if [ "$PII_ARMED" -eq 1 ]; then
-  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET"; then
+  if grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "$SCAN_TARGET_BOTH"; then
     MATCHED_LABELS+=("US Social Security number")
   fi
 
-  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET" | sort -u)
+  CC_CANDIDATES=$(grep -oE '\b[0-9]{13,19}\b' <<< "$SCAN_TARGET_BOTH" | sort -u)
   if [ -n "$CC_CANDIDATES" ]; then
     while IFS= read -r cc_candidate; do
       [ -z "$cc_candidate" ] && continue
@@ -386,7 +429,7 @@ if [ "$PII_ARMED" -eq 1 ]; then
   fi
 
   for i in "${!USER_REGEXES[@]}"; do
-    if grep -qE -e "${USER_REGEXES[$i]}" <<< "$SCAN_TARGET"; then
+    if grep -qE -e "${USER_REGEXES[$i]}" <<< "$SCAN_TARGET_BOTH"; then
       MATCHED_LABELS+=("${USER_LABELS[$i]}")
     fi
   done

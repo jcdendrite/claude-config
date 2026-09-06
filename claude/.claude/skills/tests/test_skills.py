@@ -916,7 +916,7 @@ class TestHandoffCommitMarkerCoveredWork:
         marker-covered work before writing the file when the reconciliation
         flag fired."""
         body = _skill_file("handoff").read_text()
-        assert "Run `<config-dir>/scripts/marker.sh status` and paste its output verbatim" in body
+        assert "Run `~/.claude/scripts/marker.sh status` and paste its output verbatim" in body
         assert "each labeled live, historical, or absent" in body
         assert "code-review or skill-review marker whose covered state has uncommitted" in body
         assert "commit it *before* writing this file" in body
@@ -2774,17 +2774,6 @@ class TestStep4TripwireProvenanceParity:
         )
 
 
-# Scoped to the three SKILL.md files the transcript-corpus multi-account-scope
-# plan touches, by name -- not a repo-wide grep. ready-for-review/SKILL.md
-# also contains the stale interpreter path and is deliberately out of scope
-# for that plan, so a repo-wide contract would red-fail on it for an
-# unrelated reason.
-_TRANSCRIPT_TOOLKIT_SKILLS: tuple[str, ...] = (
-    "transcript-narrative",
-    "transcript-analysis",
-    "error-mode-analysis",
-)
-
 # Pinned verbatim: transcript-analysis/SKILL.md's "Scope confirmation"
 # section sentence. A prose caveat with no enforcement is the same failure
 # class as the transcript-config-dirs-unaware caveat that preceded it -- this
@@ -2796,22 +2785,6 @@ _SCOPE_CONFIRMATION_SENTENCE = (
     "the user whether other Claude accounts exist before treating the number "
     "as complete."
 )
-
-
-class TestTranscriptToolkitInterpreterPathContract:
-    """transcript-analysis.py's interpreter path is wrong under a relocated
-    config dir (CLAUDE_CONFIG_DIR pointed somewhere other than ~/.claude) --
-    every one of the three skills this plan touches must resolve it via
-    ${CLAUDE_CONFIG_DIR:-$HOME/.claude}, never a hardcoded ~/.claude/scripts/
-    literal."""
-
-    @pytest.mark.parametrize("skill_name", _TRANSCRIPT_TOOLKIT_SKILLS)
-    def test_skill_body_contains_no_hardcoded_claude_scripts_path(self, skill_name):
-        body = _skill_body(skill_name)
-        assert "~/.claude/scripts/" not in body, (
-            f"{skill_name}/SKILL.md still contains the hardcoded interpreter path; "
-            'use "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" instead'
-        )
 
 
 class TestTranscriptAnalysisScopeConfirmationContract:
@@ -2869,6 +2842,7 @@ _MARKER_TRIPLE_SITES = [
     ("code-review", "~/.claude/scripts/marker.sh write code-review"),
     ("handoff", "~/.claude/scripts/marker.sh activate handoff"),
     ("handoff", "~/.claude/scripts/marker.sh deactivate handoff"),
+    ("handoff", "~/.claude/scripts/marker.sh status"),
 ]
 
 
@@ -2936,7 +2910,9 @@ class TestPerAccountStatePathContract:
         assert match is None, (
             f"{skill_md_path} contains a hardcoded per-account-state path "
             f"{match.group(0)!r} — use <config-dir>/... (skill/agent prose) "
-            'or "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/..." (a runnable command)'
+            "or push resolution into the invoked script via its own "
+            "config_dir()/_lib_config_dir call (a runnable command needing "
+            "a config-dir-relative data path)"
         )
 
     @pytest.mark.parametrize("agent_md_path", _all_agent_md_paths(), ids=lambda p: str(p))
@@ -2974,4 +2950,132 @@ class TestPerAccountStatePathContract:
             "(settings.json allow-rule + enforce-marker-script-shape.sh's "
             "anchor + this literal form) must change in lockstep or not at "
             "all; see plan-review/SKILL.md's marker.sh comment"
+        )
+
+
+# A templated $CLAUDE_CONFIG_DIR expansion, or a <config-dir> prose
+# placeholder, landing immediately in front of a scripts/ or hooks/ path --
+# every script and hook under claude/.claude/ is stow-shared and
+# machine-invariant (resolves into the same checkout under every account), so
+# its own call-site path never needs runtime templating; see
+# .claude/plans/deterministic-config-dir-resolution.md. Anchored on the
+# literal /scripts/ or /hooks/ segment so the ~25 legitimate per-account
+# *state* templating sites (handoffs/, briefs/, sentinels, logs --
+# _PER_ACCOUNT_STATE_PATH_RE's own domain) are left untouched.
+_STOWED_PATH_TEMPLATING_RE = re.compile(
+    r"CLAUDE_CONFIG_DIR[^}]*\}/(?:scripts|hooks)/"
+    r"|CLAUDE_CONFIG_DIR/(?:scripts|hooks)/"
+    r"|(?<=[<{])config-dir[>}]?/(?:scripts|hooks)/"
+)
+
+
+def _stowed_path_templating_matches(markdown_text: str) -> list[str]:
+    """Every _STOWED_PATH_TEMPLATING_RE match outside a
+    HOOK_TEST_FIXTURE/HOOK_SCRIPT_CONTENT_EXAMPLE-excluded fenced block.
+
+    Mirrors _trigger_a_matches's fence-exclusion structure (not
+    TestPerAccountStatePathContract's plain whole-body search): this
+    contract's corpus includes SKILL.md bodies with pytest-executed
+    HOOK_TEST_FIXTURE fenced blocks that would otherwise false-positive
+    against the regex.
+    """
+    lines = markdown_text.split("\n")
+    excluded_lines: set[int] = set()
+    for open_index, content in _fenced_code_blocks(lines):
+        if _fence_excluded_by_marker(lines, open_index):
+            close_index = open_index + 1 + len(content)
+            excluded_lines.update(range(open_index, close_index + 1))
+    matches: list[str] = []
+    for index, line in enumerate(lines):
+        if index in excluded_lines:
+            continue
+        matches.extend(match.group(0) for match in _STOWED_PATH_TEMPLATING_RE.finditer(line))
+    return matches
+
+
+class TestStowedScriptPathContract:
+    """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
+    may template $CLAUDE_CONFIG_DIR (or a <config-dir> prose placeholder) in
+    front of a scripts/ or hooks/ path -- see
+    .claude/plans/deterministic-config-dir-resolution.md. The other half of
+    the invariant TestPerAccountStatePathContract guards from the state-path
+    direction: stowed paths must be literal, state paths must stay
+    config-dir-relative."""
+
+    def test_flags_templated_expansion_in_fenced_block(self) -> None:
+        text = '```bash\npython3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/foo.py"\n```'
+        assert _stowed_path_templating_matches(text) == [
+            'CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/'
+        ]
+
+    def test_flags_prose_config_dir_placeholder_outside_any_fence(self) -> None:
+        text = "Run `<config-dir>/scripts/marker.sh status` and paste its output."
+        assert _stowed_path_templating_matches(text) == ["config-dir>/scripts/"]
+
+    def test_flags_hooks_path_as_well_as_scripts(self) -> None:
+        text = "Run `<config-dir>/hooks/nudge-handoff-near-context-cap.sh --check`."
+        assert _stowed_path_templating_matches(text) == ["config-dir>/hooks/"]
+
+    def test_flags_brace_free_config_dir_expansion(self) -> None:
+        text = "Resolves so `$CLAUDE_CONFIG_DIR/scripts/foo.py` runs."
+        assert _stowed_path_templating_matches(text) == ["CLAUDE_CONFIG_DIR/scripts/"]
+
+    def test_does_not_flag_unrelated_path_merely_ending_in_config_dir(self) -> None:
+        """"own-config-dir/scripts/build" has no preceding "<" or "${" --
+        it isn't a <config-dir> prose placeholder, just a path segment that
+        happens to end in the literal word "config-dir"."""
+        text = "own-config-dir/scripts/build"
+        assert _stowed_path_templating_matches(text) == []
+
+    def test_does_not_flag_marker_excluded_fence(self) -> None:
+        text = (
+            "<!-- HOOK_TEST_FIXTURE: example -->\n\n"
+            '```bash\npython3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/foo.py"\n```'
+        )
+        assert _stowed_path_templating_matches(text) == []
+
+    def test_does_not_flag_per_account_state_path(self) -> None:
+        """A state path (handoffs/, briefs/) templated the same way is the
+        legitimate _PER_ACCOUNT_STATE_PATH_RE case, not this contract's --
+        the regex is anchored on the literal scripts/ or hooks/ segment,
+        never handoffs/ or briefs/."""
+        text = 'mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs"'
+        assert _stowed_path_templating_matches(text) == []
+
+    @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))
+    def test_skill_body_has_no_templated_stowed_path(self, skill_md_path):
+        matches = _stowed_path_templating_matches(skill_md_path.read_text())
+        assert not matches, (
+            f"{skill_md_path} templates $CLAUDE_CONFIG_DIR or <config-dir> in "
+            f"front of a scripts/hooks path {matches!r} — every script/hook "
+            "under claude/.claude/ is stow-shared and machine-invariant, so "
+            "name it literally (~/.claude/scripts/<name> or "
+            "~/.claude/hooks/<name>) instead"
+        )
+
+    @pytest.mark.parametrize("agent_md_path", _all_agent_md_paths(), ids=lambda p: str(p))
+    def test_agent_body_has_no_templated_stowed_path(self, agent_md_path):
+        matches = _stowed_path_templating_matches(agent_md_path.read_text())
+        assert not matches, (
+            f"{agent_md_path} templates $CLAUDE_CONFIG_DIR or <config-dir> in "
+            f"front of a scripts/hooks path {matches!r} — name it literally "
+            "(~/.claude/scripts/<name> or ~/.claude/hooks/<name>) instead"
+        )
+
+    @pytest.mark.parametrize("doc_path", _all_doc_paths(), ids=lambda p: str(p))
+    def test_doc_has_no_templated_stowed_path(self, doc_path):
+        matches = _stowed_path_templating_matches(doc_path.read_text())
+        assert not matches, (
+            f"{doc_path} templates $CLAUDE_CONFIG_DIR or <config-dir> in "
+            f"front of a scripts/hooks path {matches!r} — name it literally "
+            "(~/.claude/scripts/<name> or ~/.claude/hooks/<name>) instead"
+        )
+
+    def test_global_claude_md_has_no_templated_stowed_path(self):
+        matches = _stowed_path_templating_matches(_GLOBAL_CLAUDE_MD.read_text())
+        assert not matches, (
+            f"claude/.claude/CLAUDE.md templates $CLAUDE_CONFIG_DIR or "
+            f"<config-dir> in front of a scripts/hooks path {matches!r} — "
+            "name it literally (~/.claude/scripts/<name> or "
+            "~/.claude/hooks/<name>) instead"
         )

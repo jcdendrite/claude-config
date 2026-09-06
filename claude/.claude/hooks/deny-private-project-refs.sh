@@ -108,6 +108,10 @@
 #   A different flag surface (`--body` inline text, not `-f`/`-F`
 #   field-value files) than the three surfaces above, so closing this
 #   is real, separate work, not a one-line fix.
+# - COMMAND_UNQUOTED's and SCAN_TARGET_UNQUOTED's sed/tr strip failures
+#   both fail closed: each exit status is checked and denies with an
+#   explicit message rather than falling through to this hook's normal
+#   "nothing gated"/pre-patch raw-only-scan allow path.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -190,12 +194,25 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
+# Quote-stripped so an adjacent-quote split (`"gh" pr create`, `git
+# "commit"`) can't dodge the word-walk detectors below — same helper as
+# deny-network-installs.sh. Checked and fail-closed, matching
+# deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by redaction gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
+  exit 0
+fi
+
 # Word-walk a single shell fragment and report which gated `gh` surface it
 # invokes: `pr` for `gh pr create` / `gh pr edit`, `api` for `gh api`, and
 # empty for everything else (non-gh fragments and non-gated gh subcommands
 # such as `gh pr comment`). The `gh` word test (`gh` or `*/gh`) mirrors
 # _lib_fragment_invokes_git, so absolute paths and env-var prefixes are
-# seen through.
+# seen through. Callers must pass an already quote-stripped fragment (see
+# COMMAND_UNQUOTED above) — this function's own word comparisons stay
+# quote-blind by design, matching _lib.sh's shared matchers.
 #
 # gh's root command has no value-taking global flags (only `--help` /
 # `--version`), but cobra still lets a subcommand's own flags be written
@@ -245,6 +262,12 @@ fragment_gh_gated_surface() {
 IS_GIT_COMMIT=0
 IS_GH_PR=0
 IS_GH_API=0
+FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+FRAGMENTS_SPLIT_EXIT=$?
+if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by redaction gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
+  exit 0
+fi
 while IFS= read -r fragment; do
   [ -z "$fragment" ] && continue
   if _lib_fragment_invokes_git "$fragment" \
@@ -269,16 +292,16 @@ while IFS= read -r fragment; do
       # fail-toward-scan: a false positive costs one redundant scan, a
       # false negative ships a leak. `[^A-Za-z]` is the trailing method
       # boundary (grep-portable substitute for `\b`).
-      if printf '%s\n' "$COMMAND" \
+      if printf '%s\n' "$COMMAND_UNQUOTED" \
           | grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)'; then
         IS_GH_API=1
-      elif printf '%s\n' "$COMMAND" \
+      elif printf '%s\n' "$COMMAND_UNQUOTED" \
           | grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)'; then
         IS_GH_API=1
       fi
       ;;
   esac
-done <<< "$(_lib_split_fragments "$COMMAND")"
+done <<< "$FRAGMENTS"
 
 if [ "$IS_GIT_COMMIT" -eq 0 ] && [ "$IS_GH_PR" -eq 0 ] && [ "$IS_GH_API" -eq 0 ]; then
   exit 0
@@ -582,7 +605,21 @@ if [ -z "$SCAN_TARGET" ]; then
   exit 0
 fi
 
-HITS=$(printf '%s' "$SCAN_TARGET" \
+# Quote-stripped copy, plus the raw+stripped union that all three scan
+# tiers below (tracker-ID, structural, blocklist) read instead of raw
+# $SCAN_TARGET alone. See docs/security-hardening.md's fragment-word-
+# matcher-family entry for the full quote-split/word-adjacency/apostrophe
+# derivation. Checked and fail-closed on a strip failure, matching
+# deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
+SCAN_TARGET_UNQUOTED=$(_lib_strip_shell_quotes "$SCAN_TARGET")
+SCAN_TARGET_UNQUOTED_EXIT=$?
+if [ "$SCAN_TARGET_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by redaction gate: could not quote-strip the scanned content (exit ${SCAN_TARGET_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than scanning with degraded quote-split coverage."
+  exit 0
+fi
+SCAN_TARGET_BOTH=$(printf '%s\n%s' "$SCAN_TARGET" "$SCAN_TARGET_UNQUOTED")
+
+HITS=$(printf '%s' "$SCAN_TARGET_BOTH" \
   | grep -oE '\b[A-Z]{2,}-[0-9]+\b' \
   | sort -u \
   | grep -vE "$OSS_ALLOWLIST" \
@@ -650,13 +687,13 @@ done
 # detector matches), this replaces 6 subprocess spawns with 1; on a match, it
 # falls through to the per-detector loop below unchanged to name the label.
 structural_fastpath_rc=0
-grep -Eq -- "$structural_combined_pattern" <<< "$SCAN_TARGET" || structural_fastpath_rc=$?
+grep -Eq -- "$structural_combined_pattern" <<< "$SCAN_TARGET_BOTH" || structural_fastpath_rc=$?
 if [ "$structural_fastpath_rc" -eq 0 ]; then
   for detector_entry in "${STRUCTURAL_DETECTORS[@]}"; do
     detector_label="${detector_entry%%:*}"
     detector_pattern="${detector_entry#*:}"
     detector_rc=0
-    grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET" || detector_rc=$?
+    grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET_BOTH" || detector_rc=$?
     if [ "$detector_rc" -eq 0 ]; then
       emit_deny "Commit blocked by redaction gate: the staged diff, commit message, referenced commit-message file, PR title, PR body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
@@ -698,7 +735,7 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
     # tradeoff rationale. Collect the offending lines (cap 3 per entry);
     # grep | head may SIGPIPE under pipefail — bare assignment is safe
     # because -e is not set.
-    matched_lines=$(printf '%s' "$SCAN_TARGET" | grep -iw -F -- "$line" | head -3)
+    matched_lines=$(printf '%s' "$SCAN_TARGET_BOTH" | grep -iw -F -- "$line" | head -3)
     if [ -n "$matched_lines" ]; then
       blocklist_report="${blocklist_report}"$'\n'"  - ${line}"
       while IFS= read -r hit; do

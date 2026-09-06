@@ -137,19 +137,14 @@ coverage) do not apply — it has no frontmatter or description — but items
 justification, redaction, behavioral-equivalence audit,
 platform-genericness) do.
 
-1. **Frontmatter** — `name` matches directory; `description` present
-   and contains both `TRIGGER when:` and `DO NOT TRIGGER when:`
-   blocks. `allowed-tools` and `user-invocable` only if needed. Add
-   `disable-model-invocation: true` on add-on skills loaded by a parent
-   via Glob + the Read tool (`.claude/skills/<parent>-<project>/SKILL.md`).
+1. **Frontmatter** — `name` matches directory; `description` present and contains both `TRIGGER when:` and `DO NOT TRIGGER when:` blocks. `allowed-tools` and `user-invocable` only if needed. Add `disable-model-invocation: true` on add-on skills loaded by a parent via Glob + the Read tool (`.claude/skills/<parent>-<project>/SKILL.md`).
 2. **Description scope** — the description's TRIGGER list matches
    what the body actually covers. An overpromising description fires
    on turns the body can't help with.
 3. **Trigger specificity** — TRIGGER conditions use file globs or
    action verbs, not vague context cues alone. A skill that triggers
    on "thinking about X" is too soft to fire reliably.
-4. **DO NOT TRIGGER coverage** — adjacent-skill surfaces are named
-   explicitly; verify every domain-adjacent skill appears.
+4. **DO NOT TRIGGER coverage** — adjacent-skill surfaces are named explicitly; verify every domain-adjacent skill appears.
 5. **Length** — under the 200-line target. Flag anything that drifts
    past 200 (and especially past 300) without a load-bearing reason.
 6. **Behavior test per line** — every line should change Claude's
@@ -183,6 +178,9 @@ platform-genericness) do.
     an imperative directive, an escape-hatch exception, or a
     verification command fails this audit even when the summary reads
     as equivalent.
+
+11a. **Consolidation-source coverage audit (new-skill authoring)** — for a newly-added `SKILL.md`, check whether the diff, its PR description, or a referenced plan states the skill was authored by generalizing from one or more named source files. If so, read each named source in full, including a source outside this repo (a sibling checkout, a downstream project's local skill copy) — see root CLAUDE.md's "Worktree/repo scope constrains writes, not reads" for why that's in scope. Then enumerate its top-level (`##`) sections. Each source section must either survive into the new skill, generalized per this file's own conventions (§6, §12), or be deliberately omitted with the omission stated in the diff, PR description, or plan. A section present in every named source with no surviving coverage and no stated omission is a finding — add it to item 11's table (Surviving line = "none", Behavior-preserving = N).
+    Unlike item 11, this checks for a section missing from an external source, not from the diff's own prior version. If no consolidation claim is stated anywhere in scope, note that this item is undecidable from available evidence rather than silently skipping it.
 
 12. **Platform-genericness (enumerate-then-justify)** — before declaring the review complete, extract every hit in four classes from the sections the diff touches, not only its changed lines; do not rely on noticing during read-through: (a) a tool-invocation verb prescribed as a mandatory review-instruction step; (b) a vendor/product name anchoring a rule's category rather than illustrating the generic capability alongside it; (c) a source-material bias anchor — a named team's or org's practice cited as the reason a rule holds, not the rule's own rationale; (d) a borrowed interface shape — a rule whose nouns presuppose one system's call chain, record layout, or addressing scheme, with no vendor token present to give it away; read the rule against a codebase with a different interface and ask whether it still parses.
     Justify each hit inline as deliberate/illustrative, or move it to a `<skill>-<project>` layer; extraction is mandatory, the verdict per hit stays judgment. Record a hit on a line the diff did not change as a note for the PR reviewer: it is not an N row and does not hold the marker write. (Repo-specific; see CLAUDE.md "Global skill bodies stay platform-agnostic" and "abstract first.")

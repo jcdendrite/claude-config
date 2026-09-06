@@ -565,6 +565,12 @@ _lib_is_repo_plan_file() {
 #
 # Rejects: `ls .github/`, `cat .gitignore`, `grep github.com`, `./git-foo`.
 # Accepts: `git log`, `sudo git commit`, `GIT_DIR=x git push`, `/usr/bin/git status`.
+#
+# Caller contract: word comparisons here are quote-blind by design (bash
+# word-splitting does not remove quote characters, so `"git" log` fails
+# every comparison below). The caller is responsible for passing a fragment
+# already quote-stripped via _lib_strip_shell_quotes if it needs to match a
+# quoted invocation.
 _lib_fragment_invokes_git() {
   local fragment="$1"
   local saved_opts=$-
@@ -589,6 +595,10 @@ _lib_fragment_invokes_git() {
 # The `--git-dir=<path>` form carries its value in the same word, so the
 # catch-all `-*` arm skips it rather than the value-consuming arm.
 # Globbing is disabled so a wildcard in the command text is not expanded.
+#
+# Caller contract: word comparisons here are quote-blind by design, same as
+# _lib_fragment_invokes_git — the caller is responsible for passing a
+# fragment already quote-stripped via _lib_strip_shell_quotes.
 _lib_git_argv_from_subcmd() {
   local fragment="$1"
   local saved_opts=$-
@@ -699,6 +709,12 @@ _lib_commit_fragment_has_worktree_target() {
 # $(...), backticks). Each fragment may invoke a distinct command. Leading/
 # trailing parentheses are stripped from each fragment so that `(cd /x; git push)`
 # yields `git push` as a clean fragment rather than `git push)`.
+# Call-site contract (load-bearing): the underlying sed pipeline can fail
+# (missing, killed, or erroring), and no caller runs under `set -e`, so
+# every call site must capture and check the exit status immediately and
+# fail closed on non-zero, rather than proceeding with a silently empty
+# fragment list — see deny-invisible-commit-content.sh's SPLIT_EXIT
+# computation for the pattern.
 _lib_split_fragments() {
   printf '%s' "$1" \
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
@@ -717,6 +733,10 @@ _lib_split_fragments() {
 # problem.
 #
 # Shared by deny-reviewer-tree-mutation.sh and deny-repo-relocation.sh.
+#
+# Caller contract: word comparisons here are quote-blind by design, same as
+# _lib_fragment_invokes_git — the caller is responsible for passing a
+# fragment already quote-stripped via _lib_strip_shell_quotes.
 _lib_fragment_command_word() {
   local fragment="$1"
   local saved_opts=$-
@@ -753,6 +773,10 @@ _lib_fragment_command_word() {
 
 # True iff the fragment's command word equals $2, or ends in "/$2" (an
 # absolute/relative path invocation, e.g. /usr/bin/terraform).
+#
+# Caller contract: inherits _lib_fragment_command_word's quote-blindness —
+# the caller is responsible for passing a fragment already quote-stripped
+# via _lib_strip_shell_quotes.
 _lib_fragment_invokes_tool() {
   local fragment="$1" tool="$2"
   local cmd
@@ -763,9 +787,165 @@ _lib_fragment_invokes_tool() {
 # True iff $2 appears in $1 as a standalone whitespace-delimited token — for
 # exact-flag checks (e.g. --fix, --remove-source-files) where a real value
 # never appends more non-space characters.
+#
+# Caller contract: this is a regex boundary match against $1 verbatim, no
+# word-walk — but it is still quote-blind (a quoted `"--fix"` never matches
+# the bare $2). The caller is responsible for passing a fragment already
+# quote-stripped via _lib_strip_shell_quotes.
 _lib_fragment_has_token() {
   local fragment="$1" token="$2"
   [[ "$fragment" =~ (^|[[:space:]])${token}([[:space:]]|$) ]]
+}
+
+# _lib_command_invokes_git_subcmd COMMAND SUBCMD
+# Tri-state via exit status: 0 if any fragment of COMMAND invokes `git
+# SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
+# or the fragment-split) failed and the answer could not be determined.
+# Composes _lib_strip_shell_quotes, _lib_split_fragments,
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so GH-783 Phase
+# 2's eight gate hooks share one fragment-aware matcher instead of each
+# hand-copying a raw regex over unstripped $COMMAND (which a quote-split
+# defeats, e.g. `"git" commit`).
+#
+# Call-site contract (load-bearing): never picks a fail posture itself —
+# every caller must check for status 2 and decide allow-or-deny for its own
+# gate, the same discipline _lib_split_fragments's own call-site contract
+# already requires. GH-783 Phase 2's six checked-fail-closed hooks deny on
+# status 2; its two correctly-fail-open hooks (guard-settings-session-keys.sh,
+# require-stow-reminder.sh) treat anything other than 0 as "no match" and
+# stay silent about the distinction, matching their own documented posture.
+_lib_command_invokes_git_subcmd() {
+  [ "$#" -eq 2 ] || return 2
+  local command="$1" subcmd="$2"
+  local command_unquoted fragments fragment
+  command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
+  fragments=$(_lib_split_fragments "$command_unquoted") || return 2
+  while IFS= read -r fragment; do
+    [ -z "$fragment" ] && continue
+    _lib_fragment_invokes_git "$fragment" || continue
+    if [ "$(_lib_extract_git_subcmd "$fragment")" = "$subcmd" ]; then
+      return 0
+    fi
+  done <<< "$fragments"
+  return 1
+}
+
+# Print a tool fragment's subcommand-word sequence, one word per line, after
+# walking past the tool's own command word (matched the same way
+# _lib_fragment_invokes_tool does: exact, or a path ending in "/$tool") and
+# any of its value-taking global flags. Mirrors _lib_git_argv_from_subcmd's
+# state machine, but the value-taking-flag set is looked up per TOOL rather
+# than hardcoded, since each CLI defines its own global-flag surface.
+# Internal to _lib_command_invokes_tool_subcmd below, not a documented
+# call-site contract of its own — gh is its only caller today.
+#
+# gh 2.98.0 (fetched 2026-09-02 via `gh help pr merge` and `gh help issue
+# create`, whose INHERITED FLAGS sections both list only -R/--repo as
+# value-taking): the sole global flag that can precede or interpose in a gh
+# subcommand's own word sequence. A future gh release adding another one
+# needs this list updated by hand — see test_lib.py's regression test
+# asserting this list stays a subset of the CI runner's actual `gh --help`
+# surface.
+#
+# Any TOOL other than gh falls to the empty flag set: every "-*" word is
+# treated as a flag consuming no separate-word value. That default can miss
+# a real subcommand match for a tool with its own value-taking global flags
+# (the same failure shape a future unaudited gh release would reintroduce),
+# but never over-consumes a positional word as a flag's value, so it cannot
+# produce a false match.
+_lib_tool_argv_from_subcmd() {
+  local fragment="$1" tool="$2"
+  local saved_opts=$-
+  set -f
+  local value_taking_flags=""
+  case "$tool" in
+    gh) value_taking_flags=" -R --repo " ;;
+  esac
+  local past_tool=false skip_next=false word
+  for word in $fragment; do
+    if ! $past_tool; then
+      if [[ "$word" == "$tool" || "$word" == */"$tool" ]]; then
+        past_tool=true
+      fi
+      continue
+    fi
+    if $skip_next; then
+      skip_next=false
+      continue
+    fi
+    case "$word" in
+      -*)
+        # Glued value forms (`--repo=owner/repo`, `-Rowner/repo`) carry
+        # their value in the same word — a gh-specific shape, so only
+        # recognized for tool=gh, matching value_taking_flags's own scoping.
+        if [ "$tool" = gh ]; then
+          case "$word" in
+            --repo=*|-R?*) continue ;;
+          esac
+        fi
+        case "$value_taking_flags" in
+          *" $word "*) skip_next=true ;;
+        esac
+        continue
+        ;;
+    esac
+    printf '%s\n' "$word"
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+}
+
+# _lib_command_invokes_tool_subcmd COMMAND TOOL SUBCMD...
+# Tri-state via exit status, same 0/1/2 contract as
+# _lib_command_invokes_git_subcmd above: 0 if any fragment of COMMAND
+# invokes TOOL followed by exactly the given SUBCMD word sequence (e.g. `gh`
+# `pr` `merge`), 1 if no fragment does, 2 if a needed fork failed.
+#
+# WHY command-word, not any-word (unlike the git helper above): a gh-family
+# caller (block-gh-pr-merge.sh) must allow `echo "gh pr merge"` through,
+# which any-word matching would falsely block. Resolving the fragment's
+# command word (via _lib_fragment_invokes_tool, quote-blind by contract)
+# delivers that: on the quote-stripped fragment `echo gh pr merge`, the
+# command word resolves to `echo`, not `gh`.
+# The same resolution also matches a quote-split subcommand word, an
+# independent capability: `gh pr "merge"` quote-strips to a bare `merge`
+# token, which this word-sequence match catches — see block-gh-pr-merge.sh
+# for the regression test.
+#
+# Call-site contract (load-bearing): never picks a fail posture itself,
+# same discipline as _lib_command_invokes_git_subcmd above — every caller
+# must check for status 2 and decide allow-or-deny for its own gate.
+#
+# Accepted cost, not cached: deny-escaped-backticks-in-pr-body.sh and
+# require-stow-reminder.sh each call this 2-3 times per hook invocation on
+# the same $COMMAND, and every call re-pays the full quote-strip-plus-
+# fragment-split baseline from scratch.
+_lib_command_invokes_tool_subcmd() {
+  [ "$#" -ge 3 ] || return 2
+  local command="$1" tool="$2"
+  shift 2
+  local -a want_subcmd=("$@")
+  local command_unquoted fragments fragment
+  command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
+  fragments=$(_lib_split_fragments "$command_unquoted") || return 2
+  while IFS= read -r fragment; do
+    [ -z "$fragment" ] && continue
+    _lib_fragment_invokes_tool "$fragment" "$tool" || continue
+    local -a got_subcmd=()
+    while IFS= read -r word; do
+      got_subcmd+=("$word")
+    done < <(_lib_tool_argv_from_subcmd "$fragment" "$tool")
+    [ "${#got_subcmd[@]}" -lt "${#want_subcmd[@]}" ] && continue
+    local matched=true i=0
+    while [ "$i" -lt "${#want_subcmd[@]}" ]; do
+      if [ "${got_subcmd[$i]}" != "${want_subcmd[$i]}" ]; then
+        matched=false
+        break
+      fi
+      i=$((i + 1))
+    done
+    $matched && return 0
+  done <<< "$fragments"
+  return 1
 }
 
 # Decide whether a command chains `marker.sh write <skill>` before its first
@@ -1462,10 +1642,22 @@ _lib_config_lines() {
 # shell-word tokenization: variable expansion and command substitution
 # remain an accepted residual, same as the documented indirection gap (see
 # docs/security-hardening.md).
+# Call-site contract (load-bearing): the underlying sed/tr pipeline can fail
+# (missing, killed, or erroring), and no caller runs under `set -e`, so
+# every call site must capture and check the exit status immediately and
+# fail closed on non-zero, rather than proceeding with a silently empty or
+# partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
+# computation for the pattern.
 _lib_strip_shell_quotes() {
-  printf '%s' "$1" \
-    | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g' \
-    | tr -d "\"'"
+  local stripped stripped_exit result result_exit
+  stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
+  stripped_exit=$?
+  [ "$stripped_exit" -ne 0 ] && return 1
+  result=$(printf '%s' "$stripped" | tr -d "\"'")
+  result_exit=$?
+  [ "$result_exit" -ne 0 ] && return 1
+  printf '%s' "$result"
+  return 0
 }
 
 # Credential-shaped PATH tokens, sourced by deny-credential-bash-reads.sh and deny-credential-file-reads.sh. POSIX ERE, basename-token match (not path-qualified): matches a bare filename wherever it appears, closing a `cd ~/.ssh && cat id_rsa` bypass.
@@ -1697,7 +1889,15 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 # - Residual gap: a channel reference spliced right after a fabricated
 #   closing bracket evades this detector, same class as the all-digit
 #   GitHub-issue exclusion above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^(])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+# - Excludes bash parameter-expansion-length syntax (`${#array[@]}`,
+#   `${#string}`): the first alternative also requires the hash not be
+#   immediately preceded by `{`, the exact adjacent sequence that shape
+#   always produces.
+# - Residual gap: a channel reference wrapped as `{#slug}` (e.g. a
+#   kramdown/Jekyll header-ID anchor, or a deliberate dodge of this gate)
+#   evades this detector via the same exclusion, same class as the two
+#   residual gaps above.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='(^|[^({])#[a-z0-9_-]*[a-z_-][a-z0-9_-]*|(^|[^]])\(#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a

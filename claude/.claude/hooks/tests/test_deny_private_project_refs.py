@@ -12,14 +12,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     run_hook,
     run_hook_reason,
 )
@@ -474,6 +477,24 @@ class TestDenyPrivateProjectRefs:
         ],
     )
     def test_gh_pr_inline_tracker_denied(self, claude_config_repo, command):
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    # GH-783: quoting any one of the three `gh pr create` words defeats
+    # fragment_gh_gated_surface's bare-word comparisons unless the command
+    # is quote-stripped first. All three quoted-word shapes are exercised
+    # independently: a *trailing*-only quote still matches even without
+    # the fix, so a single combined case would not prove all three are
+    # actually closed.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "\"gh\" pr create --body 'Fixes WIDGET-123'",
+            "gh \"pr\" create --body 'Fixes WIDGET-123'",
+            "gh pr \"create\" --body 'Fixes WIDGET-123'",
+        ],
+        ids=["quoted-gh-word", "quoted-pr-word", "quoted-create-word"],
+    )
+    def test_gh_pr_create_quoted_word_denied(self, claude_config_repo, command):
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     def test_gh_pr_create_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
@@ -981,6 +1002,42 @@ class TestDenyPrivateProjectRefs:
                 == "deny"
             ), f"expected deny for {punct_form!r}"
 
+    def test_blocklist_quote_split_bypass_denied(self, claude_config_repo, private_projects_file):
+        """GH-783 regression: a blocklist entry split across an adjacent
+        quote boundary (no space) must still deny — `Acme"Corp"` (bash
+        reassembles this into the literal `AcmeCorp` when the command
+        actually runs) is caught because SCAN_TARGET_BOTH's stripped side
+        reassembles it before this tier's `grep -iw -F` match runs."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m \'Acme"Corp" release notes\''),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_blocklist_word_adjacent_quote_split_denied(self, claude_config_repo, private_projects_file):
+        """Regression guard, mirroring test_word_adjacent_tracker_id_quote_split_denied
+        for the blocklist tier: a blocklisted entry whose only preceding word
+        boundary is an adjacent quote character (no space, e.g. `x"AcmeCorp"`)
+        must still deny under the raw+stripped union scan.
+        SCAN_TARGET_UNQUOTED alone would miss this — stripping the quote joins
+        `x` and `AcmeCorp` into `xAcmeCorp`, and grep -w's whole-word boundary
+        check fails on that merged run — but the raw $SCAN_TARGET side of the
+        SCAN_TARGET_BOTH union still has the quote providing the boundary and
+        still matches."""
+        private_projects_file("AcmeCorp\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m \'copy x"AcmeCorp" into the release notes\''),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
     def test_blocklist_deny_message_names_matched_entry(self, claude_config_repo, private_projects_file):
         """Deny message must name the matched blocklist entry verbatim.
 
@@ -1329,6 +1386,20 @@ class TestDenyPrivateProjectRefs:
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("gh api repos/x/y/pulls/1/comments -X=POST -f body='Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    def test_gh_api_X_quoted_method_value_with_tracker_denied(self, claude_config_repo):
+        """`-X "POST"` (method value quoted) must dispatch identically to
+        the unquoted form — the -X/-f detection greps read
+        COMMAND_UNQUOTED, same as the gh-pr word-walk and git-commit
+        surfaces (see their own quoted-word tests)."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh api repos/x/y/issues -X \"POST\" -f body='Fixes WIDGET-123'"),
                 cwd=claude_config_repo,
             )
             == "deny"
@@ -1966,6 +2037,20 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
+    def test_structural_ssh_key_word_adjacent_quote_split_denied(self, claude_config_repo):
+        """GH-783 regression: an SSH-key-path reference immediately adjacent to
+        a quote character (no space) must still deny — stripping shell
+        quotes would destroy the `"` that supplies this detector's leading
+        word boundary, but SCAN_TARGET_BOTH's raw side preserves it."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input('git commit -m \'copy x"id_rsa" into place\''),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
     # Home-rooted path
 
     def test_structural_home_rooted_path_no_reference_allowed(self, claude_config_repo):
@@ -2058,6 +2143,16 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    def test_structural_long_hex_identifier_quote_split_denied(self, claude_config_repo):
+        """GH-783 regression: a long-hex-identifier match split across an
+        adjacent quote boundary (no space) must still deny — a hex run
+        broken mid-string by an adjacent quote pair
+        (`...01234567'"89"'...`) is caught because SCAN_TARGET_BOTH's
+        stripped side reassembles it before the 32-char threshold check
+        runs."""
+        command = "git commit -m 'Session abcdef0123456789abcdef01234567'\"89\"' drove the spike'"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     # Internal hostname
 
@@ -2257,6 +2352,21 @@ class TestDenyPrivateProjectRefs:
                 bash_input(
                     "git commit -m 'Add [Permission-prompt tracking](#permission-prompt-tracking) to the TOC'"
                 ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_bash_array_length_syntax_allowed(self, claude_config_repo):
+        """Bash parameter-expansion-length syntax, `${#array[@]}`, is
+        excluded: the `{` immediately before `#` is what distinguishes this
+        common shell idiom from a real channel mention, mirroring the
+        markdown-inline-link exclusion's use of adjacency rather than
+        charset to disambiguate."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Guard the empty-array case: [ \"${#items[@]}\" -eq 0 ]'"),
                 cwd=claude_config_repo,
             )
             == "allow"
@@ -2870,15 +2980,27 @@ class TestDenyPrivateProjectRefs:
             "git -C /tmp commit -m 'Fix WIDGET-123'",
             "git --git-dir=/tmp/g --work-tree=/tmp/w commit -m 'Fix WIDGET-123'",
             "GIT_DIR=/tmp/g git commit -m 'Fix WIDGET-123'",
+            "\"git\" commit -m 'Fix WIDGET-123'",
+            "git \"commit\" -m 'Fix WIDGET-123'",
         ],
-        ids=["c-config-flag", "C-path-flag", "git-dir-equals-flag", "env-var-prefix"],
+        ids=[
+            "c-config-flag",
+            "C-path-flag",
+            "git-dir-equals-flag",
+            "env-var-prefix",
+            "quoted-git-word",
+            "quoted-subcommand-word",
+        ],
     )
     def test_git_commit_flag_evasion_forms_denied(self, claude_config_repo, command):
         """A commit with a global flag or env-var prefix between `git` and
         `commit` must still be detected and its message scanned. Detection
         keys on the command shape; for the `-C` form the staged-diff scan
         still targets the session repo, not the `-C` path (a documented
-        known gap), so these cases deny on the message token alone."""
+        known gap), so these cases deny on the message token alone. The
+        two quoted-word rows (GH-783) require BOTH _lib_fragment_invokes_git
+        and _lib_extract_git_subcmd to independently pass once stripped, so
+        each quotes a different one of the two words."""
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
     def test_git_commit_config_flag_clean_message_allowed(self, claude_config_repo):
@@ -2984,6 +3106,132 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "allow"
+        )
+
+    # GH-783: the tracker-ID scan reads SCAN_TARGET_BOTH, the union of
+    # $SCAN_TARGET and its quote-stripped copy SCAN_TARGET_UNQUOTED, so a
+    # quote-split tracker ID reassembles under the stripped side before the
+    # regex runs. Three independent tests, not one combined case: a
+    # regression in any one mechanism (the strip itself, its documented
+    # over-strip caveat, or the raw side of the union) should fail only its
+    # own test.
+
+    def test_quote_split_tracker_id_denied(self, claude_config_repo):
+        """A tracker ID split across an adjacent quote boundary (no
+        apostrophe present) must reassemble under SCAN_TARGET_UNQUOTED
+        and still be caught via the SCAN_TARGET_BOTH union — independent
+        of the over-strip-caveat test below."""
+        command = "gh pr create --body 'Fixes WIDG'\"ET-123\""
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_apostrophe_bearing_benign_message_allowed(self, claude_config_repo):
+        """_lib_strip_shell_quotes's documented over-strip caveat (a literal
+        apostrophe is deleted along with real quote delimiters) must still
+        allow a clean message with no tracker ID present — proves the
+        strip's existing over-strip behavior, already proven safe for its
+        credential-substring consumers, is also safe for this scan's first
+        tracker-ID-regex consumer."""
+        command = 'gh pr create --body "clean body, don'"'"'t leak anything here"'
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_word_adjacent_tracker_id_quote_split_denied(self, claude_config_repo):
+        """Regression guard: a real tracker ID whose only preceding word
+        boundary is an adjacent quote character (no space, e.g.
+        `x"AB-123"`) must still deny under the raw+stripped union scan.
+        SCAN_TARGET_UNQUOTED alone would miss this — stripping the quote
+        joins `x` and `AB-123` into `xAB-123` with no \\b boundary between
+        them — but the raw $SCAN_TARGET side of the SCAN_TARGET_BOTH union
+        still has the quote and still matches."""
+        command = "gh pr create --body 'issue x\"AB-123\" was closed'"
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
+
+    def test_command_unquoted_sed_absent_from_path_denied(self, claude_config_repo, tmp_path):
+        """GH-783: COMMAND_UNQUOTED's sed/tr strip failure must fail closed
+        rather than let a missing sed silently collapse gated-surface
+        detection (IS_GH_PR/IS_GH_API) and fall through to this hook's
+        normal allow path."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_fragments_split_sed_failure_denied(self, claude_config_repo, tmp_path):
+        """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
+        from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
+        sed binary, so a total sed-absent test (like the one above) can't
+        tell which of the two is actually catching the failure. A sed shim
+        fails on any invocation that isn't _lib_strip_shell_quotes's own
+        `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
+        while the later _lib_split_fragments call (a bare `sed -E
+        's/.../g'`, no `-e` token) fails on its own."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fixes WIDGET-123'"),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_scan_target_unquoted_sed_failure_denied(self, claude_config_repo, tmp_path):
+        """GH-783: SCAN_TARGET_UNQUOTED's own strip failure (reached only
+        after COMMAND_UNQUOTED already succeeded and a gated surface was
+        found) must also fail closed, not just degrade to raw-only
+        scanning. A sed shim fails only when its stdin carries this
+        staged-diff-only marker, so COMMAND_UNQUOTED's own earlier strip
+        (which never sees staged-diff content) still succeeds -- isolating
+        this specific call site from the COMMAND_UNQUOTED case above."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+        marker = "SCAN-TARGET-UNQUOTED-SED-FAILURE-MARKER"
+        (claude_config_repo / "file.txt").write_text(f"first\nsecond\n// {marker}\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+
+        shim_dir = tmp_path / "sed-fails-on-scan-target-only"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            input=$(cat)
+            case "$input" in
+              *"{marker}"*) exit 1 ;;
+            esac
+            printf '%s' "$input" | "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Generic refactor'"),
+                cwd=claude_config_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
         )
 
     def test_missing_lib_sh_fails_closed(self, claude_config_repo, tmp_path):

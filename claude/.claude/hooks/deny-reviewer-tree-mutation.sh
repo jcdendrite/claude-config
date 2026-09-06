@@ -56,36 +56,28 @@
 #     stays allowed as read-only linting.
 #
 # Known gaps (what this model does NOT close):
-#   - Arbitrary Bash write-target resolution (`cp scratch src/x`,
-#     `sed ... > src/x`, `tee src/x`) is not mechanically gated. Proving
-#     where an arbitrary redirect or `cp` lands requires full shell-write-
-#     target analysis; the file-write tools, git writes, and the closed
-#     in-place-edit family below cover every mutation vector seen in the
-#     transcript scan. The residual raw-Bash copy/redirect path is covered
-#     by the reviewer-agent prose clause and the fail-closed principle that
-#     reviewers work in /tmp. This gap also means the `agent-reviews/*`
-#     check-ignore gate below (Write/Edit/MultiEdit only) has no Bash-arm
-#     counterpart: a reviewer can write an unignored findings file directly
-#     (`printf '...' > agent-reviews/x.md`) or rewrite the target repo's own
-#     ignore state (`printf 'agent-reviews/\n' >> .git/info/exclude`) with
-#     zero mechanical enforcement — verified live against this hook. Every
-#     reviewer agent except skill-fidelity-reviewer and
-#     comment-discipline-reviewer carries Bash. The
-#     mechanical guarantee this hook adds therefore holds only when a
-#     reviewer's findings-file write goes through Write/Edit/MultiEdit, which
-#     every reviewer agent's own Output-format instructions require — an
-#     instruction-following-dependent backstop for the Bash path, not a
-#     mechanical one. A related but distinct vector: a Bash-created
-#     symlink that launders the /tmp exemption (`ln -s src/x /tmp/link`, then a
-#     Write to `/tmp/link`) — the file-write arm matches the literal `/tmp/*`
-#     path and does not resolve symlinks, so the OS write lands on the tracked
-#     file. Unlike the unbounded copy/redirect gap this one is bounded and
-#     could in principle be closed by resolving the path (realpath) before the
-#     match — but that closure would itself resolve `/tmp` to `/private/tmp` on
-#     macOS and false-deny every legitimate reviewer /tmp write (see the macOS
-#     `/tmp` note below), so it is deliberately left conceded; the vector also
-#     requires a deliberate two-step setup no cooperative reviewer performs by
-#     accident.
+#   - GH-751 is only partly closed: _fragment_raw_write_targets below
+#     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
+#     fragment's sole or first command; a target behind a bare `&`
+#     background operator (`cp /tmp/scratch.txt src/tracked_file.txt &
+#     echo /tmp/x`) is not caught, because `_lib_split_fragments` does not
+#     split a fragment on a bare `&`, so the word-walk still resolves `cp`
+#     as the command word and reads a stale trailing word as the
+#     destination.
+#   - GH-811 tracks that `_lib_split_fragments` limitation; see
+#     _fragment_raw_write_targets's own docstring below for its other
+#     residual gaps (relative paths, symlinks, fd-numbered redirects,
+#     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
+#   - A Bash-created symlink that launders the /tmp exemption
+#     (`ln -s src/x /tmp/link`, then a Write to `/tmp/link`) — the
+#     file-write arm matches the literal `/tmp/*` path and does not resolve
+#     symlinks, so the OS write lands on the tracked file. Bounded, and
+#     could in principle be closed by resolving the path (realpath) before
+#     the match — but that closure would itself resolve `/tmp` to
+#     `/private/tmp` on macOS and false-deny every legitimate reviewer
+#     /tmp write (see the macOS `/tmp` note below), so it is deliberately
+#     left conceded; the vector also requires a deliberate two-step setup
+#     no cooperative reviewer performs by accident.
 #   - Combined short-option clusters (`sed -ni`, `perl -pi`) and GNU sed's
 #     `--in-place` long form are not matched by the `-i`-prefix check below
 #     — only literal `-i`/`-i<suffix>` tokens are, a missed mutation for the
@@ -103,15 +95,13 @@
 #   - An agent reached only through an alias, wrapper script, or another
 #     level of indirection this fragment-level scan cannot see is
 #     undecidable, same class of gap as require-worktree-for-git-writes.sh.
-#   - A git-write or in-place-edit reached through a QUOTED command name
-#     (`bash -c "git checkout"`, `'sed' -i file`) is not caught: the word
-#     scan sees the glued token (`"git`, `'sed`) and it matches neither the
-#     bare name nor `*/name`. Same indirection class as the alias/wrapper gap
-#     above. Deliberately accepted under the cooperative threat model — an
-#     accidental reviewer mutation is a DIRECT command (which IS caught);
-#     wrapping a command name in quotes to run it is not a cooperative-agent
-#     behavior. Hardening the shared _lib_fragment_invokes_git for this would
-#     also change require-worktree-for-git-writes.sh — out of scope here.
+#   - A git-write or in-place-edit reached through a command name quoted
+#     directly in the Bash arm's own command text (`'sed' -i file`) IS
+#     caught: the Bash arm strips quote characters from $COMMAND before
+#     splitting into fragments, so the word scan sees the bare token. A
+#     command name reached only through a nested shell boundary this scan
+#     never executes (`bash -c "git checkout"`) is still undecidable — same
+#     indirection class as the alias/wrapper gap above.
 #   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
 #     resolves `file_path` to its real path before invoking this hook, a
 #     legitimate reviewer write under `/tmp/...` would miss the literal
@@ -126,6 +116,10 @@
 #     check — git absent, the resolved cwd not a repo, the timeout firing —
 #     denies rather than allows (fail-closed friction on an unusual
 #     environment, not a missed mutation).
+#   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
+#     exit status is checked and denies with an explicit message rather than
+#     falling through to this hook's normal "no gated fragment matched"
+#     allow path.
 
 set -uo pipefail
 
@@ -176,6 +170,79 @@ SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. To ver
 _fragment_has_token_prefix() {
   local fragment="$1" prefix="$2"
   [[ "$fragment" =~ (^|[[:space:]])${prefix} ]]
+}
+
+# Prints, one per line, every destination a `cp`/`mv`/`tee` invocation or a
+# bare `>`/`>>` shell redirect in $1 writes to.
+# Catches the target only when the cp/mv/tee/redirect is the fragment's
+# sole or first command — a target hidden behind a bare `&` background
+# operator in the same fragment is invisible (GH-811 tracks the underlying
+# _lib_split_fragments limitation this depends on; see the header's "Known
+# gaps" section).
+# Does not resolve relative paths, symlinks, fd-numbered redirects
+# (`2>file`), or `&>`.
+# Does not resolve a `cp -t DIR` target-directory flag, whose destination
+# is not the last positional word this word-walk reads.
+# Treats a literal `tee -` target and a post-`--` positional filename
+# starting with `-` as flags, so neither is ever emitted as a destination
+# (GNU `tee` writes a real file named `-`; narrow production risk, not
+# fixed here).
+# This is a word-walk over the literal target text, not a full
+# shell-write-target parse.
+# The caller matches the extracted target by literal prefix, the same
+# technique the Write/Edit/MultiEdit arm above uses for FILE_PATH.
+#
+# Caller contract: quote-blind, same as every other word-walk in this file
+# — the caller must pass a fragment already quote-stripped via
+# _lib_strip_shell_quotes.
+_fragment_raw_write_targets() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  local -a words=()
+  local word
+  for word in $fragment; do
+    words+=("$word")
+  done
+  local n="${#words[@]}"
+  local i=0 next
+  while [ "$i" -lt "$n" ]; do
+    word="${words[$i]}"
+    case "$word" in
+      '>'|'>>')
+        next=$((i + 1))
+        [ "$next" -lt "$n" ] && printf '%s\n' "${words[$next]}"
+        ;;
+      '>>'*)
+        printf '%s\n' "${word#>>}"
+        ;;
+      '>'*)
+        printf '%s\n' "${word#>}"
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ "$n" -gt 0 ] && (_lib_fragment_invokes_tool "$fragment" cp || _lib_fragment_invokes_tool "$fragment" mv); then
+    printf '%s\n' "${words[$((n - 1))]}"
+  fi
+  if [ "$n" -gt 0 ] && _lib_fragment_invokes_tool "$fragment" tee; then
+    local seen_tee=false
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      word="${words[$i]}"
+      if $seen_tee; then
+        case "$word" in
+          -*) ;;
+          *) printf '%s\n' "$word" ;;
+        esac
+      fi
+      case "$word" in
+        tee|*/tee) seen_tee=true ;;
+      esac
+      i=$((i + 1))
+    done
+  fi
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
 }
 
 case "$TOOL_NAME" in
@@ -303,6 +370,23 @@ case "$TOOL_NAME" in
     done < <(_lib_readonly_git_subcmds)
     ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
+    # Quote-stripped so an adjacent-quote split (`'sed' -i file`, `"git"
+    # checkout`) can't dodge the word-walk detectors below — same helper
+    # as deny-network-installs.sh. Checked and fail-closed, matching
+    # deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
+    COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+    COMMAND_UNQUOTED_EXIT=$?
+    if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+      emit_deny "Blocked by reviewer-tree-mutation hook: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      exit 0
+    fi
+
+    FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+    FRAGMENTS_SPLIT_EXIT=$?
+    if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+      emit_deny "Blocked by reviewer-tree-mutation hook: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      exit 0
+    fi
     while IFS= read -r fragment; do
       [ -z "$fragment" ] && continue
 
@@ -379,14 +463,41 @@ case "$TOOL_NAME" in
           exit 0
         fi
       fi
+
+      # GH-751: raw-write-target check, mirroring the Write/Edit/MultiEdit
+      # arm's own /tmp/* exemption above.
+      #   - Base rule: a cp/mv/tee destination or a `>`/`>>` shell redirect
+      #     that does not literally start with /tmp/ writes outside the one
+      #     sanctioned reviewer scratch location, and denies.
+      #   - Does not exempt agent-reviews/*: the ignore-state confirmation
+      #     that exemption depends on (git check-ignore, above) has no
+      #     Bash-arm counterpart, so a Bash write there denies exactly like
+      #     any other non-/tmp target — a stricter, sound default rather
+      #     than reproducing an unchecked exemption.
+      #   - /dev/null is exempted: it is the common diagnostic-noise
+      #     destination (`... > /dev/null 2>&1`), not a tracked-file write.
+      while IFS= read -r raw_target; do
+        [ -z "$raw_target" ] && continue
+        case "$raw_target" in
+          /dev/null) continue ;;
+          ../*|*/../*|*/..)
+            emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' writes to '$raw_target', a path-traversal write target outside /tmp. $SANCTIONED_ALTERNATIVE"
+            exit 0
+            ;;
+          /tmp/*) continue ;;
+        esac
+        emit_deny "Blocked by reviewer-tree-mutation hook: '$fragment' writes to '$raw_target', which is outside /tmp. $SANCTIONED_ALTERNATIVE"
+        exit 0
+      done < <(_fragment_raw_write_targets "$fragment")
     # <<< here-string, not < <(...) process substitution: _lib_split_fragments
     # emits no trailing newline for a single, unsplit fragment, and a
     # process-substitution `read` returns non-zero (loop body never runs) on
     # a final line with no newline delimiter. `$(...)` command substitution
     # strips any trailing newline and `<<<` re-adds exactly one, guaranteeing
     # the last fragment is newline-terminated. Mirrors deny-pii-in-commits.sh
-    # and deny-private-project-refs.sh's identical `<<< "$(_lib_split_fragments ...)"` usage.
-    done <<< "$(_lib_split_fragments "$COMMAND")"
+    # and deny-private-project-refs.sh's identical assign-then-`<<<
+    # "$VAR"`-here-string pattern.
+    done <<< "$FRAGMENTS"
     exit 0
     ;;
   *)

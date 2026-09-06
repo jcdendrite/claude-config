@@ -8,7 +8,7 @@ description: Produce a narrative case study / annotated timeline from Claude Cod
 Identify the branches, session date-range, and repos in play. Use `buckets` to enumerate branches and per-branch models:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" buckets --this-repo
+python3 ~/.claude/scripts/transcript-analysis.py buckets --this-repo
 ```
 
 Note the branch names — you will pass them to later subcommands via `--branches <branch>`.
@@ -18,7 +18,7 @@ Note the branch names — you will pass them to later subcommands via `--branche
 Get the transcript file set and read only those files:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" sessions --paths --include-subagents
+python3 ~/.claude/scripts/transcript-analysis.py sessions --paths --include-subagents
 ```
 
 `sessions --paths` prints its resolved-scope header (`SESSIONS SOURCES (...)`) to stderr — record that line. This invocation passes no `--projects`, so its scope label is always `*`; the root-count clause is what tells you whether the corpus covers every declared account or just one.
@@ -53,19 +53,19 @@ Run these subcommands and include their output as a quantitative appendix that g
 
 ```bash
 # Test-failure convergence vs thrashing
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" fail-seq --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py fail-seq --branches <branch>
 
 # Active vs idle time
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" duration --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py duration --branches <branch>
 
 # Subagent vs main-thread split
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" subagents --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py subagents --branches <branch>
 
 # Branch → PR mapping
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" pr-link --repo owner/repo --branches <branch>
+python3 ~/.claude/scripts/transcript-analysis.py pr-link --repo owner/repo --branches <branch>
 
 # Review-skill invocations, hook denials, reviewer-spawn timeline
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" review-trace --this-repo
+python3 ~/.claude/scripts/transcript-analysis.py review-trace --this-repo
 ```
 
 For `fail-seq` interpretation: a spike followed by zeros is convergent (expected); oscillation with no sustained run of zeros is thrashing (flag for the lessons step). See `transcript-analysis` for the full reading guide.

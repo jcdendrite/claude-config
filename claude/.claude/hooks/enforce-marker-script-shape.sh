@@ -60,6 +60,11 @@
 #     execution context; if it is, every agent-identity-keyed hook shares it
 #     (deny-reviewer-tree-mutation.sh has the same dependency), so the fix
 #     belongs at the permission layer for the whole class rather than here.
+#   - MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip and
+#     _bash_marker_redirect_candidates's own _lib_split_fragments call both
+#     check their exit status and fail closed, matching
+#     deny-network-installs.sh's COMMAND_UNQUOTED_EXIT/FRAGMENTS_SPLIT_EXIT
+#     pattern.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -385,16 +390,30 @@ _bash_marker_fragment_candidates() {
 # _bash_marker_redirect_candidates COMMAND_UNQUOTED
 # Splits COMMAND_UNQUOTED into fragments (the same split _lib_split_fragments
 # gives deny-network-installs.sh) and emits every fragment's candidate
-# write-target words, one per line.
+# write-target words, one per line. Returns _lib_split_fragments's own exit
+# status on failure -- the caller checks it and denies at the top level;
+# see the comment below for why this function cannot emit_deny itself.
 _bash_marker_redirect_candidates() {
   local command_unquoted="$1" fragment
+  local fragments fragments_split_exit
+  # Checked and fail-closed, matching deny-network-installs.sh's
+  # FRAGMENTS_SPLIT_EXIT pattern. Surfaced via return rather than emit_deny:
+  # this function is invoked inside the caller's own $(...) command
+  # substitution, so an emit_deny here would exit only that subshell, not
+  # the hook process -- a silently-empty candidate list would fall through
+  # to this scan's normal "no match" allow with no bypass valve.
+  fragments=$(_lib_split_fragments "$command_unquoted")
+  fragments_split_exit=$?
+  if [ "$fragments_split_exit" -ne 0 ]; then
+    return "$fragments_split_exit"
+  fi
   # Here-string, not process substitution: _lib_split_fragments emits no
   # trailing newline, and `<<<` always appends exactly one, so `read` doesn't
   # silently drop a single/final fragment at EOF.
   while IFS= read -r fragment; do
     [ -n "$fragment" ] || continue
     _bash_marker_fragment_candidates "$fragment"
-  done <<< "$(_lib_split_fragments "$command_unquoted")"
+  done <<< "$fragments"
 }
 
 # _marker_write_candidate_mentions_claude CANDIDATE
@@ -450,7 +469,18 @@ _marker_write_candidate_mentions_claude() {
 # call should re-derive this
 # call-count accounting.
 MARKER_WRITE_COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+MARKER_WRITE_COMMAND_UNQUOTED_EXIT=$?
+if [ "$MARKER_WRITE_COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by marker-script-shape gate: could not quote-strip the command text (exit ${MARKER_WRITE_COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+  exit 0
+fi
 if printf '%s' "$MARKER_WRITE_COMMAND_UNQUOTED" | grep -qiF '.claude'; then
+  MARKER_WRITE_REDIRECT_CANDIDATES=$(_bash_marker_redirect_candidates "$MARKER_WRITE_COMMAND_UNQUOTED")
+  MARKER_WRITE_REDIRECT_CANDIDATES_EXIT=$?
+  if [ "$MARKER_WRITE_REDIRECT_CANDIDATES_EXIT" -ne 0 ]; then
+    emit_deny "Blocked by marker-script-shape gate: could not split the command into fragments (exit ${MARKER_WRITE_REDIRECT_CANDIDATES_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+    exit 0
+  fi
   MARKER_WRITE_AGENT_CHECKED=false
   MARKER_WRITE_REALPATH_BUDGET=10
   while IFS= read -r MARKER_WRITE_CANDIDATE; do
@@ -487,10 +517,11 @@ if printf '%s' "$MARKER_WRITE_COMMAND_UNQUOTED" | grep -qiF '.claude'; then
 $GATE_RELEASE_DENIAL_GUIDANCE"
       exit 0
     fi
-  # Here-string, matching _bash_marker_redirect_candidates's own inner loop:
-  # collects the candidate list fully before this loop starts, rather than
-  # streaming it through a live process-substitution pipe.
-  done <<< "$(_bash_marker_redirect_candidates "$MARKER_WRITE_COMMAND_UNQUOTED")"
+  # Here-string over the already-captured MARKER_WRITE_REDIRECT_CANDIDATES,
+  # not a nested command substitution: the split's exit status is checked
+  # above, before this loop starts, matching
+  # _bash_marker_redirect_candidates's own inner loop.
+  done <<< "$MARKER_WRITE_REDIRECT_CANDIDATES"
 fi
 
 # Strip leading/trailing whitespace — computed before the activation guards so

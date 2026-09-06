@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import yaml
@@ -587,6 +588,48 @@ def agent_input(session_id: str | None = None) -> dict:
     return payload
 
 
+def skill_input(
+    skill_name: str, session_id: str | None = None, agent_type: str | None = None
+) -> dict:
+    """Build a Skill tool_use payload. `skill_name` lands under
+    `tool_input.skill` -- the field name pinned by capturing a real `Skill`
+    tool_use record from a local transcript (not documented in the harness's
+    hooks/tools-reference pages)."""
+    payload: dict = {"tool_name": "Skill", "tool_input": {"skill": skill_name}}
+    if session_id is not None:
+        payload["session_id"] = session_id
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    return payload
+
+
+# activate-handoff-bypass.sh wraps its marker.sh call in a 2s `_lib_capped_for`
+# cap that can be exceeded under parallel-test-worker contention -- see that
+# hook's own header comment. Retrying is safe because `marker.sh activate` is
+# idempotent (marker.sh:387-392 -- it just overwrites the same PID file).
+ACTIVATE_MARKER_RETRY_ATTEMPTS = 10
+
+
+def run_hook_until_marker_exists(
+    hook: Path,
+    tool_input: dict,
+    marker: Path,
+    attempts: int = ACTIVATE_MARKER_RETRY_ATTEMPTS,
+    home: Path | None = None,
+    extra_env: dict | None = None,
+) -> None:
+    """Retry `hook` against `tool_input` until `marker` exists, or fail."""
+    for _ in range(attempts):
+        run_hook(hook, tool_input, home=home, extra_env=extra_env)
+        if marker.exists():
+            return
+        time.sleep(0.5)
+    assert marker.exists(), (
+        f"marker never landed at {marker} after {attempts} attempts -- "
+        "not just a single cap-timeout miss"
+    )
+
+
 # -- Hostile session_id ------------------------------------------------------
 #
 # Every hook that builds a filesystem path from the payload's `.session_id`
@@ -855,10 +898,26 @@ def install_resume_context_script(isolated_home: Path) -> Path:
     )
 
 
+def install_marker_script(isolated_home: Path) -> Path:
+    """Symlink the real marker.sh, and the _lib.sh it sources, into an
+    isolated $HOME/.claude/ -- so a hook or skill recipe invoking marker.sh
+    via `$CONFIG_DIR/scripts/marker.sh` resolves the real script rather than
+    a missing one. Idempotent, so a caller under the `isolated_home` fixture
+    (which already symlinks hooks/_lib.sh itself) can call this unconditionally.
+    """
+    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    return _symlink_if_absent(
+        isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh"
+    )
+
+
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
-    _symlink_if_absent(isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh")
-    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    install_marker_script(isolated_home)
+    _symlink_if_absent(
+        isolated_home / ".claude" / "scripts" / "ensure-account-dir.sh",
+        SCRIPTS_DIR / "ensure-account-dir.sh",
+    )
     subprocess.run(
         ["bash", "-c", command],
         cwd=cwd,

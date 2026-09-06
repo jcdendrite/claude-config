@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import textwrap
 import time
 
 import pytest
@@ -12,6 +14,7 @@ from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     multiedit_input,
     run_hook,
@@ -1264,6 +1267,61 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         assert elapsed < 1.0, (
             f"a 60-target tee fanout with no .claude mention took {elapsed:.2f}s -- "
             "should stay near the fast-reject's cost, not scale with target count"
+        )
+
+    def test_sed_absent_from_path_denied(self, isolated_home, tmp_path):
+        """MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip is the earliest fork
+        this scan reaches, run unconditionally ahead of Stage 1 for every
+        Bash call. A missing sed must deny (fail-closed) rather than let
+        _lib_strip_shell_quotes's failure silently clear
+        MARKER_WRITE_COMMAND_UNQUOTED and fall through to this scan's normal
+        no-match allow path with no bypass valve on a real marker write."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("~/.claude/scripts/marker.sh write code-review"),
+                home=isolated_home,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_redirect_candidates_split_sed_failure_denied(self, isolated_home, tmp_path):
+        """GH-783: MARKER_WRITE_REDIRECT_CANDIDATES_EXIT must fail closed on
+        its own, isolated from MARKER_WRITE_COMMAND_UNQUOTED_EXIT above --
+        both checks depend on the same sed binary, so a total sed-absent test
+        (like the one above) can't tell which of the two is actually catching
+        the failure. A sed shim fails on any invocation that isn't
+        _lib_strip_shell_quotes's own `-e`-flagged shape, so
+        MARKER_WRITE_COMMAND_UNQUOTED succeeds via the real sed while the
+        later _lib_split_fragments call inside _bash_marker_redirect_candidates
+        (a bare `sed -E 's/.../g'`, no `-e` token) fails on its own."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("~/.claude/scripts/marker.sh write code-review"),
+                home=isolated_home,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
         )
 
 

@@ -14,10 +14,20 @@ it.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import textwrap
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, build_path_without, read_input, run_hook, run_hook_reason
+from helpers import (
+    HOOKS_DIR,
+    bash_input,
+    build_path_without,
+    read_input,
+    run_hook,
+    run_hook_reason,
+)
 
 from .conftest import assert_cap_engaged
 
@@ -311,6 +321,24 @@ class TestDenyPiiInCommits:
         _stage(git_repo, "f.txt", "x\nref 41234567890123456789\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
 
+    def test_word_adjacent_card_quote_split_denied(self, isolated_home, git_repo, pii_patterns):
+        """GH-783: a credit-card-shaped digit run whose only preceding word
+        boundary is an adjacent quote character (no space, e.g.
+        `x"4111111111111111"`) must still deny under the raw+stripped union
+        scan. SCAN_TARGET_UNQUOTED alone would miss this -- stripping the
+        quote merges `x` and the digit run into `x4111111111111111` with no
+        \\b boundary between them -- but the raw $SCAN_TARGET side of the
+        SCAN_TARGET_BOTH union still has the quote and still matches.
+        Mirrors deny-private-project-refs.sh's
+        test_word_adjacent_tracker_id_quote_split_denied."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(f'git commit -m \'card x"{CARD_VALID}" on file\''),
+            cwd=git_repo,
+        ) == "deny"
+
     # ------------------------------------------------------------------ #
     # Added lines only — removing PII must never be blocked               #
     # ------------------------------------------------------------------ #
@@ -385,6 +413,23 @@ class TestDenyPiiInCommits:
         pii_patterns("# no user patterns\n")
         (git_repo / "file.txt").write_text(f"first\nsecond\nSSN {SSN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
+
+    def test_multiword_message_does_not_trigger_head_scan(self, isolated_home, git_repo, pii_patterns):
+        """GH-783: a naive uniform quote-strip (feeding the -m
+        message to _lib_commit_fragment_has_worktree_target pre-stripped)
+        would split a multi-word message into bare words, and the awk
+        pathspec check would read the second word as a worktree target --
+        widening the scan to `git diff HEAD` on an ordinary commit.
+        Confirms the raw fragment still reaches that xargs-tokenizing
+        consumer: unstaged tracked PII outside the index must not deny a
+        plain, multi-word `-m` commit."""
+        pii_patterns("# no user patterns\n")
+        (git_repo / "file.txt").write_text(f"first\nsecond\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git commit -m 'fix the thing'"),
+            cwd=git_repo,
+        ) == "allow"
 
     def test_all_long_flag_scans_worktree(self, isolated_home, git_repo, pii_patterns):
         """`--all` is the long form of `-a`; it must trigger the HEAD scan too."""
@@ -505,6 +550,137 @@ class TestDenyPiiInCommits:
             bash_input("git -C . commit -m wip"),
             cwd=git_repo,
         ) == "deny"
+
+    def test_quoted_git_word_commit_detected(self, isolated_home, git_repo, pii_patterns):
+        """GH-783 (git-word form): `"git" commit` must still dispatch --
+        the per-fragment strip feeding the two matcher calls catches a
+        quoted git word even though the -m message reaches
+        _lib_commit_fragment_has_worktree_target unstripped."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input('"git" commit -m wip'),
+            cwd=git_repo,
+        ) == "deny"
+
+    def test_quoted_subcommand_word_commit_detected(self, isolated_home, git_repo, pii_patterns):
+        """GH-783 (subcommand-word form): `git "commit"` must independently
+        dispatch too -- both _lib_fragment_invokes_git and
+        _lib_extract_git_subcmd have to pass on the stripped fragment, so a
+        fix closing only one word would miss this case."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input('git "commit" -m wip'),
+            cwd=git_repo,
+        ) == "deny"
+
+    def test_git_fragment_unquoted_sed_failure_denied(self, isolated_home, git_repo, tmp_path):
+        """GH-783: the per-fragment git_fragment_unquoted strip must fail
+        closed on its own, immediately for the fragment carrying the
+        commit -- not `continue` past it, which would silently skip
+        scanning and let an unscanned commit through. A sed shim fails
+        only on _lib_strip_shell_quotes's own `-e`-flagged invocation
+        (unique to that function in this codebase), so
+        _lib_split_fragments's own sed calls still succeed -- isolating
+        this call site from the pre-existing, unchecked
+        _lib_split_fragments failure mode, which would otherwise yield no
+        fragments at all and bypass the fragment loop before this fix
+        ever runs."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-on-strip-shell-quotes-only"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" = "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input("git commit -m wip"),
+                cwd=git_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_total_sed_absence_denied(self, isolated_home, git_repo, pii_patterns, tmp_path):
+        """GH-783: with sed entirely absent from PATH, _lib_split_fragments's
+        own unchecked failure (the sibling gap the shim-isolated test above
+        deliberately avoids exercising) must still deny -- not silently
+        yield zero fragments and fall through to the hook's normal allow
+        path with a real, armed-pattern-matching SSN staged."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input("git commit -m wip"),
+                cwd=git_repo,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_scan_target_sed_failure_denied(self, isolated_home, git_repo, tmp_path):
+        """GH-783: SCAN_TARGET_UNQUOTED_EXIT must fail closed on its own,
+        isolated from GIT_FRAGMENTS_SPLIT_EXIT and git_fragment_unquoted_exit
+        above -- all three checks call sed against text drawn from the same
+        $COMMAND, so a total sed-absent test can't tell which one is
+        catching the failure. A sed shim fails only on a `-e`-flagged call
+        (_lib_strip_shell_quotes's own shape, shared by the per-fragment
+        strip and this SCAN_TARGET_UNQUOTED strip) whose stdin carries a
+        marker that straddles a `&&` fragment-split point -- present in the
+        raw, unsplit $COMMAND that feeds SCAN_TARGET, but absent from
+        every individual fragment the per-fragment strip sees, since
+        _lib_split_fragments already broke the marker apart at that `&&`
+        before the per-fragment strip ever runs. GIT_FRAGMENTS_SPLIT_EXIT's
+        own sed calls (not `-e`-flagged) are left untouched by the shim
+        regardless of marker content."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+        marker = "SCANTARGETEXIT&&ISOLATIONMARKER"
+        command = f"{marker} && git commit -m wip"
+
+        shim_dir = tmp_path / "sed-fails-on-scan-target-only"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" = "-e" ]; then
+              input=$(cat)
+              case "$input" in
+                *"{marker}"*) exit 1 ;;
+              esac
+              printf '%s' "$input" | "{real_sed}" "$@"
+            else
+              exec "{real_sed}" "$@"
+            fi
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                DENY_PII_IN_COMMITS_HOOK,
+                bash_input(command),
+                cwd=git_repo,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
 
     # ------------------------------------------------------------------ #
     # --no-verify does not disable a PreToolUse hook                      #

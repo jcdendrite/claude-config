@@ -61,6 +61,9 @@
 # - Not closed here: the fix touches the fragment splitter or the git-word
 #   scan, both shared by other hooks and outside this gate's cooperative
 #   threat model.
+# - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
+#   checked and denies with an explicit message rather than falling through
+#   to this gate's normal "no gated command present" allow path.
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.
@@ -133,6 +136,19 @@ if [ "$TOOL_NAME" != "Bash" ]; then
 fi
 
 [ -z "$COMMAND" ] && exit 0
+
+# Quote-stripped so an adjacent-quote split (`"git" push`, `gh pr
+# "create"`) can't dodge the fragment tokenizer below — same helper as
+# deny-network-installs.sh. The $(/backtick substitution checks further
+# down stay on raw $COMMAND — they detect substitution syntax, not words.
+# Checked and fail-closed, matching deny-invisible-commit-content.sh's own
+# COMMAND_UNQUOTED computation.
+COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+COMMAND_UNQUOTED_EXIT=$?
+if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by ready-for-review gate: could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  exit 0
+fi
 
 SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty')
@@ -226,7 +242,12 @@ push_fragment_publishes_reviewable_change() {
 is_gated_git_push=false
 is_gh_pr_ready=false
 is_gh_pr_create=false
-FRAGMENTS=$(_lib_split_fragments "$COMMAND")
+FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+FRAGMENTS_SPLIT_EXIT=$?
+if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+  emit_deny "Blocked by ready-for-review gate: could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git push/gh pr command."
+  exit 0
+fi
 while IFS= read -r frag; do
   [ -z "$frag" ] && continue
   if _lib_fragment_invokes_git "$frag"; then

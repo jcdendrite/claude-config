@@ -711,7 +711,7 @@ to hold PII/PHI or live credentials:
   itself (no config toggle, no allowlist escape) and is accurate against
   careless or undirected agent behavior; it is not a claim of safety against
   an adversarially-instructed one.
-- Both credential-value/path Bash-command gates normalize `$COMMAND` before
+- The credential-value/path Bash-command gates normalize `$COMMAND` before
   matching (`_lib_strip_shell_quotes` in `_lib.sh`) to collapse the
   character-removal-based literal-reassembly mechanisms simple enough to
   occur without deliberate adversarial intent: adjacent quote splits
@@ -737,6 +737,69 @@ to hold PII/PHI or live credentials:
   above, not the "could happen by accident" case the normalization above was
   built to close. Accepted residual, not a gap this repo is chasing
   regex-by-regex.
+- The fragment-word-matcher family inherits the identical residual above,
+  using the same `_lib_strip_shell_quotes`-before-split idiom as the
+  credential gates:
+  - `deny-private-project-refs.sh`, `require-ready-for-review.sh`,
+    `deny-reviewer-tree-mutation.sh`, and `deny-repo-relocation.sh` each
+    compute `COMMAND_UNQUOTED` once before their fragment matchers.
+  - `deny-pii-in-commits.sh` strips per-fragment for its two matcher
+    calls, keeping the raw fragment for
+    `_lib_commit_fragment_has_worktree_target`'s own `xargs -n1`
+    tokenizer — pre-stripping there would misread a multi-word `-m`
+    message as a bare pathspec and widen the scan to `git diff HEAD` on
+    an ordinary commit.
+  - None of the five closes a multi-character ANSI-C escape or a
+    backslash-newline line continuation in a gated word — same boundary,
+    same reasoning, inherited rather than re-derived.
+- `deny-private-project-refs.sh`'s `SCAN_TARGET_BOTH` scans the raw+stripped
+  union of `$SCAN_TARGET` across all three of its scan tiers (tracker-ID,
+  structural, blocklist):
+  - A quote-split token (`PRO"J-123"`) reassembles only in the stripped
+    copy.
+  - A token whose only word boundary is the quote character itself
+    (`x"PROJ-123"`) matches only in the raw copy.
+  - `_lib_strip_shell_quotes` only ever deletes characters, so the union can
+    only add matches beyond either buffer scanned alone, never suppress one
+    already present in either.
+  - The blocklist's apostrophe-preserving match (`AcmeCorp's`) still works
+    via the raw copy despite the stripped copy's apostrophe-deletion caveat.
+- Every `COMMAND_UNQUOTED`/`SCAN_TARGET_UNQUOTED`/`git_fragment_unquoted`
+  computation in this family checks `_lib_strip_shell_quotes`'s exit status,
+  and every `_lib_split_fragments` call in this family (both the ones fed
+  `$COMMAND_UNQUOTED`/`$COMMAND` and `deny-invisible-commit-content.sh`'s own
+  `$MASKED_COMMAND` call) checks that split's own exit status too, each
+  denying (failing closed) on a non-zero result, matching
+  `deny-invisible-commit-content.sh`'s own `COMMAND_UNQUOTED_EXIT`/`SPLIT_EXIT`
+  checks — a `sed`/`tr` failure (missing, killed, or erroring) cannot
+  silently collapse fragment detection to zero matches and fall through to
+  each hook's normal allow path.
+- `deny-invisible-commit-content.sh`'s whole-word quote closure:
+  - Arm 1 strips quotes before splitting (`COMMAND_UNQUOTED`), the same
+    treatment as the fragment-matcher family above.
+  - Arm 2's masker (`_mask_shell_quotes`) emits a quoted span unquoted, not
+    blanked, only when its interior is a single word matching
+    `^[A-Za-z0-9._/-]+$`, so a quoted `git`/`commit` word (`"git" commit`)
+    stays visible to both arms.
+  - Both arms inherit the fragment-matcher family's ANSI-C-escape residual
+    above: a span with a multi-character escape (`$'\x67it'`) contains a
+    backslash, so it is not a "single safe word" and stays masked, remaining
+    invisible to arm 2's fragment count.
+  - Additionally open: a shell variable holding the git path, a heredoc body
+    piped to an interpreter, and a mid-word quote split spanning multiple
+    words (`g"it commit"`, whose masked span contains whitespace and so
+    stays blanked) — the same surface every other commit gate already has.
+- `deny-invisible-commit-content.sh`'s wrapped-invocation blind spot:
+  `_mask_shell_quotes` blanks any quoted span whose interior contains
+  whitespace or a shell operator, so a real `git commit` invoked inside a
+  code-executing wrapper's quoted argument (`bash -c "git commit ..."`,
+  `eval "git commit ..."`) is invisible to arm 2's count — a two-commit
+  chain where either commit is wrapped this way evades both arms, e.g.
+  `git commit -m "fix" && bash -c "git add secret && git commit -m y"`.
+  Accepted under this repo's cooperative-agent threat model (see
+  `require-respond-pr.sh`'s own "Threat model" comment for the same
+  posture stated elsewhere): these hooks assume a cooperative agent, not
+  one deliberately constructing shell indirection to evade a gate.
 - The backslash-escape removal above strips a backslash before *any*
   character universally, including inside what bash would treat as a
   single-quoted region (where bash itself preserves the backslash

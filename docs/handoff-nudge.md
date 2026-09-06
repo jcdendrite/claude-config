@@ -35,7 +35,7 @@ Revisit this default via an extended `rearm-backtest` once escalation-fire data 
 
 - **Kill-switch** (`touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge-disabled"`) — suppresses every future fire, including the hard block, the same as it already suppresses the advisory nudge.
 - **`/handoff`** — the intended way out. It captures state in a `/tmp` file and resumes in a fresh session, whose own estimate starts back below `HANDOFF_NUDGE_BLOCK_AT`.
-- **The `/handoff` active-bypass marker** (`<config-dir>/.handoff-active.d/<session_id>`) — live only while `/handoff` itself is running, it keeps a qualifying re-arm advisory instead of blocking, so the block can't truncate `/handoff`'s own multi-turn write.
+- **The `/handoff` active-bypass marker** (`<config-dir>/.handoff-active.d/<session_id>`) — set by `activate-handoff-bypass.sh` the moment the handoff skill loads (the skill's own `marker.sh activate handoff` step is its first instructed step, and is a fallback for the rare case that hook doesn't fire), live until the skill deactivates it or the session ends. It keeps a qualifying re-arm advisory instead of blocking, so the block can't truncate `/handoff`'s own multi-turn write.
 
 `/handoff` collects this session's in-flight background dispatches before writing the file (see the `handoff` skill's own "Before writing: collect in-flight background dispatches" section), so the ordinary exit from a block can take longer than a single turn.
 
@@ -60,7 +60,7 @@ The hook checks for this file before reading the transcript. It is useful when r
 The nudge is a one-shot push, which makes it a poor thing to reason about as a query — a session at the plan→implementation boundary wants to know where it stands, not whether an injection happened to fire. `--check` answers that directly:
 
 ```bash
-"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/nudge-handoff-near-context-cap.sh" --check
+~/.claude/hooks/nudge-handoff-near-context-cap.sh --check
 ```
 
 It writes nothing — no fired marker, no log line — and exits 0 on every path, emitting one JSON object:
@@ -123,7 +123,7 @@ A session with no main-thread turn carrying a usage block (no fire threshold to 
 Run with:
 
 ```bash
-python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/transcript-analysis.py" spend-over-threshold --since 2026-01-01
+python3 ~/.claude/scripts/transcript-analysis.py spend-over-threshold --since 2026-01-01
 ```
 
 ## Known limitations

@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import textwrap
 
 import pytest
 from helpers import (
     HOOKS_DIR,
     bash_input,
+    build_path_without,
     edit_input,
     multiedit_input,
     run_hook,
@@ -468,6 +471,172 @@ class TestBashInPlaceEditFamily:
 
     def test_reviewer_rustfmt_denied(self):
         assert run_hook(HOOK, bash_input("rustfmt src/x.rs", agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_quoted_sed_dash_i_denied(self):
+        # GH-783: a command name quoted directly in $COMMAND ('sed' -i file)
+        # is caught -- $COMMAND is quote-stripped before splitting into
+        # fragments, unlike the nested-shell-boundary gap
+        # TestKnownGapBypass.test_reviewer_quoted_command_name_bypass_allowed
+        # still documents (`bash -c "sed -i ..."`, which this scan never
+        # executes).
+        assert run_hook(HOOK, bash_input("'sed' -i s/a/b/ x.txt", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_quoted_argument_without_dash_i_allowed(self):
+        # GH-783: confirms COMMAND_UNQUOTED doesn't affect fragment splitting
+        # for a benign quoted argument with no token-boundary interaction.
+        # Not an over-strip false-positive guard: _lib_strip_shell_quotes
+        # only deletes quote/backslash characters, so it can't merge, split,
+        # or relocate a token boundary, and this hook's -i gate is an
+        # exact-token-prefix match -- there is no constructible near-boundary
+        # input for this hook that a broken over-strip implementation could
+        # flip from allow to deny.
+        assert run_hook(HOOK, bash_input('sed s/a/b/ "x.txt"', agent_type="staff-sdet")) == "allow"
+
+    def test_command_unquoted_sed_absent_from_path_denied(self, tmp_path):
+        # GH-783: COMMAND_UNQUOTED's sed/tr strip failure must fail closed
+        # rather than let a missing sed silently collapse fragment
+        # detection and fall through to this hook's normal allow path.
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                HOOK,
+                bash_input("'git' checkout -- some/file.txt", agent_type="staff-sdet"),
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_fragments_split_sed_failure_denied(self, tmp_path):
+        """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
+        from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
+        sed binary, so a total sed-absent test (like the one above) can't
+        tell which of the two is actually catching the failure. A sed shim
+        fails on any invocation that isn't _lib_strip_shell_quotes's own
+        `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
+        while the later _lib_split_fragments call (a bare `sed -E
+        's/.../g'`, no `-e` token) fails on its own."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        assert (
+            run_hook(
+                HOOK,
+                bash_input("'git' checkout -- some/file.txt", agent_type="staff-sdet"),
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+
+class TestRawWriteTargetGap:
+    """GH-751: a cp/mv/tee destination, or a `>`/`>>` shell redirect
+    target, that is not literally under /tmp/ denies when the write is the
+    fragment's sole or first command. Regression tests proving the header's
+    own three named examples (`cp scratch src/x`, `sed ... > src/x`, `tee
+    src/x`) are caught, paired with the /tmp exemption each must still
+    permit. GH-811 tracks the residual gap where the same target is hidden
+    behind a bare `&` in the same fragment — see
+    test_reviewer_raw_write_hidden_behind_bare_ampersand_allowed below."""
+
+    def test_reviewer_cp_to_tracked_path_denied(self):
+        assert run_hook(HOOK, bash_input("cp scratch src/x", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_mv_to_tracked_path_denied(self):
+        assert run_hook(HOOK, bash_input("mv scratch src/x", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_redirect_to_tracked_path_denied(self):
+        assert run_hook(HOOK, bash_input("sed 's/a/b/' file > src/x", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_append_redirect_to_tracked_path_denied(self):
+        assert run_hook(HOOK, bash_input("echo x >> src/x", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_tee_to_tracked_path_denied(self):
+        assert run_hook(HOOK, bash_input("echo x | tee src/x", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_cp_to_tmp_allowed(self):
+        # The sanctioned reviewer workflow: copy the file to /tmp and
+        # mutate the copy there — must never be denied by this gate.
+        assert run_hook(HOOK, bash_input("cp src/x /tmp/scratch/x", agent_type="staff-sdet")) == "allow"
+
+    def test_reviewer_redirect_to_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("sed 's/a/b/' src/x > /tmp/scratch/x", agent_type="staff-sdet")) == "allow"
+
+    def test_reviewer_tee_to_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("echo x | tee /tmp/scratch/x", agent_type="staff-sdet")) == "allow"
+
+    def test_reviewer_redirect_to_dev_null_allowed(self):
+        # Common diagnostic-noise destination, not a tracked-file write —
+        # must not false-deny an ordinary `... > /dev/null` invocation.
+        assert run_hook(HOOK, bash_input("git status > /dev/null", agent_type="staff-sdet")) == "allow"
+
+    def test_reviewer_redirect_traversal_out_of_tmp_denied(self):
+        assert (
+            run_hook(HOOK, bash_input("echo x > /tmp/../etc/passwd", agent_type="staff-sdet"))
+            == "deny"
+        )
+
+    def test_reviewer_raw_write_to_agent_reviews_denied(self):
+        """A raw-Bash `agent-reviews/*` write gets no exemption at all: the
+        ignore-state confirmation the Write/Edit/MultiEdit arm's own
+        exemption depends on (git check-ignore) has no Bash-arm
+        counterpart, so this denies like any other non-/tmp target rather
+        than reproducing an unchecked exemption."""
+        assert (
+            run_hook(HOOK, bash_input("echo findings > agent-reviews/x.md", agent_type="staff-sdet"))
+            == "deny"
+        )
+
+    def test_reviewer_raw_write_to_git_info_exclude_denied(self):
+        """The specific scenario test_not_ignored_deny_reason_directs_to_
+        inline_fallback names as the unguarded vector: a raw redirect
+        rewriting the target repo's own ignore state."""
+        assert (
+            run_hook(
+                HOOK,
+                bash_input("printf 'agent-reviews/\\n' >> .git/info/exclude", agent_type="staff-sdet"),
+            )
+            == "deny"
+        )
+
+    def test_code_writer_cp_to_tracked_path_allowed(self):
+        # Non-reviewer + a raw write: the gate keys on agent identity, not
+        # the command shape, same invariant TestBashGitWrites pins for git.
+        assert run_hook(HOOK, bash_input("cp scratch src/x", agent_type="code-writer")) == "allow"
+
+    def test_reviewer_raw_write_hidden_behind_bare_ampersand_allowed(self):
+        # GH-811: pins the CURRENT (imperfect) behavior, not the desired
+        # one. `_lib_split_fragments` does not split on a bare `&`, so
+        # `_fragment_raw_write_targets` still resolves `cp` as this
+        # fragment's command word and reads the last word of the whole
+        # unsplit fragment ("/tmp/x", from the backgrounded `echo`) as the
+        # destination — the real target (src/tracked_file.txt) is never
+        # emitted, and the write is allowed. A fix to GH-811's underlying
+        # `_lib_split_fragments` limitation should make this assertion
+        # start failing; update it to "deny" then, not silently accept it.
+        assert (
+            run_hook(
+                HOOK,
+                bash_input(
+                    "cp /tmp/scratch.txt src/tracked_file.txt & echo /tmp/x",
+                    agent_type="staff-sdet",
+                ),
+            )
+            == "allow"
+        )
 
 
 class TestBuiltinAgents:
