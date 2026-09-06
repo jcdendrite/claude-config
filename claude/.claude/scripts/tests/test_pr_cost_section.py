@@ -13,12 +13,14 @@ presence and content.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+from helpers import SKILLS_DIR
 
 from .conftest import _base_test_env, _make_repo_with_remote
 
@@ -26,11 +28,54 @@ from .conftest import _base_test_env, _make_repo_with_remote
 _SCRIPT = Path(__file__).parent.parent / "pr-cost-section.sh"
 _LIB_SH = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
 
+# The complete block pr-cost-section.sh emits on exit 0. Written out as a
+# literal rather than composed from parts, because composing it would
+# re-implement the script's own layout and pass on a wrong shape. The two
+# interior report lines come from _fake_transcript_analysis_source().
+_EXPECTED_COST_BLOCK = (
+    "<!-- pr-cost:start -->\n"
+    "## Cost (list-price estimate)\n"
+    "\n"
+    "ARGS: cost --this-repo --branches main --summary\n"
+    "total: $12.34\n"
+    "\n"
+    "Exact command that produced this: `~/.claude/scripts/pr-cost-section.sh`\n"
+    "<!-- pr-cost:end -->\n"
+)
+
+# Same five-part shape as _EXPECTED_COST_BLOCK, with the metacharacter line
+# from _fake_transcript_analysis_source_with_metacharacters() in place of
+# the report body.
+_EXPECTED_COST_BLOCK_WITH_METACHARACTERS = (
+    "<!-- pr-cost:start -->\n"
+    "## Cost (list-price estimate)\n"
+    "\n"
+    "ARGS: cost --this-repo --branches main --summary\n"
+    "$HOME `date` %s 50% C:\\path\n"
+    "\n"
+    "Exact command that produced this: `~/.claude/scripts/pr-cost-section.sh`\n"
+    "<!-- pr-cost:end -->\n"
+)
+
+# Same five-part shape as _EXPECTED_COST_BLOCK, with the table-row-shaped
+# line from _fake_transcript_analysis_source_ending_in_table_row() in place
+# of the report body.
+_EXPECTED_COST_BLOCK_ENDING_IN_TABLE_ROW = (
+    "<!-- pr-cost:start -->\n"
+    "## Cost (list-price estimate)\n"
+    "\n"
+    "ARGS: cost --this-repo --branches main --summary\n"
+    "| subagent | 2.82 | 43.5% |\n"
+    "\n"
+    "Exact command that produced this: `~/.claude/scripts/pr-cost-section.sh`\n"
+    "<!-- pr-cost:end -->\n"
+)
+
 
 def _fake_transcript_analysis_source() -> str:
     """Source for a transcript-analysis.py stand-in: echoes its own argv (so
     a test can assert the exact invocation shape) plus a fixed cost-report
-    body the exit-0 case asserts verbatim."""
+    body _EXPECTED_COST_BLOCK wraps."""
     return textwrap.dedent("""\
         #!/usr/bin/env python3
         import sys
@@ -50,6 +95,32 @@ def _fake_transcript_analysis_source_with_stderr_diagnostics() -> str:
         print("NOTICE: STDERR-MARKER non-contiguous requestId run merged", file=sys.stderr)
         print("ARGS: " + " ".join(sys.argv[1:]))
         print("total: $12.34")
+    """)
+
+
+def _fake_transcript_analysis_source_with_metacharacters() -> str:
+    """Source for a transcript-analysis.py stand-in whose report body
+    carries $, a backtick, a printf specifier, and a backslash. The
+    generated line itself is a raw string, so the backslash reaches the
+    fake's own stdout intact rather than being consumed as an escape
+    sequence when the fake runs."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        print("ARGS: " + " ".join(sys.argv[1:]))
+        print(r"$HOME `date` %s 50% C:\\path")
+    """)
+
+
+def _fake_transcript_analysis_source_ending_in_table_row() -> str:
+    """Source for a transcript-analysis.py stand-in whose report body's
+    last line is table-row-shaped -- models the "Cost by ..." tables'
+    final row, distinct from a fixed non-table body."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        print("ARGS: " + " ".join(sys.argv[1:]))
+        print("| subagent | 2.82 | 43.5% |")
     """)
 
 
@@ -175,6 +246,56 @@ def stderr_diagnostics_script_fixture(tmp_path) -> Path:
     return script_copy
 
 
+@pytest.fixture()
+def metacharacters_script_fixture(tmp_path) -> Path:
+    """Same layout as script_fixture, but transcript-analysis.py's report
+    body carries $, a backtick, a printf specifier, and a backslash -- for
+    pinning that the wrapper passes the report as a printf argument, never
+    as its format string or an unquoted heredoc body."""
+    fixture_root = tmp_path / "fixture_root"
+    scripts_dir = fixture_root / "scripts"
+    hooks_dir = fixture_root / "hooks"
+    scripts_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+
+    script_copy = scripts_dir / "pr-cost-section.sh"
+    shutil.copy(_SCRIPT, script_copy)
+    script_copy.chmod(0o755)
+
+    shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+
+    fake = scripts_dir / "transcript-analysis.py"
+    fake.write_text(_fake_transcript_analysis_source_with_metacharacters())
+    fake.chmod(0o755)
+
+    return script_copy
+
+
+@pytest.fixture()
+def table_row_script_fixture(tmp_path) -> Path:
+    """Same layout as script_fixture, but transcript-analysis.py's report
+    body's last line is table-row-shaped -- for pinning that the blank line
+    before the trailer keeps it from parsing as a phantom row of the
+    preceding table."""
+    fixture_root = tmp_path / "fixture_root"
+    scripts_dir = fixture_root / "scripts"
+    hooks_dir = fixture_root / "hooks"
+    scripts_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+
+    script_copy = scripts_dir / "pr-cost-section.sh"
+    shutil.copy(_SCRIPT, script_copy)
+    script_copy.chmod(0o755)
+
+    shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+
+    fake = scripts_dir / "transcript-analysis.py"
+    fake.write_text(_fake_transcript_analysis_source_ending_in_table_row())
+    fake.chmod(0o755)
+
+    return script_copy
+
+
 def _run_script(script_copy: Path, cwd: Path, config_dir: Path) -> subprocess.CompletedProcess:
     env = {**_base_test_env(), "CLAUDE_CONFIG_DIR": str(config_dir)}
     return subprocess.run(
@@ -188,7 +309,7 @@ def _write_sentinel(config_dir: Path, content: str) -> None:
 
 
 class TestSentinelEnabledBranchResolves:
-    def test_prints_cost_report_verbatim_and_exit_zero(self, tmp_path, script_fixture):
+    def test_prints_the_complete_cost_block_and_exit_zero(self, tmp_path, script_fixture):
         repo, _bare = _make_repo_with_remote(tmp_path)
         config_dir = tmp_path / "claude_config"
         _write_sentinel(config_dir, "dollars\n")
@@ -196,7 +317,7 @@ class TestSentinelEnabledBranchResolves:
         result = _run_script(script_fixture, repo, config_dir)
 
         assert result.returncode == 0
-        assert result.stdout == "ARGS: cost --this-repo --branches main --summary\ntotal: $12.34\n"
+        assert result.stdout == _EXPECTED_COST_BLOCK
 
 
 class TestSentinelMixedCase:
@@ -212,7 +333,7 @@ class TestSentinelMixedCase:
         result = _run_script(script_fixture, repo, config_dir)
 
         assert result.returncode == 0
-        assert result.stdout == "ARGS: cost --this-repo --branches main --summary\ntotal: $12.34\n"
+        assert result.stdout == _EXPECTED_COST_BLOCK
 
 
 class TestSentinelAbsent:
@@ -312,7 +433,7 @@ class TestStderrDiagnosticsDiscardedOnSuccess:
         result = _run_script(stderr_diagnostics_script_fixture, repo, config_dir)
 
         assert result.returncode == 0
-        assert result.stdout == "ARGS: cost --this-repo --branches main --summary\ntotal: $12.34\n"
+        assert result.stdout == _EXPECTED_COST_BLOCK
         assert "STDERR-MARKER" not in result.stderr
 
 
@@ -331,3 +452,58 @@ class TestSentinelBlankLineThenDollars:
 
         assert result.returncode == 1
         assert result.stdout == ""
+
+
+class TestCostBodyWithShellMetacharacters:
+    """A report line carrying $, a backtick, a printf specifier, and a
+    backslash survives byte-identically: the wrapper passes the report as a
+    printf argument, never as its format string or an unquoted heredoc
+    body."""
+
+    def test_stdout_preserves_metacharacters_byte_identically(
+        self, tmp_path, metacharacters_script_fixture,
+    ):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        config_dir = tmp_path / "claude_config"
+        _write_sentinel(config_dir, "dollars\n")
+
+        result = _run_script(metacharacters_script_fixture, repo, config_dir)
+
+        assert result.returncode == 0
+        assert result.stdout == _EXPECTED_COST_BLOCK_WITH_METACHARACTERS
+
+
+class TestCostBodyEndsWithTableRow:
+    """No fixture in this suite otherwise ends its fake report body with a
+    table-row-shaped line, so nothing else pins the central invariant: the
+    blank line before the trailer keeps the reproducibility line from
+    parsing as a phantom row of the preceding table."""
+
+    def test_stdout_keeps_trailer_off_the_table_and_exit_zero(
+        self, tmp_path, table_row_script_fixture,
+    ):
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        config_dir = tmp_path / "claude_config"
+        _write_sentinel(config_dir, "dollars\n")
+
+        result = _run_script(table_row_script_fixture, repo, config_dir)
+
+        assert result.returncode == 0
+        assert result.stdout == _EXPECTED_COST_BLOCK_ENDING_IN_TABLE_ROW
+
+
+class TestCostHeadingLiteralMatchesSkillBody:
+    """Tripwire, not a behavioral test: pr-cost-section.sh's printf argument
+    and pr-description/SKILL.md's descriptive mention of the heading are two
+    independently-maintained copies of the same string, introduced by moving
+    the heading into the script. A rename of one copy without the other would
+    leave both this suite's byte-exact block assertions and test_skills.py's
+    test_declares_cost_heading_literal green while the two diverge."""
+
+    def test_heading_literal_appears_identically_in_both_places(self):
+        script_source = _SCRIPT.read_text()
+        heading_match = re.search(r"'(## Cost \(list-price estimate\))'", script_source)
+        assert heading_match, "printf's heading argument not found in pr-cost-section.sh"
+
+        skill_body = (SKILLS_DIR / "pr-description" / "SKILL.md").read_text()
+        assert heading_match.group(1) in skill_body
