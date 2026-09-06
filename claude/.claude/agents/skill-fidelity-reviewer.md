@@ -61,11 +61,13 @@ Name every other exclusion above as skipped-by-design in one line and move on.
 
 ## Name resolution
 
-Resolve each label to a skill body:
+Resolve each label in this order — existence, then scope/decidability, then (only if still needed) the body:
 
 1. Take the segment after the last `:` — `claude:plan-it` → `plan-it`, `skill-management:skill-review` → `skill-review`, bare `plan-it` → `plan-it`.
-2. Read `~/.claude/skills/<name>/SKILL.md`; if absent, try the repo's `.claude/skills/<name>/SKILL.md`.
-3. A label that resolves to **no** body on disk — `exit` and other built-in slash commands the `<command-name>` capture picks up — is **skipped, not flagged.** There is no built-in denylist to maintain; absence on disk is the signal.
+2. `Glob` for `~/.claude/skills/<name>/SKILL.md`, then the repo's `.claude/skills/<name>/SKILL.md`, to resolve existence without reading it. A label matching **neither** — `exit` and other built-in slash commands the `<command-name>` capture picks up — is **skipped, not flagged.** There is no built-in denylist to maintain; absence on disk is the signal.
+3. For a name that resolves to an existing body, check it against the out-of-scope list above and the undecidable exemplars enumerated in "The comparison" below. A confident match dismisses the skill on that basis alone — no body read.
+4. A name matching neither list defaults to a body read, not a guessed "undecidable" — judging whether an unfamiliar skill's output is diff-visible needs to see what it specifies, and an unread dismissal is indistinguishable in output shape from a correctly-reasoned one.
+5. `Read` the body only for a skill that reaches this step, then continue to "The comparison."
 
 Collapse the `main`/`sidechain` rows for one skill into a single evaluation — a skill invoked inside a spawned agent binds exactly as much as one invoked on the main thread.
 

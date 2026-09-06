@@ -144,6 +144,7 @@ def _count_name_only_skills() -> int:
 _GROUND_EVERY_CHOICE_BULLET = "- **Ground every choice.**"
 _GLOBAL_CLAUDE_MD = "claude/.claude/CLAUDE.md"
 _NUDGE_HOOK_REL_PATH = "claude/.claude/hooks/nudge-handoff-near-context-cap.sh"
+_CLAUDE_MD_LENGTH_HOOK_REL_PATH = "claude/.claude/hooks/check-claude-md-length.sh"
 
 
 def _count_ground_every_choice_categories() -> int:
@@ -181,6 +182,32 @@ def _count_ground_every_choice_categories() -> int:
     if terminator:
         body = body[: terminator.start()]
     return len(re.findall(r"^  - \*\*", body, re.MULTILINE))
+
+
+def _count_claude_md_length_hook_limit() -> int:
+    """Return the CLAUDE.md/AGENTS.md line-count limit from limit_for()'s wildcard arm.
+
+    Source-scans the literal rather than invoking the hook: limit_for() sits
+    after _lib_parse_tool_input_or_deny in the hook's control flow, so reaching
+    its value behaviorally would require routing a full tool-input payload
+    through the parse-and-gate path plus a real staged file in a real git
+    repo, purely to make a deny message expose the number. Anchored to the
+    wildcard `*)` case arm specifically, since a future per-file override arm
+    would otherwise make an unanchored "echo (\\d+)" pattern ambiguous.
+    """
+    hook_path = REPO_ROOT / _CLAUDE_MD_LENGTH_HOOK_REL_PATH
+    text = hook_path.read_text()
+    pattern = r"\*\)\s*\n\s*echo (\d+) ;;"
+    matches = re.findall(pattern, text)
+    _assert_exactly_one_match(
+        matches,
+        Occurrence(
+            rel_path=_CLAUDE_MD_LENGTH_HOOK_REL_PATH,
+            pattern=pattern,
+            description="check-claude-md-length.sh: limit_for()'s wildcard-arm default",
+        ),
+    )
+    return int(matches[0])
 
 
 def _count_handoff_nudge_threshold_percentage() -> int:
@@ -393,6 +420,20 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/skills.md",
                 pattern=r"(\w+) skills in this repo use `skillOverrides: name-only`",
                 description="docs/skills.md: N skills use skillOverrides: name-only",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_claude_md_length_hook_limit,
+        label=f"limit_for()'s wildcard-arm default in {_CLAUDE_MD_LENGTH_HOOK_REL_PATH}",
+        occurrences=[
+            Occurrence(
+                rel_path="claude-skills/skills/ai-instruction-and-memory-files/SKILL.md",
+                # Anchored on the full phrase, not the bare word "lines" — a
+                # bare-word pattern also matches this same file's unrelated
+                # "first 200 lines or 25KB of `MEMORY.md`" sentence.
+                pattern=r"under (\d+) lines per CLAUDE\.md file",
+                description="ai-instruction-and-memory-files/SKILL.md: N lines per CLAUDE.md file",
             ),
         ],
     ),
