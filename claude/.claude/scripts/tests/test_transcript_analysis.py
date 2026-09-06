@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -7939,21 +7940,24 @@ class TestCacheRebuildClassification:
     def test_dedup_synthetic_exclusion_cause_classification_and_priced_excess(
         self, fake_projects, capsys
     ):
-        """One transcript combining: a multi-record requestId run (must
-        dedup to one small, non-tail call), a requestId-less <synthetic>
-        entry (must be excluded from both pricing and the i/prev_ts/
-        prev_model bookkeeping), the transcript's own first call (must
-        classify session start, never an idle bucket), a flat-field
-        cache_creation fallback (classifies unexplained at a sub-5-minute
-        gap; its pricing-as-5m-only is covered separately by
-        test_flat_cache_creation_fallback_priced_as_5m_only), a record with
-        no timestamp at all and,
-        separately, a negative-gap clock-skew pair and a genuinely garbled
-        (non-empty) timestamp string (all three must classify as the
-        explicit timestamp-anomaly bucket, never silently folded into idle
-        or unexplained), a 6-minute gap (idle 5m-1h, with its priced excess
-        hand-computed below), and a model switch at a sub-5-minute gap
-        (classifies model switch, not unexplained)."""
+        """One transcript exercising every classification case:
+        - a multi-record requestId run (dedups to one small, non-tail call)
+        - a requestId-less <synthetic> entry (excluded from both pricing and
+          the i/prev_ts/prev_model bookkeeping)
+        - the transcript's own first call (session start, never an idle
+          bucket)
+        - a flat-field cache_creation fallback (unexplained at a sub-5-minute
+          gap; its pricing-as-5m-only is covered separately by
+          test_flat_cache_creation_fallback_priced_as_5m_only)
+        - a record with no timestamp at all (timestamp-anomaly bucket)
+        - a negative-gap clock-skew pair (timestamp-anomaly bucket)
+        - a genuinely garbled, non-empty timestamp string (timestamp-anomaly
+          bucket -- none of these three anomalies is silently folded into
+          idle or unexplained)
+        - a 6-minute gap (idle 5m-1h, priced excess hand-computed below)
+        - a model switch at a sub-5-minute gap (model switch, not
+          unexplained)
+        """
         run_ts = "2026-08-01T10:01:00.000Z"
         records = [
             # i=0: first call ever -- session start, regardless of tail size.
@@ -8124,6 +8128,28 @@ class TestCacheRebuildSwitchDeltaPricing:
         )
         assert delta == pytest.approx(-12.25)
         assert unpriced_tokens == 0
+
+
+class TestCacheRebuildNegateSwitchDeltaForDisplay:
+    """Direct unit coverage for _negate_switch_delta_for_display's own
+    sign-bit guard -- exercised elsewhere only indirectly, through a full
+    report run and a regex-parsed "Net$" cell
+    (test_exact_break_even_boundary_nets_zero_and_the_strict_inequality_holds)."""
+
+    def test_a_tiny_positive_residual_negates_to_positive_zero_not_negative_zero(self):
+        """A +1e-16 floating-point residual at an exact break-even point
+        must not print as the misleading "-0.00" once negated: round(0.0 -
+        1e-16, 2) underflows to -0.0 without the function's own + 0.0
+        guard."""
+        result = _mod._negate_switch_delta_for_display(1e-16)
+        assert result == 0.0
+        assert math.copysign(1.0, result) == 1.0
+
+    def test_negates_and_rounds_a_genuine_nonzero_delta(self):
+        """-4.567 mirrors the sign _cache_rebuild_switch_delta_dollars
+        actually accumulates (see TestCacheRebuildSwitchDeltaPricing's own
+        negative deltas); negation makes it a positive savings figure."""
+        assert _mod._negate_switch_delta_for_display(-4.567) == pytest.approx(4.57)
 
 
 class TestCacheRebuildOriginSplit:

@@ -854,7 +854,7 @@ Net $ restricted to clearing dispatches: 6.18
   (0 of 117,012,337 pooled subagent W5m tokens landed in no dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound above has exact W5m coverage, not merely assumed)
 ```
 
-The `main` row's `W5m`/`X` are genuinely zero in this corpus: every main-thread cache write observed here landed on the 1-hour tier already, never the 5-minute tier — consistent with the vendor's own statement that subagents, not the main conversation, are the ones held to the 5-minute tier on a subscription (G2 in `.claude/plans/subagent-idle-gap-cache-rebuild-split.md`).
+The `main` row's `W5m`/`X` are genuinely zero in this corpus: every main-thread cache write observed here landed on the 1-hour tier already, never the 5-minute tier — consistent with the vendor's own statement that subagents, not the main conversation, get the 5-minute tier by default on a subscription (`.claude/plans/subagent-idle-gap-cache-rebuild-split.md`, or the vendor's prompt-caching doc directly).
 
 Excess $ figures throughout this report are list-price estimates against
 `claude-sonnet-5` rates — what the excess would cost at the vendor's posted

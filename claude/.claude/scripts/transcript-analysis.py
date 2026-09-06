@@ -5930,29 +5930,15 @@ def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None
 def _cache_rebuild_switch_delta_dollars(
     model: str, usage: dict, *, is_idle_5m_1h_cause: bool
 ) -> tuple[float | None, int]:
-    """One call's signed contribution to the pooled 5m-tier-to-1h-tier
-    cacheTtl switch delta (see .claude/plans/subagent-idle-gap-cache-rebuild-split.md's
-    Approach section for the derivation): 0.75x this call's own 5m-tier
-    write tokens, priced at base rate -- the extra a switch would charge on
-    every warm incremental write, not only rebuilds -- minus (2 - r)x those
-    same tokens when the call's own cause is "idle 5m-1h", where r is this
-    call's own model's cache-read multiplier (resolved via _model_rates, so
-    a claude-fable-5-1 call's reduced 0.025x multiplier is never mispriced
-    against the default-rate 0.1x). (2 - r) is computed here as
-    cache_write_1h - cache_read against the SAME per-call rates table
-    _cache_rebuild_excess_dollars already resolves -- never hardcoded as 1.9,
-    since a corpus mixing model rates needs the true per-call coefficient.
-
-    Positive is switch-cost-positive, mirroring _cache_rebuild_excess_dollars'
-    own sign convention: the report negates the accumulated sum before
-    printing it as a savings-positive "net" dollar figure. A wholly
-    idle-5m-1h-cause call's own switch delta is exactly the negation of that
-    same call's _cache_rebuild_excess_dollars value -- the excess it already
-    paid for a rebuild that a 1-hour cache would have avoided.
-
-    Returns (None, unpriced_tokens) for a model absent from
-    _MODEL_BASE_INPUT_RATES, matching _price_turn's own unpriced-model
-    contract -- callers must not treat a None delta as a silent $0.
+    """One call's signed contribution to the pooled 5m-to-1h cacheTtl switch
+    delta -- see .claude/plans/subagent-idle-gap-cache-rebuild-split.md's
+    Approach section for the derivation. (2 - r) must be resolved per call
+    via _model_rates, never hardcoded as 1.9, since a corpus mixing model
+    rates needs the true per-call coefficient. Positive is
+    switch-cost-positive; the report negates the accumulated sum before
+    printing it as a savings-positive net. Returns (None, unpriced_tokens)
+    for a model absent from _MODEL_BASE_INPUT_RATES, matching _price_turn's
+    own contract.
     """
     dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
     if dollars_by_class is None:
@@ -6109,13 +6095,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     # record regardless of which group (or, for an inline sidechain record,
     # which file) it came from.
     per_group_dispersion: list[dict] = []
-    # Priced subagent-origin W5m tokens that actually landed inside a
-    # subagent-file group -- a strict subset of w5m_by_origin["subagent"]
-    # above. The gap between the two (printed as the dispersion block's own
-    # coverage disclosure) is an unpriced subagent-origin call (never enters
-    # any group, priced or not) plus an inline sidechain record living
-    # inside the main transcript file (group_index == 0, so is_subagent_group
-    # is False even though its own origin is "subagent").
+    # Priced subagent-origin W5m tokens that landed inside a subagent-file
+    # group -- a strict subset of w5m_by_origin["subagent"] above. The gap
+    # (printed as the dispersion block's coverage disclosure) is:
+    #   - an unpriced subagent-origin call (enters no group, priced or not)
+    #   - an inline sidechain record inside the main transcript file
+    #     (group_index == 0, so is_subagent_group is False even though its
+    #     own origin is "subagent")
     subagent_origin_w5m_in_groups = 0
 
     for jsonl, _flat_records in session_iter:
@@ -6268,14 +6254,12 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     idle_break_excess = 0.0
 
     for cand in idle_gap_candidates:
-        # bisect_right/bisect_left: an open (gap_start_ts, gap_end_ts)
-        # interval, so a call from this same transcript at exactly one of
-        # the gap's own endpoints -- the gap's start and end ARE this
-        # transcript's own calls -- is excluded from the window. The
-        # exclusion is timestamp-value-based, not (timestamp, session_key)-
-        # identity-based: a genuinely different concurrent session whose own
-        # call happens to land at exactly one of those same endpoints is
-        # also excluded.
+        # Open interval: bisect_right/bisect_left exclude a call landing
+        # exactly on gap_start_ts or gap_end_ts, since those endpoints are
+        # this transcript's own calls.
+        # The exclusion is timestamp-value-based, so a different concurrent
+        # session's call at that same exact instant is also excluded, not
+        # just this transcript's own.
         lo = bisect.bisect_right(global_ts, cand["gap_start_ts"])
         hi = bisect.bisect_left(global_ts, cand["gap_end_ts"])
         # Indexed range with early exit, not global_keys[lo:hi], so a
