@@ -1547,33 +1547,24 @@ def _review_trace_session_events(
     records may interleave main-thread and subagent (isSidechain) records
     when the caller resolved scope with include_subagents=True. Detection
     runs over those records merged into one chronological stream, sorted on
-    a three-part key:
-
-    - effective_ts: the record's own _parse_ts result, forward-filled from
-      the immediately preceding record when unparseable, or float("-inf")
-      when there is no preceding record — _parse_ts's None cannot compare
-      against a neighbour's float, so the fill is what makes the key total,
-      not a cosmetic nicety. group_boundaries (the 0-based records indices
-      where a new source file starts, from _group_start_indices; None from
-      a caller that hasn't partitioned the corpus read, meaning the whole
-      list is treated as one group) resets the fill at each boundary, since
-      filename-sorted subagent files carry no chronological relationship to
-      one another and a plain global forward-fill would carry a timestamp
-      from one file's tail into an unrelated file's unparseable head.
-    - thread_rank: 0 for a main-thread record, 1 for a sidechain one, so a
-      same-timestamp dispatch record and the first record of the subagent
-      it spawns place cause before effect.
-    - pre_sort_index: the record's original position, breaking any
-      remaining tie.
+    a three-part key: effective_ts (the record's own _parse_ts result,
+    forward-filled from the immediately preceding record when unparseable,
+    or float("-inf") at the start of a group), thread_rank (0 for a
+    main-thread record, 1 for a sidechain one), and pre_sort_index (the
+    record's original position, the final tie-break). group_boundaries (the
+    0-based records indices where a new source file starts, from
+    _group_start_indices; None from a caller that hasn't partitioned the
+    corpus read, meaning the whole list is treated as one group) resets
+    effective_ts's forward-fill at each boundary. See
+    docs/design-decisions.md §58 for why the sort key and the per-group
+    reset are shaped this way.
 
     effective_ts governs ordering only — the --since/--until filter below
     still tests each record's own, unfilled _parse_ts result. Each event
     dict carries this same pre_sort_index as line_no, plus a thread field
-    ("main" or "sidechain"). line_no is still the main transcript's own
-    1-based file line for a thread=main event, because read_session_file
-    concatenates the main transcript's records ahead of every subagent
-    file's. For a thread=sidechain event, line_no is only a merged-stream
-    offset that indexes no file.
+    ("main" or "sidechain"): the main transcript's own 1-based file line for
+    thread=main, a merged-stream offset indexing no file for thread=sidechain
+    (see docs/design-decisions.md §58 for why).
     """
     events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
     # Tracks tool_use_ids already emitted as a denial. A legacy denial
@@ -1826,6 +1817,32 @@ def _review_trace_session_events(
     return events, tool_use_commands, pre_regime_tool_result_count
 
 
+def _fresh_records_and_group_boundaries(
+    jsonl: Path, records: list[dict], *, include_subagents: bool,
+) -> tuple[list[dict], frozenset[int] | None]:
+    """Re-read jsonl as one _read_session_file_partitioned call, so the
+    records and group_boundaries handed to _review_trace_session_events
+    always come from the same snapshot of the file -- pairing session_iter's
+    own records (an earlier read) with an independently re-read
+    group_boundaries would let the two desync whenever the file grows in
+    between (e.g. review-trace scanning its own in-progress session).
+    include_subagents is a required keyword argument, not a default, so a
+    future caller must state its own session_iter's scope explicitly rather
+    than silently inheriting whatever this function's last caller needed.
+
+    Falls back to the given records with no group boundaries when jsonl is
+    unreadable right now, rather than discarding a session's already-observed
+    events. Two cases trigger the fallback: the file was deleted mid-scan, or
+    the path is a synthetic one used in a test. Shared by
+    _compute_deny_summary_data and cmd_review_trace, this function's two
+    identically-shaped callers.
+    """
+    groups = _read_session_file_partitioned(jsonl, include_subagents=include_subagents)
+    if not groups:
+        return records, None
+    return [rec for group in groups for rec in group], _group_start_indices(groups)
+
+
 def _compute_deny_summary_data(
     session_iter,
     since_ts: float | None = None,
@@ -1856,14 +1873,12 @@ def _compute_deny_summary_data(
     any_session_matched = False
 
     for jsonl, records in session_iter:
-        # session_iter already read and parsed this file once internally (to
-        # decide whether to yield it at all); this second, partitioned read
-        # is the cost of reusing _resolve_project_scope's shared iterator,
-        # which has no variant that also exposes the per-file group boundary
-        # the forward-fill in _review_trace_session_events needs (mirrors
-        # read-scope's own _scan_read_scope_session call site). Both of this
-        # function's callers resolve scope with include_subagents=True.
-        group_boundaries = _group_start_indices(_read_session_file_partitioned(jsonl, include_subagents=True))
+        # Both of this function's callers resolve scope with
+        # include_subagents=True -- see _fresh_records_and_group_boundaries
+        # for why records and group_boundaries must come from one read.
+        records, group_boundaries = _fresh_records_and_group_boundaries(
+            jsonl, records, include_subagents=True,
+        )
         events, tool_use_commands, session_pre_regime = _review_trace_session_events(
             records, since_ts, until_ts, branch_filter, group_boundaries=group_boundaries
         )
@@ -2009,10 +2024,12 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     emitted_any_session = False
 
     for jsonl, records in session_iter:
-        # Second, partitioned read for the per-file group boundary the
-        # forward-fill needs -- see _compute_deny_summary_data's identically-
-        # shaped call site for the full rationale.
-        group_boundaries = _group_start_indices(_read_session_file_partitioned(jsonl, include_subagents=True))
+        # session_iter is resolved with include_subagents=True above -- see
+        # _fresh_records_and_group_boundaries for why records and
+        # group_boundaries must come from one read at the same scope.
+        records, group_boundaries = _fresh_records_and_group_boundaries(
+            jsonl, records, include_subagents=True,
+        )
         events, tool_use_commands, _pre_regime = _review_trace_session_events(
             records, since_ts, until_epoch, branch_filter,
             skill_filter=skill_filter, group_boundaries=group_boundaries,

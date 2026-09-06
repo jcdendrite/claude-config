@@ -411,7 +411,7 @@ CLASSIFICATION SUMMARY
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
 
-`line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
+`line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
 
 **Sample output.**
 ```

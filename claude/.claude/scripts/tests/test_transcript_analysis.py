@@ -3301,6 +3301,28 @@ class TestReviewTrace:
         assert [e["thread"] for e in events] == ["main", "sidechain"]
         assert [e["skill"] for e in events] == ["plan-review", "code-review"]
 
+    def test_sidechain_event_inherits_main_threads_branch_not_its_own(self):
+        """A sidechain event's branch is the carried-forward value from the
+        preceding main-thread record, never the sidechain record's own
+        gitBranch -- the isSidechain guard on the carry-forward trackers
+        (docs/design-decisions.md §58) is load-bearing specifically because
+        lifting it would attribute a sidechain event to its own record's
+        branch instead of the dispatching main thread's. Every other
+        sidechain fixture in this file sets the sidechain record's own
+        branch equal to the preceding main record's, so only a fixture with
+        a genuinely differing sidechain gitBranch can catch a regression
+        that reads it directly."""
+        records = [
+            _asst("claude-sonnet-4-6", branch="A", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="B", sidechain=True, ts="2026-05-19T10:05:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert len(events) == 1
+        assert events[0]["branch"] == "A"
+
     def test_denial_dedup_by_tool_use_id_survives_sort_reorder(self):
         """A denial recorded as both a sidechain attachment record and its
         earlier-timestamped main-thread current-format twin still collapses
@@ -4454,6 +4476,33 @@ class TestReviewTrace:
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
         assert data["command_shape_counts"].get(_mod._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
         assert data["hook_counts"].get(_mod._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+
+
+class TestComputeDenySummaryDataGroupBoundaryFreshRead:
+    """_compute_deny_summary_data must derive group_boundaries from the same
+    read that produces its records, not from session_iter's own records
+    paired with an independent, later _read_session_file_partitioned call --
+    the two reads can observe a growing transcript file differently."""
+
+    def test_stale_session_iter_records_are_replaced_by_the_fresh_disk_read(self, fake_projects):
+        """session_iter hands in a deliberately empty records list for this
+        session -- simulating a read taken before the main and subagent
+        files carried their denials -- while the real on-disk files already
+        have one denial each. Both denials must still surface, proving
+        detection runs against a fresh read of the files, not the stale,
+        empty tuple session_iter provided."""
+        session_id = "sess-toctou"
+        jsonl = fake_projects / f"{session_id}.jsonl"
+        _write_jsonl(jsonl, [
+            _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="b2"),
+        ])
+
+        data = _mod._compute_deny_summary_data([(jsonl, [])])
+
+        assert dict(data["hook_counts"]) == {"code-review": 1, "ready-for-review": 1}
 
 
 # ---------------------------------------------------------------------------

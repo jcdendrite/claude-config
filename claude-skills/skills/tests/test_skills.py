@@ -830,11 +830,13 @@ class TestSkillFidelityReviewerArchitectConsultCheck:
         reviewer-spawn rows and architect-consult rows, both sourced from
         the main thread and every dispatched subagent, marked by a `thread`
         field, with the widening's safety rationale pinned at its single
-        source rather than restated here."""
+        source rather than restated here. Each assertion pins a distinct
+        clause of the split sentence, not overlapping substring slices of
+        one unbroken sentence -- an innocuous rewording of one clause can
+        trip at most one of these."""
         body = self._body()
         assert "`architect-consult` rows" in body
-        assert "rows, both sourced" in body
-        assert "main thread and every dispatched subagent's own transcript" in body
+        assert "Both row types are sourced from the main thread and every dispatched subagent's own transcript" in body
         assert "marked with a `thread` field" in body
         assert "design-decisions.md` §58" in body
 
