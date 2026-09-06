@@ -1082,7 +1082,7 @@ class TestMarkerDirectoryNamingConvention:
             # A staged SKILL.md-matching path: otherwise the pathspec-scoped
             # diff is empty and the write arm exits 0 without writing a
             # marker, which this test isn't exercising.
-            skill_dir = git_repo / "claude" / ".claude" / "skills" / "naming-convention-test-skill"
+            skill_dir = git_repo / "claude-skills" / "skills" / "naming-convention-test-skill"
             skill_dir.mkdir(parents=True)
             skill_md = skill_dir / "SKILL.md"
             skill_md.write_text("# test skill\n")

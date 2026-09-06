@@ -76,7 +76,7 @@ def _stage_a_skill_md_change(tree) -> None:
     """Stage a real SKILL.md-matching path, so `write skill-review` sees a
     non-empty pathspec-scoped diff and actually writes a marker rather than
     hitting the empty-diff no-marker branch."""
-    skill_dir = tree / "claude" / ".claude" / "skills" / "worktree-keying-test-skill"
+    skill_dir = tree / "claude-skills" / "skills" / "worktree-keying-test-skill"
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text("# test skill\n")
