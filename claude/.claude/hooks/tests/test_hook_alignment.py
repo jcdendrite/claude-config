@@ -17,8 +17,11 @@ static shape checks, scoped to claude/.claude/hooks/*.sh:
 - Every `jq` invocation goes through a `_lib_*` wrapper (bare `jq` outside
   one reintroduces the per-hook duplicated timeout-handling this suite
   exists to prevent).
-- Every inline command-matcher regex resolves through the shared
+- Every `grep`-family command match resolves through the shared
   subcommand-matching helpers rather than a hand-rolled literal pattern.
+  Bash's native `[[ ... =~ ... ]]` is a different, unswept mechanism for
+  the same hand-rolled-matcher shape (e.g. require-respond-pr.sh's
+  `PATTERN_*` family) -- out of scope for this check.
 - No hook regex uses GNU grep's `\\s` extension, which a POSIX-strict grep
   reads as a literal `s`.
 
@@ -592,15 +595,17 @@ def test_bare_jq_detector_flags_known_anchor_shapes(tmp_path: Path) -> None:
 # grep-family invocation: -q/-c/-l among the flags, broad enough to catch
 # `-qE`, `-Eq`, `-cE`, etc.
 _GREP_FAMILY_RE = re.compile(r"grep\s+-[a-zA-Z]*[qcl][a-zA-Z]*\b")
-# A tool token immediately followed by a whitespace-class atom, either GNU
-# `\s` or POSIX `[[:space:]]` -- the shape is hand-rolled command matching
-# either way, independent of which atom form is used. `marker\\?\.sh` also
-# catches an unescaped-dot `marker.sh` (still valid ERE), not only the
-# backslash-escaped form. A leading `\b` on `git`/`gh` keeps this from
-# matching as a substring of an unrelated word (`digit`, `high`).
-# `marker\\?\.sh` accepts the same substring risk unguarded (e.g.
-# `bookmarker.sh`), a gap accepted rather than closed, since a collision is
-# far less likely against this multi-character coined identifier.
+# A tool token immediately followed by a whitespace-class atom -- the shape
+# is hand-rolled command matching either way, independent of which form is
+# used below.
+# - Whitespace atom: accepts either GNU `\s` or POSIX `[[:space:]]`.
+# - `marker\\?\.sh` matches both the escaped- and unescaped-dot spellings of
+#   `marker.sh`.
+# - A leading `\b` guards `git`/`gh` against matching as a substring of an
+#   unrelated word (`digit`, `high`).
+# - `marker\\?\.sh` has no such guard -- a substring collision (e.g.
+#   `bookmarker.sh`) is accepted, since a collision is far less likely
+#   against this multi-character coined identifier.
 _TOOL_TOKEN_WHITESPACE_ATOM_RE = re.compile(r"(?:\bgit|\bgh|marker\\?\.sh)(?:\\s|\[\[:space:\]\])")
 
 
@@ -612,10 +617,13 @@ def _inline_command_matcher_hits(hook: Path) -> list[str]:
     to replace.
 
     Blind spot:
-    - Misses a pattern hoisted into a variable before being passed to grep
-      (e.g. require-respond-pr.sh's PATTERN_* family).
+    - Misses a pattern hoisted into a variable before being passed to grep.
     - Misses a grep-family call piped through `[ -n ... ]` rather than
       using `-q`/`-c`/`-l` directly.
+    - Misses Bash's native `[[ ... =~ ... ]]` entirely -- a different
+      mechanism for the same hand-rolled-matcher shape, not a grep variant
+      (e.g. require-respond-pr.sh's `PATTERN_*` family,
+      require-worktree-for-git-writes.sh's git-token match).
     """
     hits = []
     for line in hook.read_text().splitlines():

@@ -711,10 +711,13 @@ class TestNudgeHandoffNearContextCap:
     )
     def test_newly_capped_sites_killed_by_2s_cap_not_5s_default(self, tmp_path, case):
         """The four bare-`jq` sites wrapped in `_lib_capped_for 2 jq`
-        (:199, :208, :294, :303) each get their own case here. :199/:294
-        share one filter string (_USAGE_BLOCK_JQ_FILTER, the usage_block
-        `-s` call); :208/:303 share the other (the four-field extraction
-        `-r` call). A jq shim keyed on filter content can't tell the
+        (:199, :208, :294, :303) each get their own case here.
+        - `:199`/`:294` share `_USAGE_BLOCK_JQ_FILTER` (the usage_block `-s`
+          call).
+        - `:208`/`:303` share the four-field extraction filter (the `-r`
+          call).
+
+        A jq shim keyed on filter content can't tell the
         bootstrap call from the incremental-scan call sharing that filter,
         so each case instead arranges which of the two code paths
         (bootstrap vs incremental) is reachable, and the shared filter
@@ -741,7 +744,14 @@ class TestNudgeHandoffNearContextCap:
             f'exec {real_jq} "$@"\n'
         )
         slow_jq.chmod(0o755)
-        extra_env = {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+        # HANDOFF_NUDGE_BLOCK_AT pinned above default so the cached_* branch's
+        # rearmed_estimate stays on the advisory "fire" path this test's
+        # assertion messages describe, instead of the hard-block path a
+        # genuinely-completing slow jq would otherwise reach.
+        extra_env = {
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT,
+        }
         transcript = tmp_path / "t.jsonl"
 
         if case.startswith("bootstrap"):
