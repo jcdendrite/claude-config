@@ -210,7 +210,7 @@ fi
 # unquoted parameter expansion standing in for whitespace (`${IFS}`)   #
 # defeats this regex — see Known gaps below.                          #
 # ------------------------------------------------------------------ #
-EXECUTION_WRAPPER_TOKEN_RE='(^|/|\s)(bash|sh|zsh|ksh|dash)\s+-c(\s|$)|(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])xargs([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])source([^A-Za-z0-9_]|$)|(^|&&?|;|\|\|?)\s*\.\s+\S|(^|/|\s)perl\s+-e(\s|$)|(^|/|\s)(python|python2|python3)\s+-c(\s|$)|(^|/|\s)ruby\s+-e(\s|$)|(^|/|\s)node\s+-e(\s|$)'
+EXECUTION_WRAPPER_TOKEN_RE='(^|/|[[:space:]])(bash|sh|zsh|ksh|dash)[[:space:]]+-c([[:space:]]|$)|(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])xargs([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])source([^A-Za-z0-9_]|$)|(^|&&?|;|\|\|?)[[:space:]]*\.[[:space:]]+[^[:space:]]|(^|/|[[:space:]])perl[[:space:]]+-e([[:space:]]|$)|(^|/|[[:space:]])(python|python2|python3)[[:space:]]+-c([[:space:]]|$)|(^|/|[[:space:]])ruby[[:space:]]+-e([[:space:]]|$)|(^|/|[[:space:]])node[[:space:]]+-e([[:space:]]|$)'
 printf '%s\n' "$COMMAND" | grep -qE "$EXECUTION_WRAPPER_TOKEN_RE"
 WRAPPER_TOKEN_EXIT=$?
 if [ "$WRAPPER_TOKEN_EXIT" -eq 0 ]; then
