@@ -4,6 +4,10 @@
 
 `nudge-long-turn-subagent.sh` is registered on `PostToolBatch` only and fires solely for subagent dispatches, never the main session. See [`docs/hooks.md`](hooks.md)'s own entry for the trigger, the incremental per-dispatch scan mechanics, and the sampling cadence.
 
+## Per-fire cost
+
+The sampled cadence bounds the `tail`/`jq -s` scan's cost specifically — O(fire count) drops to O(fire count / `SAMPLE_CADENCE`) — not total per-fire hook cost. Two `_lib_capped_for`-wrapped forked external-process calls run on every subagent fire regardless of sampling: the input-parsing `jq` call and the invocation-counter's `wc -c` read. Total per-fire cost still scales linearly with raw fire count via those two always-on forks. `mkdir -p "$MARKER_DIR"` forks only on a fire that finds the directory missing, so the common steady-state fire skips it once the directory exists from the dispatch's first fire. Only the `MARKER_DIR` cleanup sweep (`find … -mtime +30 -delete`) is gated to the sampled fire alongside the scan.
+
 ## Known limitations
 
 - **A same-session fire can leak the scan lock directory, reclaimed only by the periodic `MARKER_DIR` sweep (up to 30 days).** Two independent races produce this:

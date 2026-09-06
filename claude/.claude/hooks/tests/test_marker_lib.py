@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, build_path_without
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -625,6 +625,27 @@ class TestLibAdvanceOffsetPastCompleteLines:
             f"expected the {SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
             f"if it does not), took {elapsed:.1f}s for this single call"
         )
+
+    def test_tail_absent_from_path_freezes_offset_at_current_size(self, tmp_path):
+        """The function's own doc comment in _lib.sh documents this exact
+        gap: total absence of `tail` from PATH makes the fast path's
+        `tail -c 1` read return empty output (command-not-found, not a real
+        last byte), which is indistinguishable from the file genuinely
+        ending in a newline -- so the fast path fires and silently and
+        permanently freezes the offset at CURRENT_SIZE, even though this
+        transcript is caught mid-write with no trailing newline."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        size = transcript.stat().st_size
+        farm_dir = tmp_path / "path-without-tail"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tail", farm_dir)
+        result = _advance_offset(
+            transcript, 0, size,
+            env={**os.environ, "PATH": restricted_path},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
 
 
 class TestLibIsRepoPlanFile:

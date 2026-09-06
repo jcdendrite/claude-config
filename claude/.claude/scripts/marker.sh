@@ -277,7 +277,7 @@ _marker_mtime_epoch() {
 # _resolve_code_review_check_max_age_seconds
 # Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
 # deliberately conservative, ungrounded choice (docs/design-decisions.md
-# §42). Malformed override (empty, zero, non-digit, zero-padded, or 9+
+# §60). Malformed override (empty, zero, non-digit, zero-padded, or 9+
 # digits) falls back to the default -- same guard shape as
 # nudge-long-turn-subagent.sh's resolve_threshold.
 _resolve_code_review_check_max_age_seconds() {

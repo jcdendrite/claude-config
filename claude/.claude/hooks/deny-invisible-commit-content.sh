@@ -12,13 +12,15 @@
 #    command's raw text carries both a git-commit-shaped fragment (the
 #    fast-reject check below) and an execution-wrapper token (`bash -c`,
 #    `sh -c`, `eval`, `xargs`, `source`/bare `.`, `perl -e`, `python -c`,
-#    `ruby -e`, `node -e`, or similar) anywhere in the same call, regardless
-#    of order or quoting — closing the wrapped-invocation bypass
-#    structurally, without parsing what runs inside the wrapper. See Known
-#    gaps below for the still-open case where the wrapper's own call
-#    syntax glues a quote delimiter directly against the commit text with
-#    no separating whitespace, which the fast-reject's bare-word match
-#    still misses. Accepted over-deny cost:
+#    `ruby -e`, `node -e`, or similar) anywhere in the same call,
+#    independent of order or quote style — closing the wrapped-invocation
+#    bypass structurally, without parsing what runs inside the wrapper. See
+#    Known gaps below for two still-open cases where the wrapper's own call
+#    syntax defeats the word-boundary matching this check and the
+#    fast-reject both depend on: a quote delimiter glued directly against
+#    the commit text with no separating whitespace, and an unquoted
+#    parameter expansion standing in for a required whitespace character.
+#    Accepted over-deny cost:
 #    - a commit message merely mentioning one of these tokens as ordinary
 #      text (e.g. documenting `xargs` usage), since the check does not
 #      parse quoting.
@@ -94,6 +96,15 @@
 #    position requirement and matches `git` immediately followed by
 #    `commit` anywhere a quote-stripped fragment carries them as separate
 #    words.
+#  - An unquoted parameter expansion standing in for a required whitespace
+#    character (e.g. `${IFS}`, `$IFS`) defeats the wrapper-token regex and
+#    `_lib_fragment_invokes_git`'s word-split alike, since neither performs
+#    real shell tokenization — e.g.
+#    `bash${IFS}-c${IFS}"git add secret && git commit -m y"`, where quote-
+#    stripping yields the single glued word `bash${IFS}-c${IFS}git`, which
+#    neither the wrapper regex's `\s+-c` alternations nor
+#    `_lib_fragment_invokes_git` ever recognizes as invoking `bash`/`git`.
+#    Every other enumerated wrapper token is defeated the same way.
 #  - None of this hook's own forks carries an internal timeout, except
 #    `_mask_shell_quotes`'s own 5s `_lib_capped_for` cap (see below) — a
 #    wedged or replaced grep/sed/tr/awk/xargs binary is unbounded, so it
@@ -103,29 +114,30 @@
 #  - Hoisting COMMAND_UNQUOTED's computation ahead of the fast-reject
 #    widened this hook's failure blast radius from commit-shaped Bash
 #    calls only to every Bash call in the session on a missing or wedged
-#    sed/tr — a real behavior change from the pre-merge hook, not merely a
-#    latency cost.
+#    sed/tr.
 #
-# Subprocess footprint: the quote-strip (sed+tr) that produces
-# COMMAND_UNQUOTED, and the fast-reject check's own internal quote-strip
-# and fragment-split (GH-783 Phase 2's _lib_command_invokes_git_subcmd),
-# all fork unconditionally on every Bash call — everything past the
-# fast-reject (the wrapper pre-check, arm 1, and arm 2) still only forks
-# once the fast-reject matches. COMMAND_UNQUOTED and the fast-reject's own
-# internal quote-strip independently strip the same raw $COMMAND, an
-# accepted redundant-fork cost: _lib_command_invokes_git_subcmd takes only
-# (COMMAND, SUBCMD), with no pre-stripped-input parameter, the same
-# call-site contract every one of GH-783 Phase 2's eight gate hooks shares
-# (see _lib.sh's own comment above that function), so the two strips
-# cannot be threaded together here. Every fork here is a pure
-# string-processing one (grep/sed/tr/awk/xargs), no filesystem or network
-# access. Every
-# fork's exit status is checked and fails closed on a non-zero result,
-# matching `_lib_parse_tool_input_or_deny`'s jq discipline. The
-# `_mask_shell_quotes` per-character awk scan is O(n²) on command length,
-# so it runs under the same 5s `_lib_capped_for` cap `_lib_jq`/`_lib_capped`
-# use elsewhere (every other fork in this file stays unbounded). A
-# pathological input denies fast instead of stalling the gate.
+# Subprocess footprint:
+#  - The quote-strip (sed+tr) that produces COMMAND_UNQUOTED, and the
+#    fast-reject check's own internal quote-strip and fragment-split
+#    (GH-783's _lib_command_invokes_git_subcmd), fork unconditionally on
+#    every Bash call. Everything past the fast-reject (the wrapper
+#    pre-check, arm 1, and arm 2) forks only once the fast-reject matches.
+#  - COMMAND_UNQUOTED and the fast-reject's own internal quote-strip
+#    independently strip the same raw $COMMAND, an accepted redundant-fork
+#    cost: _lib_command_invokes_git_subcmd takes only (COMMAND, SUBCMD),
+#    with no pre-stripped-input parameter, the same call-site contract
+#    every one of GH-783's eight gate hooks shares (see _lib.sh's own
+#    comment above that function), so the two strips cannot be threaded
+#    together here.
+#  - Every fork here is a pure string-processing one (grep/sed/tr/awk/
+#    xargs), with no filesystem or network access.
+#  - Every fork's exit status is checked and fails closed on a non-zero
+#    result, matching `_lib_parse_tool_input_or_deny`'s jq discipline.
+#  - The `_mask_shell_quotes` per-character awk scan is O(n²) on command
+#    length, so it runs under the same 5s `_lib_capped_for` cap
+#    `_lib_jq`/`_lib_capped` use elsewhere (every other fork in this file
+#    stays unbounded). A pathological input denies fast instead of
+#    stalling the gate.
 #
 # Fail-closed on unparseable hook input.
 
@@ -192,9 +204,11 @@ fi
 # Wrapper/commit co-occurrence pre-check: a git-commit-shaped fragment #
 # is already confirmed by the fast-reject check above. Denying outright #
 # whenever an execution-wrapper token also appears anywhere in the raw #
-# command text — independent of order or quoting — forces the          #
+# command text — independent of order or quote style — forces the      #
 # sanctioned split (staging as its own Bash call, commit as a second)  #
-# instead of trying to parse what actually runs inside the wrapper.    #
+# instead of trying to parse what actually runs inside the wrapper. An #
+# unquoted parameter expansion standing in for whitespace (`${IFS}`)   #
+# defeats this regex — see Known gaps below.                          #
 # ------------------------------------------------------------------ #
 EXECUTION_WRAPPER_TOKEN_RE='(^|/|\s)(bash|sh|zsh|ksh|dash)\s+-c(\s|$)|(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])xargs([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])source([^A-Za-z0-9_]|$)|(^|&&?|;|\|\|?)\s*\.\s+\S|(^|/|\s)perl\s+-e(\s|$)|(^|/|\s)(python|python2|python3)\s+-c(\s|$)|(^|/|\s)ruby\s+-e(\s|$)|(^|/|\s)node\s+-e(\s|$)'
 printf '%s\n' "$COMMAND" | grep -qE "$EXECUTION_WRAPPER_TOKEN_RE"

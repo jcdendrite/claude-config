@@ -2990,6 +2990,87 @@ class TestMarkerScriptCheck:
             f"it does not), took {elapsed:.1f}s"
         )
 
+    @pytest.mark.timing
+    def test_stat_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
+        """`_marker_mtime_epoch`'s own `stat -c%Y`/`stat -f%m` calls are each
+        individually capped via `_lib_capped_for(5)` -- a stalled `stat` must
+        not hang `check` indefinitely, and a killed call must fall through to
+        no-match, never a false match on an unresolvable mtime."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_stat = shutil.which("stat")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "stat"
+        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_stat} "$@"\n')
+        stub.chmod(0o755)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        # Both the GNU and BSD stat forms are individually capped at 5s and
+        # tried in sequence, so the bounded worst case is ~10s, not a hang.
+        assert elapsed < 14.5, (
+            f"expected both 5s _lib_capped_for stat timeouts to fire (stub "
+            f"sleeps 10s per call if they do not), took {elapsed:.1f}s"
+        )
+
+    @pytest.mark.timing
+    def test_grep_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
+        """`_code_review_marker_fresh_age`'s own `grep -qFx` call is capped
+        via `_lib_capped_for(5)` -- a stalled `grep` must not hang `check`
+        indefinitely, and a killed call must fall through to no-match, never
+        a false match on an unverified marker value. `_lib_marker_value_present`
+        makes an earlier, identically-shaped `grep -qFx` call on the same
+        marker file (the cheap common-case hash check `check` runs first), so
+        the stub only stalls from the second `-qFx` invocation onward --
+        isolating `_code_review_marker_fresh_age`'s own call."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_grep = shutil.which("grep")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "grep"
+        invocation_counter = tmp_path / "grep-qFx-invocation-count"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-qFx" ]; then\n'
+            f'  count=$(( $(cat {invocation_counter} 2>/dev/null || echo 0) + 1 ))\n'
+            f'  printf "%s" "$count" > {invocation_counter}\n'
+            '  if [ "$count" -ge 2 ]; then\n'
+            '    sleep 10\n'
+            '  fi\n'
+            'fi\n'
+            f'exec {real_grep} "$@"\n'
+        )
+        stub.chmod(0o755)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped_for grep timeout to fire (stub "
+            f"sleeps 10s if it does not), took {elapsed:.1f}s"
+        )
+
     def test_only_one_git_diff_invocation_on_the_check_path(
         self, isolated_home, git_repo, tmp_path
     ):

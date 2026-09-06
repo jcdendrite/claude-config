@@ -582,6 +582,21 @@ class TestDenyInvisibleCommitContent:
             bash_input("node -e \"require('child_process').execSync('git commit -m y')\""),
         ) == "allow"
 
+    def test_ifs_parameter_expansion_wrapper_bypass_allowed(self):
+        """Allowed (documented gap): an unquoted `${IFS}` parameter
+        expansion standing in for whitespace defeats both the wrapper-token
+        regex and `_lib_fragment_invokes_git`'s word-split, since neither
+        performs real shell tokenization. Quote-stripping this command
+        yields the single glued word `bash${IFS}-c${IFS}git`, which none of
+        the fast-reject, the wrapper/commit co-occurrence check, arm 1, or
+        arm 2 recognizes as invoking `bash`/`git` -- even though the
+        wrapped `git add secret && git commit -m y` actually runs at
+        execution time."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('bash${IFS}-c${IFS}"git add secret && git commit -m y"'),
+        ) == "allow"
+
     def test_readonly_subcommand_chained_before_commit_allowed(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git status && git commit -m x")) == "allow"
 
@@ -724,6 +739,16 @@ class TestDenyInvisibleCommitContent:
 
     def test_non_commit_bash_passthrough(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git status")) == "allow"
+
+    def test_wrapper_token_with_no_commit_fragment_allowed(self):
+        """Pins the fast-reject's ordering guarantee: a wrapper token
+        (`bash -c`) is present in the raw command text, but no git-commit-
+        shaped fragment appears anywhere, so the fast-reject exits before
+        the wrapper/commit co-occurrence check ever runs. A future
+        reordering that moved the co-occurrence check ahead of the
+        fast-reject would start denying every wrapper-token-containing
+        command, including this one."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input('bash -c "echo hello"')) == "allow"
 
     def test_non_bash_tool_passthrough(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, read_input("/tmp/f.txt")) == "allow"
