@@ -798,6 +798,24 @@ class TestDurationGapSplit:
         # gap between tss[1] and tss[2] = 9700s; active = 300 + 300 = 600s
         assert active == pytest.approx(600, abs=2)
 
+    def test_cmd_duration_prints_bursts_header_not_sessions(self, fake_projects, capsys):
+        """cmd_duration's activity-burst column is labeled "Bursts", not
+        "Sessions" -- the value is len(idle_gaps) + 1, a count of activity
+        bursts separated by --gap-minutes, not a count of distinct session
+        files. TestDurationGapSplit's other tests exercise the burst-count
+        arithmetic directly without going through cmd_duration; this is the
+        one regression test that actually renders the header."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:05:00.000Z"),
+        ])
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_duration(args)
+        out = capsys.readouterr().out
+        assert "Sessions" not in out
+        cols = _table_cols(out, header_contains="Bursts", row_contains="feat")
+        assert cols["Bursts"] == "1"
+
 
 # ---------------------------------------------------------------------------
 # subagent-mix
@@ -1463,6 +1481,169 @@ class TestSubagentMixDollars:
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$0.00"
         assert "1 unpriced turns / 1,000,500 tokens excluded" in out
+
+
+class TestDispatchUsageSummaryDedupBeforePricing:
+    """_dispatch_usage_summary used to price every raw assistant record in a
+    dispatch's own transcript individually, instead of collapsing a
+    same-requestId run into one turn first (dedup_turns_by_request_id) --
+    this over-counted every input/cache token class once per content block
+    instead of once per API call. These regression tests hand-roll their
+    fixtures via _asst (not _priced_sidechain_asst, which takes no
+    request_id)."""
+
+    def _two_block_run(self, model: str, *, request_id: str = "req-1") -> list[dict]:
+        """One API call's two content-block records sharing one requestId,
+        ascending non-identical output_tokens (matches
+        TestPrCostDedupBeforePricing's 3-then-50 pattern) -- input_tokens
+        identical across both (the measured invariant _merge_assistant_run
+        relies on), so a pre-fix, per-record pricing pass double-counts the
+        1,000,000 input tokens while a post-fix, deduped pass prices only
+        the last record's usage."""
+        rec1 = _asst(
+            model, branch="feature-a", sidechain=True, request_id=request_id,
+            content=[{"type": "thinking", "thinking": "..."}],
+        )
+        rec1["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 3,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        rec2 = _asst(
+            model, branch="feature-a", sidechain=True, request_id=request_id,
+            content=[{"type": "text", "text": "done"}],
+        )
+        rec2["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        return [rec1, rec2]
+
+    def test_two_block_run_prices_identically_via_subagent_mix_and_cost(self, fake_projects, capsys):
+        """A dispatch's two-content-block, one-requestId run must price
+        identically whether summed via subagent-mix's own
+        _dispatch_usage_summary or via cost's --branches path -- the
+        main-thread agent_use record carries no usage, so cost's grand
+        total for the branch is entirely this one dispatch's dollars."""
+        session_id = "sess-dispatch-dedup"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="feature-a", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            self._two_block_run("claude-sonnet-4-6"), agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args())
+        cols = _table_cols(
+            capsys.readouterr().out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5,
+        )
+        dispatch_dollars = float(cols["Actual$"].lstrip("$").replace(",", ""))
+
+        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost_total = _extract_grand_total(capsys.readouterr().out)
+        # abs= accounts for both figures' own 2-decimal-place rounding,
+        # not slack in the expected computation itself.
+        assert dispatch_dollars == pytest.approx(cost_total, abs=0.005)
+
+    def test_summed_per_dispatch_dollars_equal_hand_computed_figure(self, tmp_path):
+        """Two dispatches, each carrying the same two-content-block run:
+        summed actual_dollars across both must equal the hand-computed
+        figure derived from pricing only each run's final (billed) usage --
+        an equality assertion, not an inequality against cost's ceiling,
+        since a per-dispatch sum undercuts that ceiling even pre-fix and
+        would pass regardless of whether dedup ran."""
+        jsonl_1 = tmp_path / "dispatch-1.jsonl"
+        jsonl_2 = tmp_path / "dispatch-2.jsonl"
+        _write_jsonl(jsonl_1, self._two_block_run("claude-sonnet-4-6", request_id="req-1"))
+        _write_jsonl(jsonl_2, self._two_block_run("claude-sonnet-4-6", request_id="req-2"))
+        _, dollars_1, _, _, _, _, _ = _mod._dispatch_usage_summary(jsonl_1, None, None, None, date(2026, 8, 2))
+        _, dollars_2, _, _, _, _, _ = _mod._dispatch_usage_summary(jsonl_2, None, None, None, date(2026, 8, 2))
+        # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output (5x
+        # multiplier). Each deduped turn prices only its last record's usage
+        # (1,000,000 input + 50 output); two dispatches double that.
+        per_dispatch = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
+        assert dollars_1 + dollars_2 == pytest.approx(2 * per_dispatch)
+
+    def test_non_contiguous_run_with_interleaved_tool_result_still_merges(self, tmp_path):
+        """A same-requestId run whose two assistant records straddle an
+        interleaved tool_result -- the harness executing one multi-tool_use
+        response's tool calls one at a time -- must still collapse into one
+        priced turn, not two, when every usage field (including
+        output_tokens) agrees across both records, the byte-identical shape
+        a genuinely-once-billed non-contiguous run carries."""
+        rec1 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-nc",
+            content=[_bash_use("t1", "echo hi")],
+        )
+        rec1["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        rec2 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-nc",
+            content=[{"type": "text", "text": "done"}],
+        )
+        rec2["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, [rec1, _tool_result("t1", "hi\n"), rec2])
+        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+        # A merge prices this once (1,000,000 input + 50 output = $3.00075);
+        # a failure to merge across the interleaved tool_result would double
+        # it to $6.0015.
+        assert actual_dollars == pytest.approx(3.00075)
+
+    def test_unpriced_turn_count_is_once_per_deduped_turn_not_per_raw_record(self, tmp_path):
+        """A two-content-block, one-requestId run on an unpriced model must
+        surface as 1 unpriced turn, not 2 -- the unpriced_turns/
+        unpriced_tokens diagnostic shifted from once-per-raw-record to
+        once-per-deduped-turn along with the pricing fix, and must count
+        (and total tokens for) the merged turn's own final usage only."""
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, self._two_block_run("claude-unreleased-model"))
+        _, actual_dollars, _, _, unpriced_turns, unpriced_tokens, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+        assert actual_dollars == 0.0
+        # Merged usage is the run's last record: 1,000,000 input + 50 output.
+        assert unpriced_turns == 1
+        assert unpriced_tokens == 1_000_050
+
+    def test_run_excluded_when_first_block_timestamp_outside_window_even_if_last_block_inside(self, tmp_path):
+        """A same-requestId run whose first record's timestamp sits before
+        since_ts while its last record's timestamp sits inside [since_ts,
+        until_ts) is excluded from actual_dollars entirely, since inclusion
+        is decided by the merged turn's first-block timestamp
+        (_merge_assistant_run takes run[0]'s timestamp), not per-block --
+        a run straddling the window's lower edge this way must not leak its
+        in-window last block's usage into actual_dollars."""
+        rec1 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle",
+            ts="2026-06-30T23:59:59.000Z", content=[{"type": "thinking", "thinking": "..."}],
+        )
+        rec1["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 3,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        rec2 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle",
+            ts="2026-07-01T00:00:01.000Z", content=[{"type": "text", "text": "done"}],
+        )
+        rec2["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, [rec1, rec2])
+        since_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
+        until_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
+        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
+        )
+        assert actual_dollars == 0.0
 
 
 class TestDeclaredPinPathSafety:

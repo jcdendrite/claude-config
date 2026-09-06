@@ -742,6 +742,16 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 
 
 def cmd_duration(args: argparse.Namespace) -> None:
+    """Per-branch span/active/idle time split and activity-burst count.
+
+    The "Bursts" column is len(idle_gaps) + 1, the count of contiguous
+    activity bursts separated by a >--gap-minutes idle gap — not a count of
+    distinct session files:
+    - One burst can span several session files (a continuation with no idle
+      gap between consecutive files' timestamps).
+    - One session file can itself span several bursts (a long idle pause
+      mid-session).
+    """
     branch_filter = _branch_filter(args)
     gap_secs: int = (getattr(args, "gap_minutes", None) or 30) * 60
     roots = _resolve_scan_roots(args)
@@ -763,7 +773,7 @@ def cmd_duration(args: argparse.Namespace) -> None:
         print("No timestamp data found.")
         return
 
-    print(f"{'Branch':<40} {'Span(min)':>10} {'Active(min)':>11} {'Idle(min)':>10} {'Sessions':>9} {'GapMin':>7}")
+    print(f"{'Branch':<40} {'Span(min)':>10} {'Active(min)':>11} {'Idle(min)':>10} {'Bursts':>9} {'GapMin':>7}")
     print("-" * 95)
     for branch in sorted(branch_timestamps):
         tss = sorted(branch_timestamps[branch])
@@ -2914,21 +2924,28 @@ def _dispatch_usage_summary(
     assistant record in the file, regardless of since_ts/until_ts — a
     dispatch's model identity isn't scoped to a reporting window.
 
-    actual_dollars/dollars_by_class price (via _price_turn) only the
-    assistant records whose own timestamp falls in [since_ts, until_ts) —
-    filtered per record, not by the dispatch's own start time, since a
-    dispatch's sidechain can straddle a window edge and a start-time-only
-    filter would attribute post-cutoff spend to an "in-window" total.
+    actual_dollars/dollars_by_class price (via _price_turn) only the deduped
+    turns whose first-block timestamp falls in [since_ts, until_ts) — per
+    _merge_assistant_run's convention, a merged turn takes run[0]'s
+    timestamp — not by the dispatch's own start time, since a dispatch's
+    sidechain can straddle a window edge and a start-time-only filter would
+    attribute post-cutoff spend to an "in-window" total.
     counterfactual_dollars re-prices that same in-window usage at
     reprice_as, or is None when reprice_as is not given.
 
-    unpriced_turns/unpriced_tokens count in-window turns _price_turn couldn't
-    price (unknown model ID) — matches cost's own convention of surfacing
-    this rather than letting it silently read as zero-cost spend.
+    unpriced_turns/unpriced_tokens count in-window deduped turns _price_turn
+    couldn't price (unknown model ID) — matches cost's own convention of
+    surfacing this rather than letting it silently read as zero-cost spend.
     stale_models collects any priced model past its _MODEL_RATE_EXPIRES
     re-verify-by date, evaluated against the caller-supplied today (never
     read from the wall clock here, so a caller can hold this deterministic
     for tests) — mirrors cost's own staleness check.
+
+    Records are buffered and passed through dedup_turns_by_request_id before
+    pricing, since one API call writes one JSONL record per content block, all
+    sharing one requestId, and pricing each block separately would overcount
+    every token class. Every other pricing path in this codebase applies the
+    same dedup step (cost.py:120, cost.py:242, ...).
 
     Returns (observed_bucket, actual_dollars, dollars_by_class,
     counterfactual_dollars, unpriced_turns, unpriced_tokens, stale_models).
@@ -2946,49 +2963,52 @@ def _dispatch_usage_summary(
     unpriced_turns = 0
     unpriced_tokens = 0
     stale_models: set[str] = set()
+    records: list[dict] = []
     try:
         with open(jsonl_path) as fh:
             for raw in fh:
                 try:
-                    rec = json.loads(raw)
+                    records.append(json.loads(raw))
                 except json.JSONDecodeError:
                     continue
-                if rec.get("type") != "assistant":
-                    continue
-                msg = rec.get("message") or {}
-                model = msg.get("model")
-                if not model:
-                    continue
-                saw_any_model = True
-                if model != "<synthetic>":
-                    real_model_ids.add(model)
-
-                usage = msg.get("usage")
-                if not usage:
-                    continue
-                if since_ts is not None or until_ts is not None:
-                    rec_ts = _parse_ts(rec.get("timestamp"))
-                    if rec_ts is None:
-                        continue
-                    if since_ts is not None and rec_ts < since_ts:
-                        continue
-                    if until_ts is not None and rec_ts >= until_ts:
-                        continue
-                turn_dollars, _ctx, turn_unpriced_tokens = _price_turn(model, usage)
-                if turn_dollars is None:
-                    unpriced_turns += 1
-                    unpriced_tokens += turn_unpriced_tokens
-                else:
-                    for cls, amount in turn_dollars.items():
-                        dollars_by_class[cls] += amount
-                    if today > _MODEL_RATE_EXPIRES[model]:
-                        stale_models.add(model)
-                if reprice_as:
-                    cf_dollars, _cf_ctx, _cf_unpriced = _price_turn(reprice_as, usage)
-                    if cf_dollars is not None:
-                        counterfactual_total += sum(cf_dollars.values())
     except OSError:
         return None, 0.0, {}, None, 0, 0, set()
+
+    for rec in _dedup_turns_by_request_id(records):
+        if rec.get("type") != "assistant":
+            continue
+        msg = rec.get("message") or {}
+        model = msg.get("model")
+        if not model:
+            continue
+        saw_any_model = True
+        if model != "<synthetic>":
+            real_model_ids.add(model)
+
+        usage = msg.get("usage")
+        if not usage:
+            continue
+        if since_ts is not None or until_ts is not None:
+            rec_ts = _parse_ts(rec.get("timestamp"))
+            if rec_ts is None:
+                continue
+            if since_ts is not None and rec_ts < since_ts:
+                continue
+            if until_ts is not None and rec_ts >= until_ts:
+                continue
+        turn_dollars, _ctx, turn_unpriced_tokens = _price_turn(model, usage)
+        if turn_dollars is None:
+            unpriced_turns += 1
+            unpriced_tokens += turn_unpriced_tokens
+        else:
+            for cls, amount in turn_dollars.items():
+                dollars_by_class[cls] += amount
+            if today > _MODEL_RATE_EXPIRES[model]:
+                stale_models.add(model)
+        if reprice_as:
+            cf_dollars, _cf_ctx, _cf_unpriced = _price_turn(reprice_as, usage)
+            if cf_dollars is not None:
+                counterfactual_total += sum(cf_dollars.values())
 
     if len(real_model_ids) >= 2:
         observed = "mixed"
