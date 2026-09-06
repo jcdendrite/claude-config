@@ -1422,6 +1422,37 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh --repo o/r pr create",
+            "gh --repo o/r pr ready",
+        ],
+    )
+    def test_gh_repo_flag_before_subcommand_bypasses_detection(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A documented gap, not yet fixed: both gh arms match `gh pr
+        ready`/`gh pr create` by strict word adjacency, so a flag interposed
+        before the subcommand — `--repo o/r` here — defeats detection. This
+        is an inverted assertion pinning the current gap, not the fix; see
+        the tracking issue linked from this hook's allowlist entry in
+        test_hook_alignment.py.
+
+        fake_gh_pr_exists (a real open PR) and no completion marker are the
+        strictest available inputs: if detection ever started matching this
+        shape, the same command would deny here instead of allow. Proves
+        this gap is risk-neutral by test, not only by header prose.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
     def test_git_invocation_before_a_bare_ampersand_defeats_push_detection(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):

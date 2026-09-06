@@ -196,7 +196,7 @@ read_latest_usage() {
   local transcript_path="$1"
   local usage_block
   usage_block=$(_lib_capped_for 2 tail -n 200 "$transcript_path" 2>/dev/null \
-    | jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
+    | _lib_capped_for 2 jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
   [ -n "$usage_block" ] || return 1
   ESTIMATE=""
   MODEL=""
@@ -205,7 +205,7 @@ read_latest_usage() {
     IFS= read -r MODEL
   } < <(
     printf '%s\n' "$usage_block" \
-      | jq -r '
+      | _lib_capped_for 2 jq -r '
           ((.message.usage.cache_read_input_tokens // 0)
          + (.message.usage.cache_creation_input_tokens // 0)
          + (.message.usage.input_tokens // 0)
@@ -291,7 +291,7 @@ read_latest_usage_cached() {
   else
     local usage_block
     usage_block=$(_lib_capped_for 2 tail -c +$((scan_from + 1)) "$transcript_path" 2>/dev/null \
-      | jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
+      | _lib_capped_for 2 jq -s "$_USAGE_BLOCK_JQ_FILTER" 2>/dev/null)
     if [ -n "$usage_block" ]; then
       ESTIMATE=""
       MODEL=""
@@ -300,7 +300,7 @@ read_latest_usage_cached() {
         IFS= read -r MODEL
       } < <(
         printf '%s\n' "$usage_block" \
-          | jq -r '
+          | _lib_capped_for 2 jq -r '
               ((.message.usage.cache_read_input_tokens // 0)
              + (.message.usage.cache_creation_input_tokens // 0)
              + (.message.usage.input_tokens // 0)

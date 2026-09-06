@@ -53,14 +53,17 @@
 #   literal `gh pr ready`/`gh pr create` tokens, not the git-push arm's
 #   token-walking tokenizer, so a full-path invocation (`/usr/bin/gh pr
 #   create`) bypasses detection for those two arms.
+# - Same two arms match by strict word adjacency, so a flag interposed
+#   before the subcommand (`gh --repo o/r pr create`, `gh --repo o/r pr
+#   ready`) also bypasses detection — tracked by GH-897.
 # - _lib_split_fragments doesn't split fragments on a bare `&` (the shell
 #   background operator).
 # - The git-word scan it feeds locks onto the first `git` occurrence in a
 #   fragment, so `git status & git push origin feature` misclassifies the
 #   subcommand and the real push goes undetected.
 # - Not closed here: the fix touches the fragment splitter or the git-word
-#   scan, both shared by other hooks and outside this gate's cooperative
-#   threat model.
+#   scan, both shared by other hooks, so a change of that scope is out of
+#   bounds for this gate alone.
 # - COMMAND_UNQUOTED's sed/tr strip failure fails closed: its exit status is
 #   checked and denies with an explicit message rather than falling through
 #   to this gate's normal "no gated command present" allow path.
@@ -95,8 +98,10 @@
 #   fail-closed by design.
 # - A missing jq denies every Bash call, the posture every unconditional
 #   gate in this repo already has.
-# - This gate's threat model is cooperative, not adversarial — the same
-#   posture require-respond-pr.sh's header states for its own gate.
+# - This gate's threat model includes adversarial input, not only a
+#   knowingly evasive engineer. Untrusted content ingested mid-session can
+#   persuade the agent's own tool call into an evasive shape without the
+#   agent intending to evade anything.
 # - The backstop against deliberate evasion is block-gh-pr-merge.sh blocking
 #   self-merge, plus CI rerunning the full suite on push. That backstop
 #   holds absent one of block-gh-pr-merge.sh's own documented bypasses:
@@ -197,13 +202,13 @@ push_fragment_args_after_repo() {
 push_fragment_publishes_reviewable_change() {
   local fragment="$1"
   local remaining
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--dry-run(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--dry-run([[:space:]]|$)'; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)(-d|--delete)(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])(-d|--delete)([[:space:]]|$)'; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '\s:[A-Za-z0-9._/-]+(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '[[:space:]]:[A-Za-z0-9._/-]+([[:space:]]|$)'; then
     # Delete-only holds only when every refspec is a deletion form, since a
     # real refspec alongside one is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
@@ -219,7 +224,7 @@ push_fragment_publishes_reviewable_change() {
       return 1
     fi
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|\s)--tags(\s|$)'; then
+  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--tags([[:space:]]|$)'; then
     # Tag-only holds only when --tags is the sole refspec hint, since a
     # branch ref alongside it is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
@@ -260,10 +265,14 @@ while IFS= read -r frag; do
       is_gated_git_push=true
     fi
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+ready(\s|;|$)'; then
+  # These two matchers scan the whole fragment rather than resolving its
+  # command word, so a `bash -c` or `eval` wrapper stays covered, matching
+  # the git arm above.
+  # Cost: a flag interposed before the subcommand is missed.
+  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+ready([[:space:]]|;|$)'; then
     is_gh_pr_ready=true
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|\s)gh\s+pr\s+create(\s|;|$)'; then
+  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|;|$)'; then
     is_gh_pr_create=true
   fi
 done <<< "$FRAGMENTS"
