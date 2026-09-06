@@ -109,10 +109,10 @@
 #   symlink-skip caveat) — enforced at install time, not by this script,
 #   and only if that step actually ran.
 # - The per-uid consumed-continuity index (the "third, durable-enough
-#   channel" below) does not extend the non-goal above across
-#   $CLAUDE_CONFIG_DIR accounts sharing one uid: its rows carry the
-#   original, descriptive source path, not the destination's opaque name,
-#   so one account can enumerate another's recently-consumed slugs in one
+#   channel" below) does not extend the non-goal above past this uid: its
+#   rows carry the original, descriptive source path, not the
+#   destination's opaque name. Any process at this EUID can therefore
+#   enumerate every recently-consumed slug in one
 #   find-consumed-continuity-file.sh call. Accepted, scoped tradeoff — see
 #   docs/design-decisions.md §56.
 # - A symlink at a glob-matching path inside the durable directory is

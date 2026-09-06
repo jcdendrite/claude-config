@@ -767,13 +767,12 @@ Manual check before commit, since the skill-length gate is a local
   uid.** Row 20 already accepts that one shared per-uid index across
   multiple accounts is not a confidentiality-at-rest leak. Left as an
   accepted residual, distinct from that: on a machine running several
-  `CLAUDE_CONFIG_DIR`-scoped accounts under one uid (this repo's own
-  multi-account setup is an example), any process running as that uid can
-  now substring-search *every* account's consumed slugs in one place,
-  which is more convenient than the pre-index status quo of grepping
-  destination files by content (`ciso-reviewer`). Out of scope because the
-  threat model this plan targets is a different-uid adversary on a shared
-  box, not a different-account, same-uid one; account-level isolation
+  `CLAUDE_CONFIG_DIR`-scoped accounts under one uid, any process running
+  as that uid can now substring-search *every* account's consumed slugs
+  in one place, which is more convenient than the pre-index status quo of
+  grepping destination files by content (`ciso-reviewer`). Out of scope
+  because the threat model this plan targets is a different-uid
+  adversary on a shared box, not a same-uid one; account-level isolation
   would need its own stated goal and design.
 
 **One judgment call worth an explicit override if the engineer disagrees:**
