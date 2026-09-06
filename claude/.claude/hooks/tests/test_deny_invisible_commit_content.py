@@ -357,7 +357,7 @@ class TestDenyInvisibleCommitContent:
         ) == "deny"
 
     def test_piped_xargs_commit_text_denied(self):
-        """GH-783 Phase 2: the fast-reject's word-walk has no chain-position
+        """GH-783: the fast-reject's word-walk has no chain-position
         requirement -- it matches a bare `git` word followed, after any
         global git flags, by a `commit` word anywhere within a quote-
         stripped, operator-delimited fragment, not only at the start of a
@@ -449,7 +449,7 @@ class TestDenyInvisibleCommitContent:
         assert "no -a/--all and no pathspec" in reason
 
     def test_dash_c_other_repo_commit_denied(self):
-        """GH-783 Phase 2: `-C <other-repo>` no longer hides this commit from
+        """GH-783: `-C <other-repo>` no longer hides this commit from
         the hook. `_lib_extract_git_subcmd`'s global-flag skip list walks
         past `-C`'s value the same way it does for every git-fragment check
         in this file, so the worktree-target check above still reaches
@@ -645,7 +645,7 @@ class TestDenyInvisibleCommitContent:
     # ------------------------------------------------------------------ #
 
     def test_grep_absent_from_path_denied(self, tmp_path):
-        """GH-783 Phase 2 swapped the fast-reject's own grep-based match for
+        """GH-783 swapped the fast-reject's own grep-based match for
         _lib_command_invokes_git_subcmd (sed/tr and a bash word-walk, no
         grep), but the wrapper/commit co-occurrence pre-check downstream of
         the fast-reject still runs its own `grep -qE` over the raw command

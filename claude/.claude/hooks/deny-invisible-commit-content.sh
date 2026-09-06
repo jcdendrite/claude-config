@@ -214,11 +214,11 @@ EXECUTION_WRAPPER_TOKEN_RE='(^|/|[[:space:]])(bash|sh|zsh|ksh|dash)[[:space:]]+-
 printf '%s\n' "$COMMAND" | grep -qE "$EXECUTION_WRAPPER_TOKEN_RE"
 WRAPPER_TOKEN_EXIT=$?
 if [ "$WRAPPER_TOKEN_EXIT" -eq 0 ]; then
-  emit_deny "Commit blocked by invisible-commit-content gate: this Bash call carries both a git-commit-shaped fragment and an execution-wrapper token (bash -c, sh -c, eval, xargs, source/bare '.', perl -e, python -c, ruby -e, node -e, or similar) — content executed inside the wrapper is invisible to this and every other commit gate's git diff --cached snapshot, regardless of quoting or ordering. Staging must run as its own Bash tool call, with git commit as a second, separate call."
+  emit_deny "this Bash call carries both a git-commit-shaped fragment and an execution-wrapper token (bash -c, sh -c, eval, xargs, source/bare '.', perl -e, python -c, ruby -e, node -e, or similar) — content executed inside the wrapper is invisible to this and every other commit gate's git diff --cached snapshot, regardless of quoting or ordering. Staging must run as its own Bash tool call, with git commit as a second, separate call."
   exit 0
 fi
 if [ "$WRAPPER_TOKEN_EXIT" -ne 1 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not evaluate the execution-wrapper co-occurrence grep (exit ${WRAPPER_TOKEN_EXIT}) — grep may be missing, killed, or errored. Failing closed rather than silently allowing an unscanned git commit."
+  emit_deny "could not evaluate the execution-wrapper co-occurrence grep (exit ${WRAPPER_TOKEN_EXIT}) — grep may be missing, killed, or errored. Failing closed rather than silently allowing an unscanned git commit."
   exit 0
 fi
 
@@ -327,7 +327,7 @@ _trim_fragment() {
 MASKED_COMMAND=$(_mask_shell_quotes "$COMMAND")
 MASK_EXIT=$?
 if [ "$MASK_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by invisible-commit-content gate: could not mask quoted command text within the timeout (exit ${MASK_EXIT}) — awk may be missing, killed, have timed out on an unusually large command, or errored. Failing closed rather than allowing an unscanned git commit chain."
+  emit_deny "could not mask quoted command text within the timeout (exit ${MASK_EXIT}) — awk may be missing, killed, have timed out on an unusually large command, or errored. Failing closed rather than allowing an unscanned git commit chain."
   exit 0
 fi
 
@@ -359,7 +359,7 @@ while IFS= read -r masked_fragment; do
   fi
   if [ "$COMMIT_FRAGMENT_COUNT" -eq 0 ] && ! [[ "$masked_subcmd" =~ ^($ALLOWED_RE)$ ]]; then
     trimmed_masked_fragment=$(_trim_fragment "$masked_fragment")
-    emit_deny "Commit blocked by invisible-commit-content gate: '${trimmed_masked_fragment}' runs 'git ${masked_subcmd:-<subcommand>}' before this call's first real git commit and can change what ends up staged. Every commit gate reads \`git diff --cached\` before this Bash call executes, so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates — even when a quote-embedded decoy commit earlier in the command hides this fragment from a quote-stripped scan. Staging must run as its own Bash tool call, with git commit as a second, separate call."
+    emit_deny "'${trimmed_masked_fragment}' runs 'git ${masked_subcmd:-<subcommand>}' before this call's first real git commit and can change what ends up staged. Every commit gate reads \`git diff --cached\` before this Bash call executes, so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates — even when a quote-embedded decoy commit earlier in the command hides this fragment from a quote-stripped scan. Staging must run as its own Bash tool call, with git commit as a second, separate call."
     exit 0
   fi
 done <<< "$MASKED_FRAGMENTS"
@@ -413,7 +413,7 @@ while IFS= read -r fragment; do
   fi
   if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
     trimmed_fragment=$(_trim_fragment "$fragment")
-    emit_deny "Commit blocked by invisible-commit-content gate: '${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's git commit and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with git commit as a second, separate call."
+    emit_deny "'${trimmed_fragment}' runs 'git ${subcmd:-<subcommand>}' before this call's git commit and can change what ends up staged, but every commit gate reads \`git diff --cached\` before this Bash call executes — so whatever this fragment stages, unstages, or otherwise mutates is invisible to those gates. Staging must run as its own Bash tool call, with git commit as a second, separate call."
     exit 0
   fi
 done <<< "$STRIPPED_FRAGMENTS"
