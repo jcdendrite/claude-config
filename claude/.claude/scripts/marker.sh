@@ -299,9 +299,8 @@ case "$SUBCOMMAND" in
         # silently force a re-review. Same shape in every arm below.
         # Deliberately uncapped: marker.sh has no `pipefail` (see
         # _lib_active_plan_hash's comment in _lib.sh), so a capped-and-killed
-        # `git diff` would let sha256sum hash truncated bytes into a
-        # well-formed but wrong digest -- worse than the uncapped hang it
-        # replaces.
+        # `git diff` would hash truncated bytes into a well-formed but wrong
+        # digest, which is worse than an uncapped hang.
         MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/code-review-markers"
@@ -602,8 +601,8 @@ case "$SUBCOMMAND" in
     # `write code-review` arm above. Gated by _lib_staged_diff_state; only the
     # "content" state computes a hash. "empty" and "unknown" leave the value
     # blank, which _status_report_completion_marker already treats as
-    # absent/historical. Worst-case wall time for a "content" line is now two
-    # 5s-capped git calls in sequence (the probe, then the hash), not one.
+    # absent/historical. Worst-case wall time for a "content" line is two
+    # 5s-capped git calls in sequence (the probe, then the hash).
     CODE_REVIEW_VALUE=""
     if [ "$(_lib_staged_diff_state "$REPO_ROOT")" = content ]; then
       CODE_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')

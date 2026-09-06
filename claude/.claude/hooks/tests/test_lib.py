@@ -3115,12 +3115,15 @@ def test_lib_sanitize_for_terminal_does_not_strip_c1_bytes() -> None:
     assert result.stdout == b"a\x9bb"
 
 
-def _run_staged_diff_state(repo_root: str, *pathspecs: str) -> subprocess.CompletedProcess:
+def _run_staged_diff_state(
+    repo_root: str, *pathspecs: str, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    env = {**os.environ, **extra_env} if extra_env else dict(os.environ)
     return subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_staged_diff_state "$@"', "bash", repo_root, *pathspecs],
         capture_output=True,
         text=True,
-        env=dict(os.environ),
+        env=env,
         check=False,
     )
 
@@ -3204,6 +3207,61 @@ class TestLibStagedDiffState:
         result = _run_staged_diff_state(str(repo), "a.txt", "c.txt")
         assert result.returncode == 0, result.stderr
         assert result.stdout == "empty"
+
+    # ── --quiet's non-empty-diff categories, and its one documented
+    #    exception ──────────────────────────────────────────────────────
+
+    def test_mode_only_staged_change_classifies_as_content(self, tmp_path: Path) -> None:
+        """A mode-only staged change (chmod +x, no content change) makes
+        `git diff --cached --quiet` exit 1 (a difference) and produces
+        non-empty `git diff --cached` output too -- probe and hash agree."""
+        repo = tmp_path / "mode-only-repo"
+        self._init_repo(repo)
+        os.chmod(repo / "f.txt", 0o755)
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "content"
+
+    def test_staged_rename_classifies_as_content(self, tmp_path: Path) -> None:
+        """A staged rename also makes `--quiet` and the hash agree that
+        content changed."""
+        repo = tmp_path / "rename-repo"
+        self._init_repo(repo)
+        subprocess.run(["git", "mv", "f.txt", "renamed.txt"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "content"
+
+    def test_staged_binary_file_classifies_as_content(self, tmp_path: Path) -> None:
+        """A staged binary file also makes `--quiet` and the hash agree
+        that content changed."""
+        repo = tmp_path / "binary-repo"
+        self._init_repo(repo)
+        (repo / "binary.dat").write_bytes(bytes(range(256)))
+        subprocess.run(["git", "add", "binary.dat"], cwd=repo, check=True)
+        result = _run_staged_diff_state(str(repo))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "content"
+
+    def test_git_external_diff_noop_classifies_as_content(self, tmp_path: Path) -> None:
+        """A GIT_EXTERNAL_DIFF tool that exits 0 without writing to stdout
+        makes `--quiet` still report a difference -- per _lib_staged_diff_state's
+        own comment in _lib.sh, `--quiet` never invokes the external-diff
+        driver in the first place. _lib_staged_diff_state must still
+        classify this "content", not "empty"."""
+        repo = tmp_path / "external-diff-repo"
+        self._init_repo(repo)
+        (repo / "f.txt").write_text("first\nsecond\n")
+        subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+        noop_script = tmp_path / "noop-external-diff.sh"
+        noop_script.write_text("#!/bin/bash\nexit 0\n")
+        noop_script.chmod(0o755)
+        result = _run_staged_diff_state(
+            str(repo), extra_env={"GIT_EXTERNAL_DIFF": str(noop_script)}
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "content"
 
 
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its

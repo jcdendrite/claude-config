@@ -786,75 +786,19 @@ class TestMarkerScriptEmptyStagedGuard:
 
 
 class TestMarkerScriptStagedDiffStateClassification:
-    """_lib_staged_diff_state's three-outcome classification (content,
-    empty, unknown), exercised through marker.sh's write and status arms."""
+    """_lib_staged_diff_state's "unknown" outcome (probe timeout) and the
+    status arm's degradation to absent/historical, exercised through
+    marker.sh's write and status arms. The content/empty/unknown
+    classification itself -- including the non-empty-diff categories
+    (mode-only change, rename, binary file, a no-op GIT_EXTERNAL_DIFF) -- is
+    covered directly against _lib_staged_diff_state's own stdout by
+    test_lib.py's TestLibStagedDiffState; test_write_code_review_creates_marker
+    in TestMarkerScriptHappyPath above already confirms marker.sh's write arm
+    wires an ordinary "content" classification through to a written marker,
+    so no separate wiring check is kept here for the other content-yielding
+    diff shapes."""
 
     SID = "test-session-diff-state"
-
-    # ── --quiet's non-empty-diff categories, and its one documented
-    #    exception ──────────────────────────────────────────────────────
-
-    def test_mode_only_staged_change_still_writes_marker(self, isolated_home, git_repo):
-        """A mode-only staged change (chmod +x, no content change) makes
-        `git diff --cached --quiet` exit 1 (a difference) and produces
-        non-empty `git diff --cached` output too -- probe and hash agree."""
-        _seed_session(isolated_home, self.SID)
-        subprocess.run(["git", "commit", "-q", "-m", "commit staged change"], cwd=git_repo, check=True)
-        os.chmod(git_repo / "file.txt", 0o755)
-        subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
-        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "code-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
-
-    def test_staged_rename_still_writes_marker(self, isolated_home, git_repo):
-        """A staged rename also makes `--quiet` and the hash agree that
-        content changed."""
-        _seed_session(isolated_home, self.SID)
-        subprocess.run(["git", "commit", "-q", "-m", "commit staged change"], cwd=git_repo, check=True)
-        subprocess.run(["git", "mv", "file.txt", "renamed.txt"], cwd=git_repo, check=True)
-        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "code-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
-
-    def test_staged_binary_file_still_writes_marker(self, isolated_home, git_repo):
-        """A staged binary file also makes `--quiet` and the hash agree
-        that content changed."""
-        _seed_session(isolated_home, self.SID)
-        subprocess.run(["git", "commit", "-q", "-m", "commit staged change"], cwd=git_repo, check=True)
-        (git_repo / "binary.dat").write_bytes(bytes(range(256)))
-        subprocess.run(["git", "add", "binary.dat"], cwd=git_repo, check=True)
-        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 0, result.stderr
-        marker_dir = isolated_home / ".claude" / "code-review-markers"
-        assert len(list(marker_dir.iterdir())) == 1
-
-    def test_git_external_diff_noop_still_classifies_as_content(
-        self, isolated_home, git_repo
-    ):
-        """A GIT_EXTERNAL_DIFF tool that exits 0 without writing to stdout
-        makes `--quiet` still report a difference (it never invokes the
-        external diff driver) while a caller's own `git diff --cached`
-        output is zero bytes. _lib_staged_diff_state must classify this
-        "content", not "empty" -- the resulting hash-pipeline collision with
-        the empty-input digest is a pre-existing limitation shared by every
-        site that pipes `git diff --cached` into sha256sum (see the
-        helper's own header comment in _lib.sh), not something this probe
-        is expected to paper over."""
-        noop_script = isolated_home / "noop-external-diff.sh"
-        noop_script.write_text("#!/bin/bash\nexit 0\n")
-        noop_script.chmod(0o755)
-        result = subprocess.run(
-            ["bash", "-c", f'. "{HOOKS_DIR}/_lib.sh"; _lib_staged_diff_state "$1"',
-             "_", str(git_repo)],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "GIT_EXTERNAL_DIFF": str(noop_script)},
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout == "content"
 
     # ── the probe's own cap, exercised on the write arm ─────────────────
 
