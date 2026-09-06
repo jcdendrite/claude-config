@@ -364,8 +364,8 @@ request's cached content is "the system prompt, your project context,
 every prior message and tool result" — so a `Read` result gets the same
 TTL `cacheTtl` sets. This closes the row above's "not measured for
 subagents" gap only for reviewer re-dispatch gaps, via `review-trace`'s
-existing per-event timestamps — the row's broader claim, that a general
-subagent idle-gap figure needs a `cache-rebuild` main/sidechain split,
+existing per-event timestamps. The row's broader claim — that a general
+subagent idle-gap figure needs a `cache-rebuild` main/sidechain split —
 stays open. See the `reviewer-instance-continuation.md` section below for
 the corrected pricing this unlocks.
 
@@ -437,7 +437,8 @@ That clears gate criterion 1 decisively, the reverse of the
 Criterion 2 — the $50 floor — still fails. A one-off scan against
 `reviewer_yield.py`'s existing per-dispatch transcript resolution (not a
 rerunnable script — treat the precision accordingly, per this register's
-usual caveat for such scans) measured `R` directly: mean 14,260 tokens
+usual caveat for such scans) measured the per-dispatch `Read`-token volume
+(the plan's `R`) directly: mean 14,260 tokens
 across 550 dispatches, well under the plan's 20,000–35,000 extrapolation.
 Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
 1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
@@ -449,10 +450,10 @@ should carry weight given both figures are one-off-scan estimates.
 
 **Verdict unchanged (decline).** The corrected mechanics flip criterion 1
 from failing to passing, but the roster-wide cost and the repeat-only
-benefit are the same order of magnitude and cancel. A permanent `R`
-subcommand isn't warranted either: `reviewer_yield.py`'s per-dispatch
+benefit are the same order of magnitude and cancel. A permanent subcommand
+for that figure isn't warranted either: `reviewer_yield.py`'s per-dispatch
 resolution already supplies it via a throwaway script, and this plan treats
-`R` as magnitude-only, never sign-determining.
+it as magnitude-only, never sign-determining.
 
 This repricing doesn't reopen the `2026-09-01` "Pick the cache duration"
 row above, the register's canonical cache-duration entry. Its objection
