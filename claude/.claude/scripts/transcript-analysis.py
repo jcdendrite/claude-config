@@ -1508,12 +1508,31 @@ def _is_architect_consult_dispatch(tool_input: dict) -> bool:
     return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
 
 
+def _group_start_indices(groups: list[list[dict]]) -> frozenset[int]:
+    """0-based positions in the flattened record list where a new source
+    group (the main transcript, or one subagent file) begins.
+
+    Matches read_session_file's own flatten order — the main transcript's
+    records first, then each subagent file's in filename-sorted order — so a
+    caller that already has the flat, session_iter-yielded records can align
+    this function's output against them by plain list index. See
+    _review_trace_session_events's group_boundaries parameter for why the
+    boundary matters."""
+    starts = []
+    cursor = 0
+    for group in groups:
+        starts.append(cursor)
+        cursor += len(group)
+    return frozenset(starts)
+
+
 def _review_trace_session_events(
     records: list[dict],
     since_ts: float | None,
     until_epoch: float | None,
     branch_filter: set[str] | None,
     skill_filter: str | None = None,
+    group_boundaries: frozenset[int] | None = None,
 ) -> tuple[list[dict], dict[str, str], int]:
     """Detect cmd_review_trace's five per-session event kinds (skill, denial,
     friction, reviewer-spawn, architect-consult) from one session's records.
@@ -1524,6 +1543,28 @@ def _review_trace_session_events(
     errored tool results predating toolDenialKind's introduction, is always
     computed (cheap) even though only --deny-summary reports it — see
     _print_deny_summary's own explanation of what it means.
+
+    records may interleave main-thread and subagent (isSidechain) records
+    when the caller resolved scope with include_subagents=True. Detection
+    runs over those records merged into one chronological stream, sorted on
+    a three-part key: effective_ts (the record's own _parse_ts result,
+    forward-filled from the immediately preceding record when unparseable,
+    or float("-inf") at the start of a group), thread_rank (0 for a
+    main-thread record, 1 for a sidechain one), and pre_sort_index (the
+    record's original position, the final tie-break). group_boundaries (the
+    0-based records indices where a new source file starts, from
+    _group_start_indices; None from a caller that hasn't partitioned the
+    corpus read, meaning the whole list is treated as one group) resets
+    effective_ts's forward-fill at each boundary. See
+    docs/design-decisions.md §58 for why the sort key and the per-group
+    reset are shaped this way.
+
+    effective_ts governs ordering only — the --since/--until filter below
+    still tests each record's own, unfilled _parse_ts result. Each event
+    dict carries this same pre_sort_index as line_no, plus a thread field
+    ("main" or "sidechain"): the main transcript's own 1-based file line for
+    thread=main, a merged-stream offset indexing no file for thread=sidechain
+    (see docs/design-decisions.md §58 for why).
     """
     events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
     # Tracks tool_use_ids already emitted as a denial. A legacy denial
@@ -1537,22 +1578,45 @@ def _review_trace_session_events(
     seen_friction_ids: set[str] = set()
 
     # tool_use_id -> attempted command, for --deny-summary's by-command-shape
-    # grouping. Indexed from every assistant tool_use block on the main
-    # thread — review-trace's session_iter doesn't request subagent
-    # records, so sidechain tool_use blocks are never present to index.
-    # Independent of the --since/--until window, since a denial's own
-    # event already applies it.
+    # grouping. Indexed from every assistant tool_use block, main-thread or
+    # sidechain — this loop carries no isSidechain guard of its own, so a
+    # denial raised inside a subagent's own transcript still resolves to the
+    # command that triggered it. Independent of the --since/--until window,
+    # since a denial's own event already applies it.
     tool_use_commands: dict[str, str] = {}
 
-    # Carry-forward trackers, updated on every main-thread record before the
-    # date filter below — the branch/model attributed to a denial (which
-    # carries no message.model of its own) is whatever a prior main-thread
-    # record last set, including one outside the --since/--until window.
+    # Carry-forward trackers, updated on every main-thread record, never a
+    # sidechain one. Detection itself no longer gates on isSidechain, but a
+    # sidechain event still inherits whatever branch/model was live on the
+    # dispatching main-thread record, not its own. Applied before the date
+    # filter below, so the branch/model attributed to an event is whatever a
+    # prior main-thread record last set, including one outside the
+    # --since/--until window.
     last_branch = ""
     last_model = ""
     pre_regime_tool_result_count = 0
 
-    for line_no, rec in enumerate(records, start=1):
+    # Merge main-thread and subagent records into one chronological stream
+    # before detection (see the docstring's three-part key) — sorting
+    # instead of leaving records in main-then-subagent concatenation order is
+    # what lets the carry-forward trackers above see a sidechain event's
+    # dispatching record before the event itself, rather than after every
+    # main-thread record has already run.
+    merged: list[tuple[float, int, int, dict]] = []
+    prev_effective_ts = float("-inf")
+    for index, rec in enumerate(records):
+        if group_boundaries is not None and index in group_boundaries:
+            prev_effective_ts = float("-inf")
+        ts = _parse_ts(rec.get("timestamp"))
+        effective_ts = prev_effective_ts if ts is None else ts
+        prev_effective_ts = effective_ts
+        thread_rank = 1 if bool(rec.get("isSidechain")) else 0
+        merged.append((effective_ts, thread_rank, index + 1, rec))
+    merged.sort(key=lambda item: item[:3])
+
+    for _effective_ts, _thread_rank, line_no, rec in merged:
+        thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
+
         if not bool(rec.get("isSidechain")):
             b = rec.get("gitBranch") or ""
             if b:
@@ -1588,9 +1652,10 @@ def _review_trace_session_events(
         evt_model = _fam(last_model) if last_model else "?"
 
         # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
-        # Both are main-thread assistant tool_use blocks; a single pass over
-        # content dispatches on tool name to avoid iterating the list twice.
-        if rec_type == "assistant" and not bool(rec.get("isSidechain")):
+        # Both are assistant tool_use blocks, main-thread or sidechain; a
+        # single pass over content dispatches on tool name to avoid
+        # iterating the list twice.
+        if rec_type == "assistant":
             for block in ((rec.get("message") or {}).get("content") or []):
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -1608,6 +1673,7 @@ def _review_trace_session_events(
                         "line_no": line_no,
                         "branch": evt_branch,
                         "model": evt_model,
+                        "thread": thread,
                     })
                 elif block_name in ("Agent", "Task"):
                     tool_input = block.get("input") or {}
@@ -1620,6 +1686,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
                     elif stype == _ARCHITECT_CONSULT_SUBAGENT_TYPE and _is_architect_consult_dispatch(tool_input):
                         # A consult dispatch was initiated -- no dependence on
@@ -1632,6 +1699,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
 
         # --- Signal 2a: hook denials, legacy shape (attachment record) ---
@@ -1666,6 +1734,7 @@ def _review_trace_session_events(
                 "line_no": line_no,
                 "branch": evt_branch,
                 "model": evt_model,
+                "thread": thread,
             })
 
         # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
@@ -1716,6 +1785,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
 
                 if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
@@ -1732,6 +1802,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
                 elif pre_regime and not already_gate_denied and block.get("is_error"):
                     pre_regime_tool_result_count += 1
@@ -1744,6 +1815,32 @@ def _review_trace_session_events(
         events = [e for e in events if e["branch"] in branch_filter]
 
     return events, tool_use_commands, pre_regime_tool_result_count
+
+
+def _fresh_records_and_group_boundaries(
+    jsonl: Path, records: list[dict], *, include_subagents: bool,
+) -> tuple[list[dict], frozenset[int] | None]:
+    """Re-read jsonl as one _read_session_file_partitioned call, so the
+    records and group_boundaries handed to _review_trace_session_events
+    always come from the same snapshot of the file -- pairing session_iter's
+    own records (an earlier read) with an independently re-read
+    group_boundaries would let the two desync whenever the file grows in
+    between (e.g. review-trace scanning its own in-progress session).
+    include_subagents is a required keyword argument, not a default, so a
+    future caller must state its own session_iter's scope explicitly rather
+    than silently inheriting whatever this function's last caller needed.
+
+    Falls back to the given records with no group boundaries when jsonl is
+    unreadable right now, rather than discarding a session's already-observed
+    events. Two cases trigger the fallback: the file was deleted mid-scan, or
+    the path is a synthetic one used in a test. Shared by
+    _compute_deny_summary_data and cmd_review_trace, this function's two
+    identically-shaped callers.
+    """
+    groups = _read_session_file_partitioned(jsonl, include_subagents=include_subagents)
+    if not groups:
+        return records, None
+    return [rec for group in groups for rec in group], _group_start_indices(groups)
 
 
 def _compute_deny_summary_data(
@@ -1775,9 +1872,15 @@ def _compute_deny_summary_data(
     pre_regime_tool_result_count = 0
     any_session_matched = False
 
-    for _jsonl, records in session_iter:
+    for jsonl, records in session_iter:
+        # Both of this function's callers resolve scope with
+        # include_subagents=True -- see _fresh_records_and_group_boundaries
+        # for why records and group_boundaries must come from one read.
+        records, group_boundaries = _fresh_records_and_group_boundaries(
+            jsonl, records, include_subagents=True,
+        )
         events, tool_use_commands, session_pre_regime = _review_trace_session_events(
-            records, since_ts, until_ts, branch_filter
+            records, since_ts, until_ts, branch_filter, group_boundaries=group_boundaries
         )
         if not events:
             continue
@@ -1838,8 +1941,11 @@ def _compute_deny_summary_data(
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
-    Five event types are detected per session:
-    - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
+    Scans both the main thread and every dispatched subagent's own
+    transcript file (include_subagents=True), merged into one chronological
+    stream by _review_trace_session_events. Five event types are detected
+    per session, on either thread:
+    - skill: a Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
     - denial: a hook-blocking denial in either transcript shape — a legacy
       `attachment` record (type==hook_blocking_error) or a current-format
       `tool_result` block with is_error and a hook-denial message signature.
@@ -1853,7 +1959,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     - architect-consult: Agent/Task spawn where subagent_type is
       plan-architect and the prompt's first line is not the literal
       MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
-      consult dispatch was initiated, not that it completed.
+      consult dispatch was initiated, not that it completed — including one
+      dispatched from inside a subagent.
 
     denial and friction are deliberately separate event kinds: has_denial,
     denials=N, and --deny-only's session-selection all stay denial-kind-only,
@@ -1867,7 +1974,12 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     (or model) to another attributes each event correctly instead of labelling
     every event with whatever the session started on. An event whose branch or
     model cannot be resolved renders '?'. --branches filters the emitted event
-    list by this per-event value, not by a single session-wide branch.
+    list by this per-event value, not by a single session-wide branch. A
+    sidechain event's thread field prints as `thread=sidechain` in the
+    timeline; a main-thread event's `thread=main` is the default and stays
+    unprinted. A sidechain event's line_no is a merged-stream offset, not a
+    real file line (see _review_trace_session_events's docstring), so it
+    prints as `line   n/a` instead of a numeral.
 
     --deny-summary delegates its entire accumulation to
     _compute_deny_summary_data instead of running its own pass over
@@ -1879,7 +1991,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
     roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "review-trace", roots=roots)
+    session_iter, scope_label = _resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
 
     since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
 
@@ -1912,8 +2024,15 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     emitted_any_session = False
 
     for jsonl, records in session_iter:
+        # session_iter is resolved with include_subagents=True above -- see
+        # _fresh_records_and_group_boundaries for why records and
+        # group_boundaries must come from one read at the same scope.
+        records, group_boundaries = _fresh_records_and_group_boundaries(
+            jsonl, records, include_subagents=True,
+        )
         events, tool_use_commands, _pre_regime = _review_trace_session_events(
-            records, since_ts, until_epoch, branch_filter, skill_filter=skill_filter
+            records, since_ts, until_epoch, branch_filter,
+            skill_filter=skill_filter, group_boundaries=group_boundaries,
         )
         if not events:
             continue
@@ -1939,9 +2058,15 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         )
         for evt in events:
             ts_label = evt.get("ts") or "?"
-            lno = evt["line_no"]
+            # line_no is a real, seekable main-transcript line only for a
+            # thread=main event; for thread=sidechain it's a merged-stream
+            # offset indexing no file (see _review_trace_session_events's
+            # docstring), so it prints as n/a rather than under the same
+            # "line" label as a real one.
+            lno = "n/a" if evt["thread"] == "sidechain" else evt["line_no"]
             kind = evt["kind"]
-            suffix = f"  (branch={evt['branch']} model={evt['model']})"
+            thread_suffix = "" if evt["thread"] == "main" else f" thread={evt['thread']}"
+            suffix = f"  (branch={evt['branch']} model={evt['model']}{thread_suffix})"
             if kind == "skill":
                 print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
             elif kind == "denial":
@@ -6667,11 +6792,15 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     week_end_ts = week_start_ts + 7 * 86400
 
     cost_session_iter, scope_label = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
-    deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", roots=roots)
-    # Deliberately duplicates cost_session_iter's identical full-corpus include_subagents=True
-    # scan; sharing one materialized pass would require restructuring
-    # _compute_cost_trend_data/_compute_reviewer_yield_data's calling convention, also used by
-    # other commands.
+    # All three iterators below deliberately duplicate the identical full-corpus
+    # include_subagents=True scan rather than sharing one materialized pass —
+    # doing so would require restructuring _compute_cost_trend_data,
+    # _compute_deny_summary_data, and _compute_reviewer_yield_data's calling
+    # convention. Other commands also use that same calling convention.
+    # deny_session_iter widens to match its siblings so its denials column and
+    # review-trace --deny-summary (also include_subagents=True) can never
+    # disagree over the same scope.
+    deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
     reviewer_session_iter, _scope_label3 = _resolve_project_scope(
         args, "cost-ledger", include_subagents=True, roots=roots
     )

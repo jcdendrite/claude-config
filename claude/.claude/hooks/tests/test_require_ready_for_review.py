@@ -864,23 +864,33 @@ class TestRequireReadyForReview:
     ):
         """Checked out on `main`, the repo's default branch.
 
-        Timing out DEFAULT_BRANCH's direct `git symbolic-ref --quiet
-        refs/remotes/origin/HEAD` lookup does not, by itself, withhold the
-        default-branch bypass. The candidate-loop fallback's `git rev-parse
-        --verify origin/main` still resolves quickly against the plain
-        `refs/remotes/origin/main` ref repo_on_feature_branch sets up, so
-        DEFAULT_BRANCH still gets set and the bypass still fires.
+        Timing out _lib_default_branch_from_origin_head's `git -C <repo>
+        symbolic-ref --quiet refs/remotes/origin/HEAD` lookup does not, by
+        itself, withhold the default-branch bypass. The candidate-loop
+        fallback's `git -C <repo> rev-parse --verify origin/main` still
+        resolves quickly against the plain `refs/remotes/origin/main` ref
+        repo_on_feature_branch sets up, so DEFAULT_BRANCH still gets set and
+        the bypass still fires.
 
-        `fake_output` gives a broken cap a decision-flipping outcome: if the
-        cap fails, the full sleep completes and the shim emits this
-        un-stripped `refs/remotes/origin/...` value (the hook's own `sed`
-        strips the prefix afterward), producing `DEFAULT_BRANCH="wrong-branch"`
-        which mismatches CURRENT_BRANCH and withholds the bypass instead of
-        allowing — versus a working cap, where the shim is killed mid-sleep,
-        this call stays empty, and the candidate loop still recovers "main"."""
+        `fake_output` gives a broken cap a decision-flipping outcome: naming
+        a real-but-non-default ref (`origin/develop`, set up here) rather
+        than a nonexistent one, since the helper's own verify step would
+        otherwise reject a nonexistent ref and fall through to the same
+        candidate-loop result as a working cap, losing the distinguishing
+        power this test needs. If the cap fails, the full
+        sleep completes and the shim emits this ref, resolving
+        `DEFAULT_BRANCH="develop"`, which mismatches CURRENT_BRANCH and
+        withholds the bypass instead of allowing — versus a working cap,
+        where the shim is killed mid-sleep, this call stays empty, and the
+        candidate loop still recovers "main"."""
         subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"],
+            cwd=repo_on_feature_branch,
+            check=True,
+        )
         env = git_timeout_shim(
-            '[ "$1" = "symbolic-ref" ]', fake_output="refs/remotes/origin/wrong-branch"
+            '[ "$3" = "symbolic-ref" ]', fake_output="refs/remotes/origin/develop"
         )
         with assert_cap_engaged():
             decision = run_hook(
@@ -900,15 +910,15 @@ class TestRequireReadyForReview:
         DEFAULT_BRANCH's direct `symbolic-ref` lookup already fails to
         resolve on its own (repo_on_feature_branch configures no
         `refs/remotes/origin/HEAD`), so timing out the candidate loop's
-        `git rev-parse --verify origin/main` — the only candidate with a ref
-        to resolve against, since `master` and `develop` have none — exhausts
-        the whole loop and leaves DEFAULT_BRANCH empty, withholding the
-        default-branch bypass.
+        `git -C <repo> rev-parse --verify origin/main` — the only candidate
+        with a ref to resolve against, since `master` and `develop` have
+        none — exhausts the whole loop and leaves DEFAULT_BRANCH empty,
+        withholding the default-branch bypass.
 
         With an open PR and no completion marker, the gate then denies."""
         subprocess.run(["git", "checkout", "-q", "main"], cwd=repo_on_feature_branch, check=True)
         env = git_timeout_shim(
-            '[ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "origin/main" ]'
+            '[ "$3" = "rev-parse" ] && [ "$4" = "--verify" ] && [ "$5" = "origin/main" ]'
         )
         with assert_cap_engaged():
             decision = run_hook(
@@ -918,6 +928,51 @@ class TestRequireReadyForReview:
                 extra_env=env,
             )
         assert decision == "deny"
+
+    def test_dangling_origin_head_bypass_granted_on_coincidental_candidate_name_match(
+        self, isolated_home, tmp_path
+    ):
+        """Pins the accepted-and-tracked (GH-899) widened fail-open: origin/
+        HEAD's symref resolves to `refs/remotes/origin/main`, but that target
+        ref was never created locally (dangling) --
+        `_lib_default_branch_from_origin_head`'s verify step rejects it and
+        falls through to the candidate loop. Only `refs/remotes/origin/
+        develop` is live, so the loop lands on "develop".
+
+        The branch checked out is also literally named `develop` -- purely
+        by coincidence, not because it is the repo's real default (which
+        origin/HEAD claims, unverifiably, to be `main`). CURRENT_BRANCH and
+        the guessed DEFAULT_BRANCH match, so the gate grants the
+        default-branch bypass and allows the push, with no open-PR check
+        ever run. This is the exact scenario GH-899 tracks as an accepted
+        risk, not a regression to fix here -- the test exists so a future
+        change to this boundary is a visible, reviewed decision."""
+        repo = tmp_path / "rfr-dangling"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "develop"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        (repo / "f").write_text("a\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"],
+            cwd=repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin develop", session_id="s"),
+                cwd=repo,
+            )
+            == "allow"
+        )
 
     @pytest.mark.timing
     def test_gh_pr_view_timeout_allows(
@@ -1352,6 +1407,37 @@ class TestRequireReadyForReview:
         header). Both arms detect via plain-text regex on the literal
         `gh pr ready`/`gh pr create` tokens. `/usr/bin/gh` doesn't match
         because `gh` there isn't preceded by whitespace or start-of-string.
+
+        fake_gh_pr_exists (a real open PR) and no completion marker are the
+        strictest available inputs: if detection ever started matching this
+        shape, the same command would deny here instead of allow. Proves
+        this gap is risk-neutral by test, not only by header prose.
+        """
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input(command, session_id="s"),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh --repo o/r pr create",
+            "gh --repo o/r pr ready",
+        ],
+    )
+    def test_gh_repo_flag_before_subcommand_bypasses_detection(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """A documented gap, not yet fixed: both gh arms match `gh pr
+        ready`/`gh pr create` by strict word adjacency, so a flag interposed
+        before the subcommand — `--repo o/r` here — defeats detection. This
+        is an inverted assertion pinning the current gap, not the fix; see
+        the tracking issue linked from this hook's allowlist entry in
+        test_hook_alignment.py.
 
         fake_gh_pr_exists (a real open PR) and no completion marker are the
         strictest available inputs: if detection ever started matching this

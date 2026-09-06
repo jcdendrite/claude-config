@@ -78,9 +78,9 @@ fi
 # Only gate git commit commands — exit 0 (no opinion) for everything else.
 # Match `git commit` at the start of the command OR after a shell separator
 # (`&&`, `||`, `;`, `|`, `&`), so chained forms like `git add . && git commit`
-# are also caught. The trailing `(\s|$)` ensures we don't match `git commit-tree`
-# or other `git commit`-prefixed subcommands.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)\s*git\s+commit(\s|$)'; then
+# are also caught. The trailing `([[:space:]]|$)` ensures we don't match
+# `git commit-tree` or other `git commit`-prefixed subcommands.
+if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'; then
   exit 0
 fi
 

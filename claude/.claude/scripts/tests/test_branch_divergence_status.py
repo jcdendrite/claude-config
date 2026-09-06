@@ -128,6 +128,24 @@ class TestOriginHeadUnset:
         assert "could not resolve origin/HEAD" in result.stderr
 
 
+class TestDanglingOriginHeadWithRemotelyLiveTarget:
+    """origin/HEAD's symref resolves, but its local tracking ref is gone
+    while the branch is still live on the remote. The shared helper
+    verifies the local ref resolves before this script's own recovering
+    fetch ever runs, so this state is never recovered."""
+
+    def test_exits_nonzero_before_the_recovering_fetch(self, tmp_path):
+        local, _bare = _make_repo_with_remote(tmp_path)
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/main"], cwd=local, check=True
+        )
+
+        result = _run_script(local)
+
+        assert result.returncode == 1
+        assert "could not resolve origin/HEAD" in result.stderr
+
+
 class TestFetchFailure:
     def test_exits_nonzero_with_message(self, tmp_path):
         local, _bare = _make_repo_with_remote(tmp_path)
