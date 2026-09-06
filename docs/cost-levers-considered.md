@@ -353,6 +353,22 @@ is what this register already does, so the method gets no row of its own.
 | Set budgets and output caps | Rejected, no exposed surface | Subagent frontmatter (Anthropic, *Create custom subagents*) carries no `task_budget`, `max_tokens`, or output-token-cap field; the only budget-adjacent fields are `maxTurns` (a turn count, not a token limit) and `experimental.cacheTtl` (the cache-duration lever above). `max_tokens` is set by the API caller, which is Claude Code, not this repo. `maxTurns` is reachable and truncates a dispatch rather than pricing it — a safety cap, not a cost lever. |
 | Multi-model architectures (Advisor, Orchestrator) | Already implemented, under different names | Advisor: `plan-architect`'s `MODE=consult` dispatch is a cheap executor escalating one hard design decision to an Opus-pinned read-only agent on demand (`design-decisions.md` §37), and `MODE=plan-sections` is the same escalation on a fixed trigger (§30). Orchestrator: a Sonnet-default parent decomposes and delegates bulk work to `code-writer` and the reviewer roster, with the global `CLAUDE.md`'s Model & Effort Routing rule fixing which tier each dispatch gets. Recorded honestly: the guide's precondition — a multi-model configuration must beat a single model's entire score-vs-spend curve — was never measured here. Both arrangements were adopted on other grounds, not as a validated curve win. |
 
+**2026-09-06 correction:** `reviewer-instance-continuation.md`'s
+over-powered-primitive check claims `experimental.cacheTtl` "warms only the
+small system-prompt prefix and never touches a `Read` result." Claude
+Code's own prompt-caching guide
+(`https://code.claude.com/docs/en/prompt-caching`) is the authoritative
+source here, distinct from the generic Messages API doc cited above.
+Claude Code decides cache TTL **per request**, not per content type. A
+request's cached content is "the system prompt, your project context,
+every prior message and tool result" — so a `Read` result gets the same
+TTL `cacheTtl` sets. This closes the row above's "not measured for
+subagents" gap only for reviewer re-dispatch gaps, via `review-trace`'s
+existing per-event timestamps. The row's broader claim — that a general
+subagent idle-gap figure needs a `cache-rebuild` main/sidechain split —
+stays open. See the `reviewer-instance-continuation.md` section below for
+the corrected pricing this unlocks.
+
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 
 Full empirical record: [`case-studies/markdown-context-ingestion.md`](case-studies/markdown-context-ingestion.md). Supersedes nothing in the `lsp-token-reduction-feasibility.md` section above — that entry already rejected LSP as a general token lever and named markdown as the bucket it doesn't touch; this row closes the follow-up that finding implies, a markdown-specific LSP.
@@ -401,3 +417,46 @@ later — not a revised version of this one, since it raises the write
 multiplier on every dispatch, including the ~66% of same-(agent-type,
 branch) dispatches that are first-of-type on a branch and gain nothing from
 a warm-cache continuation fix.
+
+**2026-09-06 follow-up, the named `cacheTtl: 1h` lever, priced.** The
+correction above reopens the bundle the plan named: `cacheTtl: 1h` paired
+with the declined
+`SendMessage` continuation. `cacheTtl` alone cannot warm one dispatch's
+`Read` results for a different dispatch. Reviewer file reads land in
+`messages[]` after each dispatch's own divergent prompt, so nothing
+carries a `Read` result across two separate `Agent` calls without the
+continuation mechanism itself.
+
+Re-running this section's own gap measurement at the 1-hour boundary
+(`review-trace --this-repo --since 2026-07-07`, rerun same day; 271
+same-session repeats, up from 263 above) finds 86.7% fall under one hour.
+That clears gate criterion 1 decisively, the reverse of the
+5-minute-boundary result.
+
+Criterion 2 — the $50 floor — still fails. A one-off scan against
+`reviewer_yield.py`'s existing per-dispatch transcript resolution measured
+the per-dispatch `Read`-token volume (the plan's `R`) directly — not a
+rerunnable script, so treat the precision accordingly, per this register's
+usual caveat for such scans. The result: mean 14,260 tokens across 550
+dispatches, well under the plan's 20,000–35,000 extrapolation.
+Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
+1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
+dispatch's own write) totals ≈$17.65 over the window. The avoided-rewrite
+benefit, reaching only the subset warm under the new boundary, totals
+≈$17.35, a net of ≈−$0.30. Both terms are ≈$17, roughly $33 short of the
+$50 floor either way — a gap this size, not the precise net, is what
+should carry weight given both figures are one-off-scan estimates.
+
+**Verdict unchanged (decline).** The corrected mechanics flip criterion 1
+from failing to passing, but the roster-wide cost and the repeat-only
+benefit are the same order of magnitude and cancel. A permanent subcommand
+for that figure isn't warranted either: `reviewer_yield.py`'s per-dispatch
+resolution already supplies it via a throwaway script, and this plan treats
+it as magnitude-only, never sign-determining.
+
+This repricing doesn't reopen the `2026-09-01` "Pick the cache duration"
+row above, the register's canonical cache-duration entry. Its objection
+that `experimental.cacheTtl` sits in an unstable `experimental.` namespace
+is untouched by the cost side coming out a wash. That objection is now the
+sole reason to decline, since the cost gap no longer carries independent
+weight.
