@@ -25,12 +25,13 @@
 # Failure mode: every failure path exits 0, with a one-line diagnostic to
 # stderr only.
 #
-# Per-fire cost: includes a conditional `ps` shellout (inside
-# _lib_hook_claude_pid, when $CLAUDE_PID is set and numeric) plus jq/find,
-# but the exact call count is visible by reading the script below.
+# Per-fire cost: a conditional `ps` shellout (inside _lib_hook_claude_pid,
+# when $CLAUDE_PID is set and numeric) plus jq and find. See the script
+# below for the exact call sequence.
+#
 # SessionEnd's default execution budget is asserted to be short (~1.5s) by
 # this design but is not cited from any Anthropic documentation this repo
-# could locate; treat the per-fire cost above as a reason for caution, not a
+# could locate. Treat the per-fire cost above as a reason for caution, not a
 # proven-safe margin.
 #
 # Self-sweep: after a successful write, deletes any file in its own records
@@ -45,15 +46,15 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
-REASON=$(printf '%s\n' "$INPUT" | jq -r '.reason // empty' 2>/dev/null)
-if [ -z "$SESSION_ID" ]; then
-  echo "[record-session-end] no session_id in payload; no SessionEnd record written" >&2
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  echo "[record-session-end] could not source _lib.sh; no SessionEnd record written" >&2
   exit 0
 fi
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  echo "[record-session-end] could not source _lib.sh; no SessionEnd record written" >&2
+SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty' 2>/dev/null)
+REASON=$(printf '%s\n' "$INPUT" | _lib_jq -r '.reason // empty' 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+  echo "[record-session-end] no session_id in payload; no SessionEnd record written" >&2
   exit 0
 fi
 if ! _lib_valid_session_id_component "$SESSION_ID"; then
@@ -78,7 +79,7 @@ if ! mkdir -p "$RECORDS_DIR" 2>/dev/null; then
   exit 0
 fi
 
-RECORD_JSON=$(jq -n --arg sid "$SESSION_ID" --arg reason "$REASON" \
+RECORD_JSON=$(_lib_jq -n --arg sid "$SESSION_ID" --arg reason "$REASON" \
   '{sessionId: $sid, reason: (if $reason == "" then null else $reason end)}' 2>/dev/null)
 if [ -z "$RECORD_JSON" ]; then
   echo "[record-session-end] could not build record JSON; no SessionEnd record written" >&2

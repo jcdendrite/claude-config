@@ -914,7 +914,11 @@ def _graceful_end_record(
     safe without a stored process-identity field -- every session writes
     its start-side evidence at the same pid it later writes its end
     record to, so a process reusing pid P necessarily rewrites P's entry
-    after the previous occupant's record.
+    after the previous occupant's record. `record.session_id` is deliberately
+    not one of the three conditions: a subagent's SessionEnd payload can carry
+    a session id that differs from its parent session's, so matching on
+    (config_dir, pid) alone -- not session id -- is what lets a
+    subagent-attributed record still explain its parent session's dead entry.
     """
     if entry.config_dir is None or entry.mtime is None:
         return None
@@ -935,6 +939,16 @@ def _graceful_end_coverage(
     evidence for it."""
     matched = [record for e in entries if (record := _graceful_end_record(e, records)) is not None]
     return len(matched), len(entries), matched
+
+
+def _all_entries_explained(
+    entries: list[RegistryEntry] | list[LookupEntry], covered: int, total: int,
+) -> bool:
+    """Full coverage of the dead subset (covered == total) is not enough on
+    its own -- it must also equal every entry from the source, or an
+    indeterminate-liveness or undated sibling outside the dead subset would
+    be silently ignored."""
+    return total == len(entries) and covered == total
 
 
 def _partial_coverage_note(covered: int, total: int) -> str:
@@ -1117,38 +1131,49 @@ def _classify_session(
                 "crash looks like, but a deliberate clean exit looks identical."
             )
             covered, total, matched_records = _graceful_end_coverage(dead_after_boot, session_end_records)
-            coverage_note = _partial_coverage_note(covered, total) if 0 < covered < total else ""
+            # _read_registry applies no crash-window filter (unlike _read_lookup_entries),
+            # so dead_after_boot already reflects every process instance a
+            # window-limited lookup read could know about too -- the registry's own
+            # full-coverage check never needs to consult lookup_entries separately.
+            # This branch enters the coverage check unconditionally and relies entirely on
+            # _all_entries_explained's total == len(entries) term to reject a session with an
+            # indeterminate-liveness or undated sibling.
+            # The lookup branch below instead gates entry to its whole block on
+            # `not indeterminate_lookups` and routes an indeterminate-sibling session to a
+            # differently-worded CLASS_UNKNOWN before _all_entries_explained is ever reached.
+            fully_confirmed = _all_entries_explained(registry_entries, covered, total)
+            if fully_confirmed:
+                coverage_note = ""
+            elif covered == total:
+                coverage_note = (
+                    " Every tracked dead_after_boot instance recorded a graceful SessionEnd, but "
+                    "another registry entry for this session could not be confirmed dead or dated, "
+                    "so this session is not being classified as a confirmed clean exit."
+                )
+            else:
+                coverage_note = _partial_coverage_note(covered, total) if 0 < covered < total else ""
             if has_main_transcript:
                 cwd = transcript.cwd or newest.cwd
                 branch = transcript.git_branch
                 last_activity = transcript.last_activity
-                if covered == total:
-                    # matched_records is non-empty here: this branch only runs inside
-                    # `if dead_after_boot:`, so total >= 1 and covered == total >= 1.
-                    newest_record = max(matched_records, key=lambda r: r.mtime)
-                    detail = _confirmed_clean_exit_detail(
-                        newest_record, has_main_transcript=True, subagent_note=subagent_note,
-                    )
-                    return SessionRow(
-                        session_id, CLASS_CONFIRMED_CLEAN_EXIT, cwd, branch, last_activity,
-                        detail, entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
-                    )
-                return SessionRow(
-                    session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
-                    f"{boot_note} A transcript exists for this session.{coverage_note}",
-                    entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
-                )
-            cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
-            if covered == total:
+            else:
+                cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
+            if fully_confirmed:
                 # matched_records is non-empty here: this branch only runs inside
                 # `if dead_after_boot:`, so total >= 1 and covered == total >= 1.
                 newest_record = max(matched_records, key=lambda r: r.mtime)
                 detail = _confirmed_clean_exit_detail(
-                    newest_record, has_main_transcript=False, subagent_note=subagent_note,
+                    newest_record, has_main_transcript=has_main_transcript, subagent_note=subagent_note,
                 )
                 return SessionRow(
                     session_id, CLASS_CONFIRMED_CLEAN_EXIT, cwd, branch, last_activity,
                     detail, entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+                )
+            if has_main_transcript:
+                return SessionRow(
+                    session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
+                    f"{boot_note} A transcript exists for this session.{coverage_note}",
+                    entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
                 )
             return SessionRow(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
@@ -1188,7 +1213,7 @@ def _classify_session(
             # so it never promotes to Resumable the way a self-pruning source does.
             covered, total, matched_records = _graceful_end_coverage(dead_lookups, session_end_records)
             coverage_note = _partial_coverage_note(covered, total) if 0 < covered < total else ""
-            if covered == total:
+            if _all_entries_explained(lookup_entries, covered, total):
                 # matched_records is non-empty here: this branch only runs inside
                 # `if dead_lookups and not indeterminate_lookups:`, so total >= 1
                 # and covered == total >= 1.
