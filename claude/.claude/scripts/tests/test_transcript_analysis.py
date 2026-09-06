@@ -7857,6 +7857,22 @@ def _extract_cache_rebuild_row(out: str, row_label: str) -> tuple[int, str]:
     raise AssertionError(f"row not found for {row_label!r}")
 
 
+def _extract_cache_rebuild_attribution_row(out: str, row_label: str) -> tuple[int, str, str, str]:
+    """Read one (rebuilds, excess $, 5m-1h $, median cov.) row from the
+    subagent idle-gap cause-attribution table by its leading label -- the
+    5-cell sibling _extract_cache_rebuild_row (label + 1-2 numeric cells)
+    cannot parse, the same "neither existing extractor fits" precedent
+    _extract_cache_rebuild_dispersion sets below."""
+    for line in out.splitlines():
+        if line.startswith(row_label):
+            rest = line[len(row_label):].split()
+            if len(rest) != 4:
+                raise AssertionError(f"expected 4 cells after label {row_label!r}, got {rest!r}")
+            rebuilds, excess, band_excess, median_cov = rest
+            return int(rebuilds.replace(",", "")), excess, band_excess, median_cov
+    raise AssertionError(f"row not found for {row_label!r}")
+
+
 def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
     """Read cache-rebuild's 'Subagent per-dispatch dispersion' block's
     labeled stat lines and its own coverage-disclosure line -- neither
@@ -7884,6 +7900,232 @@ def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
         "uncovered_w5m": int(uncovered.group(1).replace(",", "")),
         "pooled_subagent_w5m": int(uncovered.group(2).replace(",", "")),
     }
+
+
+def _tool_result_record(tool_id: str, *, ts: str, text: str = "ok") -> dict:
+    """A user record carrying one tool_result block, for
+    _attribute_idle_gap_cause's direct unit tests below."""
+    return _user_msg([_tool_result(tool_id, text)], ts=ts)
+
+
+def _meta_marker_record(text: str, *, ts: str, is_meta: bool = True, is_sidechain: bool = True) -> dict:
+    """A harness-injected meta-marker user record (background-task or
+    coordinator-message), for _attribute_idle_gap_cause's direct unit tests
+    below -- conftest builds no meta-record helper of its own, so this
+    mirrors TestCacheRebuildOriginSplit's own rec["isSidechain"] = True
+    idiom of setting the flag post-hoc on a plain _user_msg record."""
+    rec = _user_msg(text, ts=ts)
+    rec["isMeta"] = is_meta
+    rec["isSidechain"] = is_sidechain
+    return rec
+
+
+class TestAttributeIdleGapCause:
+    """Direct unit tests for _attribute_idle_gap_cause -- hand-built
+    prior_turn/window dicts, no fixture transcript and no
+    _cache_rebuild_report run, so a marker-shape bug is pinned without
+    needing a full transcript fixture. Covers Verification's precedence,
+    self-scoping, and clock-skew cases."""
+
+    def test_bash_tool_result_at_gap_end_attributes_to_own_bash_call_with_high_covered_share(self):
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest -k foo")])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z")]
+        gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(350 / 360)
+
+    def test_background_task_marker_attributes_to_waiting_on_background_task(self):
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
+            ts="2026-08-01T10:05:55.000Z",
+        )]
+        gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_BACKGROUND_TASK
+        assert covered_share == pytest.approx(355 / 360)
+
+    def test_coordinator_message_marker_attributes_to_waiting_on_coordinator_message(self):
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello",
+            ts="2026-08-01T10:05:55.000Z",
+        )]
+        gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_COORDINATOR
+        assert covered_share == pytest.approx(355 / 360)
+
+    def test_empty_window_is_unattributed_with_no_covered_share(self):
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, [], gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_bash_then_coordinator_marker_in_window_last_marker_wins_coordinator(self):
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            _meta_marker_record(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:05:00.000Z",
+            ),
+        ]
+        cause, _covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_COORDINATOR
+
+    def test_coordinator_then_bash_marker_in_window_last_marker_wins_bash(self):
+        """Same two markers as the previous test, reversed window order --
+        last-marker-wins must flip with them, proving precedence is
+        window-order-based, not a fixed cause priority."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [
+            _meta_marker_record(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:01:00.000Z",
+            ),
+            _tool_result_record("tool-1", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        cause, _covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+
+    def test_tool_result_id_prior_turn_never_emitted_is_unattributed(self):
+        """Self-scoping: a tool_result whose tool_use_id isn't among the ids
+        prior_turn's own Bash tool_use blocks emitted must not match, even
+        though it's the only marker-shaped record in the window."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [_tool_result_record("tool-999", ts="2026-08-01T10:05:00.000Z")]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_non_bash_tool_use_result_in_window_is_unattributed(self):
+        """A tool_result for an Edit call (not Bash) must not attribute to
+        'waiting on own Bash call' even though its id matches a tool_use
+        prior_turn itself emitted -- only a Bash-named tool_use seeds the
+        matching id set."""
+        prior_turn = _asst("claude-sonnet-5", content=[_edit_use("tool-1")])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:00.000Z")]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_marker_prefix_text_present_but_isMeta_absent_is_unattributed(self):
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_user_msg(
+            f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
+            ts="2026-08-01T10:05:00.000Z",
+        )]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_isMeta_true_isSidechain_false_is_unattributed(self):
+        """A main-thread system notification (isMeta True, isSidechain
+        False) must not attribute -- both flags are required."""
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:05:00.000Z", is_sidechain=False,
+        )]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_isSidechain_true_isMeta_false_is_unattributed(self):
+        """The reverse combination (isSidechain True, isMeta False) must
+        also not attribute -- both flags are required, held individually
+        false in this test and the previous one."""
+        prior_turn = _asst("claude-sonnet-5", content=[])
+        window = [_meta_marker_record(
+            f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: x", ts="2026-08-01T10:05:00.000Z", is_meta=False,
+        )]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_UNATTRIBUTED
+        assert covered_share is None
+
+    def test_two_bash_pairs_poll_loop_last_marker_wins_the_later_tool_result(self):
+        """Two Bash tool_use/tool_result pairs in one window (the
+        Context section's hand-sampled poll-loop shape) -- last-marker-wins
+        must pick the LATER tool_result's timestamp, not the first."""
+        prior_turn = _asst(
+            "claude-sonnet-5", content=[_bash_use("tool-1", "sleep 30"), _bash_use("tool-2", "sleep 30")]
+        )
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:00:30.000Z"),
+            _tool_result_record("tool-2", ts="2026-08-01T10:05:50.000Z"),
+        ]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(350 / 360)
+
+    def test_clock_skew_marker_outside_gap_window_yields_finite_unclamped_covered_share(self):
+        """A marker timestamp before gap_start_ts (clock skew) must still
+        render a finite covered_share, negative and unclamped, rather than
+        crashing or silently clamping to 0."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T09:59:00.000Z")]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share == pytest.approx(-60 / 360)
+
+    def test_marker_with_no_timestamp_field_still_attributes_with_none_covered_share(self):
+        """A structurally-matching marker with no `timestamp` field at all
+        must still win the cause -- only its covered_share degrades to
+        None, never a silent fall-through to unattributed or to an earlier
+        marker."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [{"type": "user", "message": {"content": [_tool_result("tool-1", "ok")]}}]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_OWN_BASH
+        assert covered_share is None
+
+    def test_later_marker_with_bad_timestamp_still_wins_over_earlier_timestamped_marker(self):
+        """Last-marker-wins must not silently revert to an earlier,
+        timestamped marker just because the true last marker's own
+        timestamp is missing -- that would misattribute to a different
+        real cause instead of disclosing the gap via covered_share."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            {
+                "type": "user",
+                "message": {"content": f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello"},
+                "isMeta": True,
+                "isSidechain": True,
+            },
+        ]
+        cause, covered_share = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert cause == _mod._ATTR_COORDINATOR
+        assert covered_share is None
 
 
 class TestCacheRebuildExcessPricing:
@@ -8248,6 +8490,276 @@ class TestCacheRebuildOriginSplit:
         main_row = _table_cols(out, header_contains="Ratio", row_contains="main")
         assert main_row["W5m"] == "250,000"
         assert main_row["X"] == "150,000"
+
+
+class TestCacheRebuildIdleGapAttribution:
+    """.claude/plans/subagent-idle-gap-cause-attribution.md's Verification
+    section's report-level cases for the subagent idle-gap cause-attribution
+    table, modeled on TestCacheRebuildOriginSplit's own fixture-per-case
+    style. Precedence/self-scoping/clock-skew are covered directly against
+    _attribute_idle_gap_cause in TestAttributeIdleGapCause above; these
+    tests exercise the report's own wiring of that function into the scan
+    loop and the printed table."""
+
+    def test_bash_tool_result_at_gap_end_populates_own_bash_row_leaving_others_zero_seeded(
+        self, fake_projects, capsys
+    ):
+        """Also covers the populated/empty-bucket case: the three
+        unmatched causes must render their zero/'n/a' sentinel in the same
+        run without statistics.median raising on an empty list."""
+        session_id = "sess-bash-attr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest -k foo")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            1, "0.46", "0.46", "97.2%",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_BACKGROUND_TASK) == (
+            0, "0.00", "0.00", "n/a",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_COORDINATOR) == (
+            0, "0.00", "0.00", "n/a",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_UNATTRIBUTED) == (
+            0, "0.00", "0.00", "n/a",
+        )
+
+    def test_background_task_marker_populates_background_task_row(self, fake_projects, capsys):
+        session_id = "sess-bg-attr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _user_msg(
+                f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
+                ts="2026-08-01T10:05:55.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[1]["isMeta"] = True
+        subagent_records[1]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_BACKGROUND_TASK) == (
+            1, "0.46", "0.46", "98.6%",
+        )
+
+    def test_coordinator_message_marker_populates_coordinator_row(self, fake_projects, capsys):
+        session_id = "sess-coord-attr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _user_msg(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: here's an update", ts="2026-08-01T10:05:55.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[1]["isMeta"] = True
+        subagent_records[1]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_COORDINATOR) == (
+            1, "0.46", "0.46", "98.6%",
+        )
+
+    def test_main_origin_bash_tool_result_in_window_does_not_leak_into_subagent_attribution(
+        self, fake_projects, capsys
+    ):
+        """Mirrors TestCacheRebuildOriginSplit's own
+        test_inline_sidechain_record_in_main_file_counts_as_subagent_origin_and_own_gap_chain
+        main/inline-sidechain/main shape, adding a second origin's own Bash
+        tool_use/tool_result interleaved into the same group_records list.
+        The main-origin tool_result lands LATER in the subagent's own
+        window than the subagent's own tool_result -- if self-scoping were
+        "any Bash tool_result in the window" rather than true tool_use_id
+        membership, last-marker-wins would pick up main's late-arriving
+        result instead and report a high covered share, not the correct
+        low one."""
+        main_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z",
+            request_id="main-1", content=[_bash_use("main-tool-1", "ls")],
+        )
+        sidechain_first = _priced(
+            "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:01.000Z",
+            request_id="sub-inline-1", content=[_bash_use("sub-tool-1", "pytest")],
+        )
+        sidechain_first["isSidechain"] = True
+        sub_tool_result = _user_msg([_tool_result("sub-tool-1", "ok")], ts="2026-08-01T10:00:10.000Z")
+        main_tool_result = _user_msg([_tool_result("main-tool-1", "ok")], ts="2026-08-01T10:05:55.000Z")
+        sidechain_second = _priced(
+            "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-inline-2",
+        )
+        sidechain_second["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            main_first, sidechain_first, sub_tool_result, main_tool_result, sidechain_second,
+        ])
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+        rebuilds, excess, band_excess, median_cov = _extract_cache_rebuild_attribution_row(
+            out, _mod._ATTR_OWN_BASH
+        )
+        assert (rebuilds, excess, band_excess) == (1, "0.46", "0.46")
+        assert median_cov == "2.5%"
+
+    def test_main_origin_rebuild_enters_no_attribution_row_and_totals_reconcile_with_subagent_row(
+        self, fake_projects, capsys
+    ):
+        """A main-origin idle-gap rebuild in the same corpus as two
+        differently-attributed subagent rebuilds: the main rebuild must
+        enter no attribution row, and the attribution table's own
+        Rebuilds/Excess $ must sum exactly to the subagent origin row --
+        neither more (main leaking in) nor less (a subagent rebuild
+        dropped)."""
+        main_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess-main.jsonl", main_records)
+
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+            _user_msg(
+                f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:11:55.000Z",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:12:00.000Z", request_id="sub-3",
+            ),
+        ]
+        for rec in (subagent_records[0], subagent_records[2], subagent_records[4]):
+            rec["isSidechain"] = True
+        subagent_records[3]["isMeta"] = True
+        subagent_records[3]["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess-sub.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess-sub", "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        main_rebuilds, main_excess = _extract_cache_rebuild_row(out, "main")
+        subagent_rebuilds, subagent_excess = _extract_cache_rebuild_row(out, "subagent")
+        assert (main_rebuilds, main_excess) == (1, "0.23")
+        assert (subagent_rebuilds, subagent_excess) == (2, "0.92")
+
+        rows = [_extract_cache_rebuild_attribution_row(out, attr) for attr in _mod._CACHE_REBUILD_ATTRIBUTIONS]
+        total_attributed_rebuilds = sum(row[0] for row in rows)
+        total_attributed_excess = sum(float(row[1]) for row in rows)
+        assert total_attributed_rebuilds == subagent_rebuilds
+        assert total_attributed_excess == pytest.approx(float(subagent_excess))
+        # main's own 0.23 must not have leaked into any attribution row.
+        assert total_attributed_excess == pytest.approx(0.92)
+
+    def test_idle_over_1h_subagent_rebuild_counts_in_excess_but_not_5m_1h_band_excess(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-over-1h"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:30:00.000Z"),
+            # Exactly 3600s after sub-1 -- idle >1h, not idle 5m-1h.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T11:00:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "idle >1h")[0] == 1
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            1, "0.46", "0.00", "50.0%",
+        )
+
+    def test_no_marker_in_window_populates_unattributed_row_with_nonzero_rebuilds(self, fake_projects, capsys):
+        """A genuine idle-gap candidate whose prior turn emits no Bash
+        tool_use and whose window carries no meta marker at all -- distinct
+        from the all-zero corpus case below, which never reaches a
+        populated attribution branch."""
+        session_id = "sess-unattr"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:05:50.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[1]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (1, "0.46")
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_UNATTRIBUTED) == (
+            1, "0.46", "0.46", "n/a",
+        )
+
+    def test_no_subagent_idle_gap_rebuilds_renders_all_four_attribution_rows_zero_seeded(
+        self, fake_projects, capsys
+    ):
+        main_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess-mainonly.jsonl", main_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_row(out, "subagent") == (0, "0.00")
+        for attribution in _mod._CACHE_REBUILD_ATTRIBUTIONS:
+            assert _extract_cache_rebuild_attribution_row(out, attribution) == (0, "0.00", "0.00", "n/a")
 
 
 class TestCacheRebuildSwitchDeltaThresholdIndependence:
