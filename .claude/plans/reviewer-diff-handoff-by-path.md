@@ -115,7 +115,7 @@ documented shape is `<agent>-<epoch>-<slug>.md`, and touch step 7's clean-tree c
 `${TMPDIR:-/tmp}` stays rejected: it is the lighter mechanism, but a random suffix cannot
 deliver determinism, so every step-4 re-entry through the fix loop would mint a new
 readable file, nothing could clean it deterministically, and
-`enforce-marker-script-shape.sh`'s `*/.claude/*-markers/*` patterns (`:209-219`) would
+`enforce-marker-script-shape.sh`'s `*/.claude/*-markers/*` patterns (`:210-222`) would
 not cover it while `deny-reviewer-tree-mutation.sh` explicitly sanctions `/tmp` writes.
 The `*-markers` suffix also means no hook file enters the diff.
 
@@ -382,7 +382,7 @@ cost paid for nothing.
     the path, and removes only this session's suffix — so it cannot delete another
     session's artifact and cannot fire mid-gate. The CI-watch "Land the fix" path
     re-activates and re-deactivates without running step 4.
-35. `[verified: enforce-marker-script-shape.sh:209-219, :238-294; docs/hooks.md:89]`
+35. `[verified: enforce-marker-script-shape.sh:210-222, :238-261; docs/hooks.md:89]`
     The `*-markers` suffix brings the new
     directory under the hook's existing `*/.claude/*-markers/*` patterns, so a
     no-gate-release agent's hand-`Write` there is denied with no hook change. The hook
