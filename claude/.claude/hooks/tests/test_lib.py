@@ -771,6 +771,58 @@ def test_lib_emit_allow_with_context_degrades_to_no_output_when_jq_absent(tmp_pa
     assert result.stderr == "", repr(result.stderr)
 
 
+def test_lib_hook_claude_pid_equal_to_ppid_is_accepted() -> None:
+    """`_run_lib_call` spawns bash directly (no intervening shell), so that
+    bash process's own $PPID is this pytest process's pid -- matching
+    $CLAUDE_PID exactly, the no-shim disjunct."""
+    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
+    result = _run_lib_call("_lib_hook_claude_pid", env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
+def test_lib_hook_claude_pid_equal_to_ppids_parent_is_accepted() -> None:
+    """The shim disjunct: $CLAUDE_PID equals $PPID's immediate parent, not
+    $PPID itself. An intervening `sh` forks the bash process that sources
+    _lib.sh, so that bash's own $PPID is the shim's (sh's) pid, and
+    $CLAUDE_PID (this test's own pid) is that shim's parent."""
+    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
+    result = subprocess.run(
+        ["sh", "-c", f'bash -c ". {_LIB_SH}; _lib_hook_claude_pid"'],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
+def test_lib_hook_claude_pid_rejects_unrelated_live_pid() -> None:
+    """A numeric, live $CLAUDE_PID outside the one-hop bound (not $PPID, not
+    $PPID's immediate parent) must be rejected, falling back to $PPID -- the
+    sole invariant the one-hop design exists to enforce. A `sleep` child of
+    pytest is live but not an ancestor of the harness process at all."""
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        env = {**os.environ, "CLAUDE_PID": str(sleeper.pid)}
+        result = _run_lib_call("_lib_hook_claude_pid", env)
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == str(os.getpid())
+    finally:
+        sleeper.terminate()
+        sleeper.wait()
+
+
+def test_lib_hook_claude_pid_rejects_non_numeric_value() -> None:
+    """A non-numeric $CLAUDE_PID must fall back to $PPID rather than being
+    compared against it or used as-is."""
+    env = {**os.environ, "CLAUDE_PID": "abc"}
+    result = _run_lib_call("_lib_hook_claude_pid", env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
 def test_lib_worktree_lock_absent_reports_absent_under_eacces(tmp_path: Path) -> None:
     """`[ -e ... ]` can't distinguish "doesn't exist" from "exists but

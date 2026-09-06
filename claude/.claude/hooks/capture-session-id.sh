@@ -71,18 +71,7 @@ CONFIG_DIR=$(_lib_config_dir) || {
   exit 0
 }
 
-# Validate-then-select: an unusable $CLAUDE_PID must fall back to $PPID, not
-# abort the write, so substitution can't happen before the checks below run.
-# Accepted only within one hop of $PPID (itself, or its immediate parent —
-# the shim case) so an unrelated live ancestor can't be named.
-resolved_claude_pid=$PPID
-if [ -n "${CLAUDE_PID:-}" ] && [[ $CLAUDE_PID =~ ^[0-9]+$ ]]; then
-  ppid_parent=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
-  if [ "$CLAUDE_PID" = "$PPID" ] || { [ -n "$ppid_parent" ] && [ "$CLAUDE_PID" = "$ppid_parent" ]; }; then
-    resolved_claude_pid=$CLAUDE_PID
-  fi
-fi
-CLAUDE_PID=$resolved_claude_pid
+CLAUDE_PID=$(_lib_hook_claude_pid)
 if [ -z "$CLAUDE_PID" ]; then
   echo "[capture-session-id] could not resolve claude PID from \$PPID ($PPID) or \$CLAUDE_PID; respond-pr skill will fail at Step 0" >&2
   exit 0
