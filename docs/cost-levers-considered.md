@@ -363,3 +363,39 @@ Full empirical record: [`case-studies/markdown-context-ingestion.md`](case-studi
 | A section-extract script or new markdown-parsing dependency | Rejected | The lighter primitives above succeed on their own; the waste heuristic found no evidence of waste for such a tool to recover (weaker than evidence of no waste, so corroborating only); this repo declares no npm toolchain and no markdown parser today. |
 | `context: fork`, a `skills:` preload, or switching agents from `Read` to `Skill` invocation | Rejected | An invoked skill body and a read file both persist in-conversation identically until compaction, so switching between them saves no in-turn bytes. All 812 sampled multi-read subagent dispatches favored observed, as-needed reads over a turn-1 preload of every skill body; zero favored preload. Omitting `Skill` from a subagent's `tools:` disables invocation entirely, with no per-skill allowlist to selectively restrict it. |
 | Trimming the always-loaded `CLAUDE.md`/skill/doc baseline | Named, not solved — owned elsewhere | Weighted in byte-turns, the always-loaded baseline is the single largest measured item (1.41× every main-thread markdown read combined). It sits inside its 200-line commit-time cap today and reclaiming it is scoped to a separate, already-in-flight trimming effort; this plan only records the finding. |
+
+## From `reviewer-instance-continuation.md` — "Reviewer-instance continuation on same-branch, same-session re-dispatch"
+
+Pre-registered gate, fixed before the measurement ran: build the mechanism
+only if both hold — (1) at least 50% of same-session (agent-type, branch)
+repeat dispatches fall under the vendor's 300-second cache-TTL boundary, and
+(2) the projected net savings exceed a $50 floor over the observed window,
+confirmed by the engineer before the measurement. Reproducible via
+`transcript-analysis.py review-trace --this-repo --since <window>`,
+cross-checked two ways against the event count.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Continue a same-branch, same-session reviewer re-dispatch via `SendMessage`, carrying only the delta since the prior pass, instead of a fresh stateless `Agent` dispatch that re-reads every changed file | Rejected (measured, gate criterion 1 fails decisively) | Of 263 same-session (agent-type, branch) repeats measured 2026-09-06 (562 in-scope reviewer-spawn events across 299 distinct triples, `skill-fidelity-reviewer` excluded), only 14.4% (38/263) fall under the 300-second boundary — the ≥50% floor. Median gap 1,435s (~24 min), mean 2,456s. 65.4% of repeats land in the 10–60-minute band, consistent with a read-findings/apply-fixes/re-stage/re-run turnaround rather than a same-round artifact. The 85.6% majority crosses the cache-TTL boundary before the re-dispatch happens, so its prompt cache has already gone cold. A continued instance's carried prefix (the prior read set plus the prior round's own output) is strictly larger than what a fresh dispatch would re-read, so writing that larger prefix to a cold cache costs more than the fresh re-read it would replace — continuation only ever saves money on the warm-cache minority. Criterion 2 (the $50 floor) was not separately evaluated: the "both must hold" rule means criterion 1's decisive failure alone ends this, and the per-dispatch read-token volume needed to price criterion 2 precisely proved unmeasurable with existing `transcript-analysis.py` subcommands — measuring it would need new tooling, which this gate check was scoped not to build. |
+
+**Harness prerequisites, separately verified viable:** this measurement also
+resolved three open questions about whether the harness could even support
+the mechanism, independent of the cost verdict above. `ListAgents` lists a
+completed synchronous dispatch, not only a running one. Two
+same-`subagent_type` dispatches in one turn are individually addressable.
+And a `SendMessage` continuation preserves a spawned agent's own prior
+tool-result content, not merely a message-level thread — two throwaway
+agents each correctly recalled a nanosecond-precision `date +%s%N` value
+from their own earlier Bash output, one with zero further tool calls that
+turn. None of these blocked the mechanism — the gap distribution alone did —
+so a later re-measurement of the gap distribution would not need to
+re-verify these.
+
+**Verdict:** decline. The mechanism's sign, not only its magnitude, depends
+on the inter-round gap staying mostly under the cache TTL, and in this
+repo's own usage it does not: 85.6% of same-session repeats exceed the
+boundary where continuation costs more than it saves. No code change ships.
+Per the plan's own out-of-scope note, `experimental.cacheTtl: 1h` on the
+reviewer roster is the follow-up lever to open if a warm-share fix is wanted
+later — not a revised version of this one, since it prices every dispatch
+including the two-thirds that gain nothing from it.
