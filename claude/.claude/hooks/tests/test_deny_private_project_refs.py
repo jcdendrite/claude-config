@@ -2688,11 +2688,8 @@ class TestDenyPrivateProjectRefs:
         self, claude_config_repo
     ):
         """Two independent parameter expansions on the same line, `${a#x}`
-        and `${b##y}`, are both excluded. This is a demonstrated
-        pre-fix-regex false positive with no prior coverage: the old
-        regex denied this line even though neither expansion contains a
-        real channel mention, and every other param-expansion test above
-        exercises only one expansion per line."""
+        and `${b##y}`, are both excluded — this pins that per-expansion
+        exclusion composes across multiple expansions on one line."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2722,14 +2719,29 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_structural_slack_default_value_expansion_content_blind_slug_allowed(
+        self, claude_config_repo
+    ):
+        """A real Slack-channel-shaped slug used as a `${var:-<default>}`
+        default-value expansion, e.g. `${SLACK_CHANNEL:-eng-alerts}`, is
+        not caught either: the content-blind exemption covers any
+        `${...}`-shaped span, not only the `#`/`##` prefix-stripping
+        operators every other param-expansion test above exercises. Backs
+        the doc's generality claim alongside
+        test_structural_slack_param_expansion_content_blind_slug_allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Legacy alias: ${SLACK_CHANNEL:-eng-alerts}'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_structural_slack_param_expansion_and_real_mention_denied(self, claude_config_repo):
         """A parameter expansion and a real channel mention on the same
-        line: the expansion is excluded but the mention still denies. This
-        is a current-behavior invariant, not a regression proof — the
-        input already denied under the pre-fix regex too, driven entirely
-        by the trailing `#eng-alerts` shape that
-        test_structural_slack_channel_shape_denied already covers,
-        orthogonal to the parameter-expansion fix itself."""
+        line: the expansion is excluded but the mention still denies,
+        driven by the trailing `#eng-alerts` shape."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -2745,15 +2757,7 @@ class TestDenyPrivateProjectRefs:
     def test_structural_slack_brace_adjacent_mention_denied(self, claude_config_repo):
         """A real mention immediately after a closed brace, `${branch}#eng-alerts`,
         still denies: `}` closes before the channel `#`, so no `{` sits
-        between the `}` start position and the `#`. This is a regression
-        guard against a future change that drops `}` from the
-        start-position class, not evidence that today's fix corrected a
-        bug here — this input already denied under the pre-fix regex too,
-        via a different reachability path: the old regex excluded `{` only
-        as a terminal character, not throughout the run, so `${branch}`
-        was already traversable from the preceding space. Unlike
-        `${var#<pattern>}`, here the `}` comes before the `#`, not after
-        it."""
+        between the `}` start position and the `#`."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -3114,6 +3118,30 @@ class TestDenyPrivateProjectRefs:
                 bash_input(
                     "git commit -m 'See [Docs](other-file.md#permission-prompt-tracking"
                     "{#eng-super-secret-channel}) for the breakdown'"
+                ),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_structural_slack_leading_brace_second_slug_in_link_destination_allowed(
+        self, claude_config_repo
+    ):
+        """A second sibling exception to the "second slug is caught"
+        guarantee, distinct from the brace-wrapped-second-slug case above:
+        a `{` placed in the link destination before the first anchor `#`,
+        with no rescuing whitespace/`)`/`}` before the real second
+        mention, defeats the second-slug alternative too. That
+        alternative's own internal run excludes `{` the same way the
+        outer run does, so the `{` here blocks reachability to the second
+        `#eng-super-secret-channel` slug just as it would in the outer
+        run."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(
+                    "git commit -m 'See [Docs](other-file{.md#"
+                    "permission-prompt-tracking#eng-super-secret-channel) for the breakdown'"
                 ),
                 cwd=claude_config_repo,
             )

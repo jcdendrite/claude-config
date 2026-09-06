@@ -2190,6 +2190,13 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 #   `destination` resolves to a real file. This is a separate gap from the
 #   smuggled-second-slug residual above, which concerns a second `#`
 #   token rather than the first token's unresolved destination.
+# - Residual gap: a `{` anywhere in the link destination before the first
+#   anchor `#`, with no rescuing whitespace/`)`/`}` before a real second
+#   mention, evades the "second slug is caught" guarantee too. The
+#   second-slug alternative's own internal run excludes `{` the same way
+#   the outer run does, so a `{` there blocks reachability just like it
+#   does in the outer run. Same content-blindness root cause as the
+#   sibling gaps above.
 _LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
