@@ -134,10 +134,25 @@ precondition about a consult is observable from your evidence. Report
 every `architect-consult` row as `[DISCLOSED]` with its timestamp, under
 its own Output format section below: it means a consult dispatch was
 *initiated*, never that it completed or that it was the one a
-prescription owed. Zero rows go into the existing Dismissed as undecidable
-grouping, reasoned "absence of a row is not evidence of absence" — never
-`[SILENT-SKIP]`, which would claim an obligation existed and went unmet,
-something you cannot know.
+prescription owed.
+
+### No gate deny on the branch's timeline
+
+Zero `architect-consult` rows go into the existing Dismissed as
+undecidable grouping, reasoned "absence of a row is not evidence of
+absence" — never `[SILENT-SKIP]`, which would claim an obligation
+existed and went unmet, something you cannot know.
+
+### A gate deny with no later consult
+
+A `denial` row whose `msg=` text opens with `Blocked by
+architect-consult gate:` with no later `architect-consult` row on the
+same branch's timeline is the one exception that earns `[SILENT-SKIP]`:
+the preventive gate fired and the branch reached this review without the
+consult it demanded. Cite that deny row's timestamp in the finding, so
+the claim is auditable against the same timeline you were handed. Match
+on the `msg=` text, never on the row's `hook=` field — it is empty for
+every current-shape denial row.
 
 ## The standard
 

@@ -769,7 +769,7 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 
 ## cache-rebuild
 
-**Purpose.** Measure idle-gap prompt-cache TTL-expiry rebuilds: how much of the tail of large cache-write calls (`>=` a token threshold) is a full-prefix rewrite forced by a gap since the transcript's previous call outliving the vendor's 5-minute or 1-hour cache TTL — billed at the 1.25x/2x cache-write rate instead of the 0.1x warm-read rate it replaces — and whether those gaps are concurrent-session switching or genuine idle breaks. Reuses `cost`'s `_price_turn`, `_cache_write_split`, and `_dedup_turns_by_request_id`.
+**Purpose.** Measure idle-gap prompt-cache TTL-expiry rebuilds: how much of the tail of large cache-write calls (`>=` a token threshold) is a full-prefix rewrite forced by a gap since the transcript's previous call outliving the vendor's 5-minute or 1-hour cache TTL — billed at the 1.25x/2x cache-write rate instead of the 0.1x warm-read rate it replaces — and whether those gaps are concurrent-session switching or genuine idle breaks. Also splits rebuilds by origin (main thread vs. subagent) and prices the dollar delta a 5-minute-to-1-hour `cacheTtl` switch would make to subagent traffic specifically — see `.claude/plans/subagent-idle-gap-cache-rebuild-split.md`'s Approach section for why that delta is not simply the subagent share of the priced excess above. Reuses `cost`'s `_price_turn`, `_model_rates`, `_cache_write_split`, and `_dedup_turns_by_request_id`.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
@@ -778,24 +778,24 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 - `--threshold TOKENS` — minimum cache-write tokens (`ephemeral_1h + ephemeral_5m`) for a call to count as a large rebuild. Default: `100,000`.
 - `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
 
-**Sample output.**
+**Sample output.** From a live `--this-repo` run against this repo's own transcript corpus:
 ```
-CACHE REBUILD SOURCES (*; 6 roots)
+CACHE REBUILD SOURCES (this repo (31 project dirs); 4 roots)
 
 ## Cache-rebuild report (last 30d, threshold >= 100,000 cache-write tokens)
 
-Calls scanned: 165,303
-Calls writing >= 100,000 tokens: 2,261 (1.4% of calls)
-Per-call write distribution: min=100,297  median=265,334  p90=531,575  max=910,239
+Calls scanned: 33,549
+Calls writing >= 100,000 tokens: 77 (0.2% of calls)
+Per-call write distribution: min=101,351  median=182,851  p90=380,770  max=667,554
 
 ## Cause breakdown
 
 Cause                               Calls   Share
 session start                           0    0.0%
-idle 5m-1h                            985   43.6%
-idle >1h                              592   26.2%
-model switch                           81    3.6%
-unexplained                           603   26.7%
+idle 5m-1h                             18   23.4%
+idle >1h                               33   42.9%
+model switch                            0    0.0%
+unexplained                            26   33.8%
 excluded (timestamp anomaly)            0    0.0%
 
 ## Idle-gap concurrency split [unverified]
@@ -805,20 +805,56 @@ account, had a call inside the gap window. This is an association, not proof
 the operator was attending that other session. [unverified]
 
                               Rebuilds     Excess $
-Another session active           1,465     1,406.52
-Everything idle (a break)          112       107.03
-Total idle-gap rebuilds          1,577     1,513.55
+Another session active              48        51.17
+Everything idle (a break)            3         2.36
+Total idle-gap rebuilds             51        53.53
 
 ## Idle-gap excess by account
 
 Account           Rebuilds     Excess $
-account-1                9        11.41
-account-2               57        88.15
-account-3                2         2.35
-account-4              432       421.68
-account-5                1         0.44
-account-6            1,076       989.52
+account-1               51        53.53
+account-2                0         0.00
+account-3                0         0.00
+account-4                0         0.00
+
+## Idle-gap rebuilds by origin
+
+Origin      Rebuilds     Excess $
+main              31        40.83
+subagent          20        12.70
+
+## Cache-write tier switch delta (5m -> 1h), threshold-independent
+
+W5m/X below accumulate over every in-scope call regardless of the
+--threshold value above -- this is a different denominator than the
+tail-only cause breakdown, and must not be divided into those figures.
+X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold
+past 3600s, so those rebuilds happen under either tier. Net$ is
+savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,
+if negative) against this origin's own traffic. The main row's Net$ has
+no corresponding lever in this plan's scope -- experimental.cacheTtl is
+set in subagent frontmatter and cannot reach main-conversation traffic;
+read it as reconciliation context only.
+
+Origin                W5m              X    Ratio       Net$
+main                    0              0     0.0%       0.00
+subagent      117,012,337      6,167,704     5.3%    -183.78
+
+## Subagent per-dispatch dispersion (ex-post oracle bound)
+
+Dispatches selected by their own realized ratio, which a policy fixed
+before the dispatch cannot do -- a one-sided test for whether a
+selective lever is excluded, never a validation that one would work.
+
+Subagent dispatches (dispatches with any 5m-tier write): 787
+Dispatches individually clearing their own break-even ratio: 15
+Their share of per-dispatch subagent W5m (not the pooled row above): 6.7%
+Net $ restricted to clearing dispatches: 6.18
+
+  (0 of 117,012,337 pooled subagent W5m tokens landed in no dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound above has exact W5m coverage, not merely assumed)
 ```
+
+The `main` row's `W5m`/`X` are genuinely zero in this corpus: every main-thread cache write observed here landed on the 1-hour tier already, never the 5-minute tier — consistent with the vendor's own statement that subagents, not the main conversation, get the 5-minute tier by default on a subscription (`.claude/plans/subagent-idle-gap-cache-rebuild-split.md`, or the vendor's prompt-caching doc directly).
 
 Excess $ figures throughout this report are list-price estimates against
 `claude-sonnet-5` rates — what the excess would cost at the vendor's posted
@@ -829,9 +865,17 @@ bill.
 
 **Idle-gap excess by account** prints only under a multi-root scope (`--config-dir` or a populated `~/.claude/transcript-config-dirs`), one zero-seeded row per account ordinal so a valid-but-empty root still renders instead of vanishing from the breakdown.
 
+**Idle-gap rebuilds by origin** classifies each idle-gap rebuild as `main` or `subagent`, per record via the transcript's own `isSidechain` flag rather than by which source file it came from — an inline sidechain record living inside the main transcript file still counts as `subagent`. Unlike the by-account table above, this prints unconditionally (a corpus with no sidechain records at all still renders a zero-valued `subagent` row).
+
+**Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row's `Net$` has no corresponding lever in this plan's scope** — `experimental.cacheTtl` is set in subagent frontmatter and cannot reach main-conversation traffic at all, so treat the `main` row as reconciliation context (confirming the origin split adds up against the corpus-wide total), not as an actionable figure.
+
+**Subagent per-dispatch dispersion** is an ex-post oracle bound, not a forecast: it selects individual subagent dispatches by their own *realized* `X`/`W5m` ratio, something no policy fixed before a dispatch runs could do (a policy can only pick agent *types* in advance, not outcomes). A pooled ratio below break-even can still hide dispatches that individually clear it; this bound answers whether a *selective* lever (raising `cacheTtl` only for chronically-idle-gap-prone agent types) is even worth investigating further — if this ex-post-best-case subpopulation still misses a decision floor, no selective policy built on it can either. A dispatch with `W5m = 0` (no 5-minute-tier writes at all) has an undefined ratio and is excluded from the clearing count and the W5m-share denominator. "Their share of per-dispatch subagent W5m" is denominated against the sum of *per-group* `W5m` figures, not the pooled `subagent` row in the table above — the two can diverge (an unpriced call, or an inline sidechain record inside the main transcript file, contributes to the pooled row but to no dispatch group), which is exactly what the trailing coverage-disclosure line measures: the pooled-subagent-`W5m` tokens that landed in no dispatch group at all. A value of 0 there means the oracle bound has exact `W5m` coverage; a non-zero value means the bound is missing some subagent-origin volume, biased toward under-counting rather than over-counting the selective-lever case.
+
 **Rule of thumb.** At list `claude-sonnet-5` rates ($2.00/MTok base input), the per-token excess is the gap between the cache-write rate and the 0.1x warm-read rate it replaces: 1.15x base for a pure 5-minute-tier rebuild (roughly $1 per 435k tokens abandoned and rebuilt) and 1.9x base for a pure 1-hour-tier rebuild (roughly $1 per 263k tokens — costlier per token, since the 1-hour cache-write multiplier is wider). A `cache-rebuild` dollar total mixes both tiers, so dividing by a single tier's per-token figure over- or under-states the tokens involved; as a corpus-wide blended average across both tiers, **$1 per ~250k tokens** is a reasonable estimate to divide by when a per-tier breakdown isn't available.
 
-Wall-clock scales with corpus size: ~3 minutes was observed against a ~165k-call, 6-root corpus. Each session's file is read twice — once by the shared scope iterator, once more to recover the per-group (main thread vs. subagent) boundaries classification needs to avoid comparing timestamps across unrelated conversations — the same tradeoff `read-scope` already accepts for the same reason. `--since` only gates whether a threshold-crossing call is counted into the report, never whether it can see its own prior turn, and the concurrency check binary-searches one corpus-wide, pre-sorted call-timeline index rather than re-scanning per gap.
+Wall-clock scales with corpus size: this doc's own sample run above (`--this-repo`, 4 roots, ~33.5k calls scanned) took ~33s. A full machine-wide scan is correspondingly slower — ~3 minutes was observed in an earlier run against a ~165k-call, 6-root corpus.
+
+Each session's file is read twice — once by the shared scope iterator, once more to recover the per-group (main thread vs. subagent) boundaries classification needs to avoid comparing timestamps across unrelated conversations — the same tradeoff `read-scope` already accepts for the same reason. `--since` only gates whether a threshold-crossing call is counted into the report, never whether it can see its own prior turn. See `_cache_rebuild_report`'s own docstring for how the concurrency check avoids re-scanning per gap.
 
 **When to reach for it.** Answer "how much does idle-gap cache rebuild cost, and is it caused by switching between concurrent sessions or by real breaks" — see `docs/cost-levers-considered.md`'s entry on the killed cache-invalidation hypothesis this subcommand was built to re-test.
 

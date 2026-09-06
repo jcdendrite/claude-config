@@ -342,14 +342,17 @@ Not a valid reason to skip the dispatch:
 - Reuses an existing mechanism — valid only when nothing new is added; a new arm or instance of an already-generic, already-tested mechanism still fires the gate.
 - The reviewer's Suggested-fix field already names the fix — naming a fix is not a design review of it.
 
-Route on whether `.claude/plans/<slug>.md` exists on the branch:
-
-- **Plan file exists.** Dispatch `plan-it` Step 5's revision re-dispatch with that plan's path, the finding, and the fix you were about to make.
-- **No plan file.** Dispatch `plan-architect` directly with `MODE=consult` as the prompt's first line, carrying the finding, the fix, and the paths it would touch. An endorsed new mechanism still enters through `/plan-it` on its own terms, not as a review fix.
+Always dispatch `plan-architect` first, with `MODE=consult` as the prompt's first line, carrying the finding, the fix, the paths it would touch, and — when `.claude/plans/<slug>.md` exists on the branch — that file's path for `plan-architect` to read.
 
 Relay the return verbatim. A disagreement between the orchestrator and the returned recommendation is a blocking stop-and-ask to the human, per the enforcement-invariant rule below.
 
-The gate diverts the finding that trips it, not the round: state `plan-architect — <plan path>` or `plan-architect — consult` on the `Fix route:` line for that finding, and leave the remaining ADDRESS rows on whichever route they would otherwise have had. State the gate's verdict even when it doesn't fire, per the *Spawn decisions:* no-match precedent above.
+The return decides what, if anything, follows:
+
+- **Endorsed, plan file exists.** Follow with `plan-it` Step 5's revision re-dispatch against that plan's path, to insert the returned sections.
+- **Endorsed, no plan file.** No second dispatch — the endorsed mechanism enters through `/plan-it` on its own terms, not as a review fix.
+- **Rejected.** No second dispatch and no plan edit.
+
+The gate diverts the finding that trips it, not the round: state `plan-architect — consult` on the `Fix route:` line for that finding, and leave the remaining ADDRESS rows on whichever route they would otherwise have had. That line is written at disposition time, before the return is known, so it can only ever record the consult, never which branch of the follow-up fires. State the gate's verdict even when it doesn't fire, per the *Spawn decisions:* no-match precedent above.
 <!-- DISPOSITION_RULE:code-review-new-primitive-route end -->
 
 **DEFER criteria (closed list).** A finding may be tagged DEFER only when it matches one of:
