@@ -588,37 +588,59 @@ _lib_cumulative_diff_hash() {
   _lib_hash_diff_text "$diff_output"
 }
 
-# _lib_resolve_default_branch REPO_ROOT
-# Resolve REPO_ROOT's default branch name: first via the local symbolic ref
-# refs/remotes/origin/HEAD, then by probing conventional candidate names
-# (main, master, develop) against existing origin/<candidate> refs. Designed
-# to be shared by every caller that needs "the branch a commit is normally
-# compared against" rather than a hardcoded "main" literal.
+# _lib_default_branch_from_origin_head REPO_ROOT
+# Resolve REPO_ROOT's default branch from the local symbolic ref
+# refs/remotes/origin/HEAD alone, verifying the target actually resolves to
+# a commit before returning it.
+# Local refs only, never the network -- callers use the result as a local ref immediately.
+# `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
+# latter never returns empty, which would mask an unset origin/HEAD.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the resolved default branch name.
+#   - exit 1, empty stdout: origin/HEAD is unset, dangling, or the call
+#     timed out. Callers decide their own fallback.
+_lib_default_branch_from_origin_head() {
+  local repo_root="$1"
+  local ref default_branch
+  ref=$(_lib_capped git -C "$repo_root" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null)
+  [ -n "$ref" ] || return 1
+  _lib_capped git -C "$repo_root" rev-parse --verify --quiet "$ref" >/dev/null 2>&1 || return 1
+  default_branch="${ref#refs/remotes/origin/}"
+  [ -n "$default_branch" ] || return 1
+  printf '%s' "$default_branch"
+}
+
+# _lib_default_branch_or_guess REPO_ROOT
+# Resolve REPO_ROOT's default branch: first via
+# _lib_default_branch_from_origin_head, then, on its failure, by falling
+# through to probing conventional candidate names (main, master, develop)
+# against existing origin/<candidate> refs. Designed to be shared by every
+# caller whose wrong-answer consequence is a diff, a message, or a withheld
+# gate rather than the base it fetches, rebases onto, or deletes against
+# (docs/design-decisions.md §54).
+# Local refs only, never the network -- callers use the result as a local ref immediately.
 # Candidate order is a prior, not a guarantee: with origin/HEAD unset and
 # several candidate refs present, the first match wins even when it is stale.
-# `--quiet symbolic-ref`, not `rev-parse --abbrev-ref origin/HEAD`: the
-# latter never returns empty, which would skip the candidate-loop fallback.
-# Two-outcome contract:
-#   - Non-empty stdout: the resolved default branch name.
-#   - Empty stdout: neither the symbolic ref nor any candidate resolved.
-#     Callers decide their own fallback -- this helper does not pick a fail
-#     posture (same call-site contract as _lib_command_invokes_git_subcmd).
-# Asymmetry: the symbolic-ref path doesn't verify origin/<name> exists, so a
-# dangling origin/HEAD can return a name that still fails to resolve.
-# Callers must verify it themselves (see guard-settings-session-keys.sh).
-_lib_resolve_default_branch() {
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the resolved default branch name.
+#   - exit 1, empty stdout: neither the symbolic ref nor any candidate
+#     resolved. Callers decide their own fallback -- this helper does not
+#     pick a fail posture (same call-site contract as
+#     _lib_command_invokes_git_subcmd).
+_lib_default_branch_or_guess() {
   local repo_root="$1"
   local default_branch candidate
-  default_branch=$(_lib_capped git -C "$repo_root" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
-  if [ -z "$default_branch" ]; then
-    for candidate in main master develop; do
-      if _lib_capped git -C "$repo_root" rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
-        default_branch="$candidate"
-        break
-      fi
-    done
+  if default_branch=$(_lib_default_branch_from_origin_head "$repo_root"); then
+    printf '%s' "$default_branch"
+    return 0
   fi
-  printf '%s' "$default_branch"
+  for candidate in main master develop; do
+    if _lib_capped git -C "$repo_root" rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # _lib_is_repo_plan_file REPO_ROOT ABS_PATH
