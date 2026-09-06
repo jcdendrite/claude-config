@@ -33,9 +33,12 @@
 # match is written loose on the principle that a false deny costs one
 # /respond-pr redirect while a false allow posts an unattributed comment.
 #
-# Threat model: cooperative, not adversarial. This gate targets the command
-# shapes the model writes unprompted, which is where the missing-attribution
-# failure actually happens. It does not try to defeat deliberate evasion: a
+# Threat model: cooperative, not adversarial. This is deliberately narrower
+# than require-ready-for-review.sh's adversarial posture, since attributing
+# a PR comment is a lower-stakes mistake-catcher than gating code past a
+# required review step. This gate targets the command shapes the model
+# writes unprompted, which is where the missing-attribution failure
+# actually happens. It does not try to defeat deliberate evasion: a
 # quoted subcommand (gh pr 'comment'), variable indirection
 # (SUB=comment; gh pr $SUB), a `gh alias` shorthand, and piping into xargs
 # all reach through, and regex over raw command text cannot close that class

@@ -26,11 +26,9 @@ GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 # first bare ".": a nested guarded key's own dotted path (e.g.
 # "env.CLAUDE_CODE_EFFORT_LEVEL") contains a "." that a naive
 # stop-at-first-period pattern would truncate on.
-# The default "main" branch_label assumes settings_repo's default-branch
-# resolution still resolves to exactly "main". The hook interpolates
-# ${DEFAULT_BRANCH:-the default branch} at this position rather than a
-# hardcoded string, so a test against a different resolved branch (or an
-# unresolved one) must pass its own branch_label.
+# `branch_label` defaults to "main" to match settings_repo's fixture branch —
+# pass the actual resolved value (or "the default branch") when testing
+# against a different or unresolved default branch.
 def names_changed_keys(reason: str | None, branch_label: str = "main") -> set[str]:
     """Return the guarded key names the deny reason reports as changed."""
     assert reason is not None, "hook allowed the commit; expected a deny reason"
@@ -83,7 +81,7 @@ def settings_repo(tmp_path):
 def _init_settings_repo_on_branch(repo, branch: str, settings_content: str):
     """Same repo shape as `settings_repo`, parameterized on the checked-out
     branch name and initial settings.json content — shared by the fixtures
-    below that exercise `_lib_resolve_default_branch`'s candidate-probe and
+    below that exercise `_lib_default_branch_or_guess`'s candidate-probe and
     unresolvable paths through the real hook, not just in isolation
     (test_lib.py)."""
     repo.mkdir()
@@ -115,7 +113,7 @@ def settings_repo_candidate_probe_only(tmp_path):
     """Git repo whose default branch resolves only via the candidate-probe
     fallback: origin/develop exists, but no origin/HEAD symbolic ref does.
     For a test proving that fallback path reaches the real hook, not just
-    the isolated _lib_resolve_default_branch helper (test_lib.py)."""
+    the isolated _lib_default_branch_or_guess helper (test_lib.py)."""
     repo = tmp_path / "settings-repo-develop"
     settings_file = _init_settings_repo_on_branch(
         repo, "develop", '{"model": "sonnet", "effortLevel": "normal"}\n'
@@ -132,7 +130,7 @@ def settings_repo_unresolvable_default_branch(tmp_path):
     """Git repo with no origin remote configured at all: no origin/HEAD
     symbolic ref and no origin/{main,master,develop} ref. For a test
     proving the hook's fail-safe MAIN_CONTENT="" fallback holds through the
-    actual script, not just _lib_resolve_default_branch in isolation."""
+    actual script, not just _lib_default_branch_or_guess in isolation."""
     repo = tmp_path / "settings-repo-no-remote"
     settings_file = _init_settings_repo_on_branch(
         repo, "main", '{"model": "sonnet", "effortLevel": "normal"}\n'
@@ -167,21 +165,62 @@ def settings_repo_file_absent_from_default_branch(tmp_path):
 
 
 @pytest.fixture
-def settings_repo_dangling_default_branch_symref(tmp_path):
-    """origin/HEAD symbolically points at refs/remotes/origin/main, but
-    refs/remotes/origin/main was never created -- the dangling-target case
-    _lib_resolve_default_branch's symbolic-ref path does not verify (see
-    test_lib.py's test_resolve_default_branch_symbolic_ref_does_not_verify_target).
-    For a test proving the hook still denies through the git-show existence
-    check even though DEFAULT_BRANCH itself resolves non-empty."""
-    repo = tmp_path / "settings-repo-dangling-symref"
+def settings_repo_dangling_default_branch_symref_live_main(tmp_path):
+    """origin/HEAD symbolically points at refs/remotes/origin/nonexistent,
+    which was never created (dangling). Unlike
+    settings_repo_unresolvable_default_branch, origin/main exists as a
+    real, resolvable ref with committed settings.json content. It is
+    reachable only via the candidate-probe fallback, since the
+    symbolic-ref path's target-verification step fails on the dangling
+    nonexistent ref. For a test proving the hook still denies via its own
+    git-show existence check against the guessed name, even though the
+    guess happens to name a real, resolvable branch
+    (docs/design-decisions.md #54)."""
+    repo = tmp_path / "settings-repo-dangling-symref-live-main"
     settings_file = _init_settings_repo_on_branch(
         repo, "main", '{"model": "sonnet", "effortLevel": "normal"}\n'
     )
     subprocess.run(
-        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/nonexistent"],
         cwd=repo, check=True,
     )
+    return repo, settings_file
+
+
+@pytest.fixture
+def settings_repo_dangling_symref_candidate_probe_file_absent(tmp_path):
+    """origin/HEAD symbolically points at refs/remotes/origin/nonexistent,
+    which was never created (dangling), so the narrow layer fails and
+    _lib_default_branch_or_guess falls through to the candidate probe.
+    That probe lands on origin/main, a real, resolvable ref -- but one
+    that never had claude/.claude/settings.json committed at all.
+    Distinct from settings_repo_file_absent_from_default_branch, which
+    reaches the same "file absent from the resolved branch" state without
+    an origin/HEAD ref of any kind, so it never exercises the
+    dangling-symref path specifically."""
+    repo = tmp_path / "settings-repo-dangling-symref-candidate-file-absent"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "README.md").write_text("no settings.json yet\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "init without settings.json"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/nonexistent"],
+        cwd=repo, check=True,
+    )
+    settings_dir = repo / "claude" / ".claude"
+    settings_dir.mkdir(parents=True)
+    settings_file = settings_dir / "settings.json"
     return repo, settings_file
 
 
@@ -202,7 +241,7 @@ class TestGuardSettingsSessionKeys:
         """Regression test: gitrevisions(7) resolves a bare `main` against
         refs/heads/main before refs/remotes/origin/main, so an unqualified
         `git show "$DEFAULT_BRANCH:..."` would read local main's content
-        rather than the origin/main content _lib_resolve_default_branch
+        rather than the origin/main content _lib_default_branch_or_guess
         actually verified. The comparison must read origin/main.
 
         Advances local main past origin/main, then stages a change that
@@ -684,7 +723,7 @@ class TestGuardSettingsSessionKeys:
         self, settings_repo_candidate_probe_only
     ):
         """No origin/HEAD symbolic ref, only origin/develop — the hook must
-        resolve the default branch via _lib_resolve_default_branch's
+        resolve the default branch via _lib_default_branch_or_guess's
         candidate-probe fallback and name it correctly in the deny
         message, not fall back to "main"."""
         repo, settings_file = settings_repo_candidate_probe_only
@@ -701,11 +740,11 @@ class TestGuardSettingsSessionKeys:
     def test_unresolvable_default_branch_reaches_hook_and_denies_with_fallback_text(
         self, settings_repo_unresolvable_default_branch
     ):
-        """No origin remote at all, so _lib_resolve_default_branch returns
+        """No origin remote at all, so _lib_default_branch_or_guess returns
         empty and MAIN_CONTENT falls back to "", running the guarded-key
         comparison against an empty baseline.
         Proves the fail-safe fallback holds through the actual script, not
-        just _lib_resolve_default_branch in isolation (test_lib.py).
+        just _lib_default_branch_or_guess in isolation (test_lib.py).
         Asserts the deny message carries the literal "the default branch"
         fallback text from ${DEFAULT_BRANCH:-the default branch}."""
         repo, settings_file = settings_repo_unresolvable_default_branch
@@ -759,22 +798,19 @@ class TestGuardSettingsSessionKeys:
             == "allow"
         )
 
-    def test_dangling_default_branch_symref_reaches_hook_and_denies(
-        self, settings_repo_dangling_default_branch_symref
+    def test_dangling_symref_falls_through_to_live_main_guess_and_denies(
+        self, settings_repo_dangling_default_branch_symref_live_main
     ):
-        """_lib_resolve_default_branch's symbolic-ref path returns "main"
-        even though refs/remotes/origin/main was never created (see
-        test_lib.py's
-        test_resolve_default_branch_symbolic_ref_does_not_verify_target).
-        The subsequent `git show origin/main:...` existence check against
-        that dangling target fails, so MAIN_CONTENT falls back to the
-        empty-baseline comparison.
-        Both guarded keys register as changed even though only one
-        actually differs.
-        Asserts the deny message names the resolved branch ("main"), not
-        the "the default branch" fallback text, since DEFAULT_BRANCH
-        itself is non-empty here."""
-        repo, settings_file = settings_repo_dangling_default_branch_symref
+        """origin/HEAD's symbolic ref dangles, so
+        _lib_default_branch_or_guess's narrow layer fails and it falls
+        through to the candidate probe, which lands on the real, resolvable
+        origin/main -- a wrong-but-verified guess in a repo whose actual
+        default branch is unknown. The hook's own line-87 git-show
+        existence check has nothing to reject here (origin/main exists and
+        has the file), so this pins that the hook still denies on the
+        guessed branch's actual content, not on a resolution failure
+        (docs/design-decisions.md #54)."""
+        repo, settings_file = settings_repo_dangling_default_branch_symref_live_main
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         reason = run_hook_reason(
             GUARD_SETTINGS_SESSION_KEYS_HOOK,
@@ -783,7 +819,53 @@ class TestGuardSettingsSessionKeys:
         )
         assert reason is not None
         assert "differs from main on:" in reason
+        assert names_changed_keys(reason) == {"model"}
+
+    def test_dangling_symref_falls_through_to_candidate_missing_settings_denies(
+        self, settings_repo_dangling_symref_candidate_probe_file_absent
+    ):
+        """Sibling of test_dangling_symref_falls_through_to_live_main_guess_and_denies
+        for the case where the guessed branch lacks settings.json entirely,
+        matching test_guarded_key_denies_when_file_absent_from_default_branch_entirely's
+        assertion shape but reached via the dangling-symref candidate-probe
+        path rather than an absent origin/HEAD ref. Both guarded keys read
+        as changed against the empty baseline, since origin/main -- the
+        guessed branch -- has no settings.json to diff against at all."""
+        repo, settings_file = settings_repo_dangling_symref_candidate_probe_file_absent
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'add settings.json'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "differs from main on:" in reason
         assert names_changed_keys(reason) == {"model", "effortLevel"}
+
+    def test_dangling_symref_wrong_guess_matching_staged_value_allows(
+        self, settings_repo_dangling_default_branch_symref_live_main
+    ):
+        """Pins the accepted false-negative narrowing documented in
+        docs/design-decisions.md #54: origin/HEAD dangles and the
+        candidate probe lands on origin/main, a real but verified-only-in-
+        the-sense-of-existing branch -- the repo's true default branch is
+        still unknown. The staged guarded-key values happen to match what
+        origin/main already has, so the hook allows rather than denying,
+        even though it cannot tell this guess is actually correct."""
+        repo, settings_file = settings_repo_dangling_default_branch_symref_live_main
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "unrelatedTestKey": "value"}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add unrelated key'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes

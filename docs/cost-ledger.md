@@ -27,6 +27,11 @@ denominator) were left out.
 | `reviewer_gap_pp` | `reviewer-yield` | Percentage-point gap between the findings-found and zero-finding cited-path edit rates |
 | `note` | operator-supplied `--note` | What changed in the workflow that week -- must be printable ASCII (no em dashes, curly quotes, or accented characters) and must not contain markdown link/image syntax |
 
+`denials`'s scan scope widened on 2026-09-06 to include subagent (sidechain)
+transcript records alongside the main thread, matching `review-trace`'s own
+widened default scope. A row recorded before that date and one recorded
+after it are not comparable on this column alone.
+
 `context_pct` does not separate a warm cache read from an idle-gap TTL-expiry
 rebuild write — both land in the same context-class dollar share; see
 `cache-rebuild` for the write-specific breakdown.

@@ -163,6 +163,7 @@ Close GH-783 Phase 2 by adding **two composed command-matcher helpers** to `_lib
 - `claude/.claude/hooks/tests/test_hook_alignment.py` — the two repo-wide conformance checks, with an allowlist derived from what remains after Phases 1–4 rather than guessed. Add them below the Layer-1 static-check banner at `:346`.
 - The `\s`-carrying hooks that survive Phases 1–2: `require-ready-for-review.sh`, `require-stow-reminder.sh`, `deny-escaped-backticks-in-pr-body.sh`, plus any residue. `block-gh-pr-merge.sh:66` already documents the POSIX `[[:space:]]` form as the target shape — use it as the reference.
 - **Precondition:** reproduce one failure on BSD grep before treating GH-485 as confirmed. The issue itself calls it an unconfirmed risk. If the repro comes up empty, convert anyway for consistency but say so in the PR body rather than claiming a fixed fail-open.
+- **Supersession note:** the specifics above (file counts, the `:346` line citation, `block-gh-pr-merge.sh:66` as the POSIX reference) predate Phase 4 and are stale. `.claude/plans/hook-family-standardization-phase5.md` is the live spec for this phase, with corrected figures in its own assumption ledger.
 
 ## Verification
 

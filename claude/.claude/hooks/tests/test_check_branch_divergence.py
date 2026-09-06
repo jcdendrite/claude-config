@@ -157,6 +157,19 @@ def repo_behind_conflict(feature_clone, bare_remote, tmp_path):
     return feature_clone
 
 
+def _advance_remote_default_branch(bare: Path, tmp_path: Path, message: str) -> None:
+    """Push a new commit to bare's default branch from a second clone, simulating
+    another contributor's push landing on origin after local last fetched."""
+    push = tmp_path / "advance-clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(push)], check=True, capture_output=True)
+    _git_q(push, "config", "user.email", "t@t.com")
+    _git_q(push, "config", "user.name", "t")
+    (push / "f").write_text(f"{message}\n")
+    _git_q(push, "add", "f")
+    _git_q(push, "commit", "-qm", message)
+    _git_q(push, "push", "-q", "origin", "main")
+
+
 def _make_fake_git(bin_dir: Path, fetch_exit: int) -> Path:
     """Write a shim at $bin_dir/git that exits `fetch_exit` for any
     `git fetch ...` and otherwise proxies through to the real git
@@ -174,7 +187,7 @@ def _make_fake_git(bin_dir: Path, fetch_exit: int) -> Path:
     return shim
 
 
-_TIMEOUT_FREE_PATH_BINS = ("git", "jq", "awk", "sort", "paste", "bash", "tr", "cat")
+_TIMEOUT_FREE_PATH_BINS = ("git", "jq", "awk", "sort", "paste", "bash", "tr", "cat", "dirname")
 
 
 def _make_timeout_free_path(tmp_path: Path) -> Path:
@@ -322,6 +335,25 @@ class TestCheckBranchDivergence:
         _git_q(repo, "remote", "set-head", "--delete", "origin")
         _git_q(repo, "checkout", "-q", "-b", "feature")
         result = _run_hook({}, cwd=repo)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    # (h2) origin/HEAD dangles locally but its target is still live on the
+    # remote → exit 0 silent, no self-heal. Distinct from (h): there the
+    # symref itself is absent; here the symref resolves but its target ref
+    # is gone, and the shared helper verifies the local ref before this
+    # hook's own bounded fetch ever runs, so recovery never happens.
+    #
+    # The remote is advanced past the local clone first: without a real
+    # behind-count to report, this test would pass identically whether or
+    # not the pre-refactor hook's self-heal-via-fetch ran, since a fetch
+    # against an undiverged remote produces no advisory either way.
+    def test_dangling_origin_head_with_remotely_live_target_silent(
+        self, feature_clone, bare_remote, tmp_path
+    ):
+        _advance_remote_default_branch(bare_remote, tmp_path, "advance remote")
+        _git_q(feature_clone, "update-ref", "-d", "refs/remotes/origin/main")
+        result = _run_hook({}, cwd=feature_clone)
         assert result.returncode == 0
         assert result.stdout == ""
 

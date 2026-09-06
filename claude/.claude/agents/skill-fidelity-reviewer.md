@@ -21,14 +21,18 @@ Your dispatch prompt gives you:
 - **The plan path** — if one exists, read it; plan-time claims are in scope too.
 - **The `review-trace` timeline** — present whenever your dispatch prompt
   includes it, the output of `transcript-analysis.py review-trace
-  --this-repo --branches <branch>` for this branch; see Out of scope for
-  when it additionally brings a completed `code-review` pass into scope, and
-  "The architect-consult check" below, which fires on its presence alone. It
-  carries `reviewer-spawn` rows (gated by `_is_reviewer_subagent_type`, not
-  every `Agent`/`Task` dispatch) and `architect-consult` rows, both
-  main-thread only, never subagent records — tool-call metadata, not the
-  deviating session's narration, so reading it doesn't weaken the blindness
-  property above.
+  --this-repo --branches <branch>` for this branch. Consult Out of scope
+  when it additionally brings a completed `code-review` pass into scope.
+  Consult "The architect-consult check" below, which fires on its presence
+  alone. It carries `reviewer-spawn` rows (gated by
+  `_is_reviewer_subagent_type`, not every `Agent`/`Task` dispatch) and
+  `architect-consult` rows. Both row types
+  are sourced from the main thread and every dispatched subagent's own
+  transcript, each row marked with a `thread` field (`main` or `sidechain`).
+  That data is tool-call metadata, not the deviating session's narration, so
+  reading it doesn't weaken the blindness property above. See
+  `docs/design-decisions.md` §58 for why widening thread scope doesn't
+  reintroduce assistant prose.
 - **`findings_path`** — see Output format.
 
 Do not read session transcripts (`<config-dir>/projects/**`, where `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) even though nothing technically blocks it — the invocation list already tells you what ran, and reading transcripts would reintroduce the deviating session's rationale.
@@ -130,10 +134,25 @@ precondition about a consult is observable from your evidence. Report
 every `architect-consult` row as `[DISCLOSED]` with its timestamp, under
 its own Output format section below: it means a consult dispatch was
 *initiated*, never that it completed or that it was the one a
-prescription owed. Zero rows go into the existing Dismissed as undecidable
-grouping, reasoned "absence of a row is not evidence of absence" — never
-`[SILENT-SKIP]`, which would claim an obligation existed and went unmet,
-something you cannot know.
+prescription owed.
+
+### No gate deny on the branch's timeline
+
+Zero `architect-consult` rows go into the existing Dismissed as
+undecidable grouping, reasoned "absence of a row is not evidence of
+absence" — never `[SILENT-SKIP]`, which would claim an obligation
+existed and went unmet, something you cannot know.
+
+### A gate deny with no later consult
+
+A `denial` row whose `msg=` text opens with `Blocked by
+architect-consult gate:` with no later `architect-consult` row on the
+same branch's timeline is the one exception that earns `[SILENT-SKIP]`:
+the preventive gate fired and the branch reached this review without the
+consult it demanded. Cite that deny row's timestamp in the finding, so
+the claim is auditable against the same timeline you were handed. Match
+on the `msg=` text, never on the row's `hook=` field — it is empty for
+every current-shape denial row.
 
 ## The standard
 

@@ -1508,12 +1508,31 @@ def _is_architect_consult_dispatch(tool_input: dict) -> bool:
     return first_line != _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE
 
 
+def _group_start_indices(groups: list[list[dict]]) -> frozenset[int]:
+    """0-based positions in the flattened record list where a new source
+    group (the main transcript, or one subagent file) begins.
+
+    Matches read_session_file's own flatten order — the main transcript's
+    records first, then each subagent file's in filename-sorted order — so a
+    caller that already has the flat, session_iter-yielded records can align
+    this function's output against them by plain list index. See
+    _review_trace_session_events's group_boundaries parameter for why the
+    boundary matters."""
+    starts = []
+    cursor = 0
+    for group in groups:
+        starts.append(cursor)
+        cursor += len(group)
+    return frozenset(starts)
+
+
 def _review_trace_session_events(
     records: list[dict],
     since_ts: float | None,
     until_epoch: float | None,
     branch_filter: set[str] | None,
     skill_filter: str | None = None,
+    group_boundaries: frozenset[int] | None = None,
 ) -> tuple[list[dict], dict[str, str], int]:
     """Detect cmd_review_trace's five per-session event kinds (skill, denial,
     friction, reviewer-spawn, architect-consult) from one session's records.
@@ -1524,6 +1543,28 @@ def _review_trace_session_events(
     errored tool results predating toolDenialKind's introduction, is always
     computed (cheap) even though only --deny-summary reports it — see
     _print_deny_summary's own explanation of what it means.
+
+    records may interleave main-thread and subagent (isSidechain) records
+    when the caller resolved scope with include_subagents=True. Detection
+    runs over those records merged into one chronological stream, sorted on
+    a three-part key: effective_ts (the record's own _parse_ts result,
+    forward-filled from the immediately preceding record when unparseable,
+    or float("-inf") at the start of a group), thread_rank (0 for a
+    main-thread record, 1 for a sidechain one), and pre_sort_index (the
+    record's original position, the final tie-break). group_boundaries (the
+    0-based records indices where a new source file starts, from
+    _group_start_indices; None from a caller that hasn't partitioned the
+    corpus read, meaning the whole list is treated as one group) resets
+    effective_ts's forward-fill at each boundary. See
+    docs/design-decisions.md §58 for why the sort key and the per-group
+    reset are shaped this way.
+
+    effective_ts governs ordering only — the --since/--until filter below
+    still tests each record's own, unfilled _parse_ts result. Each event
+    dict carries this same pre_sort_index as line_no, plus a thread field
+    ("main" or "sidechain"): the main transcript's own 1-based file line for
+    thread=main, a merged-stream offset indexing no file for thread=sidechain
+    (see docs/design-decisions.md §58 for why).
     """
     events: list[dict] = []  # ordered, tagged with type/ts/line_no/branch/model
     # Tracks tool_use_ids already emitted as a denial. A legacy denial
@@ -1537,22 +1578,45 @@ def _review_trace_session_events(
     seen_friction_ids: set[str] = set()
 
     # tool_use_id -> attempted command, for --deny-summary's by-command-shape
-    # grouping. Indexed from every assistant tool_use block on the main
-    # thread — review-trace's session_iter doesn't request subagent
-    # records, so sidechain tool_use blocks are never present to index.
-    # Independent of the --since/--until window, since a denial's own
-    # event already applies it.
+    # grouping. Indexed from every assistant tool_use block, main-thread or
+    # sidechain — this loop carries no isSidechain guard of its own, so a
+    # denial raised inside a subagent's own transcript still resolves to the
+    # command that triggered it. Independent of the --since/--until window,
+    # since a denial's own event already applies it.
     tool_use_commands: dict[str, str] = {}
 
-    # Carry-forward trackers, updated on every main-thread record before the
-    # date filter below — the branch/model attributed to a denial (which
-    # carries no message.model of its own) is whatever a prior main-thread
-    # record last set, including one outside the --since/--until window.
+    # Carry-forward trackers, updated on every main-thread record, never a
+    # sidechain one. Detection itself no longer gates on isSidechain, but a
+    # sidechain event still inherits whatever branch/model was live on the
+    # dispatching main-thread record, not its own. Applied before the date
+    # filter below, so the branch/model attributed to an event is whatever a
+    # prior main-thread record last set, including one outside the
+    # --since/--until window.
     last_branch = ""
     last_model = ""
     pre_regime_tool_result_count = 0
 
-    for line_no, rec in enumerate(records, start=1):
+    # Merge main-thread and subagent records into one chronological stream
+    # before detection (see the docstring's three-part key) — sorting
+    # instead of leaving records in main-then-subagent concatenation order is
+    # what lets the carry-forward trackers above see a sidechain event's
+    # dispatching record before the event itself, rather than after every
+    # main-thread record has already run.
+    merged: list[tuple[float, int, int, dict]] = []
+    prev_effective_ts = float("-inf")
+    for index, rec in enumerate(records):
+        if group_boundaries is not None and index in group_boundaries:
+            prev_effective_ts = float("-inf")
+        ts = _parse_ts(rec.get("timestamp"))
+        effective_ts = prev_effective_ts if ts is None else ts
+        prev_effective_ts = effective_ts
+        thread_rank = 1 if bool(rec.get("isSidechain")) else 0
+        merged.append((effective_ts, thread_rank, index + 1, rec))
+    merged.sort(key=lambda item: item[:3])
+
+    for _effective_ts, _thread_rank, line_no, rec in merged:
+        thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
+
         if not bool(rec.get("isSidechain")):
             b = rec.get("gitBranch") or ""
             if b:
@@ -1588,9 +1652,10 @@ def _review_trace_session_events(
         evt_model = _fam(last_model) if last_model else "?"
 
         # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
-        # Both are main-thread assistant tool_use blocks; a single pass over
-        # content dispatches on tool name to avoid iterating the list twice.
-        if rec_type == "assistant" and not bool(rec.get("isSidechain")):
+        # Both are assistant tool_use blocks, main-thread or sidechain; a
+        # single pass over content dispatches on tool name to avoid
+        # iterating the list twice.
+        if rec_type == "assistant":
             for block in ((rec.get("message") or {}).get("content") or []):
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -1608,6 +1673,7 @@ def _review_trace_session_events(
                         "line_no": line_no,
                         "branch": evt_branch,
                         "model": evt_model,
+                        "thread": thread,
                     })
                 elif block_name in ("Agent", "Task"):
                     tool_input = block.get("input") or {}
@@ -1620,6 +1686,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
                     elif stype == _ARCHITECT_CONSULT_SUBAGENT_TYPE and _is_architect_consult_dispatch(tool_input):
                         # A consult dispatch was initiated -- no dependence on
@@ -1632,6 +1699,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
 
         # --- Signal 2a: hook denials, legacy shape (attachment record) ---
@@ -1666,6 +1734,7 @@ def _review_trace_session_events(
                 "line_no": line_no,
                 "branch": evt_branch,
                 "model": evt_model,
+                "thread": thread,
             })
 
         # --- Signal 2b: hook denials, current shape (is_error tool_result) ---
@@ -1716,6 +1785,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
 
                 if block.get("is_error") and _is_nongate_friction_kind(tool_denial_kind, already_gate_denied):
@@ -1732,6 +1802,7 @@ def _review_trace_session_events(
                             "line_no": line_no,
                             "branch": evt_branch,
                             "model": evt_model,
+                            "thread": thread,
                         })
                 elif pre_regime and not already_gate_denied and block.get("is_error"):
                     pre_regime_tool_result_count += 1
@@ -1744,6 +1815,32 @@ def _review_trace_session_events(
         events = [e for e in events if e["branch"] in branch_filter]
 
     return events, tool_use_commands, pre_regime_tool_result_count
+
+
+def _fresh_records_and_group_boundaries(
+    jsonl: Path, records: list[dict], *, include_subagents: bool,
+) -> tuple[list[dict], frozenset[int] | None]:
+    """Re-read jsonl as one _read_session_file_partitioned call, so the
+    records and group_boundaries handed to _review_trace_session_events
+    always come from the same snapshot of the file -- pairing session_iter's
+    own records (an earlier read) with an independently re-read
+    group_boundaries would let the two desync whenever the file grows in
+    between (e.g. review-trace scanning its own in-progress session).
+    include_subagents is a required keyword argument, not a default, so a
+    future caller must state its own session_iter's scope explicitly rather
+    than silently inheriting whatever this function's last caller needed.
+
+    Falls back to the given records with no group boundaries when jsonl is
+    unreadable right now, rather than discarding a session's already-observed
+    events. Two cases trigger the fallback: the file was deleted mid-scan, or
+    the path is a synthetic one used in a test. Shared by
+    _compute_deny_summary_data and cmd_review_trace, this function's two
+    identically-shaped callers.
+    """
+    groups = _read_session_file_partitioned(jsonl, include_subagents=include_subagents)
+    if not groups:
+        return records, None
+    return [rec for group in groups for rec in group], _group_start_indices(groups)
 
 
 def _compute_deny_summary_data(
@@ -1775,9 +1872,15 @@ def _compute_deny_summary_data(
     pre_regime_tool_result_count = 0
     any_session_matched = False
 
-    for _jsonl, records in session_iter:
+    for jsonl, records in session_iter:
+        # Both of this function's callers resolve scope with
+        # include_subagents=True -- see _fresh_records_and_group_boundaries
+        # for why records and group_boundaries must come from one read.
+        records, group_boundaries = _fresh_records_and_group_boundaries(
+            jsonl, records, include_subagents=True,
+        )
         events, tool_use_commands, session_pre_regime = _review_trace_session_events(
-            records, since_ts, until_ts, branch_filter
+            records, since_ts, until_ts, branch_filter, group_boundaries=group_boundaries
         )
         if not events:
             continue
@@ -1838,8 +1941,11 @@ def _compute_deny_summary_data(
 def cmd_review_trace(args: argparse.Namespace) -> None:
     """Emit an ordered review-event timeline per session.
 
-    Five event types are detected per session:
-    - skill: main-thread Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
+    Scans both the main thread and every dispatched subagent's own
+    transcript file (include_subagents=True), merged into one chronological
+    stream by _review_trace_session_events. Five event types are detected
+    per session, on either thread:
+    - skill: a Skill tool_use where input.skill is in REVIEW_TRACE_SKILLS
     - denial: a hook-blocking denial in either transcript shape — a legacy
       `attachment` record (type==hook_blocking_error) or a current-format
       `tool_result` block with is_error and a hook-denial message signature.
@@ -1853,7 +1959,8 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     - architect-consult: Agent/Task spawn where subagent_type is
       plan-architect and the prompt's first line is not the literal
       MODE=plan-sections, per _is_architect_consult_dispatch. Signals that a
-      consult dispatch was initiated, not that it completed.
+      consult dispatch was initiated, not that it completed — including one
+      dispatched from inside a subagent.
 
     denial and friction are deliberately separate event kinds: has_denial,
     denials=N, and --deny-only's session-selection all stay denial-kind-only,
@@ -1867,7 +1974,12 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     (or model) to another attributes each event correctly instead of labelling
     every event with whatever the session started on. An event whose branch or
     model cannot be resolved renders '?'. --branches filters the emitted event
-    list by this per-event value, not by a single session-wide branch.
+    list by this per-event value, not by a single session-wide branch. A
+    sidechain event's thread field prints as `thread=sidechain` in the
+    timeline; a main-thread event's `thread=main` is the default and stays
+    unprinted. A sidechain event's line_no is a merged-stream offset, not a
+    real file line (see _review_trace_session_events's docstring), so it
+    prints as `line   n/a` instead of a numeral.
 
     --deny-summary delegates its entire accumulation to
     _compute_deny_summary_data instead of running its own pass over
@@ -1879,7 +1991,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
     roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "review-trace", roots=roots)
+    session_iter, scope_label = _resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
 
     since_ts, until_epoch = _parse_absolute_window_args(args, "review-trace")
 
@@ -1912,8 +2024,15 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     emitted_any_session = False
 
     for jsonl, records in session_iter:
+        # session_iter is resolved with include_subagents=True above -- see
+        # _fresh_records_and_group_boundaries for why records and
+        # group_boundaries must come from one read at the same scope.
+        records, group_boundaries = _fresh_records_and_group_boundaries(
+            jsonl, records, include_subagents=True,
+        )
         events, tool_use_commands, _pre_regime = _review_trace_session_events(
-            records, since_ts, until_epoch, branch_filter, skill_filter=skill_filter
+            records, since_ts, until_epoch, branch_filter,
+            skill_filter=skill_filter, group_boundaries=group_boundaries,
         )
         if not events:
             continue
@@ -1939,9 +2058,15 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         )
         for evt in events:
             ts_label = evt.get("ts") or "?"
-            lno = evt["line_no"]
+            # line_no is a real, seekable main-transcript line only for a
+            # thread=main event; for thread=sidechain it's a merged-stream
+            # offset indexing no file (see _review_trace_session_events's
+            # docstring), so it prints as n/a rather than under the same
+            # "line" label as a real one.
+            lno = "n/a" if evt["thread"] == "sidechain" else evt["line_no"]
             kind = evt["kind"]
-            suffix = f"  (branch={evt['branch']} model={evt['model']})"
+            thread_suffix = "" if evt["thread"] == "main" else f" thread={evt['thread']}"
+            suffix = f"  (branch={evt['branch']} model={evt['model']}{thread_suffix})"
             if kind == "skill":
                 print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
             elif kind == "denial":
@@ -5732,6 +5857,12 @@ _CACHE_REBUILD_CAUSES: tuple[str, ...] = (
 # have hit, and model switch/unexplained are not gap-driven.
 _CACHE_REBUILD_IDLE_GAP_CAUSES: tuple[str, ...] = (_CAUSE_IDLE_5M_1H, _CAUSE_IDLE_OVER_1H)
 
+# Origin labels for the main/subagent split -- classified per record via
+# isSidechain, never by which source file (group) a record came from, so
+# this reconciles against cache-efficiency's own sidechain row and survives
+# a subagent-file layout change (see _cache_rebuild_report's docstring).
+_CACHE_REBUILD_ORIGINS: tuple[str, ...] = ("main", "subagent")
+
 
 def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> float | None:
     """Seconds since the previous call in this transcript's own turn
@@ -5796,6 +5927,49 @@ def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None
     return write_dollars - warm_read_dollars, 0
 
 
+def _cache_rebuild_switch_delta_dollars(
+    model: str, usage: dict, *, is_idle_5m_1h_cause: bool
+) -> tuple[float | None, int]:
+    """One call's signed contribution to the pooled 5m-to-1h cacheTtl switch
+    delta -- see .claude/plans/subagent-idle-gap-cache-rebuild-split.md's
+    Approach section for the derivation. (2 - r) must be resolved per call
+    via _model_rates, never hardcoded as 1.9, since a corpus mixing model
+    rates needs the true per-call coefficient. Positive is
+    switch-cost-positive; the report negates the accumulated sum before
+    printing it as a savings-positive net. Returns (None, unpriced_tokens)
+    for a model absent from _MODEL_BASE_INPUT_RATES, matching _price_turn's
+    own contract.
+    """
+    dollars_by_class, _context_at_turn, unpriced_tokens = _price_turn(model, usage)
+    if dollars_by_class is None:
+        return None, unpriced_tokens
+    rates = _model_rates(model)
+    _eph_1h, eph_5m = _cache_write_split(usage)
+    switch_cost_per_token = rates["cache_write_1h"] - rates["cache_write_5m"]
+    delta_dollars = eph_5m / 1_000_000 * switch_cost_per_token
+    if is_idle_5m_1h_cause:
+        rescue_per_token = rates["cache_write_1h"] - rates["cache_read"]
+        delta_dollars -= eph_5m / 1_000_000 * rescue_per_token
+    # Mirrors _price_turn's own fast/geo multiplier application -- neither
+    # leg above goes through _price_turn's own dollars_by_class, so both
+    # need the same multiplier applied here instead.
+    if usage.get("speed") == "fast":
+        delta_dollars *= _FAST_MODE_RATE_MULTIPLIER
+    if usage.get("inference_geo") == "us":
+        delta_dollars *= _INFERENCE_GEO_US_RATE_MULTIPLIER
+    return delta_dollars, 0
+
+
+def _negate_switch_delta_for_display(accumulated_delta: float) -> float:
+    """Savings-positive negation of an accumulated switch-delta sum, cents-
+    rounded. Two per-call contributions that cancel exactly at the rational
+    level (a group's own W5m/X sitting exactly at the break-even ratio) can
+    leave a +-1e-16 residual after floating-point summation; left
+    un-rounded, its sign bit would print as the misleading "-0.00" instead
+    of "0.00" once negated."""
+    return round(0.0 - accumulated_delta, 2) + 0.0
+
+
 def cmd_cache_rebuild(args: argparse.Namespace) -> None:
     """CLI entry point for the cache-rebuild subcommand.
 
@@ -5818,12 +5992,24 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     (timestamp, transcript) index. is_first_call/gap_seconds/model_changed
     reset at every group boundary -- a group is its own context, so a delta
     taken across a boundary would compare two unrelated conversations (see
-    _read_session_file_partitioned's own docstring). Binary-searches one
-    pre-sorted global (timestamp, transcript) index per idle-gap call
-    instead of re-scanning per gap -- O(n log n) total, not O(gaps x calls).
+    _read_session_file_partitioned's own docstring). Within one group, that
+    same reset is further keyed per origin (main vs. subagent, via each
+    record's own isSidechain flag): an inline sidechain record living inside
+    the main transcript file must never be classified against whichever
+    record precedes it in file order when that record is the other origin.
+    Binary-searches one pre-sorted global (timestamp, transcript) index per
+    idle-gap call instead of re-scanning per gap -- O(n log n) total, not
+    O(gaps x calls).
 
     `--since` only gates whether a call is *counted*, never whether it can
     see its own prior turn (same contract as _cost_report's since_ts).
+
+    Also splits idle-gap rebuilds and the 5m-tier cache-write-token volume
+    by origin (main vs. subagent), and prices the dollar delta a 5m-to-1h
+    cacheTtl switch would make to subagent traffic -- see
+    .claude/plans/subagent-idle-gap-cache-rebuild-split.md's Approach
+    section for why that delta is not simply the subagent share of the
+    priced excess above.
 
     roots is None only for this module's own tests exercising the report
     body directly; --this-repo/--config-dir CLI validation happens once in
@@ -5886,6 +6072,38 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     per_account_rebuilds: dict[int, int] = dict.fromkeys(redact_ordinals.values(), 0) if multi_root else {}
     per_account_excess: dict[int, float] = dict.fromkeys(redact_ordinals.values(), 0.0) if multi_root else {}
 
+    # Origin split (main vs. subagent, per-record via isSidechain -- see
+    # this function's own docstring). Always seeded with both keys, unlike
+    # the per-account dicts above, since the origin split prints
+    # unconditionally rather than only under a multi-root scope -- a corpus
+    # with no sidechain records at all must still render a zero subagent
+    # row rather than vanishing.
+    origin_rebuilds: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
+    origin_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
+    # W5m/X/switch-delta (Approach section) -- accumulated threshold-
+    # independently (every in-scope 5m-tier write, not only tail calls),
+    # since the 2x uplift a cacheTtl switch would charge applies to warm
+    # incremental writes too, not just rebuilds.
+    w5m_by_origin: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
+    x_by_origin: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
+    switch_delta_by_origin: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
+    unpriced_switch_delta_turns = 0
+    unpriced_switch_delta_tokens = 0
+    # One entry per subagent-file group (one dispatch's own conversation),
+    # for the ex-post per-dispatch dispersion figures -- kept separate from
+    # w5m_by_origin/x_by_origin above, which pool every subagent-origin
+    # record regardless of which group (or, for an inline sidechain record,
+    # which file) it came from.
+    per_group_dispersion: list[dict] = []
+    # Priced subagent-origin W5m tokens that landed inside a subagent-file
+    # group -- a strict subset of w5m_by_origin["subagent"] above. The gap
+    # (printed as the dispersion block's coverage disclosure) is:
+    #   - an unpriced subagent-origin call (enters no group, priced or not)
+    #   - an inline sidechain record inside the main transcript file
+    #     (group_index == 0, so is_subagent_group is False even though its
+    #     own origin is "subagent")
+    subagent_origin_w5m_in_groups = 0
+
     for jsonl, _flat_records in session_iter:
         session_key = str(jsonl.resolve())
 
@@ -5909,12 +6127,30 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         # file-level across every group, though -- a subagent's own calls are
         # still this session's activity for the concurrency check below, not
         # another session's.
-        for group in _read_session_file_partitioned(jsonl, include_subagents=True):
+        for group_index, group in enumerate(_read_session_file_partitioned(jsonl, include_subagents=True)):
             group_records = _dedup_turns_by_request_id(group)
 
-            i = 0
-            prev_ts: float | None = None
-            prev_model: str | None = None
+            # A subagent-file group is one dispatch's own conversation --
+            # group_index 0 is always the main transcript (see
+            # _read_session_file_partitioned's own docstring). This is used
+            # only for the per-dispatch dispersion figures below, never for
+            # origin classification itself: an inline sidechain record can
+            # still appear inside group_index 0, and is classified as
+            # subagent origin regardless via its own isSidechain flag.
+            is_subagent_group = group_index > 0
+            group_w5m_tokens = 0
+            group_x_tokens = 0
+            group_delta_dollars = 0.0
+
+            # Sequential classification state, keyed per origin (mirroring
+            # _scan_cache_efficiency_group's own chain_key = (session_key,
+            # thread) pattern) rather than shared across the whole group --
+            # an inline sidechain record interleaved with main-thread
+            # records must never be classified against the other origin's
+            # own prior call.
+            chain_state: dict[str, dict] = {
+                origin: {"i": 0, "prev_ts": None, "prev_model": None} for origin in _CACHE_REBUILD_ORIGINS
+            }
 
             for rec in group_records:
                 if rec.get("type") != "assistant":
@@ -5927,10 +6163,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 if model == "<synthetic>":
                     continue
 
+                origin = "subagent" if bool(rec.get("isSidechain")) else "main"
+                chain = chain_state[origin]
+
                 cur_ts = _parse_ts(rec.get("timestamp"))
-                is_first_call = i == 0
-                gap_seconds = None if is_first_call else _cache_rebuild_gap_seconds(prev_ts, cur_ts)
-                model_changed = not is_first_call and model != prev_model
+                is_first_call = chain["i"] == 0
+                gap_seconds = None if is_first_call else _cache_rebuild_gap_seconds(chain["prev_ts"], cur_ts)
+                model_changed = not is_first_call and model != chain["prev_model"]
                 eph_1h, eph_5m = _cache_write_split(usage)
                 pure_1h_tier_write = eph_1h > 0 and eph_5m == 0
                 cause = _classify_cache_rebuild_cause(is_first_call, gap_seconds, model_changed, pure_1h_tier_write)
@@ -5944,6 +6183,31 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 in_scope = since_ts is None or (cur_ts is not None and cur_ts >= since_ts)
                 if in_scope:
                     total_calls_in_scope += 1
+
+                # Threshold-independent: W5m/X accumulate over every
+                # in-scope 5m-tier write, not only tail (>= threshold)
+                # calls -- the 2x uplift a cacheTtl switch would charge
+                # applies to warm incremental writes too, not only rebuilds.
+                if in_scope and eph_5m > 0:
+                    w5m_by_origin[origin] += eph_5m
+                    is_idle_5m_1h_cause = cause == _CAUSE_IDLE_5M_1H
+                    if is_idle_5m_1h_cause:
+                        x_by_origin[origin] += eph_5m
+                    delta_dollars, turn_unpriced_tokens = _cache_rebuild_switch_delta_dollars(
+                        model, usage, is_idle_5m_1h_cause=is_idle_5m_1h_cause
+                    )
+                    if delta_dollars is None:
+                        unpriced_switch_delta_turns += 1
+                        unpriced_switch_delta_tokens += turn_unpriced_tokens
+                    else:
+                        switch_delta_by_origin[origin] += delta_dollars
+                        if is_subagent_group:
+                            group_w5m_tokens += eph_5m
+                            if is_idle_5m_1h_cause:
+                                group_x_tokens += eph_5m
+                            group_delta_dollars += delta_dollars
+                            if origin == "subagent":
+                                subagent_origin_w5m_in_groups += eph_5m
 
                 write_tokens = eph_1h + eph_5m
                 in_tail = write_tokens >= threshold
@@ -5960,15 +6224,23 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         else:
                             idle_gap_candidates.append({
                                 "session_key": session_key,
-                                "gap_start_ts": prev_ts,
+                                "gap_start_ts": chain["prev_ts"],
                                 "gap_end_ts": cur_ts,
                                 "excess_dollars": excess_dollars,
                                 "account_ordinal": account_ordinal,
+                                "origin": origin,
                             })
 
-                prev_ts = cur_ts if cur_ts is not None else prev_ts
-                prev_model = model
-                i += 1
+                chain["prev_ts"] = cur_ts if cur_ts is not None else chain["prev_ts"]
+                chain["prev_model"] = model
+                chain["i"] += 1
+
+            if is_subagent_group:
+                per_group_dispersion.append({
+                    "w5m": group_w5m_tokens,
+                    "x": group_x_tokens,
+                    "delta_dollars": group_delta_dollars,
+                })
 
     # One sort, once, over the whole corpus -- every idle-gap candidate below
     # binary-searches this same index rather than re-scanning per gap.
@@ -5982,14 +6254,12 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     idle_break_excess = 0.0
 
     for cand in idle_gap_candidates:
-        # bisect_right/bisect_left: an open (gap_start_ts, gap_end_ts)
-        # interval, so a call from this same transcript at exactly one of
-        # the gap's own endpoints -- the gap's start and end ARE this
-        # transcript's own calls -- is excluded from the window. The
-        # exclusion is timestamp-value-based, not (timestamp, session_key)-
-        # identity-based: a genuinely different concurrent session whose own
-        # call happens to land at exactly one of those same endpoints is
-        # also excluded.
+        # Open interval: bisect_right/bisect_left exclude a call landing
+        # exactly on gap_start_ts or gap_end_ts, since those endpoints are
+        # this transcript's own calls.
+        # The exclusion is timestamp-value-based, so a different concurrent
+        # session's call at that same exact instant is also excluded, not
+        # just this transcript's own.
         lo = bisect.bisect_right(global_ts, cand["gap_start_ts"])
         hi = bisect.bisect_left(global_ts, cand["gap_end_ts"])
         # Indexed range with early exit, not global_keys[lo:hi], so a
@@ -6005,6 +6275,8 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
         if multi_root and cand["account_ordinal"] is not None:
             per_account_rebuilds[cand["account_ordinal"]] += 1
             per_account_excess[cand["account_ordinal"]] += cand["excess_dollars"]
+        origin_rebuilds[cand["origin"]] += 1
+        origin_excess[cand["origin"]] += cand["excess_dollars"]
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Cache-rebuild report ({title_since}, threshold >= {threshold:,} cache-write tokens)\n")
@@ -6055,6 +6327,80 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             f"\n  ({unpriced_idle_gap_turns:,} idle-gap tail calls / {unpriced_idle_gap_tokens:,} tokens"
             " excluded from priced excess -- model has no price-table entry)"
         )
+
+    print("\n## Idle-gap rebuilds by origin\n")
+    print(f"{'Origin':<10} {'Rebuilds':>9} {'Excess $':>12}")
+    for origin in _CACHE_REBUILD_ORIGINS:
+        print(f"{origin:<10} {origin_rebuilds[origin]:>9,} {origin_excess[origin]:>12,.2f}")
+
+    print(
+        "\n## Cache-write tier switch delta (5m -> 1h), threshold-independent\n\n"
+        "W5m/X below accumulate over every in-scope call regardless of the\n"
+        "--threshold value above -- this is a different denominator than the\n"
+        "tail-only cause breakdown, and must not be divided into those figures.\n"
+        "X excludes idle >1h and pure-1h-tier writes: a 1-hour cache is also cold\n"
+        "past 3600s, so those rebuilds happen under either tier. Net$ is\n"
+        "savings-positive: what a 5m-to-1h cacheTtl switch would save (or cost,\n"
+        "if negative) against this origin's own traffic. The main row's Net$ has\n"
+        "no corresponding lever in this plan's scope -- experimental.cacheTtl is\n"
+        "set in subagent frontmatter and cannot reach main-conversation traffic;\n"
+        "read it as reconciliation context only.\n"
+    )
+    print(f"{'Origin':<10} {'W5m':>14} {'X':>14} {'Ratio':>8} {'Net$':>10}")
+    for origin in _CACHE_REBUILD_ORIGINS:
+        w5m = w5m_by_origin[origin]
+        x_tokens = x_by_origin[origin]
+        net_dollars = _negate_switch_delta_for_display(switch_delta_by_origin[origin])
+        print(f"{origin:<10} {w5m:>14,} {x_tokens:>14,} {_pct_of(x_tokens, w5m):>8} {net_dollars:>10,.2f}")
+
+    if unpriced_switch_delta_turns:
+        print(
+            f"\n  ({unpriced_switch_delta_turns:,} 5m-tier write calls / {unpriced_switch_delta_tokens:,} tokens"
+            " excluded from the switch-delta figures above -- model has no price-table entry)"
+        )
+
+    # Ex-post oracle bound: a group with w5m==0 has an undefined ratio and
+    # is excluded from every figure below, though its (zero) delta still
+    # contributes nothing to clearing_net. "Clears" uses the cents-rounded
+    # sign, not the raw float, for the same reason
+    # _negate_switch_delta_for_display rounds before printing -- a
+    # dispatch built at the exact break-even boundary can leave a +-1e-16
+    # residual that a raw `< 0` comparison would misclassify.
+    eligible_groups = [g for g in per_group_dispersion if g["w5m"] > 0]
+    clearing_groups = [g for g in eligible_groups if round(g["delta_dollars"], 2) < 0]
+    total_subagent_group_w5m = sum(g["w5m"] for g in per_group_dispersion)
+    clearing_w5m = sum(g["w5m"] for g in clearing_groups)
+    # Sum the raw (un-rounded) per-group deltas first, then negate/round the
+    # sum once -- rounding each group to cents before summing can drift a
+    # many-group total by up to $0.005 per group against the raw sum, the
+    # same reason the pooled origin-row Net$ figures above round only once.
+    clearing_net = _negate_switch_delta_for_display(sum(g["delta_dollars"] for g in clearing_groups))
+    # Priced subagent-origin W5m tokens that landed in no dispatch group at
+    # all (see subagent_origin_w5m_in_groups' own comment above) -- a
+    # non-zero figure means the oracle bound below is missing coverage in
+    # the exclusion direction (undercounts what a selective policy could
+    # find), not the inclusion direction.
+    uncovered_subagent_w5m = w5m_by_origin["subagent"] - subagent_origin_w5m_in_groups
+
+    print(
+        "\n## Subagent per-dispatch dispersion (ex-post oracle bound)\n\n"
+        "Dispatches selected by their own realized ratio, which a policy fixed\n"
+        "before the dispatch cannot do -- a one-sided test for whether a\n"
+        "selective lever is excluded, never a validation that one would work.\n"
+    )
+    print(f"Subagent dispatches (dispatches with any 5m-tier write): {len(eligible_groups):,}")
+    print(f"Dispatches individually clearing their own break-even ratio: {len(clearing_groups):,}")
+    print(
+        "Their share of per-dispatch subagent W5m (not the pooled row above):"
+        f" {_pct_of(clearing_w5m, total_subagent_group_w5m)}"
+    )
+    print(f"Net $ restricted to clearing dispatches: {clearing_net:,.2f}")
+    print(
+        f"\n  ({uncovered_subagent_w5m:,} of {w5m_by_origin['subagent']:,} pooled subagent W5m tokens landed in no"
+        " dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main"
+        " transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound"
+        " above has exact W5m coverage, not merely assumed)"
+    )
 
 
 # --- cost-ledger: local per-week cost/efficiency ledger read/append -------
@@ -6667,11 +7013,15 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     week_end_ts = week_start_ts + 7 * 86400
 
     cost_session_iter, scope_label = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
-    deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", roots=roots)
-    # Deliberately duplicates cost_session_iter's identical full-corpus include_subagents=True
-    # scan; sharing one materialized pass would require restructuring
-    # _compute_cost_trend_data/_compute_reviewer_yield_data's calling convention, also used by
-    # other commands.
+    # All three iterators below deliberately duplicate the identical full-corpus
+    # include_subagents=True scan rather than sharing one materialized pass —
+    # doing so would require restructuring _compute_cost_trend_data,
+    # _compute_deny_summary_data, and _compute_reviewer_yield_data's calling
+    # convention. Other commands also use that same calling convention.
+    # deny_session_iter widens to match its siblings so its denials column and
+    # review-trace --deny-summary (also include_subagents=True) can never
+    # disagree over the same scope.
+    deny_session_iter, _scope_label2 = _resolve_project_scope(args, "cost-ledger", include_subagents=True, roots=roots)
     reviewer_session_iter, _scope_label3 = _resolve_project_scope(
         args, "cost-ledger", include_subagents=True, roots=roots
     )

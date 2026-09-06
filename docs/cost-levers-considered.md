@@ -342,7 +342,7 @@ is what this register already does, so the method gets no row of its own.
 | Guide lever | Verdict | Coverage, or why not reachable |
 |---|---|---|
 | Prompt caching (cache repeated context) | Already covered, root-caused | The "Context cost root cause" section above traced idle-gap rebuilds to concurrent-session switching (92.9%), not operator breaks (7.1%). `transcript_analysis/pricing.py` independently encodes the same multipliers the guide prices against: 5-minute write 1.25x, 1-hour write 2x, cache read 0.1x. |
-| Pick the cache duration (5-minute vs. 1-hour) | Reopened on a new mechanism; verdict unchanged | Supersedes the cache-TTL thread running through three earlier entries (the original "Cache-TTL selection" row, its 2026-08-15 follow-up, and the "Cache TTL as a uniform, non-account-scoped property" row under `cost-attribution-integrity.md`). A mechanism none of them covered exists: `experimental.cacheTtl` in subagent frontmatter selects `5m` or `1h` per agent (Anthropic, *Create custom subagents*). It is the first cache-duration control living in repo-tracked config rather than per-machine environment. Still not worth pulling: the 1-hour tier costs 2x base per write against the 5-minute tier's 1.25x, so it pays only when a prefix is re-read after a gap past five minutes. The field also sits in an `experimental.` namespace, not a stable surface for repo-shared config. Not measured for subagents: the 96–97% sub-5-minute idle-gap concentration behind the 2026-08-15 verdict was taken on main-thread calls. `cache-rebuild` includes subagent groups but reports no main/sidechain split, so a subagent-scoped figure needs a `transcript-analysis.py` change, not a rerun. |
+| Pick the cache duration (5-minute vs. 1-hour) | Reopened on a new mechanism; verdict unchanged | Supersedes the cache-TTL thread running through three earlier entries (the original "Cache-TTL selection" row, its 2026-08-15 follow-up, and the "Cache TTL as a uniform, non-account-scoped property" row under `cost-attribution-integrity.md`). A mechanism none of them covered exists: `experimental.cacheTtl` in subagent frontmatter selects `5m` or `1h` per agent (Anthropic, *Create custom subagents*). It is the first cache-duration control living in repo-tracked config rather than per-machine environment. Still not worth pulling: the 1-hour tier costs 2x base per write against the 5-minute tier's 1.25x, so it pays only when a prefix is re-read after a gap past five minutes. The field also sits in an `experimental.` namespace, not a stable surface for repo-shared config. Not measured for subagents as of this row's original writing: the 96–97% sub-5-minute idle-gap concentration behind the 2026-08-15 verdict was taken on main-thread calls, and `cache-rebuild` at the time reported no main/sidechain split. That gap is closed below — see the `subagent-idle-gap-cache-rebuild-split.md` section for the subagent-scoped measurement and its decline verdict. |
 | Trim tokens | Already covered; all three sub-levers adopted by a different mechanism | Deferring unused tool definitions: `disableArtifact`/`disableWorkflows` default to `true`, measured 16k-token drop (23.8k→7.8k), see the `disable-artifact-workflow-default.md` section above. Keeping bulk data out of the prompt: the guide's Files-API-plus-code-execution mechanism has no Claude Code surface, and the reachable equivalent is already mandatory — "Locate before a whole-file read" in the global `CLAUDE.md`, plus pass-a-path-not-the-content in `brief` and `handoff`, with one documented exception in `ready-for-review` for a subagent holding no `Bash` to resolve a path itself. Managing the context lifecycle: the handoff-nudge program, retuned against `$/PR` (`handoff-nudge-cap-recalibration.md` above). |
 | Audit prompts against the current model | Swept 2026-09-01, nothing found | The guide targets stale over-specification: "verify twice," "maximally thorough," mandatory step-by-step, hand-rolled reasoning scratchpads, retired thinking-budget settings, contradictory rules. A sweep across `claude/.claude/`, both `CLAUDE.md` files, and `docs/` returned zero instructional hits for any of those shapes. The only "step-by-step" and "scratchpad" matches found are descriptive prose or unrelated senses (a filesystem scratch path, the ephemeral-isolation worktree primitive). Recorded so the next reader of this guide doesn't re-run the sweep. |
 | Batch processing (50% discount, 24-hour turnaround) | Rejected, no exposed surface | Nothing in `settings.json`, hooks, or agent frontmatter exposes a batch-submission path, so a session cannot route its own turns through it — the same no-surface shape as the original `cache_control` rejection above. The guide forecloses it directly: "Not available for Claude Managed Agents sessions (interactive by design)." Zero prior mention anywhere in this repo, which is why it gets a row rather than a pointer. |
@@ -352,6 +352,22 @@ is what this register already does, so the method gets no row of its own.
 | Re-run failures at higher effort | Named, not investigated | The one guide lever with no prior coverage and no verdict here. Effort pins are static per agent, and nothing re-dispatches the same agent at a higher effort after a failed outcome check, though the guide's precondition (checkable outcomes) holds via tests and the review gates. The nearest existing arrangement differs in kind: `code-writer` runs at `high` with a downstream review pass as backstop (`design-decisions.md` §24), escalating to a different agent rather than re-running the same one. Closing this needs a measurement nobody has run — what share of `code-writer` dispatches fail their own downstream check, and what a lower starting tier would cost against that share. |
 | Set budgets and output caps | Rejected, no exposed surface | Subagent frontmatter (Anthropic, *Create custom subagents*) carries no `task_budget`, `max_tokens`, or output-token-cap field; the only budget-adjacent fields are `maxTurns` (a turn count, not a token limit) and `experimental.cacheTtl` (the cache-duration lever above). `max_tokens` is set by the API caller, which is Claude Code, not this repo. `maxTurns` is reachable and truncates a dispatch rather than pricing it — a safety cap, not a cost lever. |
 | Multi-model architectures (Advisor, Orchestrator) | Already implemented, under different names | Advisor: `plan-architect`'s `MODE=consult` dispatch is a cheap executor escalating one hard design decision to an Opus-pinned read-only agent on demand (`design-decisions.md` §37), and `MODE=plan-sections` is the same escalation on a fixed trigger (§30). Orchestrator: a Sonnet-default parent decomposes and delegates bulk work to `code-writer` and the reviewer roster, with the global `CLAUDE.md`'s Model & Effort Routing rule fixing which tier each dispatch gets. Recorded honestly: the guide's precondition — a multi-model configuration must beat a single model's entire score-vs-spend curve — was never measured here. Both arrangements were adopted on other grounds, not as a validated curve win. |
+
+**2026-09-06 correction:** `reviewer-instance-continuation.md`'s
+over-powered-primitive check claims `experimental.cacheTtl` "warms only the
+small system-prompt prefix and never touches a `Read` result." Claude
+Code's own prompt-caching guide
+(`https://code.claude.com/docs/en/prompt-caching`) is the authoritative
+source here, distinct from the generic Messages API doc cited above.
+Claude Code decides cache TTL **per request**, not per content type. A
+request's cached content is "the system prompt, your project context,
+every prior message and tool result" — so a `Read` result gets the same
+TTL `cacheTtl` sets. This closes the row above's "not measured for
+subagents" gap only for reviewer re-dispatch gaps, via `review-trace`'s
+existing per-event timestamps. The row's broader claim — that a general
+subagent idle-gap figure needs a `cache-rebuild` main/sidechain split —
+stays open. See the `reviewer-instance-continuation.md` section below for
+the corrected pricing this unlocks.
 
 ## From `markdown-context-ingestion-cost.md` — "Markdown context-ingestion cost"
 
@@ -401,3 +417,67 @@ later — not a revised version of this one, since it raises the write
 multiplier on every dispatch, including the ~66% of same-(agent-type,
 branch) dispatches that are first-of-type on a branch and gain nothing from
 a warm-cache continuation fix.
+
+**2026-09-06 follow-up, the named `cacheTtl: 1h` lever, priced.** The
+correction above reopens the bundle the plan named: `cacheTtl: 1h` paired
+with the declined
+`SendMessage` continuation. `cacheTtl` alone cannot warm one dispatch's
+`Read` results for a different dispatch. Reviewer file reads land in
+`messages[]` after each dispatch's own divergent prompt, so nothing
+carries a `Read` result across two separate `Agent` calls without the
+continuation mechanism itself.
+
+Re-running this section's own gap measurement at the 1-hour boundary
+(`review-trace --this-repo --since 2026-07-07`, rerun same day; 271
+same-session repeats, up from 263 above) finds 86.7% fall under one hour.
+That clears gate criterion 1 decisively, the reverse of the
+5-minute-boundary result.
+
+Criterion 2 — the $50 floor — still fails. A one-off scan against
+`reviewer_yield.py`'s existing per-dispatch transcript resolution measured
+the per-dispatch `Read`-token volume (the plan's `R`) directly — not a
+rerunnable script, so treat the precision accordingly, per this register's
+usual caveat for such scans. The result: mean 14,260 tokens across 550
+dispatches, well under the plan's 20,000–35,000 extrapolation.
+Pricing the full bundle at `claude-sonnet-4-5` rates (`pricing.py:25-27`,
+1.25x/2x/0.1x): the roster-wide write-cost increase (1.25x→2x on every
+dispatch's own write) totals ≈$17.65 over the window. The avoided-rewrite
+benefit, reaching only the subset warm under the new boundary, totals
+≈$17.35, a net of ≈−$0.30. Both terms are ≈$17, roughly $33 short of the
+$50 floor either way — a gap this size, not the precise net, is what
+should carry weight given both figures are one-off-scan estimates.
+
+**Verdict unchanged (decline).** The corrected mechanics flip criterion 1
+from failing to passing, but the roster-wide cost and the repeat-only
+benefit are the same order of magnitude and cancel. A permanent subcommand
+for that figure isn't warranted either: `reviewer_yield.py`'s per-dispatch
+resolution already supplies it via a throwaway script, and this plan treats
+it as magnitude-only, never sign-determining.
+
+This repricing doesn't reopen the `2026-09-01` "Pick the cache duration"
+row above, the register's canonical cache-duration entry. Its objection
+that `experimental.cacheTtl` sits in an unstable `experimental.` namespace
+is untouched by the cost side coming out a wash. That objection is now the
+sole reason to decline, since the cost gap no longer carries independent
+weight.
+
+## From `subagent-idle-gap-cache-rebuild-split.md` — "Subagent-specific idle-gap cache-rebuild share, and a 5m-to-1h `cacheTtl` switch, priced" (2026-09-06)
+
+Pre-registered gate, fixed before the measurement ran (`.claude/plans/subagent-idle-gap-cache-rebuild-split.md`), in the same discipline `reviewer-instance-continuation.md` and `delegate-instrument-authoring.md` both used. `W5m` is every 5-minute-tier cache-write token in scope; `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the subset a `cacheTtl` switch would actually rescue. Three outcomes: (1) **adopt (uniform)** if the pooled subagent net exceeds a $50 floor (by analogy to the floor this register already applied once, at `:388` above) *and* the pooled `X/W5m` ratio clears a 0.50 robustness margin over the 0.3947 break-even; (2) **not excluded (selective)** if the pooled figure fails but the ex-post oracle bound (net restricted to subagent dispatches that individually clear their own break-even ratio) exceeds $50; (3) **decline** if both fail. `cache-rebuild --this-repo` now reports the split and the switch-delta pricing directly; no one-off scan was needed.
+
+**Free pre-gate (`cache-efficiency`, zero code):** confirmed the premise before any instrument change. Sidechain `Write1h` is ≈0 in this repo's corpus, consistent with the vendor's stated default that subagents get the 5-minute tier "even on a subscription until you choose a longer one." The absolute-ceiling check found enough sidechain `Write5m` volume to clear the $50 floor at the impossible `X = W5m` extreme. The plan proceeded to the instrument change on that basis, rather than declining on the pre-gate alone.
+
+**Live measurement** (`cache-rebuild --this-repo`, run 2026-09-06, last 30 days, 4 roots):
+
+| Origin | W5m | X | Ratio | Net$ |
+|---|---|---|---|---|
+| main | 0 | 0 | 0.0% | 0.00 |
+| subagent | 107,128,369 | 5,600,740 | 5.2% | -168.81 |
+
+The pooled subagent ratio (5.2%) sits far under both the 0.3947 break-even and the 0.50 robustness margin, and the pooled net is negative — a uniform 5-minute-to-1-hour switch would cost this corpus money, not save it, because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds. Criterion 1 fails decisively.
+
+**Ex-post oracle bound** (per-dispatch dispersion, the one-sided selective-lever test): of 727 subagent dispatches with any 5-minute-tier write, only 13 individually clear their own break-even ratio. Those 13 carry 6.7% of per-dispatch subagent `W5m` and net **$5.89** — an order of magnitude under the $50 floor even at this ex-post-best-case selection. No ex-ante per-agent-type policy could reach even this bound in practice, since a policy selects agent types in advance and cannot select on a dispatch's realized outcome. Criterion 2 fails.
+
+**Verdict: decline.** Both criteria fail, exactly the outcome the plan named as expected before the run. No `experimental.cacheTtl` edit ships from this plan. The instrument change ships regardless — the origin split and switch-delta pricing are now a permanent, rerunnable part of `cache-rebuild --this-repo`, not a one-off scan, so a future re-measurement (a corpus shift, a change in subagent dispatch volume or duration) costs one command, not a new plan.
+
+Two follow-ups named, neither pursued here: (1) if long in-dispatch `Bash` stalls dominate the 300–3600s gaps, cutting the stall — this repo already mandates `select-tests.py` over the full suite in agents — shrinks both `W5m` and `X`, and is the first thing to re-examine before ever revisiting `cacheTtl`; (2) per-agent-type attribution, which the oracle bound's own dispersion result gives no reason to build, since even the ex-post-best-case subpopulation misses the floor by an order of magnitude, so a selective lever restricted to real agent-type policy would fare no better.

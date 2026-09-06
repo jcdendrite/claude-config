@@ -37,9 +37,20 @@
 # and decides whether to invoke /git-feature-branch-sync, which owns the
 # rebase/merge decision framework and pre-flight checklist.
 #
+# Depends on _lib.sh's _lib_default_branch_from_origin_head for default-
+# branch resolution. The helper verifies the local origin/HEAD target
+# resolves before this hook's own bounded fetch ever runs, so a dangling
+# origin/HEAD whose target is still live on the remote is not recovered —
+# this hook exits silently instead (advisory-only, no gating effect —
+# `git remote set-head origin --auto` is the repair).
+#
 # Exit 0 always — this hook must not block session startup.
 
 set -uo pipefail
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
 
 # --- skip-silent gates --------------------------------------------------
 # Any of: not in a repo / detached HEAD / on default branch / no origin
@@ -52,9 +63,10 @@ CURRENT_BRANCH=$(git symbolic-ref -q --short HEAD 2>/dev/null) || exit 0
 
 git remote get-url origin >/dev/null 2>&1 || exit 0
 
-DEFAULT_REF=$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null) || exit 0
-DEFAULT_BRANCH=${DEFAULT_REF#refs/remotes/origin/}
-[ -z "$DEFAULT_BRANCH" ] && exit 0
+# The origin/HEAD pointer only, with no conventional-name fallback: a guessed
+# name here would select the branch this fetches and reports divergence
+# against.
+DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$PWD") || exit 0
 
 [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] && exit 0
 
@@ -88,7 +100,6 @@ fi
 # --- behind-count + advisory --------------------------------------------
 
 REMOTE_REF="refs/remotes/origin/$DEFAULT_BRANCH"
-git rev-parse --verify --quiet "$REMOTE_REF" >/dev/null || exit 0
 
 BEHIND=$(git rev-list --count "HEAD..$REMOTE_REF" 2>/dev/null)
 [ -z "$BEHIND" ] && exit 0

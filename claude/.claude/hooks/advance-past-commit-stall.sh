@@ -8,10 +8,10 @@
 #
 # Dispatch: matcher-less Stop (per Anthropic's docs, Stop has no matcher
 # support). Fail-silent posture throughout — this hook must never emit a
-# malformed block payload; every non-firing path is a plain `exit 0`, and
-# the emitting jq call itself has an `|| true` plus an explicit trailing
-# `exit 0` so a broken/missing jq degrades to silent-allow, not a stuck
-# block loop.
+# malformed block payload; every non-firing path is a plain `exit 0`.
+# The reason is encoded through the capped _lib_jq wrapper, so a failed
+# encode emits nothing and a broken, missing, or hung jq degrades to
+# silent-allow, not a stuck block loop.
 #
 # set -euo pipefail deliberately omitted (nudge-worktree-anchor.sh:51-54
 # is the precedent): this hook inspects many non-zero exits (grep/git/jq
@@ -35,8 +35,8 @@
 #   stall is not caught here.
 # - _lib_capped's timeout(1) fallback is a no-op on stock macOS without GNU
 #   coreutils, so the three git calls below are unbounded there.
-# - --dry-run/default-branch bypass residuals inherited from Part 3's gate
-#   repair are orthogonal to this hook (it does not gate a git operation).
+# - This hook does not gate a git operation, so --dry-run/default-branch
+#   bypass shapes from the push-gate arm are irrelevant here.
 # - STATE_FILE's write-then-read-back race is untested: assumes Stop fires
 #   at most once per session at a time (the harness's own invocation model),
 #   not two concurrent processes racing the same session_id/prompt_id.
@@ -214,5 +214,10 @@ printf 'fired session=%s prompt=%s\n' "$SESSION_ID" "$PROMPT_ID" >> "$LOG_FILE" 
 
 REASON="Per this repo's Shipping policy (CLAUDE.md), autonomous shipping is active — do not stop to ask permission for a commit, push, or PR that is already authorized. Continue: run /code-review, commit with path-scoped staging (never stage-all), run /ready-for-review, and open the PR. Stop before merge — that stays human-only. If you are genuinely blocked (a failing test you cannot fix, a design ambiguity with no defensible default), say what is blocked instead of asking permission to proceed with work that is already done. To disable this for the rest of this session: touch ~/.claude/.commit-stall-block-disabled. To disable it for this repo: add .claude/autonomous-shipping-optout."
 
-jq -n --arg reason "$REASON" '{"decision":"block","reason":$reason}' 2>/dev/null || true
+# Mirrors _lib_emit_allow_with_context's gated-encode shape (_lib.sh:193-200):
+# an empty REASON_JSON exits before printing, avoiding the malformed
+# `{"decision":"block","reason":}` a bare printf would otherwise emit.
+REASON_JSON=$(printf '%s' "$REASON" | _lib_jq -Rs . 2>/dev/null)
+[ -z "$REASON_JSON" ] && exit 0
+printf '{"decision":"block","reason":%s}\n' "$REASON_JSON" || true
 exit 0

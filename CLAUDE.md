@@ -71,6 +71,10 @@ never leaks to the public repo.
 **Hook defense-in-depth:** Hooks must filter their own input by tool
 name and matcher; do not rely solely on settings.json `if` conditions.
 
+**Hook regexes: POSIX ERE only.** Use `[[:space:]]`, not GNU grep's `\s`
+extension, since `\s` isn't portable ERE — enforced repo-wide by
+`test_hook_alignment.py`.
+
 **Should this be a hook?** When the user asks for automated/recurring
 behavior ("from now on when X…", "whenever X…", "each time X…",
 "before/after X…"), configure a hook in

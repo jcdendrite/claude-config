@@ -17,26 +17,9 @@ if [ "$#" -gt 0 ] && [ "$1" = "--record" ]; then
   shift
 fi
 
-# Resolves the repo's own default branch, which is not always main.
-resolve_default_branch() {
-  local origin_head candidate
-  if origin_head=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null); then
-    printf '%s\n' "${origin_head#*/}"
-    return 0
-  fi
-  # Reached only when origin/HEAD is unset, so the name below is a guess, not a lookup.
-  for candidate in main master develop; do
-    if git rev-parse --verify "origin/$candidate" >/dev/null 2>&1; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  return 1
-}
-
 if ! BASE_REF=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null); then
   # gh exits nonzero for "no PR open yet" and for auth/network failure alike.
-  if ! BASE_REF=$(resolve_default_branch); then
+  if ! BASE_REF=$(_lib_default_branch_or_guess "$PWD"); then
     printf 'pr-diff-against-base.sh: gh pr view failed and no default branch resolved from origin\n' >&2
     exit 1
   fi

@@ -92,6 +92,8 @@ set -euo pipefail
 # (resolve_worktree_for_branch) are shared with cleanup-idle-open-pr-worktrees.sh.
 # shellcheck source=_worktree-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -286,15 +288,21 @@ fi
 # Default branch resolution
 # ---------------------------------------------------------------------------
 
-DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
-if [ -z "$DEFAULT_BRANCH" ]; then
-  git remote set-head origin --auto &>/dev/null || true
-  DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
-fi
-DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
-if [ -z "$DEFAULT_BRANCH" ]; then
-  echo "WARNING: could not resolve default branch from origin/HEAD; falling back to 'main'." >&2
-  DEFAULT_BRANCH="main"
+# No fallback branch name: an unresolved default would fail to exclude the
+# repo's real default branch from the deletion candidates below.
+if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$REPO_ROOT"); then
+  # Known gap, accepted:
+  # - Under --all-projects this repair call runs serially, so a hung/slow
+  #   remote blocks the rest of the sweep; _lib_capped's 5s cap only applies
+  #   when timeout/gtimeout is present.
+  # - Runs only when origin/HEAD is already unresolvable, and the sweep
+  #   stalls visibly on the printed "== <repo> ==" line rather than failing
+  #   silently.
+  _lib_capped git remote set-head origin --auto >/dev/null 2>&1 || true
+  if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$REPO_ROOT"); then
+    echo "cleanup-merged-branches.sh: could not resolve origin/HEAD, and 'git remote set-head origin --auto' did not repair it -- check that 'origin' exists and is reachable, then set the default branch manually with 'git remote set-head origin <branch>'" >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------

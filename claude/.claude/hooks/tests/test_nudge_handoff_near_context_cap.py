@@ -704,6 +704,96 @@ class TestNudgeHandoffNearContextCap:
         )
         assert not _marker_path(tmp_path).exists()
 
+    @pytest.mark.timing
+    @pytest.mark.parametrize(
+        "case",
+        ["bootstrap_filter", "bootstrap_extract", "cached_filter", "cached_extract"],
+    )
+    def test_newly_capped_sites_killed_by_2s_cap_not_5s_default(self, tmp_path, case):
+        """The four bare-`jq` sites wrapped in `_lib_capped_for 2 jq`
+        (:199, :208, :294, :303) each get their own case here.
+        - `:199`/`:294` share `_USAGE_BLOCK_JQ_FILTER` (the usage_block `-s`
+          call).
+        - `:208`/`:303` share the four-field extraction filter (the `-r`
+          call).
+
+        A jq shim keyed on filter content can't tell the
+        bootstrap call from the incremental-scan call sharing that filter,
+        so each case instead arranges which of the two code paths
+        (bootstrap vs incremental) is reachable, and the shared filter
+        content only ever fires inside that one path.
+        """
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — cap cannot fire at all")
+
+        filter_marker = "map(select"  # _USAGE_BLOCK_JQ_FILTER: sites :199/:294
+        extract_marker = "cache_read_input_tokens"  # four-field extraction: sites :208/:303
+        slow_on = filter_marker if case.endswith("_filter") else extract_marker
+
+        fake_bin = tmp_path / f"fakebin-slow-jq-{case}"
+        fake_bin.mkdir()
+        slow_jq = fake_bin / "jq"
+        slow_jq.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            f'  *"{slow_on}"*) sleep 3.5 ;;\n'
+            "esac\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        slow_jq.chmod(0o755)
+        # HANDOFF_NUDGE_BLOCK_AT pinned above default so the cached_* branch's
+        # rearmed_estimate stays on the advisory "fire" path this test's
+        # assertion messages describe, instead of the hard-block path a
+        # genuinely-completing slow jq would otherwise reach.
+        extra_env = {
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HANDOFF_NUDGE_BLOCK_AT": REARM_MECHANICS_BLOCK_AT,
+        }
+        transcript = tmp_path / "t.jsonl"
+
+        if case.startswith("bootstrap"):
+            _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+            start = time.perf_counter()
+            result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+            elapsed = time.perf_counter() - start
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", (
+                f"hook fired despite the slow bootstrap-path jq call being expected to "
+                f"time out at the 2s cap (took {elapsed:.1f}s) -- the cap may have "
+                "collapsed to the 5s _lib_capped default"
+            )
+            assert not _marker_path(tmp_path).exists()
+            return
+
+        # "cached_*": a real (fast) first call bootstraps the scan-state
+        # file, then a larger usage record is appended so the incremental
+        # scan has genuinely new usage to find. The appended estimate sits
+        # past the rearm-spacing threshold, so the two outcomes diverge:
+        # - A successful slow jq (the 5s-regression case) produces an
+        #   observable fire.
+        # - A correctly-2s-killed call falls back to the first call's
+        #   cached, not-yet-rearmed estimate and stays silent.
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        first = _run_hook(_base_payload(transcript), tmp_path)
+        assert first.stdout.strip() != ""
+
+        rearmed_estimate = ABOVE_LARGE + DEFAULT_REARM_SPACING + 1
+        _append_to_transcript(transcript, [_record_totalling(rearmed_estimate)])
+
+        start = time.perf_counter()
+        result = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        elapsed = time.perf_counter() - start
+        assert result.returncode == 0
+        assert result.stdout.strip() == "", (
+            f"hook fired despite the slow incremental-scan jq call being expected to "
+            f"time out at the 2s cap (took {elapsed:.1f}s) -- the cap may have "
+            "collapsed to the 5s _lib_capped default"
+        )
+        assert _marker_path(tmp_path).read_text() == f"{ABOVE_LARGE}\n"
+
     def test_already_fired_is_silent(self, tmp_path):
         """When the marker holds a LAST_FIRED_AT within REARM_SPACING of ESTIMATE, subsequent calls produce no stdout."""
         transcript = tmp_path / "t.jsonl"

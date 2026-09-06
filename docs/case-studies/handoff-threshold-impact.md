@@ -93,6 +93,8 @@ Token decomposition (mechanism detail, not the decision variable): after-era cac
 
 Reviewer-spawn intensity per branch rose (8.72 → 9.95, roughly +14%) rather than holding flat — more scrutiny per branch under the new cap, not less, which is still evidence against a quality decline. Hook-denial friction also held its shape. Before-window denials totaled 842: worktree-enforcement 269, plan-review-routing 146, redaction 125, marker.sh 109, plan-review 69, code-review 47, and eight smaller categories. After-window denials totaled 368 over roughly half the calendar span: worktree-enforcement 181, plan-review 39, redaction 35, marker.sh 32, code-review 21, and seven smaller categories. The same gates dominate in the same rank order in both windows. User-facing friction (rejections, auto-mode blocks, interruptions) fell from 59 events in the before window to 24 in the after window.
 
+**Not comparable to a post-2026-09-06 `review-trace` run.** The table and denial/friction totals above were measured under `review-trace`'s pre-2026-09-06 main-thread-only scan, which excluded subagent (sidechain) transcript records.
+
 **Findings.** `reviewer-yield --this-repo` has no lower-bound date flag, so its three checkpoints are each cumulative since this repo's transcript history began, not era-isolated:
 
 - Through 2026-08-16: 954 dispatches / 638 findings.
