@@ -73,7 +73,7 @@ CWD=""
   IFS= read -r CWD
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.session_id // ""),(.cwd // "")' \
+    | _lib_jq -r '(.session_id // ""),(.cwd // "")' \
     2>/dev/null
 ) 2>/dev/null || true
 
@@ -168,6 +168,7 @@ if [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ]; then
 fi
 printf '%s\n' "$REPO_ROOT" > "$STATE_FILE" 2>/dev/null || true
 
-jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
+# shellcheck disable=SC2016 # single-quoted on purpose: $ctx is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+_lib_jq -n --arg ctx "$ADDITIONAL_CONTEXT" \
   '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}' || true
 exit 0

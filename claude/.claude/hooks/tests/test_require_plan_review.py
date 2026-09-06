@@ -2326,6 +2326,60 @@ class TestRequirePlanReviewPlanMode:
             f"does not), took {elapsed:.1f}s"
         )
 
+    @pytest.mark.timing
+    def test_planfilepath_hung_jq_denies_within_timeout(
+        self, plan_review_repo, plan_review_home, tmp_path
+    ):
+        """The planFilePath extraction at line ~109 uses _lib_jq, not bare jq
+        (GH-489's uncapped-secondary-jq defect class) — a hung jq binary must
+        deny within the 5s _lib_jq backstop rather than blocking ExitPlanMode
+        indefinitely. Deny is the correct outcome here (unlike the analogous
+        require-architect-consult.sh case): an empty PLAN_MODE_FILE_PATH
+        falls through to this class's baseline armed-gate logic, which
+        denies with no file_path present (see this class's own docstring).
+
+        The hook's first jq call (_lib_parse_tool_input_or_deny's six-field
+        extraction) is already _lib_jq-wrapped and would itself deny within
+        budget on an always-hung jq, which would pass this test even if the
+        second call (planFilePath, this test's actual target) were still
+        bare jq. Matching narrowly on the planFilePath filter string (rather
+        than a call counter) isolates that specific call: a call-counter
+        stub would also hang _lib_emit_deny's own reason-encoding jq call
+        on the deny path this test exercises (a third, unrelated call),
+        adding a second 5s timeout cycle and roughly doubling elapsed time —
+        not a defect in the fix, just a test artifact this design avoids."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "jq"
+        stub.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            '  *planFilePath*) sleep 10 ;;\n'
+            f'  *) exec "{real_jq}" "$@" ;;\n'
+            "esac\n"
+        )
+        stub.chmod(0o755)
+
+        sid = "session-planmode-hung-jq"
+        start = time.monotonic()
+        result = run_hook(
+            REQUIRE_PLAN_REVIEW_HOOK,
+            {**exitplanmode_input(plan_file_path="/tmp/whatever-plan.md"), "session_id": sid},
+            cwd=plan_review_repo,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+        assert result == "deny"
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_jq timeout to fire on the second (planFilePath) "
+            f"jq call (stub sleeps 10s if it does not), took {elapsed:.1f}s"
+        )
+
 
 class TestPlanReviewSkillPlanModeFixture:
     """Exercises the new Step 0 declare-planmode-path fixture end to end: the

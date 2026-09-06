@@ -420,7 +420,7 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
   [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=main model=opus)
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
-  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
+  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
@@ -465,6 +465,14 @@ git checkout           2
   unmatched                                         1           0                0      2
   worktree-enforcement                              1           5                0      0
 
+## Denials by hook/gate x cause (14 total)
+
+  Hook                                behavioral  lib-source  input-parse  helper-proc  deny-encode
+  -----------------------------------------------------------------------------------------------------
+  worktree-enforcement                         6           0            0            0            0
+  marker-script-shape                          4           0            0            1            0
+  unmatched                                    3           0            0            0            0
+
 ## Friction events by kind (9 total)
 
 Kind                     Count
@@ -479,6 +487,8 @@ interrupted                    1
 
 - **The two marginal tables and the cross-tab.** "Denials by hook/gate" and "Denials by attempted command shape" are independent marginals over the same denial population `--deny-only` selects; "Denials by hook/gate x command shape" cross-tabs the two, since the marginals alone can't say which hook denied which command shape — a hook's row, read across the cross-tab's columns, is the only place that join is visible.
 - **`other` and `unmatched` are open buckets, not errors.** A command shape falls to `other` when the denied command isn't a recognized `git`/`gh`/`marker.sh` invocation (or its subcommand-position token looks like a flag rather than a subcommand); a hook/gate label falls to `unmatched` when the denial message matches the general hook-denial signature but names no hook the classifier recognizes. Both buckets stay printed — a shape or label that needs adding to the classifier shows up as a nonzero count here rather than being silently absorbed.
+- **The cause axis is a closed five-value vocabulary, with `behavioral` as the fallback.** `lib-source` (`_lib.sh` failed to source), `input-parse` (the tool-input payload failed to parse), `helper-proc` (`sed`/`tr`/`awk`/`grep` missing, killed by the timeout backstop, or errored), and `deny-encode` (`jq` missing, failed, or timed out, so the deny envelope itself couldn't be built) are matched in that order against a fragment of the denial's message body; a message matching none of the four is `behavioral` — the agent tripped the gate, not the tooling underneath it.
+- **Cause classification is best-effort, and an accidental miscount is not the same risk as a deliberate one.** An ordinary path or command that happens to contain a cause fragment mis-buckets one event by coincidence — the same kind of noise this toolkit's `_HOOK_DENIAL_SIGNATURE` detection layer already documents. Separately, an agent can deliberately plant a cause fragment such as `failing closed` inside a file path or command it controls, which moves its own gate-tripping denial out of `behavioral` in this table; the gate still denied in real time, the raw transcript record is unchanged, and `review-trace`'s own per-event `cause=` line on the default timeline recovers the individual event.
 - **Friction events are a different axis from denials.** A `denial` event is a hook or `permissions.allow` block, matched by message text. A `friction` event is one of four other reasons a tool call didn't go through, read from the record's own `toolDenialKind` field: `user-rejected` (a permission prompt the user declined), `automode-blocked`, `automode-unavailable`, or `interrupted` (`[Request interrupted by user for tool use]`). A `toolDenialKind` value outside that four-value set prints as `other-kind` rather than being echoed raw. Friction events never change `has_denial`, the per-session `denials=N` header, or `--deny-only`'s session-selection — those three stay denial-kind-only. `--deny-summary` is the only surface that tallies friction into a table; without it, the default per-session timeline still renders a `friction` line for each one, but nothing counts them.
 - **Combined with `--deny-only`.** Friction counts are tallied from a session's full event list before the `--deny-only` session filter is applied, so a session whose only events are friction (no denials at all) still contributes to the friction breakout even though `--deny-only` alone wouldn't select that session for the default timeline view.
 - **Corpus window and the pre-regime caveat.** The printed window is the earliest/latest timestamp among in-scope events, after `--branches`/`--since`/`--until` are applied. `toolDenialKind` was not recorded on any transcript before 2026-07-20, so an errored, non-gate tool result timestamped earlier than that can't be classified into the friction breakdown at all. Those records are counted separately, on the line under the friction table, rather than folded into the breakdown as zero friction.

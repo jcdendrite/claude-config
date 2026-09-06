@@ -452,7 +452,7 @@ class TestDenyPrivateProjectRefs:
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "Commit blocked by redaction gate" in reason
+        assert "Blocked by redaction gate: Commit" in reason
         assert "Redact private-project-identifying content" in reason
         assert "WIDGET-123" in reason
 
@@ -2030,7 +2030,7 @@ class TestDenyPrivateProjectRefs:
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
         # Tracker-ID branch fired (priority): its specific marker phrase.
-        assert "Commit blocked by redaction gate" in reason
+        assert "Blocked by redaction gate: Commit" in reason
         assert "WIDGET-123" in reason
         # Blocklist scan is skipped when tracker fires, so entry absent.
         assert "Acme Corp" not in reason
@@ -3700,7 +3700,7 @@ class TestDenyPrivateProjectRefs:
         command = f"gh api repos/x/y/issues/1/comments -X POST -f body='clean' && gh issue create --body-file {missing}"
         reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
         assert reason is not None
-        assert reason.startswith("gh issue command references a body-source file")
+        assert reason.startswith("Blocked by redaction gate: gh issue command references a body-source file")
 
     def test_gh_api_command_substitution_form_denied(self, claude_config_repo):
         """A mutating `gh api` call wrapped in `$()` is split into its own

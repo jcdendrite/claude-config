@@ -142,10 +142,22 @@ _lib_config_dir() {
 # to rely on unconditionally here (unlike in the bootstrap stub) because this
 # function only ever runs after _lib.sh
 # has fully sourced.
+#
+# DENY_GATE_LABEL is declared by each gate hook before its bootstrap
+# emit_deny stub above, so the pre-source and post-source deny paths emit
+# the same "Blocked by <label> gate: " identity. A hook that forgets the
+# declaration falls back to ${0##*/} with a trailing .sh stripped, rather
+# than an unattributed bare body.
 _lib_emit_deny() {
   local reason="$1"
+  local label="${DENY_GATE_LABEL:-}"
+  if [ -z "$label" ]; then
+    label="${0##*/}"
+    label="${label%.sh}"
+  fi
+  local prefixed_reason="Blocked by ${label} gate: ${reason}"
   local reason_json
-  reason_json=$(printf '%s' "$reason" | _lib_jq -Rs . 2>/dev/null)
+  reason_json=$(printf '%s' "$prefixed_reason" | _lib_jq -Rs . 2>/dev/null)
   if [ -z "$reason_json" ]; then
     # jq is absent, failed, or was killed by the timeout backstop. Exit 2 is
     # the harness's blocking path for PreToolUse and carries the reason on
@@ -157,7 +169,7 @@ _lib_emit_deny() {
     # with the parse-failure reason below — which names the wrong cause.
     # Without this line the session has no in-agent route to a fix.
     printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. Underlying gate reason follows.\n%s\n' \
-      "$reason" >&2
+      "$prefixed_reason" >&2
     exit 2
   fi
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
@@ -187,15 +199,17 @@ _lib_emit_allow_with_context() {
     "$context_json"
 }
 
-# Reads stdin into INPUT (global), extracts TOOL_NAME and COMMAND (globals)
-# via a single _lib_jq call using ASCII Unit Separator (0x1f) as delimiter.
-# The single call surfaces a structural-type error when .tool_input is non-object
-# (jq non-zero exit).
+# Reads stdin into INPUT (global), extracts TOOL_NAME, COMMAND, CWD,
+# SESSION_ID, FILE_PATH, and AGENT_TYPE (globals) via a single _lib_jq call
+# using ASCII Unit Separator (0x1f) as delimiter. The single call surfaces a
+# structural-type error when .tool_input is non-object (jq non-zero exit).
 #
-# Three deny paths protect against silent-allow:
+# Four deny paths protect against silent-allow:
 #   (a) jq non-zero exit (parse failure, timeout exit=124, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
+#   (d) a 0x1f byte inside any extracted value, which would otherwise shift
+#       every field after it into the wrong global
 # Per Anthropic PreToolUse contract, every legitimate event has a non-empty
 # .tool_name; absence indicates the call did not originate from a real tool
 # invocation. Without (b)/(c), downstream gates that early-exit on
@@ -205,8 +219,8 @@ _lib_emit_allow_with_context() {
 # On failure, calls emit_deny (caller-defined) with the supplied message and
 # exits 0 — caller never checks $?. Never call this with `|| true` or in
 # a pipeline. CALLER MUST define emit_deny before sourcing _lib.sh so this
-# helper can resolve it; the canonical pattern (define-emit_deny-then-source)
-# is enforced by test_hook_alignment.py. See _lib_emit_deny above for the
+# helper can resolve it. test_hook_alignment.py enforces the
+# define-emit_deny-then-source pattern. See _lib_emit_deny above for the
 # post-source re-pointing pattern hooks use to pick up the shared body.
 _lib_parse_tool_input_or_deny() {
   local deny_msg="${1:-Blocked: could not parse tool-input JSON.}"
@@ -215,27 +229,55 @@ _lib_parse_tool_input_or_deny() {
     emit_deny "$deny_msg"
     exit 0
   fi
-  # Single jq call extracts both fields delimited by ASCII Unit Separator (0x1f)
-  # rather than newlines, preventing a tool_name value containing an embedded
-  # newline from corrupting COMMAND via head/tail line splitting. Unit Separator
-  # cannot appear in a valid Claude Code tool name or shell command.
+  # Single jq call extracts all six fields delimited by ASCII Unit Separator
+  # (0x1f) rather than newlines, preventing a value containing an embedded
+  # newline from corrupting a later field via line splitting. Unit Separator
+  # cannot appear in a valid Claude Code tool name, shell command, cwd,
+  # session id, path, or agent type.
   # The .tool_input.command extraction additionally surfaces a structural-type
   # error when .tool_input is non-object (e.g. "Cannot index string with string
   # 'command'"), returning non-zero.
+  # .cwd, .session_id, and .agent_type silently stringify via jq's \(...)
+  # interpolation rather than erroring when the field holds a non-string
+  # JSON value (a number, object, or array).
+  # For AGENT_TYPE this is safe because both of its consumers
+  # (_lib_is_review_only_agent, _lib_is_no_gate_release_agent) are
+  # exact-match denylists, so a garbled value just fails to match and
+  # falls through to the existing safe default.
   local jq_out
-  # WARNING: the format string below contains a literal 0x1f (ASCII Unit Separator)
-  # byte between the two interpolated fields - invisible in editors and diff views.
-  # Do not remove it. test_lib.py::test_valid_bash_payload_returns_ok will fail
-  # immediately if the delimiter is absent, catching accidental deletion.
-  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")"' 2>/dev/null)
+  # WARNING: the format string below contains five literal 0x1f (ASCII Unit
+  # Separator) bytes, one between each of the six interpolated fields. They
+  # are invisible in editors and diff views — do not remove them. test_lib.py's
+  # six-field characterization test will fail immediately if a delimiter is
+  # missing, catching accidental deletion.
+  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")"' 2>/dev/null)
   local jq_exit=$?
   if [ "$jq_exit" -ne 0 ]; then
     emit_deny "$deny_msg"
     exit 0
   fi
-  TOOL_NAME="${jq_out%%$'\x1f'*}"
-  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND
-  COMMAND="${jq_out#*$'\x1f'}"
+  # -d '' (NUL delimiter, absent from the input) is required rather than the
+  # default newline delimiter, because COMMAND may legitimately contain
+  # embedded newlines. mapfile/readarray, the bash-4 alternative, is
+  # forbidden in this repo (test_no_bash4_constructs.py) because the target
+  # includes bash 3.2. `read -r -d ''` returns non-zero at EOF without ever
+  # finding that delimiter, on every invocation including this one's own
+  # success path, hence the trailing `|| true`.
+  # The appended sixth 0x1f plus the trailing _lib_parse_overflow variable is
+  # a field-shift detector, not a per-field guard. A 0x1f byte inside any one
+  # of the six values raises the split's field count above six regardless of
+  # which field carries it. A well-formed payload therefore leaves
+  # _lib_parse_overflow holding exactly the herestring's own trailing
+  # newline and nothing else.
+  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE
+  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
+  # This deny carries its own message rather than $deny_msg, so a deliberate
+  # field-shift attempt classifies as a behavioral denial instead of being
+  # filed under the shared parse-failure (infra) reason.
+  if [ "$_lib_parse_overflow" != $'\n' ]; then
+    emit_deny "a tool-input field contained a Unit Separator (U+001F) byte, which would shift extracted-field boundaries — refusing rather than acting on values that may not be the ones the harness sent."
+    exit 0
+  fi
   # Embedded newline in TOOL_NAME means the payload violated the PreToolUse
   # contract; deny rather than allow with a corrupted TOOL_NAME value.
   if [ -z "$TOOL_NAME" ]; then
@@ -1025,7 +1067,7 @@ _lib_command_invokes_tool_subcmd() {
   return 1
 }
 
-# _lib_staged_length_gate PATTERN GATE_LABEL
+# _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE
 # Shared body behind check-skill-length.sh and check-claude-md-length.sh:
 # deny a git commit when a staged file matching PATTERN (a grep -E pattern
 # over `git diff --cached --name-only` output) is over its per-file limit
@@ -1040,23 +1082,15 @@ _lib_command_invokes_tool_subcmd() {
 # populated $COMMAND and $TOOL_NAME via _lib_parse_tool_input_or_deny, and
 # on the caller having already exited for a non-Bash TOOL_NAME.
 #
-# GATE_LABEL is the exact sentence (through its trailing period) each caller
-# already used as its own over-limit deny message's lead-in before this
-# extraction — verbatim, not a generic template, because
-# transcript-analysis.py's _denial_hook_label parses that exact wording
-# ("AGENTS.md length", "Skill length") out of live deny text to attribute a
-# denial to its hook; see _DENIAL_HOOK_LABELS there.
+# OVER_LIMIT_MESSAGE now carries only the caller's own over-limit sentence:
+# the gate-identity prefix comes from _lib_emit_deny's DENY_GATE_LABEL, not
+# from this parameter, so the two fail-closed/internal-error denies below
+# emit their own body text without re-deriving a prefix from it.
 #
 # Checked fail-closed on the commit-match check, matching both callers'
 # documented fail-closed posture: an undetermined match (sed/tr missing,
 # killed, or erroring inside _lib_command_invokes_git_subcmd) denies rather
 # than silently skipping the length check.
-#
-# The fail-closed message below deliberately reuses GATE_LABEL's own prefix
-# (via ${gate_label%%:*}), so it now classifies into the same
-# transcript-analysis.py _DENIAL_HOOK_LABELS bucket as the over-limit
-# message below — the two were distinct buckets before this extraction; the
-# merge is a deliberate simplification, not an oversight.
 #
 # The git calls below are capped via _lib_capped, which degrades to allow
 # (not just to not-hanging) on timeout: a locked index or network mount
@@ -1072,21 +1106,21 @@ _lib_command_invokes_tool_subcmd() {
 # cap-engagement test anywhere, a pre-existing gap this extraction doesn't
 # close.
 _lib_staged_length_gate() {
-  local pattern="$1" gate_label="$2"
+  local pattern="$1" over_limit_message="$2"
   _lib_command_invokes_git_subcmd "$COMMAND" commit
   local git_commit_match_status=$?
   if [ "$git_commit_match_status" -eq 1 ]; then
     return 0
   fi
   if [ "$git_commit_match_status" -ne 0 ]; then
-    emit_deny "Blocked by ${gate_label%%:*}: could not determine whether this command invokes git commit (status ${git_commit_match_status}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
+    emit_deny "could not determine whether this command invokes git commit (status ${git_commit_match_status}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
     return 0
   fi
 
   # Fail closed if a caller forgot to define limit_for, rather than letting
   # `limit=$(limit_for "$f")` silently yield empty and skip the length check.
   if ! declare -f limit_for >/dev/null 2>&1; then
-    emit_deny "Blocked by ${gate_label%%:*}: internal error — limit_for is not defined. This is a caller-contract violation, not a policy violation; report it."
+    emit_deny "internal error — limit_for is not defined. This is a caller-contract violation, not a policy violation; report it."
     return 0
   fi
 
@@ -1107,7 +1141,7 @@ _lib_staged_length_gate() {
 
   if [ "$fail" -eq 1 ]; then
     local reason
-    reason=$(printf '%s Reduce to the limit or fewer lines before committing:\n%b' "$gate_label" "$messages")
+    reason=$(printf '%s Reduce to the limit or fewer lines before committing:\n%b' "$over_limit_message" "$messages")
     emit_deny "$reason"
   fi
   return 0

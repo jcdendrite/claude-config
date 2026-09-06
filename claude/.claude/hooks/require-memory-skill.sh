@@ -41,12 +41,14 @@ set -uo pipefail
 #   0      — allow (no opinion)
 #   0+JSON — deny (memory write without active skill session)
 
+DENY_GATE_LABEL="memory-skill"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -57,11 +59,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by memory-skill gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by memory-skill gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Only gate Write, Edit, and MultiEdit tool calls.
 case "$TOOL_NAME" in
@@ -69,7 +71,6 @@ case "$TOOL_NAME" in
   *) exit 0 ;;
 esac
 
-FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty')
 if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
@@ -120,8 +121,6 @@ if [ "$IS_CANDIDATE" -eq 0 ]; then
   exit 0
 fi
 
-SESSION_ID=$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty')
-
 # Fail open if we can't key the per-session marker at all: an absent
 # session_id (older Claude Code versions, payload-schema drift) leaves no
 # marker path to build, so there is nothing to distinguish "skill active"
@@ -139,4 +138,4 @@ if _lib_active_bypass_marker_live_and_touch ".memory-skill-active.d" "$SESSION_I
   exit 0
 fi
 
-emit_deny "Memory write blocked by ai-instruction-and-memory-files gate. You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."
+emit_deny "Memory write — You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."

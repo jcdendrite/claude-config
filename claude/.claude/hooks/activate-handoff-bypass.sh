@@ -11,7 +11,12 @@ set -uo pipefail
 # marker's read side.
 
 INPUT=$(cat)
-TOOL_NAME=$(printf '%s\n' "$INPUT" | jq -r '.tool_name // empty')
+
+if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+  exit 0
+fi
+
+TOOL_NAME=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_name // empty')
 [ "$TOOL_NAME" = "Skill" ] || exit 0
 
 # Single jq pass for all three fields, mirroring
@@ -25,12 +30,8 @@ SESSION_ID=""
   IFS= read -r SESSION_ID
 } < <(
   printf '%s\n' "$INPUT" \
-    | jq -r '(.tool_input.skill // ""),(.agent_type // ""),(.session_id // "")' 2>/dev/null
+    | _lib_jq -r '(.tool_input.skill // ""),(.agent_type // ""),(.session_id // "")' 2>/dev/null
 ) 2>/dev/null || true
-
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
-  exit 0
-fi
 
 # SESSION_ID feeds the drift-signal path below as a path component ("../"
 # would escape its marker directory); fail the same way an empty id already

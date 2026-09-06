@@ -871,15 +871,18 @@ class TestAgentTypeMatchSemantics:
         assert run_hook(HOOK, bash_input("sed -i s/a/b/ x", agent_type="staff-sdet ")) == "allow"
 
 
-def _run_hook_with_jq_failing_on(payload: dict, fail_token: str, tmp_path) -> str:
+def _run_hook_with_jq_failing_on(payload: dict, fail_token: str, tmp_path) -> str | None:
     """Run the hook under a jq stub that exits non-zero whenever its filter
     arguments mention `fail_token`, delegating every other jq call to the real
-    binary. This lets the parse-layer jq succeed while forcing one specific
-    downstream read (.agent_type or .tool_input.file_path) to fail, so the
-    fail-closed deny at that call site is exercised directly — a regression
-    guard against a future edit that reintroduces `local` on the assignment and
-    silently flips the read back to fail-open. Mirrors test_lib.py's PATH-stub
-    pattern; skips when the toolchain isn't available."""
+    binary. Returns the deny reason (or `None` on silent allow) via
+    run_hook_reason, so a caller can assert on the message rather than only the
+    decision. `agent_type` and `file_path` both appear inside
+    _lib_parse_tool_input_or_deny's own combined jq filter string (which reads
+    `.agent_type // ""` and `.tool_input.file_path // ""` in the same call as
+    the other four fields), so failing on either token fails that shared
+    parse-layer call — this hook issues no jq call of its own for either
+    field. Mirrors test_lib.py's PATH-stub pattern; skips when the toolchain
+    isn't available."""
     real_jq = shutil.which("jq")
     bash = shutil.which("bash")
     if not real_jq or not bash:
@@ -897,28 +900,35 @@ def _run_hook_with_jq_failing_on(payload: dict, fail_token: str, tmp_path) -> st
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
-    return run_hook(HOOK, payload, extra_env={"PATH": str(tmp_path)})
+    return run_hook_reason(HOOK, payload, extra_env={"PATH": str(tmp_path)})
 
 
 class TestFailClosedJqReads:
-    """The .agent_type and .tool_input.file_path reads are wrapped so a jq
-    failure denies rather than falling through to allow. Each test forces jq to
-    fail on exactly that read (parse-layer jq still succeeds) and uses a payload
-    that would otherwise ALLOW, so the deny proves the fail-closed branch — not
-    an incidental deny."""
+    """AGENT_TYPE and FILE_PATH are populated by _lib_parse_tool_input_or_deny's
+    single shared jq call, and _lib.sh's own fail-closed handling denies with
+    the generic parse-failure message on any jq failure in that call — before
+    this hook's own AGENT_TYPE/FILE_PATH-consuming logic
+    (_lib_is_review_only_agent, the Write/Edit/MultiEdit FILE_PATH branch)
+    ever runs. This hook holds no per-site fail-closed fork of its own for
+    either field, since one would be redundant with that shared guarantee.
+    Each test forces jq to fail on a token that only appears in the shared
+    parser's combined filter string, using a payload that would otherwise
+    ALLOW, so the generic parse-failure deny proves the shared guard fired
+    ahead of this hook's own logic rather than some incidental deny."""
 
-    def test_agent_type_read_failure_denies(self, tmp_path):
-        # code-writer + git status would normally allow (non-reviewer, read-only);
-        # with the agent_type read failing the hook can't clear the caller, so it denies.
+    def test_agent_type_token_failure_denies_via_shared_parser(self, tmp_path):
+        # code-writer + git status would normally allow (non-reviewer, read-only).
         payload = bash_input("git status", agent_type="code-writer")
-        assert _run_hook_with_jq_failing_on(payload, "agent_type", tmp_path) == "deny"
+        reason = _run_hook_with_jq_failing_on(payload, "agent_type", tmp_path)
+        assert reason is not None
+        assert "could not parse tool-input JSON" in reason
 
-    def test_file_path_read_failure_denies(self, tmp_path):
-        # reviewer + Write to /tmp would normally allow (exempt path); the
-        # agent_type read succeeds (reviewer), then the file_path read fails, so
-        # the hook denies at that read rather than allowing the /tmp write.
+    def test_file_path_token_failure_denies_via_shared_parser(self, tmp_path):
+        # reviewer + Write to /tmp would normally allow (exempt path).
         payload = write_input("/tmp/scratch/ok.py", agent_type="staff-sdet")
-        assert _run_hook_with_jq_failing_on(payload, "file_path", tmp_path) == "deny"
+        reason = _run_hook_with_jq_failing_on(payload, "file_path", tmp_path)
+        assert reason is not None
+        assert "could not parse tool-input JSON" in reason
 
 
 def _review_only_roster() -> list[str]:

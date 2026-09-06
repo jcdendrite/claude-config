@@ -51,12 +51,14 @@
 
 set -uo pipefail
 
+DENY_GATE_LABEL="respond-pr"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -67,11 +69,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by respond-pr gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked by respond-pr gate: could not parse tool-input JSON."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Only gate Bash tool use
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -82,7 +84,6 @@ fi
 # skill and should let its own gh commands through. An empty session_id (older
 # Claude Code versions, payload-schema drift) or a path-escaping one falls
 # through to the gate.
-SESSION_ID=$(printf '%s\n' "$INPUT" | _lib_jq -r '.session_id // empty')
 if _lib_active_bypass_marker_live_and_touch ".respond-pr-active.d" "$SESSION_ID"; then
   exit 0
 fi
@@ -118,7 +119,7 @@ fi
 COMMAND_FLAT=$(printf '%s' "$COMMAND" | awk 'BEGIN { RS = "\0" } { gsub(/\\\n/, ""); gsub(/\n/, " "); printf "%s", $0 }')
 COMMAND_FLAT_EXIT=$?
 if [ "$COMMAND_FLAT_EXIT" -ne 0 ]; then
-  emit_deny "Blocked by respond-pr gate: could not flatten the command text (exit ${COMMAND_FLAT_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than evaluating an unflattened command that could hide a gated pattern across a line break."
+  emit_deny "could not flatten the command text (exit ${COMMAND_FLAT_EXIT}) — awk may be missing, killed, or errored. Failing closed rather than evaluating an unflattened command that could hide a gated pattern across a line break."
   exit 0
 fi
 
@@ -279,7 +280,7 @@ shopt -u nocasematch
 # unattributed write to this one; a decoy that only releases a read costs
 # nothing, since the read was never the thing being protected.
 if [ "$GATED_WRITE" -eq 1 ]; then
-  emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. Stop and ask the user how they want to proceed."
+  emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. Stop and ask the user how they want to proceed."
   exit 0
 fi
 
@@ -330,4 +331,4 @@ if [ -n "$COMMAND_REPO" ]; then
   fi
 fi
 
-emit_deny "PR comment access blocked by respond-pr gate. Run the /respond-pr skill instead — it fetches inline file comments, top-level review bodies, AND issue-level comments (Claude habitually fetches only the first and misses real feedback), and it enforces the [Claude Code] attribution prefix on replies so comments posted through the GitHub token are clearly labeled as AI-generated. Do not ask the user for permission — run /respond-pr and let it handle this operation."
+emit_deny "PR comment access — Run the /respond-pr skill instead — it fetches inline file comments, top-level review bodies, AND issue-level comments (Claude habitually fetches only the first and misses real feedback), and it enforces the [Claude Code] attribution prefix on replies so comments posted through the GitHub token are clearly labeled as AI-generated. Do not ask the user for permission — run /respond-pr and let it handle this operation."

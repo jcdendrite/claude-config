@@ -22,19 +22,22 @@
 #
 # Known gaps (out of scope by design):
 #   - `gh api repos/OWNER/REPO/pulls/N/merge` — the gh-api path to merge.
-#     Different command shape; excluded by the implementation brief.
+#     Different command shape: this hook inspects tool_input.command text
+#     for a `gh pr merge` invocation, not the REST API surface `gh api` reaches.
 #   - `eval "gh pr merge..."`, `bash -c "gh pr merge..."` — subshell wrappers.
 #     The hook inspects tool_input.command, not the expanded subshell content.
 #     Claude Code agents operating in good faith do not use these forms.
 
 set -uo pipefail
 
+DENY_GATE_LABEL="gh-pr-merge"
+
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
 # source — see _lib_parse_tool_input_or_deny's contract comment in _lib.sh
 # for why the full jq-encode-or-hard-block body lives there, not here.
 emit_deny() {
-  printf '%s\n' "$1" >&2
+  printf 'Blocked by %s gate: %s\n' "$DENY_GATE_LABEL" "$1" >&2
   exit 2
 }
 
@@ -45,11 +48,11 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
   # after the call instead, but that defeats the bootstrap's job of
   # covering the case where sourcing _lib.sh itself fails.
   # shellcheck disable=SC2218
-  emit_deny "Blocked by gh-pr-merge gate: could not source _lib.sh."
+  emit_deny "could not source _lib.sh."
 fi
 emit_deny() { _lib_emit_deny "$1"; }
 
-_lib_parse_tool_input_or_deny "Blocked: could not parse tool-input JSON for gh-pr-merge gate."
+_lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Defense-in-depth: only act on Bash calls (settings.json already matches Bash).
 if [ "$TOOL_NAME" != "Bash" ]; then
@@ -68,11 +71,11 @@ fi
 _lib_command_invokes_tool_subcmd "$COMMAND" gh pr merge
 GH_PR_MERGE_MATCH_STATUS=$?
 if [ "$GH_PR_MERGE_MATCH_STATUS" -eq 0 ]; then
-  emit_deny "Blocked: '${COMMAND:0:200}' would merge a PR. Per the repo-root CLAUDE.md rule \"AI agents: don't merge your own PRs\", an AI agent that opens a PR does not also merge it — CI passing is necessary but not sufficient. Surface the merge intent to the engineer and wait for their explicit \"merge it\" instruction. (The engineer can run the command directly via the ! shell escape.)"
+  emit_deny "'${COMMAND:0:200}' would merge a PR. Per the repo-root CLAUDE.md rule \"AI agents: don't merge your own PRs\", an AI agent that opens a PR does not also merge it — CI passing is necessary but not sufficient. Surface the merge intent to the engineer and wait for their explicit \"merge it\" instruction. (The engineer can run the command directly via the ! shell escape.)"
   exit 0
 fi
 if [ "$GH_PR_MERGE_MATCH_STATUS" -ne 1 ]; then
-  emit_deny "Blocked: could not determine whether '${COMMAND:0:200}' invokes gh pr merge (status ${GH_PR_MERGE_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed per this gate's documented fail-closed posture rather than letting an unscanned command bypass the self-merge block."
+  emit_deny "could not determine whether '${COMMAND:0:200}' invokes gh pr merge (status ${GH_PR_MERGE_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed per this gate's documented fail-closed posture rather than letting an unscanned command bypass the self-merge block."
   exit 0
 fi
 

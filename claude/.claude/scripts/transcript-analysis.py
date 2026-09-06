@@ -1120,59 +1120,52 @@ _DENIAL_HOOK_NAME_COLON_RE = re.compile(
     rf"(?P<name>[\w .-]{{1,{_DENIAL_HOOK_NAME_MAX_CHARS}}}?)\s+(?:hook|gate):", re.IGNORECASE
 )
 
-# The hand-maintained set of prose labels hooks/*.sh actually emits — sourced
-# by grepping every hook's emit_deny call, not from hooks/*.sh basenames
-# (which match none of these; see the module-level docstring for why). A
-# captured name is trusted only if it's a member of this set; anything else
-# (a coincidental match, an unanticipated wording, an unbounded interpolated
-# value that happened to survive the character-class bound) falls to
-# _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim. Regression
-# coverage: TestDenialHookLabelEnumeration in test_transcript_analysis.py
-# drives each hook's real deny-path wording and asserts the label it
-# produces is a member here, so a hook's wording change or a new hook shows
-# up as a test failure rather than a silently stale set.
+# The hand-maintained set of prose labels hooks/*.sh actually emits. Every
+# gate hook declares its label once as DENY_GATE_LABEL, read by both the
+# bootstrap emit_deny stub and _lib_emit_deny; this set mirrors that
+# declaration. A captured name is trusted only if it's a member of this set;
+# anything else falls to _DENY_SUMMARY_UNMATCHED_HOOK rather than being
+# echoed verbatim. Examples of "anything else": a coincidental match, an
+# unanticipated wording, an unbounded interpolated value that survived the
+# character-class bound. Regression coverage: TestDenialHookLabelEnumeration
+# in test_transcript_analysis.py drives each hook's real deny-path wording
+# and asserts the label it produces is a member here, so a hook's wording
+# change or a new hook shows up as a test failure rather than a silently
+# stale set.
 _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
-    # "blocked by <name> hook/gate" — one entry per hooks/*.sh label.
-    "gh-pr-merge",  # block-gh-pr-merge.sh:49
-    # Still producible today by check-claude-md-length.sh's and
-    # check-skill-length.sh's bootstrap (source-failure) and
-    # parse-input-failure paths, both untouched by the hook-family-
-    # standardization Phase 2 extraction. The commit-detection fail-closed
-    # path that used to share these two labels now goes through the
-    # extracted _lib_staged_length_gate and shares "AGENTS.md length" /
-    # "Skill length" below instead.
-    "CLAUDE.md length",  # check-claude-md-length.sh:51,55
-    "skill length",  # check-skill-length.sh:56,60
-    "credential-path Bash",  # deny-credential-bash-reads.sh:27
-    "credential-file read",  # deny-credential-file-reads.sh:27
-    "data-file read",  # deny-data-file-reads.sh:65
-    "env-read",  # deny-env-reads.sh:47
-    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh:46
-    "network-install",  # deny-network-installs.sh:40
-    "PII commit",  # deny-pii-in-commits.sh:127
-    "redaction",  # deny-private-project-refs.sh:180
-    "repo-relocation",  # deny-repo-relocation.sh:63
-    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh:146
-    "marker-script-shape",  # enforce-marker-script-shape.sh:68
-    "settings session-keys",  # guard-settings-session-keys.sh:49
-    "code-review",  # require-code-review.sh:48
-    "memory-skill",  # require-memory-skill.sh:59
-    "ai-instruction-and-memory-files",  # require-memory-skill.sh:125
-    "plan-review",  # require-plan-review.sh:66
-    "plan-review routing",  # require-routing-read.sh:68
-    "ready-for-review",  # require-ready-for-review.sh:80
-    "respond-pr",  # require-respond-pr.sh:69
-    "routing-read",  # require-routing-read.sh:27
-    "stow-reminder",  # require-stow-reminder.sh:71
-    "worktree-enforcement",  # require-worktree-for-file-writes.sh:50, require-worktree-for-git-writes.sh:91
-    # "<name> invocation denied" (_DENIAL_HOOK_NAME_INVOCATION_DENIED_RE).
-    "marker.sh",  # enforce-marker-script-shape.sh:277,353
-    # "<name> gate:"/"<name> hook:" (_DENIAL_HOOK_NAME_COLON_RE) — a hook
-    # stating its own label as the message's own prefix. check-claude-md-length.sh:85's
-    # message reads "CLAUDE.md/AGENTS.md length gate: ..."; '/' isn't in the
-    # name-shaped class, so only the AGENTS.md half of the label survives.
-    "AGENTS.md length",  # check-claude-md-length.sh:85
-    "Skill length",  # check-skill-length.sh:87
+    # "blocked by <name> hook/gate" — one entry per hooks/*.sh DENY_GATE_LABEL.
+    "gh-pr-merge",  # block-gh-pr-merge.sh
+    "CLAUDE.md length",  # check-claude-md-length.sh
+    "skill length",  # check-skill-length.sh
+    "credential-path Bash",  # deny-credential-bash-reads.sh
+    "credential-file read",  # deny-credential-file-reads.sh
+    "data-file read",  # deny-data-file-reads.sh
+    "env-read",  # deny-env-reads.sh
+    "backtick-escape",  # deny-escaped-backticks-in-pr-body.sh
+    "network-install",  # deny-network-installs.sh
+    "PII commit",  # deny-pii-in-commits.sh
+    "redaction",  # deny-private-project-refs.sh
+    "repo-relocation",  # deny-repo-relocation.sh
+    "reviewer-tree-mutation",  # deny-reviewer-tree-mutation.sh
+    "marker-script-shape",  # enforce-marker-script-shape.sh
+    "settings session-keys",  # guard-settings-session-keys.sh
+    "code-review",  # require-code-review.sh
+    "memory-skill",  # require-memory-skill.sh
+    "plan-review",  # require-plan-review.sh
+    "ready-for-review",  # require-ready-for-review.sh
+    "respond-pr",  # require-respond-pr.sh
+    "routing-read",  # require-routing-read.sh
+    "stow-reminder",  # require-stow-reminder.sh
+    "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
+    "architect-consult",  # require-architect-consult.sh
+    "invisible-commit-content",  # deny-invisible-commit-content.sh
+    # Legacy-only: no active hook emits this wording. Each member is kept
+    # permanently so an older recorded transcript still classifies.
+    "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
+    "AGENTS.md length",  # check-claude-md-length.sh's "CLAUDE.md/AGENTS.md length gate:" wording, kept for legacy transcripts
+    "Skill length",  # check-skill-length.sh's "Skill length gate:" wording, kept for legacy transcripts
+    "ai-instruction-and-memory-files",  # require-memory-skill.sh's behavioral-deny wording, kept for legacy transcripts
+    "plan-review routing",  # require-routing-read.sh's behavioral-deny wording, kept for legacy transcripts
 })
 
 # --deny-summary's unmatched-hook-name bucket: a denial matched by
@@ -1292,6 +1285,25 @@ def _denial_hook_label(hook_name: str, message: str) -> str:
     return _DENY_SUMMARY_UNMATCHED_HOOK
 
 
+def _denial_cause_kind(message: str) -> str:
+    """Return one denial's infra-failure family, or the behavioral fallback.
+
+    Sibling of _denial_hook_label: same substring-cascade mechanism over the
+    message text only, never given hook_name. The cause axis is orthogonal
+    to the hook axis, so a denial carries exactly one value from each.
+    Classification matches a body fragment rather than a full sentence,
+    because the surrounding wording differs per hook. A hook that echoes
+    agent-controlled command or path text into its deny body can produce a
+    false infra classification, so counts are approximate in the same sense
+    _HOOK_DENIAL_SIGNATURE already documents.
+    """
+    lowered = message.lower()
+    for marker, kind in _DENIAL_CAUSE_MARKERS:
+        if marker in lowered:
+            return kind
+    return _DENIAL_CAUSE_BEHAVIORAL
+
+
 def _denial_command_shape(command: str) -> str:
     """Classify a denied Bash command's shape for --deny-summary.
 
@@ -1375,10 +1387,30 @@ def _friction_kind_label(tool_denial_kind: str) -> str:
     return tool_denial_kind if tool_denial_kind in _FRICTION_KINDS else _FRICTION_KIND_OTHER
 
 
+# --deny-summary's/review-trace's denial-cause vocabulary — closed, the same
+# shape as _FRICTION_KINDS above. Its tuple order fixes _print_deny_summary's
+# printed column order for the hook/gate x cause table.
+_DENIAL_CAUSE_BEHAVIORAL = "behavioral"
+_DENIAL_CAUSE_KINDS: tuple[str, ...] = (
+    _DENIAL_CAUSE_BEHAVIORAL, "lib-source", "input-parse", "helper-proc", "deny-encode",
+)
+
+# Ordered (marker, kind) cascade tried against the message in turn; the
+# first match wins. deny-encode is checked first because a jq outage also
+# fails the input parse and would otherwise be reported as the wrong cause.
+_DENIAL_CAUSE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("could not encode its deny reason", "deny-encode"),
+    ("could not source _lib.sh", "lib-source"),
+    ("could not parse tool-input json", "input-parse"),
+    ("failing closed", "helper-proc"),
+)
+
+
 def _print_deny_summary(
     hook_counts: dict[str, int],
     command_shape_counts: dict[str, int],
     hook_shape_counts: Counter[tuple[str, str]],
+    hook_cause_counts: Counter[tuple[str, str]],
     friction_counts: dict[str, int],
     pre_regime_tool_result_count: int,
     corpus_min_ts: float | None,
@@ -1389,6 +1421,8 @@ def _print_deny_summary(
     hook_shape_counts cross-tabs the hook/gate axis against the command-shape
     axis — the two marginal tables alone can't say which hook denied which
     command shape, which is the whole point of the census this feeds.
+    hook_cause_counts cross-tabs the same hook/gate axis against the
+    orthogonal denial-cause axis (_DENIAL_CAUSE_KINDS).
     """
     if corpus_min_ts is not None and corpus_max_ts is not None:
         print(f"\nCorpus window: {_fmt_date(corpus_min_ts)} to {_fmt_date(corpus_max_ts)}")
@@ -1428,6 +1462,24 @@ def _print_deny_summary(
         for hook in hooks:
             row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
                 f"{hook_shape_counts.get((hook, shape), 0):>{col_width}}" for shape in shapes
+            )
+            print(row)
+
+    # Column set is the fixed _DENIAL_CAUSE_KINDS enumeration rather than
+    # sorted-observed — a zero in the lib-source column is itself the
+    # signal, so a fixed column set keeps two runs comparable. Row order
+    # matches the hook/gate marginal table above.
+    if hook_counts:
+        cause_col_width = max((len(k) for k in _DENIAL_CAUSE_KINDS), default=5) + 2
+        print(f"\n## Denials by hook/gate x cause ({total} total)\n")
+        header = f"  {'Hook':<40}" + "".join(
+            f"{_sanitize_table_cell(kind):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
+        )
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for hook, _count in sorted(hook_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            row = f"  {_sanitize_table_cell(hook):<40}" + "".join(
+                f"{hook_cause_counts.get((hook, kind), 0):>{cause_col_width}}" for kind in _DENIAL_CAUSE_KINDS
             )
             print(row)
 
@@ -1713,6 +1765,10 @@ def _compute_deny_summary_data(
     hook_counts: dict[str, int] = defaultdict(int)
     command_shape_counts: dict[str, int] = defaultdict(int)
     hook_shape_counts: Counter[tuple[str, str]] = Counter()
+    # No separate corpus-wide cause accumulator — the per-cause total is a
+    # column sum of this cross-tab, and _DENIAL_CAUSE_KINDS is closed so
+    # every column always prints.
+    hook_cause_counts: Counter[tuple[str, str]] = Counter()
     friction_counts: dict[str, int] = defaultdict(int)
     corpus_min_ts: float | None = None
     corpus_max_ts: float | None = None
@@ -1760,14 +1816,17 @@ def _compute_deny_summary_data(
             hook_label = _denial_hook_label(evt["hook_name"], evt["message"])
             command = tool_use_commands.get(evt["tool_use_id"], "")
             command_shape = _denial_command_shape(command)
+            cause_kind = _denial_cause_kind(evt["message"])
             hook_counts[hook_label] += 1
             command_shape_counts[command_shape] += 1
             hook_shape_counts[(hook_label, command_shape)] += 1
+            hook_cause_counts[(hook_label, cause_kind)] += 1
 
     return {
         "hook_counts": hook_counts,
         "command_shape_counts": command_shape_counts,
         "hook_shape_counts": hook_shape_counts,
+        "hook_cause_counts": hook_cause_counts,
         "friction_counts": friction_counts,
         "corpus_min_ts": corpus_min_ts,
         "corpus_max_ts": corpus_max_ts,
@@ -1835,7 +1894,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         if sum(data["hook_counts"].values()) or sum(data["friction_counts"].values()):
             _print_deny_summary(
                 data["hook_counts"], data["command_shape_counts"], data["hook_shape_counts"],
-                data["friction_counts"], data["pre_regime_tool_result_count"],
+                data["hook_cause_counts"], data["friction_counts"], data["pre_regime_tool_result_count"],
                 data["corpus_min_ts"], data["corpus_max_ts"],
             )
         elif data["any_session_matched"]:
@@ -1889,7 +1948,11 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
                 hook = evt['hook_name']
                 uid = evt['tool_use_id']
                 msg = evt['message']
-                print(f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  id={uid}  msg={msg!r}{suffix}")
+                cause = _denial_cause_kind(msg)
+                print(
+                    f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
+                    f"  id={uid}  msg={msg!r}{suffix}"
+                )
             elif kind == "friction":
                 fkind = _friction_kind_label(evt['friction_kind'])
                 uid = evt['tool_use_id']
@@ -3620,12 +3683,12 @@ _EDIT_KNOWN_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 # This repo's own governance-hook/harness denial wordings that can deny an
-# edit-family call, matched case-insensitively — a *different*, narrower
-# purpose than _denial_hook_label's general "blocked by <name> hook/gate"
-# extraction above: three of these six (path-spelling, permissions,
-# worktree-isolation) are harness-native denial text, never a hook's own
-# "blocked by ... hook/gate" wording, so _denial_hook_label's enumerated
-# label set does not cover them.
+# edit-family call, matched case-insensitively.
+# Serves a narrower purpose than _denial_hook_label's general "blocked by
+# <name> hook/gate" extraction above. Three of these six (path-spelling,
+# permissions, worktree-isolation) are harness-native denial text rather
+# than a hook's own wording, so they fall outside _denial_hook_label's
+# enumerated label set.
 _EDIT_GOVERNANCE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("blocked by plan-review gate", "plan-review"),
     ("reviewer-tree-mutation", "reviewer-tree"),
