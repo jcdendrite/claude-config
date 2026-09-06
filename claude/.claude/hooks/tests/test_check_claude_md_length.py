@@ -55,6 +55,20 @@ def make_multibyte_bytes(n: int, filler: str = "é") -> str:
     return filler * ((n - 1) // filler_byte_length) + "\n"
 
 
+def make_lines_over_byte_limit(n: int, min_bytes: int, filler: str = "a") -> str:
+    """Return content with exactly n lines whose total byte count is at
+    least min_bytes, padding the last line with filler characters. Lets a
+    test grow both the line-count and byte-count dimensions at once from a
+    single piece of content."""
+    lines = [f"line {i + 1}" for i in range(n)]
+    content = "\n".join(lines) + "\n"
+    deficit = min_bytes - len(content.encode("utf-8"))
+    if deficit > 0:
+        lines[-1] += filler * deficit
+        content = "\n".join(lines) + "\n"
+    return content
+
+
 def make_repo_with_byte_file(tmp_path: Path, target_path: str, head_bytes: int) -> Path:
     """Git repo with `target_path` committed at exactly `head_bytes` bytes."""
     repo = tmp_path / "repo"
@@ -410,11 +424,10 @@ class TestCheckClaudeMdLength:
         )
 
     def test_new_claude_md_over_byte_limit_denies(self, isolated_home, tmp_path):
-        """New file with no HEAD version staged over BYTE_LIMIT — old_bytes
-        defaults to 0 → deny. Mirrors test_new_claude_md_over_limit_denies for
-        the byte dimension, exercising the `old_bytes` fallback path (`[ -n
-        "$old_bytes" ] || old_bytes=0` in _lib.sh), which is separately
-        implemented shell logic from the line-count fallback."""
+        """New file with no HEAD version staged over BYTE_LIMIT — there is no
+        `HEAD:$f` for `git show` to read, so the file is new to this commit
+        and old_bytes is 0 → deny. Mirrors test_new_claude_md_over_limit_denies
+        for the byte dimension."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -475,6 +488,29 @@ class TestCheckClaudeMdLength:
             )
             == "deny"
         )
+
+    def test_combined_line_and_byte_violation_denies_with_both_reasons(
+        self, isolated_home, tmp_path
+    ):
+        """HEAD under both limits, staged crosses both simultaneously: the
+        deny reason must include both the line-violation and byte-violation
+        message fragments, not just one (mutation regression: overwriting
+        instead of appending the byte-violation message would silently drop
+        the line-violation message)."""
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        content = make_lines_over_byte_limit(250, BYTE_LIMIT + 100)
+        (repo / CLAUDE_MD_PATH).write_text(content)
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_CLAUDE_MD_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "lines (was" in reason
+        assert "limit 200)" in reason
+        assert "bytes (was" in reason
+        assert f"limit {BYTE_LIMIT})" in reason
 
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, tmp_path

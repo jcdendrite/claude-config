@@ -15658,13 +15658,15 @@ class TestDenialHookLabelEnumeration:
         ("enforce-marker-script-shape.sh:353",
          "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus",
          "marker.sh"),
+        # These two rows must land unedited: they pin legacy pre-DENY_GATE_LABEL wording,
+        # not today's hooks/*.sh text (see TestDenialHookLabelEnumerationRealHooks for that).
         ("check-claude-md-length.sh:85",
-         "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line or "
-         "25600-byte limit. Reduce to the limit before committing.",
+         "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
+         "Reduce to the limit or fewer lines before committing.",
          "AGENTS.md length"),
         ("check-skill-length.sh:87",
          "Skill length gate: one or more SKILL.md files grew past their per-skill limit. "
-         "Reduce to the limit before committing.",
+         "Reduce to the limit or fewer lines before committing.",
          "Skill length"),
     ])
     def test_hook_wording_produces_enumerated_label(self, hook_file, message, expected_label):

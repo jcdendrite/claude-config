@@ -1139,14 +1139,12 @@ _lib_command_invokes_tool_subcmd() {
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
 #
-# BYTE_LIMIT is optional and opt-in: when non-empty, the same
-# over-limit-and-growing check also runs on byte count, using the same
-# `git show ":$f"` / `git show "HEAD:$f"` reads already fetched for the
-# line count. check-skill-length.sh's call site omits it (2-arg form):
-# unchanged behavior. check-claude-md-length.sh passes it. Both dimensions
-# accumulate into the same $messages/$fail pair below, so a file violating
-# both resolves into the one combined emit_deny call at the bottom rather
-# than a second, independently-emitted deny.
+# BYTE_LIMIT is optional and opt-in. When set, the byte check reuses the
+# same `git show ":$f"` / `git show "HEAD:$f"` reads already fetched for
+# the line-count check. check-skill-length.sh's call site omits it (2-arg
+# form, unchanged behavior). check-claude-md-length.sh passes it. Both
+# dimensions accumulate into the same $messages/$fail pair below,
+# producing one combined emit_deny call at the bottom rather than two.
 #
 # Callback-by-convention, the same shape _lib_parse_tool_input_or_deny
 # already establishes: CALLER MUST define `emit_deny` (as every gate hook

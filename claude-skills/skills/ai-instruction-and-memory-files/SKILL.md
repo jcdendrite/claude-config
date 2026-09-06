@@ -46,10 +46,12 @@ those files is open. Read it directly when reviewing a diff with neither open.
 Official threshold: **under 200 lines per CLAUDE.md file** — longer files
 consume more context and reduce adherence. The unit is **lines** — no
 Anthropic source attaches a word-count threshold. Within that cap, line
-count undercounts density (long-paragraph lines bury rules); see
-`docs/instruction-file-sizing-evidence.md` §3-4 for what the placement
-literature actually supports and does not support before citing "lost in
-the middle" for rule placement. Apply the
+count undercounts density (long-paragraph lines bury rules). See
+`docs/instruction-file-sizing-evidence.md` §3-4 before citing "lost in the
+middle" for rule placement — the placement literature supports less than
+that phrase implies. Place critical rules near the start or end of the
+file; see `docs/instruction-file-sizing-evidence.md` §1 for OpenAI's
+GPT-4.1 guidance on beginning-and-end placement. Apply the
 **behavior test** below per line. CLAUDE.md is **advisory** while
 hooks are **deterministic**; they guarantee the action happens — prefer a
 hook or structural test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.

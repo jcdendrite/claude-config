@@ -38,20 +38,22 @@ every figure in this section as **asserted, not measured**.
   > sections are easier to follow than dense paragraphs."
 
   The 200-line figure for CLAUDE.md is a stated recommendation with no
-  enforcement mechanism, not a hard limit — the docs draw that same
+  enforcement mechanism, not a hard limit. The docs draw that same
   distinction themselves: "This limit applies only to `MEMORY.md`. Claude
   Code loads a CLAUDE.md file of up to 4 MiB in full and skips a larger
   file. Shorter files produce better adherence." The truncation mechanism
-  described elsewhere on the page is MEMORY.md-only; CLAUDE.md's only hard
-  technical limit is the 4 MiB full-file skip. The 4 MiB figure is a hard
-  skip threshold, not a recommendation — a file under it loads in full
-  regardless of size, and a file over it is silently dropped.
+  described elsewhere on the page is MEMORY.md-only. CLAUDE.md's only hard
+  technical limit is the 4 MiB full-file skip. The 4 MiB figure is itself a
+  hard skip threshold, not a recommendation:
+
+  - Under 4 MiB: loads in full.
+  - Over 4 MiB: silently dropped.
 
   The same page states `MEMORY.md`'s load window: "The first 200 lines of
   `MEMORY.md`, or the first 25KB, whichever comes first, are loaded at the
   start of every conversation." This 25KB figure is Anthropic's stated
   `MEMORY.md` load window, extrapolated to CLAUDE.md as the nearest
-  in-family precedent — Anthropic states no byte/KB figure for CLAUDE.md
+  in-family precedent. Anthropic states no byte/KB figure for CLAUDE.md
   itself. 25KB over 200 lines implies roughly 128 bytes per line at that
   boundary.
 
