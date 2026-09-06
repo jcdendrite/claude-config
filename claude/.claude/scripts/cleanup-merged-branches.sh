@@ -291,13 +291,16 @@ fi
 # No fallback branch name: an unresolved default would fail to exclude the
 # repo's real default branch from the deletion candidates below.
 if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$REPO_ROOT"); then
-  SET_HEAD_ERR=$(_lib_capped git remote set-head origin --auto 2>&1 >/dev/null) || true
+  # Known gap, accepted:
+  # - Under --all-projects this repair call runs serially, so a hung/slow
+  #   remote blocks the rest of the sweep; _lib_capped's 5s cap only applies
+  #   when timeout/gtimeout is present.
+  # - Runs only when origin/HEAD is already unresolvable, and the sweep
+  #   stalls visibly on the printed "== <repo> ==" line rather than failing
+  #   silently.
+  _lib_capped git remote set-head origin --auto >/dev/null 2>&1 || true
   if ! DEFAULT_BRANCH=$(_lib_default_branch_from_origin_head "$REPO_ROOT"); then
-    ERR_MSG="cleanup-merged-branches.sh: could not resolve origin/HEAD, and 'git remote set-head origin --auto' did not repair it -- check that 'origin' exists and is reachable, then set the default branch manually with 'git remote set-head origin <branch>'"
-    if [ -n "$SET_HEAD_ERR" ]; then
-      ERR_MSG="$ERR_MSG (${SET_HEAD_ERR%%$'\n'*})"
-    fi
-    echo "$ERR_MSG" >&2
+    echo "cleanup-merged-branches.sh: could not resolve origin/HEAD, and 'git remote set-head origin --auto' did not repair it -- check that 'origin' exists and is reachable, then set the default branch manually with 'git remote set-head origin <branch>'" >&2
     exit 1
   fi
 fi

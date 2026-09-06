@@ -67,7 +67,9 @@
 # - The default-branch bypass's candidate-loop fallback can land on a real,
 #   verified-but-wrong branch name when origin/HEAD dangles (the
 #   "wrong-but-verified guess" tradeoff — see docs/design-decisions.md §54
-#   for the full explanation).
+#   for why that guess is accepted rather than closed). For this hook
+#   specifically, a coincidental branch-name match can skip the entire
+#   review/test/lint gate on a push, tracked as GH-899.
 # Every git rev-parse/symbolic-ref call in this script, and the gh pr view
 # network call, are capped via _lib_capped, so a stalled filesystem, locked
 # index, or hanging gh fails fast (5s) instead of hanging indefinitely.
@@ -78,15 +80,9 @@
 # A CURRENT_BRANCH timeout, or a candidate-loop timeout in isolation, does
 # not allow directly: it withholds the default-branch bypass and lets the
 # gate below decide, which can still deny.
-# DEFAULT_BRANCH resolves via _lib_default_branch_or_guess: a direct `git
-# symbolic-ref` lookup on origin/HEAD, verified with a `git rev-parse
-# --verify --quiet` on the resolved target
-# (_lib_default_branch_from_origin_head's own two-outcome contract,
-# documented in _lib.sh), then the main/master/develop candidate loop as
-# fallback. A symbolic-ref or verify timeout alone only withholds the
-# bypass if the candidate loop also fails to resolve a value. If the loop
-# still succeeds, DEFAULT_BRANCH is set and the bypass still fires
-# normally.
+# DEFAULT_BRANCH resolves via _lib_default_branch_or_guess (see _lib.sh for
+# the resolution recipe). A symbolic-ref or verify timeout alone only
+# withholds the bypass if the candidate loop also fails.
 # Only CURRENT_HEAD fails closed on that timeout (see its own comment below).
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition —

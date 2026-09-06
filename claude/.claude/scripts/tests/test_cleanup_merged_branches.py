@@ -668,7 +668,7 @@ class TestOriginHeadUnset:
 
 
 class TestUnresolvableDefaultBranchAborts:
-    """row8: when origin/HEAD is unresolvable and 'git remote set-head
+    """When origin/HEAD is unresolvable and 'git remote set-head
     origin --auto' cannot repair it either, the script aborts rather than
     falling back to a guessed branch name -- on every invocation mode,
     since a --dry-run preview computed against a guessed default would

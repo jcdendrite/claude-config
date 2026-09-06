@@ -66,13 +66,9 @@ def test_lib_sh_carries_the_literal() -> None:
 _OTHER_SHELL_FILES = [p for p in _SHELL_FILES if p != _EXPECTED_HOME]
 
 
-@pytest.mark.parametrize(
-    "script", _OTHER_SHELL_FILES, ids=[str(p.relative_to(CLAUDE_DIR)) for p in _OTHER_SHELL_FILES]
-)
-def test_literal_confined_to_lib_sh(script: Path) -> None:
-    """Every shell file under claude/.claude/ other than _lib.sh must not
-    reference refs/remotes/origin/HEAD directly -- default-branch
-    resolution goes through _lib.sh's two layers instead."""
+def _scan_for_violations(script: Path) -> list[str]:
+    """Return one formatted line per non-comment, non-suppressed reference
+    to _TARGET_LITERAL in script."""
     violations = []
     for lineno, line in enumerate(script.read_text().splitlines(), start=1):
         if "# noqa-origin-head" in line:
@@ -82,9 +78,34 @@ def test_literal_confined_to_lib_sh(script: Path) -> None:
             continue  # skip full-comment lines (e.g. explanatory prose naming the ref)
         if _TARGET_LITERAL in line:
             violations.append(f"  line {lineno}: {line.rstrip()}")
+    return violations
+
+
+@pytest.mark.parametrize(
+    "script", _OTHER_SHELL_FILES, ids=[str(p.relative_to(CLAUDE_DIR)) for p in _OTHER_SHELL_FILES]
+)
+def test_literal_confined_to_lib_sh(script: Path) -> None:
+    """Every shell file under claude/.claude/ other than _lib.sh must not
+    reference refs/remotes/origin/HEAD directly -- default-branch
+    resolution goes through _lib.sh's two layers instead."""
+    violations = _scan_for_violations(script)
     assert not violations, (
         f"{script.relative_to(CLAUDE_DIR)} references {_TARGET_LITERAL!r} directly:\n"
         + "\n".join(violations)
         + "\nroute default-branch resolution through _lib.sh's "
         "_lib_default_branch_from_origin_head / _lib_default_branch_or_guess instead"
     )
+
+
+def test_noqa_origin_head_suppresses_only_the_marked_line(tmp_path: Path) -> None:
+    """The `# noqa-origin-head` escape hatch is unused in shipped code, so
+    this pins that a marked line is excluded from violations while an
+    unmarked violation elsewhere in the same file is still caught."""
+    fixture = tmp_path / "synthetic.sh"
+    fixture.write_text(
+        f'echo "{_TARGET_LITERAL}"  # noqa-origin-head\n'
+        f'echo "{_TARGET_LITERAL}"\n'
+    )
+    violations = _scan_for_violations(fixture)
+    assert len(violations) == 1
+    assert "line 2" in violations[0]
