@@ -988,13 +988,22 @@ def install_resume_context_script(isolated_home: Path) -> Path:
 
 
 def install_marker_script(isolated_home: Path) -> Path:
-    """Symlink the real marker.sh, and the _lib.sh it sources, into an
-    isolated $HOME/.claude/ -- so a hook or skill recipe invoking marker.sh
-    via `$CONFIG_DIR/scripts/marker.sh` resolves the real script rather than
-    a missing one. Idempotent, so a caller under the `isolated_home` fixture
-    (which already symlinks hooks/_lib.sh itself) can call this unconditionally.
+    """Symlink the real marker.sh, and the _lib.sh/_config.sh/config-keys.psv
+    it sources, into an isolated $HOME/.claude/ -- so a hook or skill recipe
+    invoking marker.sh via `$CONFIG_DIR/scripts/marker.sh` resolves the real
+    script rather than a missing one. Idempotent, so a caller under the
+    `isolated_home` fixture (which already symlinks hooks/_lib.sh itself)
+    can call this unconditionally.
+    _config.sh is a required sibling: _lib.sh sources it via a BASH_SOURCE-
+    relative path, which does not follow the _lib.sh symlink above.
+    config-keys.psv is a required sibling of _config.sh for the same
+    reason: _config.sh reads it via a BASH_SOURCE-relative path too.
     """
     _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_config.sh", HOOKS_DIR / "_config.sh")
+    _symlink_if_absent(
+        isolated_home / ".claude" / "hooks" / "config-keys.psv", HOOKS_DIR / "config-keys.psv"
+    )
     return _symlink_if_absent(
         isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh"
     )

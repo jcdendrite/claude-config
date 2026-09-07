@@ -4849,3 +4849,199 @@ class TestListContains:
 
     def test_glob_metacharacter_item_matches_its_own_literal_value(self) -> None:
         assert _list_contains("code*", ("code*",))
+
+
+# --- _LIB_WRITE_UTILITIES / _lib_command_has_write_construct ------------
+#
+# Shared write-utility list and fork-free write-construct fast-reject behind
+# _lib_redirect_candidates's own skip-fragment-splitting-entirely check.
+# enforce-marker-script-shape.sh's and enforce-config-write-shape.sh's own
+# test files already prove the end-to-end effect (a no-write-construct
+# command allows without paying the fragment-split fork); these pin the
+# primitives directly.
+
+
+def test_lib_write_utilities_is_the_documented_six() -> None:
+    """Pins the shared list's exact membership -- both
+    _lib_command_has_write_construct's fast-reject and
+    _lib_fragment_candidates's own recognition loop read this one array, so
+    a silent addition or removal here changes both at once rather than
+    drifting apart."""
+    result = _run_lib_call('printf "%s\\n" "${_LIB_WRITE_UTILITIES[@]}"', env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["tee", "cp", "mv", "install", "dd", "sed"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf x > /tmp/y",
+        "printf x >> /tmp/y",
+        "printf x >/tmp/y",
+        "printf x &> /tmp/y",
+        "echo x | tee /tmp/y",
+        "cp /tmp/a /tmp/b",
+        "mv /tmp/a /tmp/b",
+        "install /tmp/a /tmp/b",
+        "dd if=/tmp/a of=/tmp/b",
+        "sed -i s/a/b/ /tmp/y",
+        # `;`-glued, no surrounding space -- the regex's boundary classes
+        # must not require whitespace specifically.
+        "true;tee /tmp/y",
+        # Case-folded utility name: on a case-insensitive-but-case-preserving
+        # filesystem (macOS APFS/HFS+, Windows NTFS), TEE resolves to the
+        # same on-disk `tee` binary a case-sensitive match here would miss.
+        "echo x | TEE /tmp/y",
+    ],
+)
+def test_lib_command_has_write_construct_true_for_documented_shapes(command: str) -> None:
+    result = _run_lib_call(f'_lib_command_has_write_construct "{command}"', env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "ls -la",
+        "echo hello",
+        # A write-utility name appearing as a substring of a longer word must
+        # not false-trigger the fast-reject -- the boundary classes require a
+        # non-word character (or start/end of string) on both sides.
+        "grep -rn sedan file.txt",
+        "cat installed.log",
+    ],
+)
+def test_lib_command_has_write_construct_false_for_unrelated_commands(command: str) -> None:
+    result = _run_lib_call(f'_lib_command_has_write_construct "{command}"', env=dict(os.environ))
+    assert result.returncode != 0, result.stderr
+
+
+# --- _lib_shape_match: $HOME/$CLAUDE_CONFIG_DIR expansion and the
+# `-ef`-based inode-identity passes --------------------------------------
+#
+# End-to-end coverage of _lib_shape_match already lives in
+# test_enforce_marker_script_shape.py and test_enforce_config_write_shape.py
+# (the two hooks that call it); these pin the shared engine's new detection
+# passes and variable expansion directly, since they are otherwise only
+# exercised indirectly through two hooks' worth of JSON-payload plumbing.
+
+
+def test_lib_shape_match_home_variable_reference_expanded(tmp_path: Path) -> None:
+    """A literal, unexpanded `$HOME` reference in the target text (never
+    shell-expanded, since PreToolUse hands a hook raw, unexecuted command
+    text) must resolve to the real $HOME before matching. Single-quoted in
+    the harness call so this test's OWN shell does not expand it first --
+    the point is to prove _lib_shape_match does the expansion itself."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    result = _run_lib_call(
+        "_lib_shape_match '$HOME/.claude/claude-config.toml' 'claude-config.toml'", env=env
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_claude_config_dir_variable_reference_expanded(tmp_path: Path) -> None:
+    """Same as the $HOME case above, for a literal `$CLAUDE_CONFIG_DIR`
+    reference -- scoped to exactly these two variable names per item 4;
+    every other variable reference stays an accepted indirection gap."""
+    config_dir = tmp_path / "profile-container"
+    config_dir.mkdir()
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    result = _run_lib_call(
+        "_lib_shape_match '$CLAUDE_CONFIG_DIR/claude-config.toml' 'claude-config.toml'", env=env
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_directory_prefix_ef_match_through_symlinked_root(
+    tmp_path: Path,
+) -> None:
+    """Pass 2: a candidate whose own path carries none of the textual
+    shapes (no `.claude` segment, no literal config-dir prefix) but whose
+    stripped-prefix directory is `-ef` the resolved root must still match --
+    the root itself is reached here via a symlinked config dir, so the
+    candidate's literal text has no relationship to the real root at all."""
+    physical_root = tmp_path / "physical-root"
+    (physical_root / "code-review-markers").mkdir(parents=True)
+    symlinked_root = tmp_path / "symlinked-root"
+    symlinked_root.symlink_to(physical_root)
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = str(symlinked_root)
+    candidate = physical_root / "code-review-markers" / "forged"
+    result = _run_lib_call(
+        f"_lib_shape_match '{candidate}' '*-markers/*' '.*-active.d/*'", env=env
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_bare_target_ef_match_for_non_glob_pattern(tmp_path: Path) -> None:
+    """Pass 3: a hardlink to the real, existing single-file target denies
+    even though its own path is unrelated to the config root -- gated to a
+    glob-metacharacter-free SUFFIX_PATTERN (true for claude-config.toml,
+    never true for a marker-directory glob, which Pass 3 deliberately
+    excludes -- see _lib_shape_match's own header for why)."""
+    config_dir = tmp_path / "home" / ".claude"
+    config_dir.mkdir(parents=True)
+    real_state_file = config_dir / "claude-config.toml"
+    real_state_file.write_text("worktree_required = true\n")
+    hardlinked = tmp_path / "unrelated-dir"
+    hardlinked.mkdir()
+    hardlinked_path = hardlinked / "not-named-claude-config"
+    os.link(real_state_file, hardlinked_path)
+    env = dict(os.environ)
+    env["HOME"] = str(tmp_path / "home")
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    result = _run_lib_call(f"_lib_shape_match '{hardlinked_path}' 'claude-config.toml'", env=env)
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_directory_symlink_onto_marker_directory_denied(
+    tmp_path: Path,
+) -> None:
+    """Pass 4: a symlink pointing AT a marker-shaped directory itself (not
+    inside it) must deny a write beneath the symlink -- the candidate's own
+    literal text carries no `.claude` segment and its stripped-prefix
+    directory (the symlink itself) is not `-ef` the root (it's `-ef` the
+    real markers directory instead, one level down)."""
+    home = tmp_path / "home"
+    (home / ".claude" / "code-review-markers").mkdir(parents=True)
+    alias_dir = tmp_path / "aliasdir"
+    alias_dir.mkdir()
+    symlinked_dir = alias_dir / "notclaudepath"
+    symlinked_dir.symlink_to(home / ".claude" / "code-review-markers")
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    candidate = symlinked_dir / "forged"
+    result = _run_lib_call(
+        f"_lib_shape_match '{candidate}' '*-markers/*' '.*-active.d/*'", env=env
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_unrelated_path_does_not_match(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    result = _run_lib_call(
+        f"_lib_shape_match '{home}/.claude/some-other-file.md' 'claude-config.toml'", env=env
+    )
+    assert result.returncode == 1, result.stderr
+
+
+def test_lib_shape_match_unresolvable_root_denies_via_status_2(tmp_path: Path) -> None:
+    """CLAUDE_CONFIG_DIR set to a relative value makes _lib_config_dir()
+    fail -- callers must deny, not skip, on this status."""
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = "relative-profile"
+    result = _run_lib_call(
+        f"_lib_shape_match '{tmp_path}/claude-config.toml' 'claude-config.toml'", env=env
+    )
+    assert result.returncode == 2, result.stderr

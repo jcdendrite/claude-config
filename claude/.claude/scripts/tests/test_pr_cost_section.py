@@ -27,6 +27,13 @@ from .conftest import _base_test_env, _make_repo_with_remote
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-cost-section.sh"
 _LIB_SH = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
+# _lib.sh sources _config.sh from its own directory (BASH_SOURCE-relative) --
+# every fixture below that copies _lib.sh needs this sibling copied alongside
+# it too, or that source fails outright.
+_CONFIG_SH = Path(__file__).parent.parent.parent / "hooks" / "_config.sh"
+# config-keys.psv is a required sibling of _config.sh for the same
+# BASH_SOURCE-relative reason.
+_CONFIG_KEYS_PSV = Path(__file__).parent.parent.parent / "hooks" / "config-keys.psv"
 
 # The single-quoted literal pr-cost-section.sh substitutes for the counts
 # slot when its own cost-counts call fails -- duplicated here on purpose
@@ -416,6 +423,8 @@ def _build_fixture(tmp_path, source: str) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(source)

@@ -1,10 +1,10 @@
 """Three-layer hook alignment test suite.
 
 Layer 0 — Docs coverage: every .sh hook in claude/.claude/hooks/ (excluding
-_lib.sh) must have its own list-item entry in docs/hooks.md.
+_lib.sh and _config.sh) must have its own list-item entry in docs/hooks.md.
 
 Layer 1 — Static checks: every .sh hook in claude/.claude/hooks/ and
-plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
+plugins/*/hooks/ (excluding _lib.sh/_config.sh siblings) must declare a
 `# hook-class: <value>` header on line 2 with a valid value, and hooks
 matching gate-naming prefixes or the EXPLICIT_GATES set must declare
 `# hook-class: gate`. Layer 1 also pins each gate-backed review skill to the
@@ -69,25 +69,34 @@ _MAIN_HOOKS_DIR = _REPO_ROOT / "claude" / ".claude" / "hooks"
 _PLUGIN_HOOKS_DIRS = list((_REPO_ROOT / "plugins").glob("*/hooks"))
 
 
+# Shared helper libraries, not hooks -- sourced by hooks/scripts, never
+# themselves registered on a PreToolUse/PostToolUse matcher or documented as
+# a standalone hook in docs/hooks.md.
+_HELPER_LIBRARY_NAMES: frozenset[str] = frozenset({"_lib.sh", "_config.sh"})
+
+
 def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/.
 
-    Excludes each directory's _lib.sh by default. Pass include_lib=True to
-    sweep those too. Each detector's default follows from its own
-    self-match risk against _lib.sh:
-    - `include_lib=True` (used only by the `\\s` detector) -- that detector
-      is safe against _lib.sh because it isn't defined there.
-    - The bare-jq and inline-matcher detectors stay excluded because each
-      is itself defined inside _lib.sh using the exact primitive it
-      detects -- including it would be a guaranteed self-match.
+    Excludes both shared helper libraries (_lib.sh, _config.sh) by default.
+    Pass include_lib=True to add _lib.sh back in -- used only by the `\\s`
+    detector, which is safe against _lib.sh because it isn't defined there.
+    _config.sh stays excluded even then: it exists only under
+    claude/.claude/hooks/, so folding it into ALL_HOOKS_AND_LIBS would break
+    test_all_hooks_and_libs_includes_every_lib_sh's one-_lib.sh-per-directory
+    count invariant. The bare-jq and inline-matcher detectors stay excluded
+    from _lib.sh because each is itself defined inside _lib.sh using the
+    exact primitive it detects -- including it would be a guaranteed
+    self-match.
     """
+    excluded = {"_config.sh"} if include_lib else _HELPER_LIBRARY_NAMES
     hooks: list[Path] = []
     for sh in sorted(_MAIN_HOOKS_DIR.glob("*.sh")):
-        if include_lib or sh.name != "_lib.sh":
+        if sh.name not in excluded:
             hooks.append(sh)
     for hooks_dir in _PLUGIN_HOOKS_DIRS:
         for sh in sorted(hooks_dir.glob("*.sh")):
-            if include_lib or sh.name != "_lib.sh":
+            if sh.name not in excluded:
                 hooks.append(sh)
     return hooks
 

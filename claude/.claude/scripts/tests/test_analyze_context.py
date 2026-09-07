@@ -29,6 +29,32 @@ def test_claude_dir_honors_claude_config_dir(monkeypatch, tmp_path):
     assert tmp_path / "usage-data" / "session-meta" == mod.SESSION_META_DIR
 
 
+def test_import_does_not_crash_when_home_unset(monkeypatch):
+    """Module import must succeed even when $HOME is unset/empty and
+    CLAUDE_CONFIG_DIR is not set -- CLAUDE_DIR/PROJECTS_DIR/SESSION_META_DIR
+    resolve lazily, on first access, not at import time."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    spec = importlib.util.spec_from_file_location("analyze_context_home_unset_case", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # must not raise
+
+
+def test_claude_dir_access_exits_cleanly_when_home_unset(monkeypatch, capsys):
+    """Accessing CLAUDE_DIR after import prints a clean diagnostic and exits
+    2, rather than an uncaught ValueError traceback, when $HOME is
+    unset/empty and CLAUDE_CONFIG_DIR is not set."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    spec = importlib.util.spec_from_file_location("analyze_context_home_unset_access_case", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with pytest.raises(SystemExit) as exc_info:
+        _ = mod.CLAUDE_DIR
+    assert exc_info.value.code == 2
+    assert "HOME is unset or empty" in capsys.readouterr().err
+
+
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
 

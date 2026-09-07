@@ -1,0 +1,102 @@
+# config-keys.psv — the single schema for every key claude-config.toml can
+# hold. Read by both _config.sh (bash) and _config.py (Python); a change here
+# is the only place a key's shape, default, or resolution mode can diverge
+# between the two readers. See docs/config-file.md for the full design
+# record.
+#
+# Grammar (reuses install.sh's SENTINEL_INVENTORY row grammar verbatim — no
+# surrounding whitespace around any `|`, IFS='|' read -r would otherwise bake
+# leading/trailing spaces into every field; leading-`#` and blank lines are
+# skipped by both readers):
+#   key|type|default|resolution|legacy-probe-on-resolution-failure|legacy-import-locations|legacy-filename|legacy-polarity|human-name|docs-anchor|prompt-description
+#
+# key: the state-file key name (snake_case). Also the config-get.sh argument
+#   and the _config_enabled/_config_value bash and Python argument.
+# type: `bool`, or `enum:<value>` for a key whose enabled state is a specific
+#   non-boolean literal (today only `enum:dollars`, for pr_cost_disclosure's
+#   content-matches semantics). The value subset every reader accepts is
+#   exactly `true`, `false`, or a bare `[a-z0-9_-]+` token (an enum literal)
+#   — see _config.sh's header for why this is decoded directly rather than
+#   via a second parser.
+# default: this key's effective value when absent from the state file AND
+#   its legacy file is absent — `true` or `false`. An enum-typed key's
+#   "enabled" default, when it has one, is never `true` here; a `false`
+#   default plus a state-file value of the enum literal is how an enum key
+#   is enabled.
+# resolution: `config-dir` (the resolved config dir only) or
+#   `config-dir-or-home` (union: resolved config dir OR the literal
+#   $HOME/.claude, so a sentinel armed before CLAUDE_CONFIG_DIR adoption
+#   still activates — today only worktree_required and autonomous_shipping).
+# legacy-probe-on-resolution-failure: `true` or `false`. Whether, when the
+#   resolved config dir itself cannot be determined (relative
+#   CLAUDE_CONFIG_DIR, or empty/unset $HOME with CLAUDE_CONFIG_DIR also
+#   unset), this key's legacy file is still probed at the literal
+#   $HOME/.claude location before falling through to `default`. `true` only
+#   for worktree_required, matching _lib.sh:1223-1226's existing fail-closed
+#   probe; `false` for every other key, including autonomous_shipping, whose
+#   existing behavior (_lib.sh:1280) bails immediately rather than probing —
+#   granting autonomous shipping on a resolution failure would be the wrong
+#   direction for a mechanism that removes a human checkpoint.
+# legacy-import-locations: `config-dir` or `config-dir-and-home`. Governs
+#   only the one-time migrate-legacy-config.sh recovery import, never
+#   ordinary reads: `config-dir-and-home` keys are checked at both
+#   $HOME/.claude/<legacy-filename> and the resolved-config-dir legacy path,
+#   treating either as "legacy value present." `config-dir-and-home` is
+#   marked for three reason categories:
+#   - The two config-dir-or-home keys (worktree_required,
+#     autonomous_shipping): their read-time union already covers both
+#     locations, so import naturally does too.
+#   - The four other former machine-promptable keys
+#     (permission_prompt_tracking, error_mode_nudge, cost_ledger_recording,
+#     pr_cost_recording): install.sh's old `configure_machine_level_opt_ins`
+#     writer always wrote $HOME/.claude/$path_template regardless of
+#     CLAUDE_CONFIG_DIR, so a diverged-CLAUDE_CONFIG_DIR user's prior opt-in
+#     for one of these keys may physically exist only at $HOME/.claude, a
+#     location this key's own corrected post-migration `resolution` never
+#     reads from again once migrated.
+#   - pr_cost_disclosure: its old resolution (`_report_account_sentinel`:
+#     $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude, *never
+#     both*) means a diverged user's real governing value could be sitting
+#     at either location depending on when they set CLAUDE_CONFIG_DIR
+#     relative to when they opted in — import recovers "whichever location
+#     actually governed," not a guess. See tests/config-schema-audit.md for
+#     the resolved-config-dir-wins tiebreak this key alone needs.
+#   Every other key was never auto-written by install.sh at all (a user
+#   hand-toggles it directly, already at wherever its own `resolution`
+#   reads from), so `config-dir` is correct and no recovery check is
+#   needed.
+# legacy-filename: the exact SENTINEL_INVENTORY path-template this key
+#   replaces — permanently readable, since this fallback has no removal
+#   date and claude/.claude/** goes live on `git pull` with no guaranteed
+#   install.sh re-run.
+# legacy-polarity: `presence-enables` (old file present = new key true), or
+#   `presence-disables` (old file present = new key false; the new key
+#   itself defaults `true`), or `content-matches` (old file's trimmed,
+#   lowercased content, not mere presence, decides the value — today only
+#   pr_cost_disclosure).
+# human-name, docs-anchor: display text for config-get.sh, install.sh's
+#   reporter, and the query CLI — human-name reflects the key's new
+#   positive-sense capability, not its old kill-switch/suppression framing.
+# prompt-description: non-empty iff this key is offered by install.sh's
+#   interactive machine-level opt-in prompt — a non-empty value here is what
+#   makes a key promptable; there is no separate scope field.
+#
+# The five enforcement-critical keys (worktree_required, autonomous_shipping,
+# round_consult_gate, commit_stall_block, authorization_boundary_restore)
+# require claude-hook-review on any future change to this file's
+# resolution, legacy-probe-on-resolution-failure, or legacy-import-locations
+# column for their own row — see docs/config-file.md.
+worktree_required|bool|false|config-dir-or-home|true|config-dir-and-home|worktree-required|presence-enables|Worktree enforcement|README.md § Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.
+autonomous_shipping|bool|false|config-dir-or-home|false|config-dir-and-home|autonomous-shipping-required|presence-enables|Autonomous shipping|README.md § Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.
+permission_prompt_tracking|bool|false|config-dir|false|config-dir-and-home|track-permission-prompts|presence-enables|Permission-prompt tracking|docs/permission-prompt-tracking.md|Logs each interactive permission-prompt Notification (credential-shaped values redacted) to ~/.claude/.permission-prompt-log.jsonl, so you can see which commands still trigger a prompt under auto permission mode. No per-repo opt-out.
+error_mode_nudge|bool|false|config-dir|false|config-dir-and-home|.error-mode-nudge-enabled|presence-enables|Error-mode analysis nudge|docs/error-mode-nudge.md|Nudges you to run /error-mode-analysis after a repeated-failure sequence in a session, so a stuck debugging loop gets flagged instead of continuing silently. See docs/error-mode-nudge.md.
+cost_ledger_recording|bool|false|config-dir|false|config-dir-and-home|.cost-ledger-enabled|presence-enables|Cost ledger recording|docs/cost-ledger.md|Lets cost-ledger --record append this machine's weekly cost/efficiency figures to $CLAUDE_CONFIG_DIR/cost-ledger.md (override via COST_LEDGER_PATH) — outlives the source transcripts once they age out and get deleted, though it's a single local file with no automatic backup. See docs/cost-ledger.md.
+pr_cost_recording|bool|false|config-dir|false|config-dir-and-home|.pr-cost-enabled|presence-enables|PR cost ledger recording|docs/pr-cost.md|Lets pr-cost --record durably append this machine's per-PR AI-tooling dollar cost rows to $CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv (override via PR_COST_LEDGER_PATH) — unlike the weekly cost ledger's aggregate-only rows, these carry branch names and repo identifiers, and outlive the source transcripts once they age out and get deleted, though it's a single local file with no automatic backup. See docs/pr-cost.md.
+pr_cost_disclosure|enum:dollars|false|config-dir|false|config-dir-and-home|pr-cost-disclosure|content-matches|PR cost disclosure|README.md § PR cost disclosure|
+pr_description_tighten_prose|bool|true|config-dir|false|config-dir|pr-description-tighten-prose-optout|presence-disables|Prose-tightening pass|docs/hooks.md § Prose tightening opt-out|
+handoff_nudge|bool|true|config-dir|false|config-dir|.handoff-nudge-disabled|presence-disables|Handoff-near-cap nudge|docs/handoff-nudge.md|
+consume_durable_continuity|bool|true|config-dir|false|config-dir|.consume-durable-continuity-disabled|presence-disables|Durable-continuity auto-consume|docs/hooks.md § Utility hooks|
+commit_stall_block|bool|true|config-dir|false|config-dir|.commit-stall-block-disabled|presence-disables|Commit-stall auto-advance|docs/commit-stall-block.md|
+session_title_from_branch|bool|true|config-dir|false|config-dir|.session-title-disabled|presence-disables|Branch-based session-title (machine-wide)|docs/hooks.md § Utility hooks|
+round_consult_gate|bool|true|config-dir|false|config-dir|.round-consult-gate-disabled|presence-disables|Round-3 architect-consult gate|docs/hooks.md § Gate hooks|
+authorization_boundary_restore|bool|true|config-dir|false|config-dir|.authorization-boundary-disabled|presence-disables|Authorization-boundary restore on compact|docs/hooks.md § Utility hooks|

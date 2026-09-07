@@ -2030,6 +2030,13 @@ class TestWalkSessionDelegatesToLib:
             "}\n"
         )
         (hooks_dir / "_lib.sh").write_text(instrumented_lib)
+        # _lib.sh sources _config.sh from its own directory (BASH_SOURCE-relative,
+        # not $0) -- this synthetic hooks_dir needs a real copy alongside the
+        # instrumented _lib.sh above, or that source fails outright.
+        shutil.copy(HOOKS_DIR / "_config.sh", hooks_dir / "_config.sh")
+        # config-keys.psv is a required sibling of _config.sh for the same
+        # BASH_SOURCE-relative reason.
+        shutil.copy(HOOKS_DIR / "config-keys.psv", hooks_dir / "config-keys.psv")
 
         result = subprocess.run(
             ["bash", str(scripts_dir / "marker.sh"), "resolve-session-id"],
