@@ -914,11 +914,19 @@ def _graceful_end_record(
     safe without a stored process-identity field -- every session writes
     its start-side evidence at the same pid it later writes its end
     record to, so a process reusing pid P necessarily rewrites P's entry
-    after the previous occupant's record. `record.session_id` is deliberately
-    not one of the three conditions: a subagent's SessionEnd payload can carry
-    a session id that differs from its parent session's, so matching on
-    (config_dir, pid) alone -- not session id -- is what lets a
-    subagent-attributed record still explain its parent session's dead entry.
+    after the previous occupant's record. For source D (LookupEntry) this is
+    code-verified: capture-session-id.sh explicitly rewrites its lookup file
+    at every SessionStart/SubagentStart under the resolved pid. For source A
+    (RegistryEntry), the same soundness rests on an unverified assumption
+    about Claude Code's own undocumented registry-write behavior on pid
+    reuse -- unconfirmed against any primary source, like every other
+    registry-format claim in this module's docstring.
+
+    `record.session_id` is deliberately not one of the three conditions: a
+    subagent's SessionEnd payload can carry a session id that differs from
+    its parent session's, so matching on (config_dir, pid) alone -- not
+    session id -- is what lets a subagent-attributed record still explain
+    its parent session's dead entry.
     """
     if entry.config_dir is None or entry.mtime is None:
         return None
@@ -949,6 +957,16 @@ def _all_entries_explained(
     indeterminate-liveness or undated sibling outside the dead subset would
     be silently ignored."""
     return total == len(entries) and covered == total
+
+
+def _has_indeterminate_liveness(
+    entries: list[RegistryEntry] | list[LookupEntry], liveness: dict[tuple[str, int], str], source_name: str,
+) -> bool:
+    """True when any entry in `entries` carries indeterminate liveness under
+    `source_name` in `liveness` -- used to withhold Confirmed-clean-exit
+    promotion when a same-session sibling from the *other* evidence source
+    hasn't resolved to live or dead."""
+    return any(liveness[(source_name, e.pid)] == "indeterminate" for e in entries)
 
 
 def _partial_coverage_note(covered: int, total: int) -> str:
@@ -1129,10 +1147,16 @@ def _classify_session(
         # A dead_before_boot sibling is explained by the reboot itself, not by a
         # SessionEnd record, so its count is folded into this deficit check instead
         # of disqualifying confirmation on its own.
+        registry_sibling_deficit = len(dead_before_boot) + total != len(registry_entries)
+        # A same-session lookup_entries sibling with unresolved liveness is cross-source
+        # evidence this branch would otherwise ignore entirely, since it only ever
+        # partitions registry_entries.
+        lookup_sibling_indeterminate = _has_indeterminate_liveness(lookup_entries, liveness, "lookup")
         dead_after_boot_fully_confirmed = (
             bool(dead_after_boot)
-            and len(dead_before_boot) + total == len(registry_entries)
+            and not registry_sibling_deficit
             and covered == total
+            and not lookup_sibling_indeterminate
         )
 
         if dead_before_boot and not dead_after_boot_fully_confirmed:
@@ -1161,11 +1185,22 @@ def _classify_session(
                 "crash looks like, but a deliberate clean exit looks identical."
             )
             # dead_after_boot_fully_confirmed rejects an indeterminate-liveness or
-            # undated sibling, like _all_entries_explained, but also tolerates a
-            # dead_before_boot sibling (already explained by the reboot).
+            # undated registry sibling (like _all_entries_explained) or an
+            # indeterminate-liveness lookup sibling for the same session, but also
+            # tolerates a dead_before_boot sibling (already explained by the reboot).
             fully_confirmed = dead_after_boot_fully_confirmed
             if fully_confirmed:
                 coverage_note = ""
+            # When both a registry-sibling deficit and a lookup-sibling indeterminate exist
+            # simultaneously, the registry-sibling message below wins (this elif's
+            # `not registry_sibling_deficit` guard excludes that case) -- message-only
+            # precedence, deliberate but untested; classification correctness is unaffected either way.
+            elif covered == total and lookup_sibling_indeterminate and not registry_sibling_deficit:
+                coverage_note = (
+                    " Every tracked post-boot process instance recorded a graceful SessionEnd, but "
+                    "a capture-session-id.sh lookup file for this session could not be confirmed dead, "
+                    "so this session is not being classified as a confirmed clean exit."
+                )
             elif covered == total:
                 coverage_note = (
                     " Every tracked post-boot process instance recorded a graceful SessionEnd, but "
@@ -1242,6 +1277,11 @@ def _classify_session(
             # so it never promotes to Resumable the way a self-pruning source does.
             covered, total, matched_records = _graceful_end_coverage(dead_lookups, session_end_records)
             coverage_note = _partial_coverage_note(covered, total) if 0 < covered < total else ""
+            # This branch only runs when registry_entries is empty: the preceding
+            # `if registry_entries:` block above always returns. So there is no
+            # registry-source sibling to cross-check here; the cross-source guard only
+            # needs to run in the registry branch's own direction (checking
+            # lookup_entries from there), not this one.
             if _all_entries_explained(lookup_entries, covered, total):
                 # matched_records is non-empty here: this branch only runs inside
                 # `if dead_lookups and not indeterminate_lookups:`, so total >= 1

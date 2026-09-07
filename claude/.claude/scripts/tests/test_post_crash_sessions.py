@@ -1511,6 +1511,80 @@ def test_graceful_end_record_entry_without_mtime_never_matches(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _graceful_end_coverage, _all_entries_explained, _has_indeterminate_liveness
+# -- direct unit tests
+# ---------------------------------------------------------------------------
+
+def test_graceful_end_coverage_empty_entries_is_zero_of_zero():
+    covered, total, matched = _mod._graceful_end_coverage([], {})
+    assert (covered, total, matched) == (0, 0, [])
+
+
+def test_graceful_end_coverage_no_matching_record_is_zero_of_n(tmp_path):
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    covered, total, matched = _mod._graceful_end_coverage([entry], {})
+    assert (covered, total, matched) == (0, 1, [])
+
+
+def test_graceful_end_coverage_partial_match(tmp_path):
+    covered_entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    uncovered_entry = _registry_entry(pid=101, mtime=1000.0, config_dir=tmp_path)
+    record = _session_end_record(pid=100, mtime=1500.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    covered, total, matched = _mod._graceful_end_coverage([covered_entry, uncovered_entry], records)
+    assert covered == 1
+    assert total == 2
+    assert matched == [record]
+
+
+def test_graceful_end_coverage_full_match(tmp_path):
+    entry_a = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    entry_b = _registry_entry(pid=101, mtime=1000.0, config_dir=tmp_path)
+    record_a = _session_end_record(pid=100, mtime=1500.0, config_dir=tmp_path)
+    record_b = _session_end_record(pid=101, mtime=1500.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record_a, (tmp_path.resolve(), 101): record_b}
+    covered, total, matched = _mod._graceful_end_coverage([entry_a, entry_b], records)
+    assert covered == 2
+    assert total == 2
+    assert sorted(matched, key=lambda r: r.pid) == [record_a, record_b]
+
+
+def test_all_entries_explained_false_when_total_not_equal_len_entries():
+    """covered == total alone is not enough -- total must also equal every
+    entry from the source, or an indeterminate-liveness or undated sibling
+    outside the dead subset would be silently ignored. Currently unreachable
+    via _classify_session's only call site, so this needs a direct call."""
+    entries = [_registry_entry(pid=100), _registry_entry(pid=101)]
+    assert _mod._all_entries_explained(entries, covered=1, total=1) is False
+
+
+def test_all_entries_explained_true_when_total_equals_len_entries_and_fully_covered():
+    entries = [_registry_entry(pid=100), _registry_entry(pid=101)]
+    assert _mod._all_entries_explained(entries, covered=2, total=2) is True
+
+
+def test_all_entries_explained_false_when_partially_covered():
+    entries = [_registry_entry(pid=100)]
+    assert _mod._all_entries_explained(entries, covered=0, total=1) is False
+
+
+def test_has_indeterminate_liveness_true_when_an_entry_is_indeterminate():
+    entry = _registry_entry(pid=100)
+    liveness = {("registry", 100): "indeterminate"}
+    assert _mod._has_indeterminate_liveness([entry], liveness, "registry") is True
+
+
+def test_has_indeterminate_liveness_false_when_every_entry_resolved():
+    entry = _registry_entry(pid=100)
+    liveness = {("registry", 100): "dead"}
+    assert _mod._has_indeterminate_liveness([entry], liveness, "registry") is False
+
+
+def test_has_indeterminate_liveness_false_for_empty_entries():
+    assert _mod._has_indeterminate_liveness([], {}, "registry") is False
+
+
+# ---------------------------------------------------------------------------
 # Classification precedence
 # ---------------------------------------------------------------------------
 
@@ -1678,6 +1752,25 @@ def test_classify_now_anchored_transcript_only_session_is_possible_crash():
     )
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert "no reboot in between" in row.detail
+
+
+def test_classify_transcript_only_fallback_ignores_session_end_records(tmp_path):
+    """The transcript-only-fallback branch (no registry, lock, or lookup
+    entry at all) never threads session_end_records into its own
+    classification -- mirrors test_classify_registry_dead_before_boot_fully_covered_stays_resumable
+    and test_classify_lock_dead_fully_covered_stays_resumable for this
+    branch. A populated session_end_records dict must not change this
+    branch's pre-Source-E classification or detail."""
+    transcript = _transcript_info(session_id="s1", last_activity=950.0, has_main=True)
+    unrelated_record = _session_end_record(pid=999, mtime=2000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 999): unrelated_record}
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "within 4h before the last boot" in row.detail
+    assert "no other corroboration" in row.detail
 
 
 def test_classify_subagent_only_transcript_does_not_count_as_resumable():
@@ -1868,15 +1961,34 @@ def test_classify_registry_dead_after_boot_fully_covered_cites_newest_record(tmp
     assert "reason_early" not in row.detail
 
 
+def test_classify_registry_dead_after_boot_fully_covered_no_reason_says_no_reason_recorded(tmp_path):
+    """A SessionEnd payload with no `reason` field writes reason=None to the
+    record. The detail's ternary must render "no reason recorded", not the
+    Python str() of None -- guards against a mutation that collapses the
+    ternary to unconditional f-string interpolation of newest_record.reason."""
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, reason=None, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "no reason recorded" in row.detail
+    assert "reason None" not in row.detail
+
+
 def test_classify_registry_full_coverage_ignores_uncovered_lookup_entry_for_same_session(tmp_path):
     """The registry branch's full-coverage promotion must rest on the
     registry's own dead_after_boot list alone. `lookup_entries` here is
     passed directly into `_classify_session` as a pre-built tuple, not read
     via `_read_lookup_entries`, so its crash-evidence window plays no role in
-    this test -- the registry branch's own `_all_entries_explained` call only
-    ever consults `registry_entries` and `dead_after_boot`, never
-    `lookup_entries`. A dead, uncovered lookup entry for the same session
-    must not block registry-branch promotion."""
+    this test -- coverage itself is checked against `registry_entries` and
+    `dead_after_boot` only; `lookup_entries` is consulted solely for
+    indeterminate liveness (see the sibling test below), never for whether a
+    dead lookup entry has its own matching record. A dead, uncovered lookup
+    entry for the same session must not block registry-branch promotion."""
     entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
     transcript = _transcript_info(last_activity=1500.0, has_main=True)
     record = _session_end_record(pid=entry.pid, mtime=1600.0, reason="prompt_input_exit", config_dir=tmp_path)
@@ -1888,6 +2000,33 @@ def test_classify_registry_full_coverage_ignores_uncovered_lookup_entry_for_same
     )
     assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
     assert "prompt_input_exit" in row.detail
+
+
+def test_classify_registry_full_coverage_blocked_by_indeterminate_lookup_sibling(tmp_path):
+    """The real cross-source bug this guards against: pid 100's registry
+    entry is dead-after-boot and fully covered by a SessionEnd record, but a
+    lookup entry for the same session at a different pid (888) has
+    unresolved liveness -- its stored proc_start doesn't parse, so sameness
+    against its live pid can't be confirmed. Full coverage of the registry's
+    own dead_after_boot list alone must not promote past a same-session
+    lookup sibling that's still unresolved -- pid 888 could still be running
+    or could have genuinely crashed."""
+    entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    indeterminate_lookup = _lookup_entry(
+        pid=888, session_id="s1", proc_start=None, mtime=1500.0, config_dir=tmp_path,
+    )
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({888: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        lookup_entries=(indeterminate_lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert (
+        "a capture-session-id.sh lookup file for this session could not be confirmed dead"
+    ) in row.detail
 
 
 def test_classify_registry_dead_after_boot_partially_covered_stays_possible_crash_with_sentence(tmp_path):
@@ -1903,6 +2042,26 @@ def test_classify_registry_dead_after_boot_partially_covered_stays_possible_cras
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
     assert "at least one did not" in row.detail
+
+
+def test_classify_registry_dead_after_boot_no_matching_record_omits_coverage_sentence(tmp_path):
+    """session_end_records is non-empty, but every record in it is for an
+    unrelated pid -- zero matches against this session's own dead pid.
+    covered=0 must not satisfy the `0 < covered < total` partial-coverage
+    guard, so the detail stays the pre-Source-E wording with no "0 of N ...
+    recorded a graceful SessionEnd" sentence appended. Guards against a
+    mutation that drops the `0 <` lower bound."""
+    entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    unrelated_record = _session_end_record(pid=999, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 999): unrelated_record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "recorded a graceful SessionEnd" not in row.detail
+    assert "0 of 1" not in row.detail
 
 
 def test_classify_registry_dead_after_boot_indeterminate_sibling_not_promoted(tmp_path):

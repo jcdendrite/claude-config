@@ -8,20 +8,17 @@ set -uo pipefail
 #
 # Record shape: writes <config-dir>/session-end-records/<claude-pid> as
 # {"sessionId": "<id>", "reason": <SessionEnd reason, or null if absent>}.
-# No timestamp field -- the file's own mtime is the record time, matching
-# how post-crash-sessions.py's other on-disk sources date themselves.
-# `<claude-pid>` is resolved the same way capture-session-id.sh resolves its
-# own PID (_lib_hook_claude_pid): this hook's own $PPID, optionally
-# overridden by $CLAUDE_PID when Claude Code exports it and it names the
-# same process or its immediate parent.
+# No timestamp field -- the file's own mtime is the record time.
+# `<claude-pid>` resolution's two-way fallback (own $PPID, optionally
+# overridden by $CLAUDE_PID) is documented in full at _lib_hook_claude_pid's
+# own header in _lib.sh.
 #
 # Known gaps:
 #   `claude -p` (headless) skips SessionEnd entirely, so a headless run that
 #   exits cleanly never writes a record.
 #   Whether SessionEnd fires on a hard kill (SIGKILL, OOM, reboot) is
-#   undocumented upstream. It is verified only by the plan's manual
-#   verification steps, not by any automated check that reruns on every
-#   Claude Code version upgrade.
+#   undocumented upstream and verified only by manual testing (see
+#   .claude/plans/detect-clean-exit-vs-crash.md).
 #
 # Failure mode: every failure path exits 0, with a one-line diagnostic to
 # stderr only.
@@ -30,10 +27,8 @@ set -uo pipefail
 # when $CLAUDE_PID is set and numeric) plus jq and find. See the script
 # below for the exact call sequence.
 #
-# SessionEnd's default execution budget is asserted to be short (~1.5s) by
-# this design but is not cited from any Anthropic documentation this repo
-# could locate. Treat the per-fire cost above as a reason for caution, not a
-# proven-safe margin.
+# SessionEnd's ~1.5s execution budget is unconfirmed in Anthropic's docs --
+# the per-fire cost above is a caution, not a proven-safe margin.
 #
 # Self-sweep: after a successful write, deletes any file in its own records
 # directory older than 30 days -- this repo's established idiom for
@@ -93,6 +88,6 @@ if ! printf '%s\n' "$RECORD_JSON" > "$RECORDS_DIR/$CLAUDE_PID" 2>/dev/null; then
   exit 0
 fi
 
-find "$RECORDS_DIR" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
+_lib_capped_for 2 find "$RECORDS_DIR" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
 
 exit 0

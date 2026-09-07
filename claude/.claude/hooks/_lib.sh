@@ -1551,7 +1551,7 @@ _lib_hook_claude_pid() {
   local resolved_claude_pid=$PPID
   if [ -n "${CLAUDE_PID:-}" ] && [[ $CLAUDE_PID =~ ^[0-9]+$ ]]; then
     local ppid_parent
-    ppid_parent=$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
+    ppid_parent=$(_lib_capped ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
     if [ "$CLAUDE_PID" = "$PPID" ] || { [ -n "$ppid_parent" ] && [ "$CLAUDE_PID" = "$ppid_parent" ]; }; then
       resolved_claude_pid=$CLAUDE_PID
     fi
