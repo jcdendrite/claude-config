@@ -100,8 +100,9 @@ shapes, and recursive per-round subagent dollar attribution via `corpus._index_s
 toolUseId join (`compute_review_round_costs`). Imports `corpus`, `pricing`, `redaction`, `render`,
 and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
-when absent, never `cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread
-round-opening record never needs. `REVIEW_SKILLS` is the one public name here, back-imported by
+when absent, and every record inside that round's window is attributed to it, never
+`cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
+never needs. `REVIEW_SKILLS` is the one public name here, back-imported by
 the still-unmigrated `cmd_judgment_pair` in the shim for its own `--skills` default — a second
 entry in the one-directional exception noted above.
 

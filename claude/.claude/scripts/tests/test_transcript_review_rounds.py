@@ -431,6 +431,74 @@ class TestComputeReviewRoundCosts:
         pct = 100 * round_dollars / branch_total
         assert pct == pytest.approx(100.0)  # round dollars == branch total in this fixture
 
+    def test_gitbranch_drift_inside_a_round_window_attributes_dollars_to_the_opening_branch(self, fake_projects):
+        """(cumulative /code-review finding, revision -- row 12a) A round's
+        dollars must land in the branch_totals bucket the round itself is
+        keyed to even when the session's own gitBranch changes between the
+        round's opening record and its window end. One session, one open
+        window: the opening record fires the code-review Skill block on
+        feat-a; a later main-thread record inside the same window, on
+        feat-b, also dispatches a subagent (exercises both accumulation
+        sites the fix names -- the priced turn and _price_dispatch's
+        return -- not just the first); a fresh user prompt then closes the
+        window. The round's own branch_key stays feat-a, and both the
+        drifted main-thread turn's dollars and the subagent dispatch's
+        dollars land in feat-a's branch_totals bucket -- feat-b gets no
+        bucket of its own."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(  # round open, feat-a: $0.20
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _priced(  # still inside the window, gitBranch drifted to feat-b: $0.40, spawns a1
+                "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+                content=[_agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:02:00.000Z"),  # closes the window
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:01:10.000Z")],  # $1.00
+        )
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["branch_key"] == (None, "feat-a")
+        assert r["main_dollars"] == pytest.approx(0.20 + 0.40)
+        assert r["agent_dollars"] == pytest.approx(1.00)
+        assert data["branch_totals"][(None, "feat-a")] == pytest.approx(0.20 + 0.40 + 1.00)
+        assert (None, "feat-b") not in data["branch_totals"]
+
+    def test_gitbranch_drift_fix_leaves_out_of_window_attribution_unaffected(self, fake_projects):
+        """Paired with the drift test above: a main-thread record added
+        after the window closes, carrying no gitBranch of its own, still
+        attributes to feat-b via the ordinary forward-pass carry-forward --
+        proving the row-12a fix changes in-window attribution only,
+        leaving out-of-window (non-round) attribution exactly as it was."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _priced(
+                "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+                content=[_agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:02:00.000Z"),  # closes the window
+            _priced(  # after the window, no gitBranch of its own: $0.20
+                "claude-sonnet-5", input=100_000, branch="", ts="2026-08-01T10:03:00.000Z",
+            ),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:01:10.000Z")],
+        )
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert data["branch_totals"][(None, "feat-a")] == pytest.approx(0.20 + 0.40 + 1.00)
+        assert data["branch_totals"][(None, "feat-b")] == pytest.approx(0.20)
+
     def test_since_ts_is_inclusive_of_a_round_opening_exactly_on_the_boundary(self, fake_projects):
         """A round opening exactly at since_ts is kept, and one opening
         strictly earlier is dropped -- since_ts is an inclusive lower bound
@@ -474,27 +542,53 @@ class TestComputeReviewRoundCosts:
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects), until_ts=until_ts)
         assert [r["skill"] for r in data["rounds"]] == ["code-review"]
 
-    def test_allowed_skills_narrows_round_detection_to_the_given_skill(self, fake_projects):
-        """allowed_skills restricts round detection itself -- not just CLI
-        rendering -- to the given REVIEW_SKILLS subset, the same
-        direct-call layer test_skill_flag_narrows_printed_rounds_to_one_skill
-        exercises only through cmd_review_round_cost's print formatting."""
-        _write_jsonl(fake_projects / "sess-1.jsonl", [
+    def test_skill_filter_is_a_pure_output_filter_invariant_to_dollars_and_list_membership(self, fake_projects):
+        """(engineer decision, row 19) skill_filter never narrows
+        round-window detection -- only which already-detected rounds are
+        returned. Fixture is the shape a detection-time narrowing would
+        mis-bound: a code-review invocation immediately followed by a
+        plan-review invocation, with no fresh user prompt between them, so
+        the plan-review opener is the code-review round's own closing
+        bound. If skill_filter narrowed detection instead, excluding
+        plan-review would stop it from closing the code-review window,
+        letting the code-review round's own turns extend past it and
+        inflate its own dollar figure. Passing skill_filter={"code-review"}
+        must yield the same code-review round -- identical main_dollars,
+        agent_dollars, and agents -- as passing no filter at all. Also
+        carries forward the list-membership coverage the pre-row-19 test
+        this replaces provided (mirroring
+        test_branch_filter_narrows_rounds_but_not_branch_totals's pattern):
+        data["rounds"] must contain no plan-review entry when
+        skill_filter={"code-review"} is passed, so a skill_filter bug that
+        leaves non-matching rounds in the returned list is caught at the
+        compute layer, not only inferred from the dollar-invariance
+        assertion."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _priced(
                 "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review")],
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
             ),
-            _user_msg("u1", branch="feat", ts="2026-08-01T10:01:00.000Z"),
             _priced(
-                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:02:00.000Z",
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:01:00.000Z",
                 content=[_skill_block("s2", "plan-review")],
             ),
-            _user_msg("u2", branch="feat", ts="2026-08-01T10:03:00.000Z"),
+            _user_msg("done", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
-        data = review_rounds.compute_review_round_costs(
-            _session_iter(fake_projects), allowed_skills=frozenset({"plan-review"}),
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z")],  # $1.00
         )
-        assert [r["skill"] for r in data["rounds"]] == ["plan-review"]
+        unfiltered = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        filtered = review_rounds.compute_review_round_costs(
+            _session_iter(fake_projects), skill_filter={"code-review"},
+        )
+        unfiltered_cr = next(r for r in unfiltered["rounds"] if r["skill"] == "code-review")
+        filtered_cr = next(r for r in filtered["rounds"] if r["skill"] == "code-review")
+        assert filtered_cr["main_dollars"] == pytest.approx(unfiltered_cr["main_dollars"])
+        assert filtered_cr["agent_dollars"] == pytest.approx(unfiltered_cr["agent_dollars"])
+        assert filtered_cr["agents"] == unfiltered_cr["agents"]
+        assert [r["skill"] for r in filtered["rounds"]] == ["code-review"]
 
     def test_branch_filter_narrows_rounds_but_not_branch_totals(self, fake_projects):
         """branch_filter drops a non-matching branch's own rounds from the
@@ -668,9 +762,10 @@ class TestCmdReviewRoundCost:
         assert secret_path not in out
 
     def test_skill_flag_narrows_printed_rounds_to_one_skill(self, fake_projects, capsys):
-        """--skill NAME restricts round detection (and therefore the printed
-        rounds) to that one REVIEW_SKILLS member, ignoring the other two
-        entirely."""
+        """--skill NAME narrows what is printed to that one REVIEW_SKILLS
+        member, ignoring the other two entirely -- it is a post-hoc output
+        filter over already-detected rounds, never a detection-time
+        narrowing (row 19)."""
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _priced(
                 "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
@@ -686,6 +781,35 @@ class TestCmdReviewRoundCost:
         _mod.cmd_review_round_cost(_review_round_cost_args(skill="plan-review"))
         out = capsys.readouterr().out
         assert "rounds=1  (code-review=0  plan-review=1  ready-for-review=0)" in out
+
+    def test_gitbranch_drift_inside_round_window_prints_coherent_reconciliation_line(self, fake_projects, capsys):
+        """(cumulative /code-review finding, revision -- row 12a) The same
+        gitBranch-drift fixture at the CLI layer: the printed
+        reconciliation line reads 100.0% (all of the branch's dollars fell
+        inside its one round) and the corpus-wide "Non-round dollars"
+        footer is not negative -- the pre-revision accumulator produced a
+        200%/-100% reconciliation-line output on this exact shape, so it
+        stays a permanent required case rather than a one-off check."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _priced(
+                "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+                content=[_agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:01:10.000Z")],
+        )
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        out = capsys.readouterr().out
+        assert "round $1.60 of $1.60 branch $ (100.0%)" in out
+        assert "Non-round dollars: 0.0% of branch dollars fell outside every round window" in out
 
     def test_totals_mean_and_non_round_footer_aggregate_across_two_branches(self, fake_projects, capsys):
         """The Totals/Mean rounds per branch/Non-round dollars footer lines

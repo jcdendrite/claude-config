@@ -33,7 +33,7 @@ from transcript_analysis import corpus, pricing, redaction, render, scope
 # documented in docs/transcript-analysis-architecture.md).
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
-_ALLOWED_SKILLS_DEFAULT: frozenset[str] = frozenset(REVIEW_SKILLS)
+_REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
 
 
 def _is_fresh_user_prompt(rec: dict) -> bool:
@@ -79,9 +79,9 @@ def _round_skill_name(raw: str) -> str:
     return normalized.rsplit(":", 1)[-1]
 
 
-def _round_open_skill(rec: dict, allowed_skills: frozenset[str]) -> str | None:
-    """The REVIEW_SKILLS (or --skill-narrowed) member this main-thread record
-    opens a round for, or None.
+def _round_open_skill(rec: dict) -> str | None:
+    """The REVIEW_SKILLS member this main-thread record opens a round for,
+    or None.
 
     Two disjoint invocation shapes: a `Skill` tool_use's input.skill, and a
     `/slash` user record's <command-name> tag.
@@ -102,7 +102,7 @@ def _round_open_skill(rec: dict, allowed_skills: frozenset[str]) -> str | None:
                 continue
             raw_skill = (block.get("input") or {}).get("skill") or ""
             matched = _round_skill_name(raw_skill)
-            if matched in allowed_skills:
+            if matched in _REVIEW_SKILL_SET:
                 return matched
         return None
     if rtype == "user":
@@ -110,29 +110,28 @@ def _round_open_skill(rec: dict, allowed_skills: frozenset[str]) -> str | None:
         content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
         for m in _SLASH_COMMAND_RE.finditer(content_str):
             matched = _round_skill_name(m.group(1))
-            if matched in allowed_skills:
+            if matched in _REVIEW_SKILL_SET:
                 return matched
         return None
     return None
 
 
-def _detect_round_windows(records: list[dict], allowed_skills: frozenset[str]) -> list[tuple[int, int, str]]:
+def _detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
     (already deduped, main-thread-only) records.
 
     Re-expresses cmd_judgment_pair's own boundary rule
     (transcript-analysis.py:2166-2197). window_end is the index of the next
-    fresh user prompt or the next round-open record (of the same
-    allowed_skills set), whichever comes first (exclusive of window_end
-    itself). The window is inclusive of its own opening record. No
-    cross-path dedup is needed between the two invocation shapes. They are
-    disjoint by construction: a Skill tool_use lives on an assistant
-    record, a /slash tag lives on a user record.
+    fresh user prompt or the next round-open record, whichever comes first
+    (exclusive of window_end itself). The window is inclusive of its own
+    opening record. No cross-path dedup is needed between the two
+    invocation shapes. They are disjoint by construction: a Skill tool_use
+    lives on an assistant record, a /slash tag lives on a user record.
     """
     n = len(records)
     windows: list[tuple[int, int, str]] = []
     for idx, rec in enumerate(records):
-        skill = _round_open_skill(rec, allowed_skills)
+        skill = _round_open_skill(rec)
         if skill is None:
             continue
         window_end = n
@@ -141,11 +140,44 @@ def _detect_round_windows(records: list[dict], allowed_skills: frozenset[str]) -
             if _is_fresh_user_prompt(scan_rec):
                 window_end = scan_idx
                 break
-            if _round_open_skill(scan_rec, allowed_skills) is not None:
+            if _round_open_skill(scan_rec) is not None:
                 window_end = scan_idx
                 break
         windows.append((idx, window_end, skill))
     return windows
+
+
+def _session_record_branches(records: list[dict], windows: list[tuple[int, int, str]]) -> list[str]:
+    """Per-record branch attribution for one session, computed once before
+    pricing as a pure function of (records, windows).
+
+    Pass 1 carries forward the last non-empty gitBranch from a
+    non-sidechain record at every index, mirroring cost.py's
+    _session_branch_index main-thread-only carry-forward. A sidechain
+    record's own gitBranch can be an isolation:"worktree" dispatch's
+    ephemeral worktree-agent-* branch, not this session's real one, so it
+    is read but never becomes the carried value.
+
+    Pass 2 overwrites every index inside a round's window
+    [open_idx, window_end) with that window's own opening-record branch,
+    so a round's dollars always land in the branch_totals bucket the
+    round itself is keyed to, even when the session's own gitBranch
+    changes mid-window. Windows are disjoint and in index order, so this
+    never writes one index twice.
+    """
+    branches: list[str] = [""] * len(records)
+    last_branch = ""
+    for idx, rec in enumerate(records):
+        if not rec.get("isSidechain"):
+            branch = rec.get("gitBranch") or ""
+            if branch:
+                last_branch = branch
+        branches[idx] = last_branch
+    for open_idx, window_end, _skill in windows:
+        window_branch = branches[open_idx]
+        for idx in range(open_idx, window_end):
+            branches[idx] = window_branch
+    return branches
 
 
 def _price_dispatch(
@@ -227,7 +259,7 @@ def _price_dispatch(
 def compute_review_round_costs(
     session_iter,
     *,
-    allowed_skills: frozenset[str] = _ALLOWED_SKILLS_DEFAULT,
+    skill_filter: set[str] | None = None,
     branch_filter: set[str] | None = None,
     since_ts: float | None = None,
     until_ts: float | None = None,
@@ -245,20 +277,30 @@ def compute_review_round_costs(
     review-round-cost section for the round/non-round reconciliation-line
     formula this branch total feeds.
 
-    A round's branch is keyed (root_idx, branch). root_idx is None under a
-    single scan root, else the 0-based index into resolved_roots the
-    session's own jsonl resolves under (scope._root_index_for_path). This
-    keying keeps two different roots' identically-named branches from
+    A round's branch is keyed (root_idx, branch). branch is the round's own
+    opening record's gitBranch, carried forward from the last non-empty
+    main-thread value when absent, and every record inside that round's
+    window — not only the opening record — is attributed to that same
+    branch for branch_totals purposes (_session_record_branches), so a
+    round's dollars always land in the branch_totals bucket the round
+    itself is keyed to even when the session's own gitBranch changes
+    mid-window. A record outside every window still carries forward the
+    last non-empty gitBranch, unaffected by any window. root_idx is None
+    under a single scan root, else the 0-based index into resolved_roots
+    the session's own jsonl resolves under (scope._root_index_for_path).
+    This keying keeps two different roots' identically-named branches from
     merging into one row, mirroring subagent-mix's own (root_idx, branch)
     keying. resolved_roots is only consulted when it has more than one
     entry; caller passes None (or an empty/single-element sequence) under a
     single root.
 
-    branch_filter/since_ts/until_ts are applied as a final filter over the
-    detected rounds, by the round's own raw branch name / opening
-    timestamp, matching judgment-pair's convention. They do not narrow
-    which records are priced, so branch_totals always reflects each
-    branch's full, unwindowed corpus activity.
+    skill_filter/branch_filter/since_ts/until_ts are applied as a final
+    filter over the detected rounds, by the round's own skill / raw branch
+    name / opening timestamp, matching judgment-pair's convention. They do
+    not narrow which records are priced or which windows are detected, so
+    branch_totals always reflects each branch's full, unwindowed corpus
+    activity and a round's own main_dollars/agent_dollars/agents are
+    invariant to skill_filter.
 
     Returns {"rounds": [...], "branch_totals": {(root_idx, branch): dollars}}.
     Each round dict holds branch_key, skill, ts (raw timestamp string or
@@ -274,13 +316,15 @@ def compute_review_round_costs(
     for jsonl, records in session_iter:
         records = pricing.dedup_turns_by_request_id(records)  # dedup before pricing — see pricing.py
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
-        windows = _detect_round_windows(records, allowed_skills)
+        windows = _detect_round_windows(records)
+        record_branches = _session_record_branches(records, windows)
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         visited: set[str] = set()
 
         round_entries: list[dict] = [
             {
-                "branch_key": (root_idx, ""), "skill": skill, "ts": None,
+                "branch_key": (root_idx, record_branches[open_idx]), "skill": skill,
+                "ts": records[open_idx].get("timestamp"),
                 "main_dollars": 0.0, "agent_dollars": 0.0, "agents": 0,
                 "unpriced_turns": 0, "dangling": 0, "open_idx": open_idx,
             }
@@ -288,22 +332,11 @@ def compute_review_round_costs(
         ]
 
         window_ptr = 0
-        last_branch = ""
         for idx, rec in enumerate(records):
-            # Mirrors cost.py's _session_branch_index main-thread-only carry-forward:
-            # a sidechain record's own gitBranch can be an isolation:"worktree"
-            # dispatch's ephemeral worktree-agent-* branch, not this session's real one.
-            if not rec.get("isSidechain"):
-                branch = rec.get("gitBranch") or ""
-                if branch:
-                    last_branch = branch
             while window_ptr < len(windows) and idx >= windows[window_ptr][1]:
                 window_ptr += 1
             in_window = window_ptr < len(windows) and windows[window_ptr][0] <= idx
             round_entry = round_entries[window_ptr] if in_window else None
-            if round_entry is not None and idx == windows[window_ptr][0]:
-                round_entry["branch_key"] = (root_idx, last_branch)
-                round_entry["ts"] = rec.get("timestamp")
 
             if rec.get("type") != "assistant":
                 continue
@@ -317,7 +350,7 @@ def compute_review_round_costs(
                         round_entry["unpriced_turns"] += 1
                 else:
                     turn_dollars = sum(dollars_by_class.values())
-                    branch_totals[(root_idx, last_branch)] += turn_dollars
+                    branch_totals[(root_idx, record_branches[idx])] += turn_dollars
                     if round_entry is not None:
                         round_entry["main_dollars"] += turn_dollars
 
@@ -330,7 +363,7 @@ def compute_review_round_costs(
                 if not tool_use_id:
                     continue
                 dollars, unpriced, dangling, resolved = _price_dispatch(tool_use_id, dispatch_index, visited)
-                branch_totals[(root_idx, last_branch)] += dollars
+                branch_totals[(root_idx, record_branches[idx])] += dollars
                 if round_entry is not None:
                     round_entry["agent_dollars"] += dollars
                     round_entry["unpriced_turns"] += unpriced
@@ -351,6 +384,8 @@ def compute_review_round_costs(
         if until_ts is not None and (rts is None or rts >= until_ts):
             continue
         if branch_filter is not None and entry["branch_key"][1] not in branch_filter:
+            continue
+        if skill_filter is not None and entry["skill"] not in skill_filter:
             continue
         filtered_rounds.append(entry)
 
@@ -390,7 +425,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     branches_arg: str | None = getattr(args, "branches", None) or None
     branch_filter = {b for b in branches_arg.split(",") if b} if branches_arg else None
     skill_arg: str | None = getattr(args, "skill", None) or None
-    allowed_skills = frozenset({skill_arg}) if skill_arg else _ALLOWED_SKILLS_DEFAULT
+    skill_filter = {skill_arg} if skill_arg else None
     since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
 
     roots = scope.resolve_scan_roots(args)
@@ -405,7 +440,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     resolved_roots = [root.resolve() for root in roots] if multi_root else None
     data = compute_review_round_costs(
         session_iter,
-        allowed_skills=allowed_skills,
+        skill_filter=skill_filter,
         branch_filter=branch_filter,
         since_ts=since_ts,
         until_ts=until_ts,
