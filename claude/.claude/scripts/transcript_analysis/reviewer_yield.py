@@ -50,54 +50,6 @@ _REVIEWER_YIELD_ACTIVE_FLOOR = 10
 _REVIEWER_YIELD_INSUFFICIENT = "insufficient"
 
 
-def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str | None]], int]:
-    """Map each subagent dispatch's toolUseId to (its paired .jsonl path,
-    requested model), for one session.
-
-    Reads subagents/*.meta.json directly rather than through iter_sessions'
-    include_subagents merge — that merge flattens every subagent file's
-    records into one list with no per-file boundary, which cannot answer
-    "this specific dispatch's own last assistant text." The requested model
-    is meta.json's own "model" key (absent when the dispatch carried no
-    explicit model request) — reading it here, alongside the toolUseId this
-    function already parses meta.json for, avoids a second per-dispatch
-    meta.json read in subagent-mix's model-mix join.
-
-    Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
-    files present but unusable — invalid JSON, valid JSON missing a
-    string-typed toolUseId, or valid JSON whose "model" key is present but
-    not a string — distinct from a dispatch with no meta.json at all (the
-    caller's own, separately-documented exclusion path). meta.json is
-    written by Claude Code's own harness, not by this repo, so its "model"
-    and "toolUseId" fields are external input: a non-string value for either
-    (a future harness change, or a corrupted file) is excluded here rather
-    than reaching a caller that would use it as a dict key and crash with an
-    uncaught TypeError.
-    """
-    subagent_dir = jsonl.parent / jsonl.stem / corpus.SUBAGENT_SUBDIR
-    index: dict[str, tuple[Path, str | None]] = {}
-    meta_read_errors = 0
-    if not subagent_dir.is_dir():
-        return index, meta_read_errors
-    for meta_path in sorted(subagent_dir.glob("*.meta.json")):
-        try:
-            meta = json.loads(meta_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            meta_read_errors += 1
-            continue
-        tool_use_id = meta.get("toolUseId")
-        if not isinstance(tool_use_id, str) or not tool_use_id:
-            meta_read_errors += 1
-            continue
-        requested_model = meta.get("model")
-        if requested_model is not None and not isinstance(requested_model, str):
-            meta_read_errors += 1
-            continue
-        agent_id = meta_path.name.removesuffix(".meta.json")
-        index[tool_use_id] = (meta_path.parent / f"{agent_id}.jsonl", requested_model)
-    return index, meta_read_errors
-
-
 class _ReviewerTranscriptScan(NamedTuple):
     """One reviewer subagent transcript's join inputs, gathered in a single walk.
 
@@ -556,7 +508,7 @@ def compute_reviewer_yield_data(
     sidechain_turns = 0
 
     for jsonl, records in session_iter:
-        dispatch_index, session_meta_read_errors = _index_subagent_dispatches(jsonl)
+        dispatch_index, session_meta_read_errors = corpus._index_subagent_dispatches(jsonl)
         meta_read_errors += session_meta_read_errors
         subagent_spawns += pricing._count_subagent_spawns(records)
 
