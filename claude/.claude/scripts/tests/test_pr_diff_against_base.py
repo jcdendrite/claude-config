@@ -176,6 +176,12 @@ def _seed_session(config_dir: Path, session_id: str, pid: int | None = None) -> 
 
 class TestNormalPathAgainstMain:
     def test_diverged_feature_branch_diff_mentions_changed_file(self, tmp_path):
+        """The simplest regression guard against an EXIT trap whose last
+        command is a failing test clobbering $?: with neither --record nor
+        --diff-file, TMP_FILE and DIFF_TMP stay empty for the whole run, so
+        the cleanup trap's final `[ -n "$DIFF_TMP" ]` check evaluates false
+        and would turn this returncode-0 assertion into a 1 without the
+        trap's own explicit $? capture-and-restore."""
         local, _bare = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/add-thing")
         subprocess.run(["git", "checkout", "-q", "feat/add-thing"], cwd=local, check=True)
@@ -889,6 +895,32 @@ class TestDiffFileFlag:
         leftover_dotfiles = [p for p in subject_dir.iterdir() if p.name.startswith(".")]
         assert leftover_dotfiles == []
 
+    def test_combined_flags_diff_file_mv_failure_leaves_no_leaked_temp_when_record_succeeds(self, tmp_path):
+        """The trap-collision property, mirrored: unlike the test above
+        (--record's own mv fails), this forces --diff-file's mktemp to
+        succeed and only its mv to fail, while --record's own mktemp+mv (a
+        different directory) still succeeds -- the same shared-TMP_FILE-name
+        bug shape, from the opposite direction."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/combined-diff-file-mv-failure")
+        subprocess.run(["git", "checkout", "-q", "feat/combined-diff-file-mv-failure"], cwd=local, check=True)
+        env = _env_with_gh_shim_and_failing_mv(tmp_path, "main", "cumulative-review-diff-markers")
+
+        result = _run_script(local, env, record=True, diff_file=True)
+
+        assert result.returncode == 0, result.stderr
+        assert "diff file not written" in result.stderr
+        assert "DIFF_FILE:" not in result.stderr
+        subject = _subject_path(env, local, self.SID)
+        assert subject.exists()
+
+        diff_dir = Path(env["CLAUDE_CONFIG_DIR"]) / "cumulative-review-diff-markers"
+        leftover_dotfiles = [
+            p for p in list(subject.parent.iterdir()) + list(diff_dir.iterdir())
+            if p.name.startswith(".")
+        ]
+        assert leftover_dotfiles == []
+
 
 class TestDiffFileFlagWithoutASession:
     """Mirrors TestRecordFlagWithoutASession: no test in this class seeds a
@@ -918,10 +950,7 @@ def test_unknown_argument_exits_before_any_git_work(tmp_path):
     empty stdout and a stderr containing no git-originated text pin that the
     parser's exit 2 fires ahead of resolve_default_branch/gh/git merge-base,
     run from a non-repo tmp_path with no _init_repo at all."""
-    result = subprocess.run(
-        [str(_SCRIPT), "--bogus"], cwd=str(tmp_path), env=dict(os.environ),
-        capture_output=True, text=True, check=False,
-    )
+    result = _run_script(tmp_path, dict(os.environ), extra_args=["--bogus"])
     assert result.returncode == 2
     assert result.stdout == ""
     assert "unknown argument" in result.stderr

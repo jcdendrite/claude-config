@@ -618,6 +618,13 @@ case "$SUBCOMMAND" in
     esac
     ;;
   clear-stale)
+    # Sweeps only .*-active.d/ below. cumulative-review-subject-markers/ and
+    # cumulative-review-diff-markers/ are unreachable here, so a session
+    # killed before `deactivate ready-for-review` leaks that session's
+    # artifact indefinitely. Accepted as a low-cost gap:
+    #   - each artifact is bounded to one session
+    #   - overwritten on the next gate pass
+    #   - revisit only if unbounded accumulation shows up in practice
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
     EVICTED=0

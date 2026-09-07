@@ -9,7 +9,7 @@
 # --diff-file additionally writes the diff to
 # <config-dir>/cumulative-review-diff-markers/<repo-hash>.<session-id> and
 # announces the path on stderr as `DIFF_FILE: <path>`, for a reviewer with
-# no Bash to Read directly -- ready-for-review/SKILL.md step 4 is the only
+# no Bash to Read directly. ready-for-review/SKILL.md step 4 is the only
 # caller. Both flags may be combined. `marker.sh deactivate ready-for-review`
 # removes both artifacts.
 set -euo pipefail
