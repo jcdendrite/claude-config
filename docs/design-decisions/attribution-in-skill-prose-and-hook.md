@@ -2,6 +2,8 @@
 
 *2026-09-01. Formerly `docs/design-decisions.md` §40.*
 
+**Partially superseded by [§63](attributionsessionurl-false-ships-in-both-settings.md) (2026-09-05):** the `sessionUrl` paragraph below is reversed — `attribution.sessionUrl` now ships as `false` in both settings files. This entry's account of anthropics/claude-code #77830 is also wrong. That report set `attribution.commit: ""`, not `sessionUrl`. The issue is closed as completed, with the maintainer naming `attribution.sessionUrl` as the trailer's actual control. The same maintainer addresses a question this entry's body leaves open: the trailer is reported to fire only from a web or Remote Control session, not a plain local terminal one. This repo's own history fits that account only partially — see [§63](attributionsessionurl-false-ships-in-both-settings.md) for the full account, including counter-evidence from a dispatched review subagent that this scoping does not fully explain. Everything else here stands, including the `attribution.commit`/`attribution.pr` decisions and the `respond-pr` reasoning.
+
 The `attribution` settings object has three properties: `commit`, `pr`,
 and `sessionUrl`. Together they reach two surfaces: commit messages and
 pull request *bodies*. Neither this repo's `.claude/settings.json` nor
