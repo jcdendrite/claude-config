@@ -13,12 +13,14 @@ section had guessed. Per `docs/design-decisions.md` §49's own precedent,
 the exact counts and ratios are withheld here: the sampled corpus mixes
 private-project and public transcripts, so any such figure would inherit
 the private half's composition. A `plan-architect MODE=consult` dispatch
-this session separately established that no generically-buildable lever
-exists for this cause — backgrounding a slow Bash call converts a blocking
-wait into an equally long idle wait absent independent work to interleave
-(`docs/cost-levers-considered.md:244-245`), and `Monitor` is event-driven
-with no periodic heartbeat to refresh the prompt-cache TTL during the wait
-either (`docs/design-decisions.md:1069`).
+this session separately established that two candidate mechanisms don't
+reach this cause: backgrounding a slow Bash call converts a blocking wait
+into an equally long idle wait absent independent work to interleave
+(`docs/cost-levers-considered.md:244-245`), and `ScheduleWakeup` can't
+legitimately serve as a `Monitor`-wait heartbeat, since its own documented
+scope is exclusively `/loop` dynamic-mode iteration pacing
+(`code.claude.com/docs/en/tools-reference`). Whether any other mechanism
+could reach this cause is unswept, not ruled out.
 
 The intended outcome is two artifacts: (1) the cache-rebuild report gains a
 precise sleep-poll-vs-other sub-split within the existing "waiting on own
@@ -83,14 +85,14 @@ It states the sub-shape finding qualitatively and withholds the machine-wide cou
 
 - **G1 — Claude Code owns the `tool_use` block shape and the marker literals; a harness release can change either without notice.** [verified: `transcript-analysis.py:5887-5889`] Vendor owns the emitting side.
 - **G2 — A transcript carries no per-call execution-time field, so a recorded command's elapsed window cannot be separated from permission-prompt wait or operator idle.** [verified: `docs/cost-levers-considered.md:244`] Vendor owns the schema.
-- **G3 — No mechanism reaches this stall: backgrounding converts a blocking wait into an equally long idle wait absent independent work to interleave, and `Monitor` has no periodic heartbeat to refresh the cache TTL.** [verified: `docs/cost-levers-considered.md:245`, `docs/design-decisions.md` §49; `code.claude.com/docs/en/tools-reference`'s `ScheduleWakeup` entry] Both limits are genuinely vendor-side, the same class rather than two different ones. Backgrounding's limit is a mechanism-design property of `run_in_background`'s detach-without-approval-shortcut semantics, not a repo config choice. `Monitor`'s missing heartbeat is the same: `ScheduleWakeup`'s own documented scope is exclusively `/loop` dynamic-mode iteration pacing. This repo's `permissions.deny` entry (§49) isn't what excludes a `Monitor`-wait heartbeat, and reversing it would not make that use legitimate. No settings edit reaches this.
+- **G3 — Of the two mechanisms checked, neither reaches this stall: backgrounding converts a blocking wait into an equally long idle wait absent independent work to interleave, and `ScheduleWakeup` can't serve as a `Monitor`-wait heartbeat. Whether any other mechanism could is unswept, not ruled out.** [verified: `docs/cost-levers-considered.md:245`, `docs/design-decisions.md` §49; `code.claude.com/docs/en/tools-reference`'s `ScheduleWakeup` entry] Backgrounding's limit is a mechanism-design property of `run_in_background`'s detach-without-approval-shortcut semantics, not a repo config choice — genuinely vendor-side. `ScheduleWakeup`'s documented scope is exclusively `/loop` dynamic-mode iteration pacing. This repo's `permissions.deny` entry (§49) is not what excludes a `Monitor`-wait heartbeat use. Reversing it would not make that use legitimate.
 
 **Assumptions:**
 
 1. Live Bash `tool_use` blocks carry a string `input.command`, so the classifier has something to match. [verified: `.claude/plans/idle-gap-sleep-poll-attribution.md:9-11` — the Context's two sampled command shapes could only have been read from live command text; `transcript-analysis.py:5959` reads the same block dict that holds it]
 2. The three shape rows sum exactly to the `waiting on own Bash call` row, because the shape is set only when the cause is `_ATTR_OWN_BASH` and the classifier returns exactly one of the three labels for every such candidate. [verified: `transcript-analysis.py:6395-6402` accumulation pattern]
 3. Only `--this-repo`-scoped figures are publishable from this report; machine-wide figures inherit the private half of a mixed corpus. [verified: repo `CLAUDE.md` § "Also redact structural fingerprints and provenance"; `docs/design-decisions.md` §49's own withheld-counts paragraph]
-4. A high sleep-poll share implies no lever, so this plan ships no behavior change. [verified: `docs/cost-levers-considered.md:245`; `docs/design-decisions.md` §49]
+4. A high sleep-poll share implies no known lever, so this plan ships no behavior change. [verified: `docs/cost-levers-considered.md:245`; `docs/design-decisions.md` §49]
 5. The `--this-repo` corpus's own-Bash row is small — 11 rebuilds in the sample block's last pasted run — so the published sub-split may be too small to be directional, and the entry must not present it as one. [verified: `docs/transcript-analysis.md:851`]
 6. `_extract_cache_rebuild_attribution_row` parses the new block unchanged, given identical column widths and labels that prefix-collide with no other printed row. [verified: `test_transcript_analysis.py:7860-7873`]
 7. `select-tests.py` selects `claude/.claude/hooks/tests`, `claude/.claude/scripts/tests`, and `claude-skills/skills/tests` for this diff — script change via `DOMAIN_RULES` (`select-tests.py:352`), docs changes via the `DOCS_DIR` blanket (`:467`), plan file selecting nothing (`:357`). [verified: `select-tests.py:350-359`, `:467`]
