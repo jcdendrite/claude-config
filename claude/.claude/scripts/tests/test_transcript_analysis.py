@@ -18361,6 +18361,212 @@ class TestOperatorResponseLagFromLog:
         assert excluded == 0
 
 
+class TestNudgeConversionFromLog:
+    """Pure unit tests against _nudge_conversion_from_log, mirroring
+    TestOperatorResponseLagFromLog's own convention for its sibling
+    function -- plain session_traces/log_entries_by_root dicts, no
+    filesystem or report-rendering plumbing. Pins the pre-registered
+    classification from .claude/plans/handoff-nudge-deep-tail-lever.md's
+    "The classification, frozen before any run" table."""
+
+    def test_nudged_then_handoff_is_voluntary(self):
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["voluntary"] == 1
+        assert result["forced"] == 0
+        assert result["blocked_no_handoff"] == 0
+        assert result["no_compliance"] == 0
+        assert result["dropped"] == 0
+
+    def test_block_before_handoff_is_forced(self):
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["forced"] == 1
+        assert result["voluntary"] == 0
+
+    def test_block_after_handoff_is_still_voluntary(self):
+        """The classification's 'precedes' language is load-bearing: a block
+        that fires only after a handoff already ran -- the session kept
+        working and later hit the block -- must not be misclassified as
+        forced just because a block line exists somewhere in the log."""
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "s"},
+            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["voluntary"] == 1
+        assert result["forced"] == 0
+
+    def test_second_handoff_line_does_not_flip_classification_to_forced(self):
+        """Classification is decided against the FIRST handoff line reached,
+        per this function's own documented contract -- a block sandwiched
+        between two handoff lines must not flip an otherwise-voluntary
+        session to forced."""
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "handoff", "session": "s"},
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["voluntary"] == 1
+        assert result["forced"] == 0
+
+    def test_block_with_no_handoff_is_its_own_bucket_not_folded_into_forced(self):
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["blocked_no_handoff"] == 1
+        assert result["forced"] == 0
+        assert result["voluntary"] == 0
+
+    def test_nudged_only_is_no_compliance_observed(self):
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["no_compliance"] == 1
+
+    def test_handoff_session_without_in_scope_trace_is_dropped(self):
+        """Mirrors test_excluded_operator_lag_count_is_reported: a session
+        with no surviving in-scope transcript is excluded and counted, not
+        silently discarded -- even though it has both a nudged and a
+        handoff line."""
+        session_traces: dict = {}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["dropped"] == 1
+        assert result["voluntary"] == 0
+
+    def test_nudged_only_session_without_in_scope_trace_is_dropped_not_no_compliance(self):
+        """The mirror orphan shape: a nudged-only session with no in-scope
+        trace must land in dropped, not inflate no_compliance."""
+        session_traces: dict = {}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["dropped"] == 1
+        assert result["no_compliance"] == 0
+
+    def test_missing_ignored_field_is_counted_not_defaulted_to_zero(self):
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["voluntary"] == 1
+        assert result["no_ignored_field"] == 1
+        assert result["ignored_values"] == []
+
+    def test_ignored_value_is_read_from_the_line_immediately_preceding_handoff(self):
+        """Not the first, min, max, or a sum/average -- a plausible wrong
+        selection would not surface by hand-checking the report."""
+        session_traces = {"s": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
+             "event": "Stop", "ignored": 2},
+            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
+             "event": "Stop", "ignored": 9},
+            {"kind": "nudged", "session": "s", "est": 300, "model": "x", "window": 1,
+             "event": "Stop", "ignored": 4},
+            {"kind": "handoff", "session": "s"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["ignored_values"] == [4]
+        assert result["no_ignored_field"] == 0
+
+    def test_non_overlapping_session_ids_yield_zero_join_validity(self):
+        """The hook resolves its session id from the hook-event payload;
+        handoff-record-conversion.sh resolves its own by PID walk -- a
+        systematic mismatch between the two would read as universal
+        non-compliance. This fixture's two well-formed, never-coincident
+        ids exercise that shape directly, distinct from a malformed or
+        missing-field input."""
+        session_traces = {"hookid-A": [100]}
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "hookid-A", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "pidwalk-B"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        assert result["join_validity"] == 0
+        assert result["no_compliance"] == 1
+
+    def test_bucket_exhaustiveness_and_derived_rate_arithmetic_match_hand_computed_counts(self):
+        """Every fired, in-scope session lands in exactly one of the four
+        buckets or dropped, and the derived conversion/block-reach rates are
+        simple sums over those bucket counts -- the pure-dict counterpart to
+        test_conversion_bucket_and_rate_arithmetic_matches_hand_computed_counts,
+        which additionally verifies the printed percentage strings."""
+        session_traces = {
+            "voluntary-1": [100], "voluntary-2": [100],
+            "forced-1": [100], "forced-2": [100],
+            "blocked-1": [100], "blocked-2": [100],
+            "nocompliance-1": [100], "nocompliance-2": [100],
+        }
+        log_entries_by_root = {"root": [
+            {"kind": "nudged", "session": "voluntary-1", "est": 100, "model": "x", "window": 1,
+             "event": "Stop", "ignored": 3},
+            {"kind": "handoff", "session": "voluntary-1"},
+            {"kind": "nudged", "session": "voluntary-2", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "handoff", "session": "voluntary-2"},
+            {"kind": "nudged", "session": "forced-1", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "nudged", "session": "forced-1", "est": 200, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+            {"kind": "handoff", "session": "forced-1"},
+            {"kind": "nudged", "session": "forced-2", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "nudged", "session": "forced-2", "est": 200, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+            {"kind": "handoff", "session": "forced-2"},
+            {"kind": "nudged", "session": "blocked-1", "est": 100, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+            {"kind": "nudged", "session": "blocked-2", "est": 100, "model": "x", "window": 1,
+             "event": "PostToolBatch", "action": "block"},
+            {"kind": "nudged", "session": "nocompliance-1", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "nudged", "session": "nocompliance-2", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+            {"kind": "nudged", "session": "dropped-1", "est": 100, "model": "x", "window": 1, "event": "Stop"},
+        ]}
+        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
+
+        total = (
+            result["voluntary"] + result["forced"] + result["blocked_no_handoff"]
+            + result["no_compliance"] + result["dropped"]
+        )
+        assert total == 9  # 8 fired, in-scope sessions + dropped-1
+        assert result["voluntary"] == 2
+        assert result["forced"] == 2
+        assert result["blocked_no_handoff"] == 2
+        assert result["no_compliance"] == 2
+        assert result["dropped"] == 1
+
+        conversion = result["voluntary"] + result["forced"]
+        block_reach = result["forced"] + result["blocked_no_handoff"]
+        assert conversion == 4
+        assert block_reach == 4
+
+
 class TestParseRearmSpacingsArg:
     def test_default_value_when_spacings_is_unset(self):
         """--spacings absent falls back to _REARM_BACKTEST_DEFAULT_SPACINGS."""
@@ -18542,6 +18748,258 @@ class TestRearmBacktestReport:
         # abs= accounts for the table's own 2-decimal-place rounding
         # ($X,XXX.XX), not slack in the expected computation itself.
         assert total == pytest.approx(expected_total, abs=0.005)
+
+    def test_conversion_section_never_prints_session_ids(self, fake_projects, tmp_path, capsys):
+        """Redaction: the conversion section's output carries no raw session
+        id, matching the pooled, pseudonymous-aggregate discipline the
+        spacing table already follows. Also asserts the session was
+        actually classified voluntary, not silently dropped -- redaction
+        alone can't be credited if the session never reached a bucket."""
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=super-secret-session est=100000 model=claude-sonnet-5"
+            " window=1000000 event=Stop\n"
+            "handoff session=super-secret-session\n"
+        )
+        _write_jsonl(fake_projects / "super-secret-session.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "super-secret-session" not in out
+        assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
+        assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "1"
+
+    def test_root_aware_join_reads_every_root_own_log_not_just_the_default(
+        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
+    ):
+        """A session logged only under a second declared root's own log must
+        still join -- a fixture that reads only the default root's log would
+        leave this session's nudged line unjoined and silently understate
+        both the lag sample and the conversion population. Also asserts
+        redaction holds at multi-root scope: neither root's own session id
+        leaks into the printed report."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=sess-a est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+
+        acct_b = fake_config_dir_factory("acct-b")
+        proj_b = acct_b / "projects" / "-home-user-other-repo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (acct_b / ".handoff-nudge.log").write_text(
+            "nudged session=sess-b est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+
+        _mod._rearm_backtest_report(
+            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
+        )
+        out = capsys.readouterr().out
+        assert "Operator-response-lag sample: 2 joined" in out
+        cols = _table_cols(out, header_contains="Bucket", row_contains="no-compliance-observed")
+        assert cols["Count"] == "2"
+        # Redaction: each root's own distinctive session id must not leak
+        # into the printed report, the multi-root counterpart to
+        # test_conversion_section_never_prints_session_ids' single-root
+        # assertion.
+        assert "sess-a" not in out
+        assert "sess-b" not in out
+
+    def test_root_with_no_log_file_contributes_zero_entries_without_raising(
+        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
+    ):
+        """Exercises _read_bounded_log_lines' absent-file path against the
+        real 4-of-6-declared-roots-have-a-log shape on the plan's own
+        machine: acct_b's root carries no .handoff-nudge.log at all, and
+        must contribute zero entries rather than raising, while the default
+        root's own log line still joins normally."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        acct_b = fake_config_dir_factory("acct-b")  # no .handoff-nudge.log written for this root
+        _mod._rearm_backtest_report(
+            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
+        )
+        out = capsys.readouterr().out
+        assert "Operator-response-lag sample: 1 joined" in out
+
+    def test_per_root_log_sizes_print_with_account_n_labels_never_a_raw_path(
+        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
+    ):
+        """Per-root log sizes are disclosed through the same account-N
+        labeling every other per-account figure in this codebase uses --
+        never the raw config-dir path."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text("schema-drift session=x event=Stop\n")
+        acct_b = fake_config_dir_factory("acct-b")
+        (acct_b / ".handoff-nudge.log").write_text("schema-drift session=y event=Stop\n")
+        _mod._rearm_backtest_report(
+            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
+        )
+        out = capsys.readouterr().out
+        assert "account-1" in out
+        assert "account-2" in out
+        assert str(acct_b) not in out
+        assert "acct-b" not in out
+
+    def test_conversion_bucket_and_rate_arithmetic_matches_hand_computed_counts(
+        self, fake_projects, tmp_path, capsys
+    ):
+        """The printed percentage strings (Conversion rate, Block-reach rate,
+        Join validity) are verified end-to-end against a hand-computed mixed
+        corpus here; the bucket-exhaustiveness and derived-rate arithmetic
+        invariant itself is covered directly against
+        _nudge_conversion_from_log's own return dict in
+        TestNudgeConversionFromLog. The appended conversion section must
+        also not disturb the pre-existing Spacing table's own `_table_cols`
+        parsing."""
+        sessions = [
+            "voluntary-1", "voluntary-2", "forced-1", "forced-2",
+            "blocked-1", "blocked-2", "nocompliance-1", "nocompliance-2",
+        ]
+        for session_id in sessions:
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _priced("claude-sonnet-5", input=100, output=100, ts="2026-05-19T10:00:00.000Z"),
+            ])
+        # dropped-1 has a log line but no transcript -- excluded from every bucket.
+        log_lines = [
+            "nudged session=voluntary-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop ignored=3",
+            "handoff session=voluntary-1",
+            "nudged session=voluntary-2 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
+            "handoff session=voluntary-2",
+            "nudged session=forced-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
+            "nudged session=forced-1 est=200 model=claude-sonnet-5 window=1000000 event=PostToolBatch action=block",
+            "handoff session=forced-1",
+            "nudged session=forced-2 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
+            "nudged session=forced-2 est=200 model=claude-sonnet-5 window=1000000 event=PostToolBatch action=block",
+            "handoff session=forced-2",
+            "nudged session=blocked-1 est=100 model=claude-sonnet-5 window=1000000 event=PostToolBatch action=block",
+            "nudged session=blocked-2 est=100 model=claude-sonnet-5 window=1000000 event=PostToolBatch action=block",
+            "nudged session=nocompliance-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
+            "nudged session=nocompliance-2 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
+            "nudged session=dropped-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
+        ]
+        (tmp_path / ".handoff-nudge.log").write_text("\n".join(log_lines) + "\n")
+
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+
+        assert "Fired sessions in scope: 8 (1 dropped -- no in-scope trace)" in out
+        assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "2"
+        assert _table_cols(out, header_contains="Bucket", row_contains="forced")["Count"] == "2"
+        assert _table_cols(out, header_contains="Bucket", row_contains="blocked-no-handoff")["Count"] == "2"
+        assert _table_cols(out, header_contains="Bucket", row_contains="no-compliance-observed")["Count"] == "2"
+        assert "Conversion rate (voluntary + forced / fired): 50.0% (4/8)" in out
+        assert "Block-reach rate (forced + blocked-no-handoff / fired): 50.0% (4/8)" in out
+        assert "Join validity (handoff lines matching an in-scope fired session): 4" in out
+        assert (
+            "Re-arms tolerated at voluntary compliance: median ignored=3 across 1 voluntary session(s)"
+            " (1 voluntary session(s) missing ignored=)" in out
+        )
+        spacing_cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
+        assert spacing_cols["$"] != ""
+
+    def test_zero_fired_sessions_prints_the_degenerate_conversion_branch_text(self, fake_projects, capsys):
+        """No .handoff-nudge.log at all (an account that has never fired a
+        nudge) still yields a priced spacing table plus a conversion section
+        reporting zero fired sessions -- _pct_of already guards the 0/0
+        division (transcript_analysis/render.py), so this pins the exact
+        wording of both degenerate-count branches rather than merely
+        confirming no crash."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Fired sessions in scope: 0 (0 dropped -- no in-scope trace)" in out
+        assert (
+            "Re-arms tolerated at voluntary compliance: no voluntary session(s) with ignored="
+            " present (0 voluntary session(s) missing ignored=)" in out
+        )
+
+    def test_current_format_action_block_line_with_ignored_and_skills_parses_through_full_stack(
+        self, fake_projects, tmp_path, capsys
+    ):
+        """Every action=block fixture among the report-level integration
+        tests in TestRearmBacktestReport/TestNudgeConversionFromLog, before
+        this one, omits ignored=/skills= (test_ignored_and_skills_fields_are_
+        captured_when_present covers the combined fields, but only against
+        _parse_nudge_log_entries directly, not classification).
+        nudge-handoff-near-context-cap.sh:644 always emits ignored=%s
+        skills=%s on a current action=block line -- this fixture routes that
+        current-format line through the real text-log parser (not a
+        hand-built dict) into _nudge_conversion_from_log, so a field-name or
+        type regression in that parsing path fails this test."""
+        _write_jsonl(fake_projects / "forced-tele.jsonl", [
+            _priced("claude-sonnet-5", input=100, output=100, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=forced-tele est=100 model=claude-sonnet-5 window=1000000"
+            " event=PostToolBatch ignored=2 skills=handoff,memory-skill action=block\n"
+            "handoff session=forced-tele\n"
+        )
+        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
+        assert _table_cols(out, header_contains="Bucket", row_contains="forced")["Count"] == "1"
+
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
+        """--no-redact is refused when --config-dir puts more than one root
+        in scope, mirroring cost's and context-distribution's own refusal --
+        the pre-existing guard is exercised via cmd_rearm_backtest itself,
+        before any log read."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        acct_b = fake_config_dir_factory("acct-b")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_rearm_backtest(_rearm_backtest_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+        assert exc_info.value.code == 2
+        assert "--no-redact" in capsys.readouterr().err
+
+    def test_no_redact_prints_literal_log_path_in_per_root_log_size_line(self, fake_projects, tmp_path, capsys):
+        """Single-root --no-redact prints the literal .handoff-nudge.log path,
+        not an account-N label, in the per-root log-size line -- exercises
+        the `else str(log_path)` branch (multi-root refuses --no-redact
+        outright, so this branch is only reachable at single-root scope)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert str(tmp_path / ".handoff-nudge.log") in out
+        assert "account-1" not in out
+
+    def test_no_redact_still_omits_session_id_of_a_real_fired_session(
+        self, fake_projects, tmp_path, capsys
+    ):
+        """--no-redact discloses the literal log path (the test above), but
+        must not also disclose the session id of a real fired/classified
+        session -- the existing --no-redact test writes no
+        .handoff-nudge.log at all, so it never has a session id that could
+        leak. This one constructs a real voluntary-bucket session so there's
+        something to assert isn't leaking."""
+        _write_jsonl(fake_projects / "leaky-session-1.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=leaky-session-1 est=100000 model=claude-sonnet-5"
+            " window=1000000 event=Stop\n"
+            "handoff session=leaky-session-1\n"
+        )
+        _mod._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert str(tmp_path / ".handoff-nudge.log") in out
+        assert "leaky-session-1" not in out
 
 
 # ---------------------------------------------------------------------------

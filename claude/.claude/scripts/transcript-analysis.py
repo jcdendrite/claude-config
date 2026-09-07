@@ -10410,6 +10410,118 @@ def _operator_response_lag_from_log(
     return lags, excluded
 
 
+def _nudge_conversion_from_log(
+    session_traces: dict[str, list[int]], log_entries_by_root: dict[Path, list[dict]]
+) -> dict:
+    """Classify each fired, in-scope session into one of four nudge-to-handoff
+    conversion buckets, per the frozen classification in
+    .claude/plans/handoff-nudge-deep-tail-lever.md ("The classification,
+    frozen before any run").
+
+    A session enters the classified population when it appears on at least
+    one `nudged` log line AND has a surviving in-scope trace in
+    session_traces -- the same population _operator_response_lag_from_log
+    joins against. A nudged session with no in-scope trace is excluded and
+    counted under "dropped" rather than guessed at (mirroring
+    _operator_response_lag_from_log's own excluded_count). A `handoff` line
+    for a session that never appears on a `nudged` line at all is outside
+    this population and is neither classified nor counted -- this measures
+    "did a nudged session convert," not "how many handoffs ran."
+
+    log_entries_by_root groups _parse_nudge_log_entries' own per-root output
+    -- a session's own nudged/handoff lines always land in one root's log,
+    since the same account writes both. Neither line type carries a
+    timestamp, so each root's own file order is the only chronological
+    signal available. No cross-root merge is needed as a result.
+
+    Buckets (mutually exclusive, decided by the first `handoff` line reached
+    and whether any `action=block` line precedes it):
+    - voluntary: a handoff line exists, no block precedes it
+    - forced: a handoff line exists, at least one block precedes it
+    - blocked_no_handoff: at least one block line, no handoff line
+    - no_compliance: neither a block nor a handoff line
+
+    Returns a dict with:
+    - "voluntary", "forced", "blocked_no_handoff", "no_compliance": the four
+      bucket counts above
+    - "dropped": nudged sessions with no surviving in-scope trace, excluded
+      rather than guessed at (see above)
+    - "join_validity": voluntary + forced, the count of fired, in-scope
+      sessions whose handoff line's session id actually matched a nudged
+      session id
+    - "ignored_values": the `ignored=` value on the last nudged line
+      preceding the handoff line, one per voluntary session where that line
+      carries the field
+    - "no_ignored_field": voluntary sessions whose preceding nudged line
+      carries no ignored= field -- counted separately and never defaulted to
+      0, which would bias the distribution toward "complied immediately"
+    """
+    # A session id repeated under more than one root (a stale symlink, a
+    # merged log, a PID-reuse collision) is an explicit non-goal: entries
+    # land in root-scan order, not true chronological order, since neither
+    # line type carries a timestamp.
+    per_session: dict[str, list[dict]] = defaultdict(list)
+    for entries in log_entries_by_root.values():
+        for entry in entries:
+            if entry.get("kind") not in ("nudged", "handoff"):
+                continue
+            session = entry.get("session")
+            if session:
+                per_session[session].append(entry)
+
+    voluntary = forced = blocked_no_handoff = no_compliance = 0
+    dropped = no_ignored_field = 0
+    ignored_values: list[int] = []
+
+    for session, entries in per_session.items():
+        if not any(e["kind"] == "nudged" for e in entries):
+            continue
+        if session not in session_traces:
+            dropped += 1
+            continue
+
+        handoff_index = next((i for i, e in enumerate(entries) if e["kind"] == "handoff"), None)
+        block_index = next(
+            (i for i, e in enumerate(entries) if e["kind"] == "nudged" and e.get("action") == "block"),
+            None,
+        )
+
+        if handoff_index is None:
+            if block_index is not None:
+                blocked_no_handoff += 1
+            else:
+                no_compliance += 1
+            continue
+
+        if block_index is not None and block_index < handoff_index:
+            forced += 1
+            continue
+
+        voluntary += 1
+        last_nudged = next(
+            (e for e in reversed(entries[:handoff_index]) if e["kind"] == "nudged"), None
+        )
+        if last_nudged is not None and "ignored" in last_nudged:
+            ignored_values.append(last_nudged["ignored"])
+        else:
+            no_ignored_field += 1
+
+    return {
+        "voluntary": voluntary,
+        "forced": forced,
+        "blocked_no_handoff": blocked_no_handoff,
+        "no_compliance": no_compliance,
+        "dropped": dropped,
+        # Definitional sum of the two buckets above, not an independent join
+        # re-check: the classification loop's own per-session bucket
+        # assignment already requires a shared session id before either
+        # bucket increments.
+        "join_validity": voluntary + forced,
+        "ignored_values": ignored_values,
+        "no_ignored_field": no_ignored_field,
+    }
+
+
 def _simulate_rearm_spacing(
     main_thread_turns: Sequence[tuple[int, int, float]],
     boundaries: Sequence[int],
@@ -10624,7 +10736,20 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    # Per-root join is required: a single hardcoded config_dir() read would
+    # bias the lag/conversion signal toward one account while session_traces
+    # spans every resolved root.
+    # Computed unconditionally, not gated on multi_root -- correct and cheap
+    # on a single-element sequence too.
+    redact_ordinals: dict[Path, int] = _redaction_ordinals(scan_roots)
+    log_entries_by_root: dict[Path, list[dict]] = {}
+    for root in scan_roots:
+        log_path = root.parent / ".handoff-nudge.log"
+        log_entries_by_root[root] = _parse_nudge_log_entries(log_path)
+        root_label = f"account-{redact_ordinals[root.resolve()]}" if redact else str(log_path)
+        log_size = log_path.stat().st_size if log_path.exists() else 0
+        print(f"  {root_label} nudge log: {log_size:,} bytes")
+    log_entries = [entry for entries in log_entries_by_root.values() for entry in entries]
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
         sorted_lags = sorted(lags)
@@ -10692,6 +10817,55 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
                 f"{spacing:>10,} {compliance_label:>12} {total:>14,.2f} {delta:>+10,.2f}"
                 f" {c_bar:>10,.0f} {delta_c_bar:>+12,.0f}"
             )
+
+    conversion = _nudge_conversion_from_log(session_traces, log_entries_by_root)
+    fired = (
+        conversion["voluntary"] + conversion["forced"]
+        + conversion["blocked_no_handoff"] + conversion["no_compliance"]
+    )
+    print(f"\n## Nudge->handoff conversion ({title_since}, generated {today.isoformat()})\n")
+    print(f"Fired sessions in scope: {fired:,} ({conversion['dropped']:,} dropped -- no in-scope trace)")
+
+    bucket_header = f"{'Bucket':<24} {'Count':>8} {'Rate':>8}"
+    print(f"\n{bucket_header}")
+    print("-" * len(bucket_header))
+    for label, key in (
+        ("voluntary", "voluntary"),
+        ("forced", "forced"),
+        ("blocked-no-handoff", "blocked_no_handoff"),
+        ("no-compliance-observed", "no_compliance"),
+    ):
+        count = conversion[key]
+        print(f"{label:<24} {count:>8,} {_pct_of(count, fired):>8}")
+
+    converted = conversion["voluntary"] + conversion["forced"]
+    block_reach = conversion["forced"] + conversion["blocked_no_handoff"]
+    print(
+        f"\nConversion rate (voluntary + forced / fired): {_pct_of(converted, fired)}"
+        f" ({converted:,}/{fired:,})"
+    )
+    print(
+        f"Block-reach rate (forced + blocked-no-handoff / fired): {_pct_of(block_reach, fired)}"
+        f" ({block_reach:,}/{fired:,})"
+    )
+    print(
+        "Join validity (handoff lines matching an in-scope fired session):"
+        f" {conversion['join_validity']:,}"
+    )
+
+    ignored_values = conversion["ignored_values"]
+    if ignored_values:
+        median_ignored = statistics.median(ignored_values)
+        print(
+            f"Re-arms tolerated at voluntary compliance: median ignored={median_ignored:,.0f}"
+            f" across {len(ignored_values):,} voluntary session(s)"
+            f" ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
+        )
+    else:
+        print(
+            "Re-arms tolerated at voluntary compliance: no voluntary session(s) with ignored="
+            f" present ({conversion['no_ignored_field']:,} voluntary session(s) missing ignored=)"
+        )
 
 
 # --- plan-boundary: continue-vs-switch-vs-handoff repricing at the plan boundary ---
