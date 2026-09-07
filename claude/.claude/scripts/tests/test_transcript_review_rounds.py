@@ -916,3 +916,135 @@ class TestCmdReviewRoundCost:
         assert "Totals: 2 branches, 2 rounds (code-review=1  plan-review=1  ready-for-review=0)" in out
         assert "Mean rounds per branch: 1.00" in out
         assert f"Non-round dollars: {expected_pct} of branch dollars fell outside every round window" in out
+
+    def test_footer_is_partitioned_per_root_and_does_not_blend_dollars_or_round_counts_across_roots(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Under more than one declared root, the footer prints one
+        account-<K>-prefixed block per root, summed only from that root's
+        own branches. A blended block would let a reader subtract out one
+        account's known spend to recover the other's."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a1.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T09:00:00.000Z"),  # non-round: $0.20
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),  # round: $0.20
+            _user_msg("thanks", branch="feat-a1", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        _write_jsonl(proj_a / "sess-a2.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "code-review")],
+            ),  # round, no non-round activity: $0.20
+            _user_msg("thanks", branch="feat-a2", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s3", "plan-review")],
+            ),  # round, no non-round activity: $0.40
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        root_a_branch_dollars = 0.20 + 0.20 + 0.20
+        root_a_round_dollars = 0.20 + 0.20
+        root_a_pct = render._pct_of(root_a_branch_dollars - root_a_round_dollars, root_a_branch_dollars)
+        root_b_branch_dollars = 0.40
+        root_b_round_dollars = 0.40
+        root_b_pct = render._pct_of(root_b_branch_dollars - root_b_round_dollars, root_b_branch_dollars)
+
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        out = capsys.readouterr().out
+
+        assert "account-1 Totals: 2 branches, 2 rounds (code-review=2  plan-review=0  ready-for-review=0)" in out
+        assert "account-1 Mean rounds per branch: 1.00" in out
+        assert f"account-1 Non-round dollars: {root_a_pct} of branch dollars fell outside every round window" in out
+        assert "account-2 Totals: 1 branches, 1 rounds (code-review=0  plan-review=1  ready-for-review=0)" in out
+        assert "account-2 Mean rounds per branch: 1.00" in out
+        assert f"account-2 Non-round dollars: {root_b_pct} of branch dollars fell outside every round window" in out
+        # Asserts the footer never blends root A's and root B's totals into one combined figure.
+        assert "3 branches, 3 rounds" not in out
+        assert "code-review=2  plan-review=1" not in out
+
+    def test_footer_partitions_mean_per_round_dangling_and_unpriced_turns_across_roots(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Extends the partition test above to the three footer lines it
+        doesn't cover: Mean $ per round, Dangling dispatches, and Unpriced
+        turns. Root A's round carries one dangling dispatch and one
+        unpriced-model turn. Root B's carries neither, so a shared
+        accumulator bug would leak root A's nonzero counts into root B's
+        line."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(  # round open: $0.20, spawns dangling dispatch a1
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            # unrecognized model: unpriced turn, still inside the window
+            _priced("some-unrecognized-model-id", input=100_000, branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        # No _write_subagent_dispatch call for tool_use_id "a1" -- dangling.
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced(  # round, no dangling dispatch or unpriced turn: $0.40
+                "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        out = capsys.readouterr().out
+
+        assert "account-1 Mean $ per round — code-review 0.20  plan-review no data  ready-for-review no data" in out
+        assert "account-2 Mean $ per round — code-review no data  plan-review 0.40  ready-for-review no data" in out
+        assert "account-1 Dangling dispatches inside round windows: 1 (no readable meta.json/jsonl pair)" in out
+        assert "account-2 Dangling dispatches inside round windows: 0 (no readable meta.json/jsonl pair)" in out
+        assert "account-1 Unpriced turns inside round windows: 1" in out
+        assert "account-2 Unpriced turns inside round windows: 0" in out
+
+    def test_root_with_no_rounds_left_after_skill_filter_is_absent_from_footer(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Filtering by --skill narrows root B's rounds to zero while root A
+        keeps its own. A root with no rounds left in scope is absent from
+        the footer rather than printed as a zeroed block. Asserts exactly
+        one account-<K>-prefixed footer block prints, and root B's own
+        ordinal never appears in output."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+            _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
+        ])
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(skill="code-review"))
+        out = capsys.readouterr().out
+
+        assert "account-1 Totals: 1 branches, 1 rounds (code-review=1  plan-review=0  ready-for-review=0)" in out
+        assert out.count("Totals:") == 1
+        assert "account-2" not in out

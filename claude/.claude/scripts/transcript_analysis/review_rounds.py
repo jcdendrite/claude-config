@@ -411,15 +411,18 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     reported.
 
     See docs/transcript-analysis.md's review-round-cost section for the
-    round/non-round reconciliation-line formula, and for the corpus-wide
+    round/non-round reconciliation-line formula, and for the
     "Non-round dollars"/"Dangling dispatches"/"Unpriced turns" footer lines.
+    Under multi-root scope the footer prints one block per root, never
+    blended across roots.
 
-    Output redaction follows subagent-mix's documented contract exactly:
-    under more than one scan root, a branch name prints raw only under
-    --this-repo (account-<K>/<branch>), else opaque
+    Output redaction follows subagent-mix's documented contract exactly for
+    per-branch rows: under more than one scan root, a branch name prints raw
+    only under --this-repo (account-<K>/<branch>), else opaque
     (account-<K>/branch-<N>), with DO NOT PUBLISH on stdout and stderr;
     under a single root there is nothing to redact, so branch names print
-    raw unconditionally.
+    raw unconditionally. Unlike subagent-mix (which has no cross-branch
+    footer), this command's own footer is partitioned per root the same way.
     """
     this_repo = bool(getattr(args, "this_repo", False))
     branches_arg: str | None = getattr(args, "branches", None) or None
@@ -469,13 +472,19 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
     for entry in rounds:
         by_branch[entry["branch_key"]].append(entry)
 
-    total_rounds = 0
-    skill_round_counts: dict[str, int] = defaultdict(int)
-    skill_dollar_totals: dict[str, float] = defaultdict(float)
-    total_round_dollars = 0.0
-    total_branch_dollars = 0.0
-    total_unpriced_turns = 0
-    total_dangling = 0
+    # One totals accumulator per root_idx (always {None: ...} under a single
+    # root), so the footer below can be partitioned per root instead of
+    # blending every root's dollars/round counts into one figure.
+    per_root_totals: dict[int | None, dict] = defaultdict(lambda: {
+        "num_branches": 0,
+        "total_rounds": 0,
+        "skill_round_counts": defaultdict(int),
+        "skill_dollar_totals": defaultdict(float),
+        "total_round_dollars": 0.0,
+        "total_branch_dollars": 0.0,
+        "total_unpriced_turns": 0,
+        "total_dangling": 0,
+    })
 
     print()
     for branch_key in sorted(by_branch, key=_branch_label):
@@ -510,29 +519,48 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             )
         print()
 
-        total_rounds += len(branch_rounds)
+        root_totals = per_root_totals[branch_key[0]]
+        root_totals["num_branches"] += 1
+        root_totals["total_rounds"] += len(branch_rounds)
         for e in branch_rounds:
-            skill_round_counts[e["skill"]] += 1
-            skill_dollar_totals[e["skill"]] += e["main_dollars"] + e["agent_dollars"]
-            total_unpriced_turns += e["unpriced_turns"]
-            total_dangling += e["dangling"]
-        total_round_dollars += branch_round_dollars
-        total_branch_dollars += branch_dollars
+            root_totals["skill_round_counts"][e["skill"]] += 1
+            root_totals["skill_dollar_totals"][e["skill"]] += e["main_dollars"] + e["agent_dollars"]
+            root_totals["total_unpriced_turns"] += e["unpriced_turns"]
+            root_totals["total_dangling"] += e["dangling"]
+        root_totals["total_round_dollars"] += branch_round_dollars
+        root_totals["total_branch_dollars"] += branch_dollars
 
-    skill_counts_str = "  ".join(f"{s}={skill_round_counts.get(s, 0)}" for s in REVIEW_SKILLS)
-    print(f"Totals: {len(by_branch)} branches, {total_rounds} rounds ({skill_counts_str})")
-    print(f"Mean rounds per branch: {total_rounds / len(by_branch):.2f}")
+    def _print_footer(totals: dict, *, prefix: str = "") -> None:
+        skill_round_counts = totals["skill_round_counts"]
+        skill_dollar_totals = totals["skill_dollar_totals"]
+        skill_counts_str = "  ".join(f"{s}={skill_round_counts.get(s, 0)}" for s in REVIEW_SKILLS)
+        print(f"{prefix}Totals: {totals['num_branches']} branches, {totals['total_rounds']} rounds ({skill_counts_str})")
+        print(f"{prefix}Mean rounds per branch: {totals['total_rounds'] / totals['num_branches']:.2f}")
 
-    mean_parts = []
-    for s in REVIEW_SKILLS:
-        count = skill_round_counts.get(s, 0)
-        mean_parts.append(f"{s} {skill_dollar_totals[s] / count:.2f}" if count else f"{s} no data")
-    print("Mean $ per round — " + "  ".join(mean_parts))
+        mean_parts = []
+        for s in REVIEW_SKILLS:
+            count = skill_round_counts.get(s, 0)
+            mean_parts.append(f"{s} {skill_dollar_totals[s] / count:.2f}" if count else f"{s} no data")
+        print(f"{prefix}Mean $ per round — " + "  ".join(mean_parts))
 
-    non_round_dollars = total_branch_dollars - total_round_dollars
-    print(
-        f"Non-round dollars: {render._pct_of(non_round_dollars, total_branch_dollars)}"
-        " of branch dollars fell outside every round window"
-    )
-    print(f"Dangling dispatches inside round windows: {total_dangling} (no readable meta.json/jsonl pair)")
-    print(f"Unpriced turns inside round windows: {total_unpriced_turns}")
+        non_round_dollars = totals["total_branch_dollars"] - totals["total_round_dollars"]
+        print(
+            f"{prefix}Non-round dollars: {render._pct_of(non_round_dollars, totals['total_branch_dollars'])}"
+            " of branch dollars fell outside every round window"
+        )
+        print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")
+        print(f"{prefix}Unpriced turns inside round windows: {totals['total_unpriced_turns']}")
+
+    if multi_root:
+        # One footer block per root, ordered by the same resolved-path-sorted
+        # ordinal the per-branch account-<K> labels use.
+        # A root with no rounds left in scope after filtering is simply
+        # absent from the footer, not printed as a zeroed block.
+        root_idxs_by_ordinal = sorted(per_root_totals, key=lambda idx: redact_ordinals[resolved_roots[idx]])
+        for i, root_idx in enumerate(root_idxs_by_ordinal):
+            if i > 0:
+                print()
+            ordinal = redact_ordinals[resolved_roots[root_idx]]
+            _print_footer(per_root_totals[root_idx], prefix=f"account-{ordinal} ")
+    else:
+        _print_footer(per_root_totals[None])
