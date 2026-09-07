@@ -11790,7 +11790,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_round_cost.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
     p_review_round_cost.add_argument(
         "--skill", metavar="NAME", choices=sorted(REVIEW_SKILLS),
-        help="Restrict round detection to one skill name (default: all three).",
+        help="Print only rounds for one skill name (default: all three); never narrows detection.",
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
