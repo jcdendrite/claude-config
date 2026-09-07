@@ -412,6 +412,14 @@ if [ -f "$HOME/.claude.json" ]; then
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
 
+# Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
+# which doesn't exist yet at this point in a fresh install (this repo isn't
+# stowed yet). Deletes the inline $CLAUDE_CONFIG_DIR resolver this script
+# used to carry -- _lib_config_dir is now the single bash definition of
+# config-dir resolution, shared with every hook via _lib.sh.
+# shellcheck source=claude/.claude/hooks/_config.sh
+. "$REPO_DIR/claude/.claude/hooks/_config.sh"
+
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
@@ -419,29 +427,32 @@ fi
 # Caller must check `[ -t 0 ]` before invoking this — it has no TTY guard of
 # its own and will block on `read` forever against an open, never-closed
 # stdin. configure_machine_level_opt_ins below is the only sanctioned caller.
+# Writes via _config_set to the resolved config dir (the write-path fix
+# _config_set's own key/value interface gives every promptable key, not just
+# the four that used to read from the resolved config dir already) rather
+# than always to $HOME/.claude as the pre-migration version did. KEY is a
+# config-keys.psv key name, not a caller-supplied path, so the old
+# path-confinement guard (a defense-in-depth check against a future
+# non-hardcoded/repo-influenced path argument) is gone: there is no longer a
+# path argument to confine.
 _prompt_sentinel_opt_in() {
-  local sentinel_path="$1" human_name="$2" description="$3" answer
-  # Defense-in-depth: both current call sites hardcode a safe path, but this
-  # function performs unconditional touch/rm/mkdir on its first argument —
-  # confine it to $HOME/.claude so a future call site with a
-  # non-hardcoded/repo-influenced path fails loudly instead of silently
-  # writing wherever it's pointed.
-  case "$sentinel_path" in
-    "$HOME/.claude/"*) ;;
-    *)
-      echo "[install] internal error: _prompt_sentinel_opt_in refuses a path outside \$HOME/.claude: $sentinel_path" >&2
-      return 1
-      ;;
-  esac
-  if [ -f "$sentinel_path" ]; then
-    printf '%s is currently ENABLED on this machine (%s).\n' "$human_name" "$sentinel_path"
+  local key="$1" human_name="$2" description="$3" answer current
+  current=$(_config_value "$key") || current="false"
+  if [ "$current" != "false" ]; then
+    printf '%s is currently ENABLED on this machine (%s).\n' "$human_name" "$current"
     printf '%s\n' "$description"
     # `|| answer=""` treats read's EOF (e.g. Ctrl-D) the same as a bare
     # Enter (no-op) instead of letting set -e abort the rest of install.sh
     # — including marketplace/plugin registration below — with no diagnostic.
     read -r -p "Keep it enabled? [Y/n] " answer || answer=""
     case "$answer" in
-      [Nn]*) rm -f "$sentinel_path"; echo "  → disabled: removed $sentinel_path" ;;
+      [Nn]*)
+        if _config_set "$key" false; then
+          echo "  → disabled"
+        else
+          echo "  ! could not write $key -- see claude-config.toml" >&2
+        fi
+        ;;
       *) echo "  ✓ keeping $human_name enabled" ;;
     esac
   else
@@ -449,21 +460,26 @@ _prompt_sentinel_opt_in() {
     printf '%s\n' "$description"
     read -r -p "Enable it now? [y/N] " answer || answer=""
     case "$answer" in
-      [Yy]*) mkdir -p "$(dirname "$sentinel_path")"; touch "$sentinel_path"; echo "  → enabled: created $sentinel_path" ;;
+      [Yy]*)
+        if _config_set "$key" true; then
+          echo "  → enabled"
+        else
+          echo "  ! could not write $key -- see claude-config.toml" >&2
+        fi
+        ;;
       *) echo "  ✓ leaving $human_name disabled" ;;
     esac
   fi
 }
 
-# SENTINEL_INVENTORY (defined in the INSTALL_TEST_FIXTURE: sentinel-inventory
-# block below) must already be populated by the time this runs — every
-# top-level call site in this script satisfies that by ordering, since both
-# blocks are defined, in file order, before this function is ever called.
-# configure_machine_level_opt_ins iterates its scope=machine-promptable rows.
-# Reads all 8 fields per row but only consumes the first four (expected_content
-# and polarity are account-scope-only); no current machine-promptable row
-# populates those two, so this read site's handling of them is untested --
-# add coverage here if a future row starts consuming either.
+# Drives the prompt from config-keys.psv itself (sourced via _config.sh
+# above): a key is promptable iff its prompt-description column is
+# non-empty, so adding a new promptable key needs a schema edit here, not a
+# second array. Reads config-keys.psv into an array first, then iterates
+# with `for`/here-string parsing (never `while read ... < file`) -- the
+# loop body below calls `read -r -p` via _prompt_sentinel_opt_in, and a
+# `while read` loop redirected from the schema file would steal that same
+# fd 0 away from the terminal for the loop's whole duration.
 configure_machine_level_opt_ins() {
   if [ ! -t 0 ]; then
     echo ""
@@ -473,15 +489,21 @@ configure_machine_level_opt_ins() {
   fi
   echo ""
   echo "=== Machine-level opt-ins ==="
-  SENTINEL_INVENTORY_PROMPTED_INDICES=""
-  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor expected_content polarity
-  for entry in "${SENTINEL_INVENTORY[@]}"; do
-    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor expected_content polarity <<< "$entry"
-    if [ "$scope" = "machine-promptable" ]; then
-      _prompt_sentinel_opt_in "$HOME/.claude/$path_template" "$human_name" "$prompt_description"
-      SENTINEL_INVENTORY_PROMPTED_INDICES="$SENTINEL_INVENTORY_PROMPTED_INDICES $sentinel_index"
-    fi
-    sentinel_index=$((sentinel_index + 1))
+  local -a schema_lines=()
+  local line
+  while IFS= read -r line; do
+    schema_lines+=("$line")
+  done < "$_CONFIG_SCHEMA_FILE"
+  local key type default resolution legacy_probe legacy_import legacy_filename \
+    legacy_polarity human_name docs_anchor prompt_description
+  for line in "${schema_lines[@]}"; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    IFS='|' read -r key type default resolution legacy_probe legacy_import legacy_filename \
+      legacy_polarity human_name docs_anchor prompt_description <<< "$line"
+    [ -n "$prompt_description" ] || continue
+    _prompt_sentinel_opt_in "$key" "$human_name" "$prompt_description"
   done
 }
 # INSTALL_TEST_FIXTURE: machine-level-opt-ins — end
@@ -490,58 +512,31 @@ configure_machine_level_opt_ins() {
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: sentinel-inventory — start
-# Flat, pipe-delimited rows rather than an associative array: the system bash
-# on macOS (and this machine's default) is 3.2, which has no `declare -A`.
-# Schema (no surrounding whitespace around any `|` — IFS='|' read -r would
-# otherwise bake leading/trailing spaces into every field):
-#   path-template|scope|human-name|prompt-description|default-state|docs-anchor|expected-content|polarity
-# scope is one of:
-#   machine-promptable — offered by configure_machine_level_opt_ins above; resolved against $HOME/.claude/
-#   machine            — report-only; same resolution as machine-promptable
-#   repo               — report-only; resolved against this repo's own root
-#   account            — report-only; resolved against $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude, never both (see _report_account_sentinel)
-# prompt-description is carried only for machine-promptable rows.
-# default-state is the label printed when the sentinel file is absent — "disabled" for
-# every row except an opt-out-polarity account row (see polarity below), where absence
-# is the on-by-default state, so default-state reads "enabled" instead.
-# expected-content, polarity: optional trailing fields, meaningful only for scope=account
-# rows; appended last so every other row's `read` leaves them as empty strings.
-#   expected-content: empty = presence-only check (default for every row); non-empty =
-#     content-mode — compare the sentinel's trimmed, lowercased content against this value
-#     (e.g. pr-cost-disclosure checks against "dollars").
-#   polarity: empty or "opt-in" (also the fallback for any unrecognized value) = existing
-#     behavior (absent -> default-state, present -> "ENABLED"); "opt-out" inverts which
-#     state is the row's default.
-#   Constraint: a content-mode row (non-empty expected-content) must use default-state
-#     "disabled" — its CTA is never keyed off default-state (see _report_account_sentinel),
-#     so "enabled" would desync the printed state from the CTA.
-# Promotion criterion, machine -> machine-promptable: boolean file-presence
-# state plus an opt-into-new-capability semantic — see docs/design-decisions.md #23.
-SENTINEL_INVENTORY=(
-  "worktree-required|machine-promptable|Worktree enforcement|Denies git commit/push/etc. outside a linked worktree on every repo without a per-repo .claude/worktree-optout. See README 'Worktree enforcement'.|disabled|README.md § Worktree enforcement"
-  "autonomous-shipping-required|machine-promptable|Autonomous shipping|Lets Claude Code commit, push, and open PRs without asking first, on every repo without a per-repo .claude/autonomous-shipping-optout. A repo cannot enable this by committing anything — only this machine-level file can. See README 'Autonomous shipping'.|disabled|README.md § Autonomous shipping"
-  "track-permission-prompts|machine-promptable|Permission-prompt tracking|Logs each interactive permission-prompt Notification (credential-shaped values redacted) to ~/.claude/.permission-prompt-log.jsonl, so you can see which commands still trigger a prompt under auto permission mode. No per-repo opt-out.|disabled|docs/permission-prompt-tracking.md"
-  ".error-mode-nudge-enabled|machine-promptable|Error-mode analysis nudge|Nudges you to run /error-mode-analysis after a repeated-failure sequence in a session, so a stuck debugging loop gets flagged instead of continuing silently. See docs/error-mode-nudge.md.|disabled|docs/error-mode-nudge.md"
-  ".cost-ledger-enabled|machine-promptable|Cost ledger recording|Lets cost-ledger --record append this machine's weekly cost/efficiency figures to \$CLAUDE_CONFIG_DIR/cost-ledger.md (override via COST_LEDGER_PATH) — outlives the source transcripts once they age out and get deleted, though it's a single local file with no automatic backup. See docs/cost-ledger.md.|disabled|docs/cost-ledger.md"
-  ".pr-cost-enabled|machine-promptable|PR cost ledger recording|Lets pr-cost --record durably append this machine's per-PR AI-tooling dollar cost rows to \$CLAUDE_CONFIG_DIR/pr-cost-ledger.tsv (override via PR_COST_LEDGER_PATH) — unlike the weekly cost ledger's aggregate-only rows, these carry branch names and repo identifiers, and outlive the source transcripts once they age out and get deleted, though it's a single local file with no automatic backup. See docs/pr-cost.md.|disabled|docs/pr-cost.md"
-  ".handoff-nudge-disabled|machine|Handoff-near-cap nudge suppression||disabled|docs/handoff-nudge.md"
-  ".consume-durable-continuity-disabled|machine|Durable-continuity auto-consume suppression||disabled|docs/hooks.md § Utility hooks"
-  ".commit-stall-block-disabled|machine|Commit-stall auto-advance suppression||disabled|docs/commit-stall-block.md"
-  ".session-title-disabled|machine|Branch-based session-title suppression (machine-wide)||disabled|docs/hooks.md § Utility hooks"
-  ".round-consult-gate-disabled|machine|Round-3 architect-consult gate suppression||disabled|docs/hooks.md § Gate hooks"
-  ".round-consult-round2-pilot|machine|Round-2 architect-consult pilot cap override (time-boxed)||disabled|docs/hooks.md § Gate hooks"
-  ".claude/worktree-required|repo|Worktree enforcement (committed, this repo)||disabled|README.md § Worktree enforcement"
-  ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
-  ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
-  ".claude/session-title-disabled|repo|Branch-based session-title suppression (this repo)||disabled|docs/hooks.md § Utility hooks"
-  "pr-cost-disclosure|account|PR cost disclosure (this account)||disabled|README.md § PR cost disclosure|dollars"
-  "pr-description-tighten-prose-optout|account|Prose-tightening pass opt-out (this account)||enabled|docs/hooks.md § Prose tightening opt-out||opt-out"
+# The four repo-scope committed markers only -- every machine/account-scope
+# row moved to config-keys.psv (see the Context section of
+# .claude/plans/sentinel-config-migration.md for why: a committed file is
+# the git-native idiom for a repo-level toggle, and moving these into the
+# per-machine state file would break exactly the property they exist for).
+# Flat, pipe-delimited rows rather than an associative array: the system
+# bash on macOS (and this machine's default) is 3.2, which has no
+# `declare -A`. Schema (no surrounding whitespace around any `|` --
+# IFS='|' read -r would otherwise bake leading/trailing spaces into every
+# field): path-template|human-name|docs-anchor. Every row's default state
+# is "disabled" (presence-enables) -- no row here carries the opt-out
+# polarity account-scope rows used to need.
+REPO_MARKER_INVENTORY=(
+  ".claude/worktree-required|Worktree enforcement (committed, this repo)|README.md § Worktree enforcement"
+  ".claude/worktree-optout|Worktree enforcement opt-out (this repo)|README.md § Worktree enforcement"
+  ".claude/autonomous-shipping-optout|Autonomous-shipping opt-out (this repo)|README.md § Autonomous shipping"
+  ".claude/session-title-disabled|Branch-based session-title suppression (this repo)|docs/hooks.md § Utility hooks"
 )
 
-# Whether $1 (a zero-based SENTINEL_INVENTORY index) was prompted by
-# configure_machine_level_opt_ins during this run — report_sentinel_inventory
-# uses this to suppress a redundant enable-hint for a sentinel the user was
-# just asked about.
+# Whether $1 (a zero-based REPO_MARKER_INVENTORY index) was prompted by
+# configure_machine_level_opt_ins during this run -- always false today,
+# since no repo-scope row is ever machine-promptable, kept for the same
+# reason report_sentinel_inventory's schema-key loop below needs no
+# equivalent: a repo marker's CTA is never suppressed by anything this
+# script prompts about.
 _sentinel_index_prompted_this_run() {
   case " ${SENTINEL_INVENTORY_PROMPTED_INDICES:-} " in
     *" $1 "*) return 0 ;;
@@ -549,157 +544,140 @@ _sentinel_index_prompted_this_run() {
   esac
 }
 
-# Prints "ENABLED" when $1 exists, else $2 (the row's own default-state,
-# always "disabled" per the schema comment above) — the same two labels
-# _prompt_sentinel_opt_in's own prompts already use.
+# Prints "ENABLED" when $1 exists, else "disabled" -- the same two labels
+# this reporter's own CTA text already uses.
 _sentinel_state_label() {
   if [ -f "$1" ]; then
     printf 'ENABLED'
   else
-    printf '%s' "$2"
-  fi
-}
-
-_report_machine_sentinel() {
-  local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5" diverged_config_dir="$6"
-  local home_path="$HOME/.claude/$path_template"
-  if [ -n "$diverged_config_dir" ]; then
-    local config_dir_path="$diverged_config_dir/$path_template"
-    # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
-    # unexpanded here, naming the literal env var in the diagnostic message,
-    # not this run's own resolved value (already printed on the next line).
-    printf '  %s: DIVERGED — CLAUDE_CONFIG_DIR and $HOME/.claude disagree\n' "$human_name"
-    printf '    %s: %s\n' "$home_path" "$(_sentinel_state_label "$home_path" "$default_state")"
-    printf '    %s: %s\n' "$config_dir_path" "$(_sentinel_state_label "$config_dir_path" "$default_state")"
-    printf '    docs: %s\n' "$docs_anchor"
-    return 0
-  fi
-  local state
-  state="$(_sentinel_state_label "$home_path" "$default_state")"
-  printf '  %s: %s (%s)\n' "$human_name" "$state" "$home_path"
-  printf '    docs: %s\n' "$docs_anchor"
-  if [ "$state" = "$default_state" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
-    printf '    → to enable: touch %s\n' "$home_path"
+    printf 'disabled'
   fi
 }
 
 _report_repo_sentinel() {
-  local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5"
+  local sentinel_index="$1" path_template="$2" human_name="$3" docs_anchor="$4"
   local repo_path="$REPO_DIR/$path_template"
   local state
-  state="$(_sentinel_state_label "$repo_path" "$default_state")"
+  state="$(_sentinel_state_label "$repo_path")"
   printf '  %s: %s (%s)\n' "$human_name" "$state" "$path_template"
   printf '    docs: %s\n' "$docs_anchor"
-  if [ "$state" = "$default_state" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
+  if [ "$state" = "disabled" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
     printf '    → to enable: touch %s\n' "$path_template"
   fi
 }
 
-# See the SENTINEL_INVENTORY schema comment above for the full
-# expected-content/polarity grammar (including the content-mode/default-state
-# invariant). polarity applies only when expected_content is empty;
-# content-mode rows (e.g. pr-cost-disclosure) always use opt-in semantics and
-# mirror claude-skills/skills/pr-description/SKILL.md's mode grammar
-# byte-for-byte — a manual pin, not an enforced sync, so a change to one side
-# needs the matching edit on the other. Resolution is not union:
-# $CLAUDE_CONFIG_DIR only when set and absolute, else $HOME/.claude — never
-# both, so one account's opt-in cannot activate a row under another
-# account's config dir.
-_report_account_sentinel() {
-  local sentinel_index="$1" path_template="$2" human_name="$3" default_state="$4" docs_anchor="$5" expected_content="$6" polarity="$7"
-  local effective_polarity="opt-in"
-  [ "$polarity" = "opt-out" ] && effective_polarity="opt-out"
-  local config_dir
-  case "${CLAUDE_CONFIG_DIR:-}" in
-    /*) config_dir="${CLAUDE_CONFIG_DIR%/}" ;;
-    *) config_dir="$HOME/.claude" ;;
-  esac
-  local sentinel_path="$config_dir/$path_template"
-  local state
-  if [ -n "$expected_content" ]; then
-    if [ ! -f "$sentinel_path" ]; then
-      state="$default_state"
-    else
-      local mode
-      mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
-      mode="${mode#"${mode%%[![:space:]]*}"}"
-      mode="${mode%"${mode##*[![:space:]]}"}"
-      mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
-      if [ "$mode" = "$expected_content" ]; then
-        state="ENABLED (mode=$expected_content)"
-      elif [ -z "$mode" ]; then
-        state="$default_state"
-      else
-        state="present but mode not recognized: \"$mode\" — treated as $default_state"
-      fi
-    fi
-  elif [ ! -f "$sentinel_path" ]; then
-    state="$default_state"
-  elif [ "$effective_polarity" = "opt-out" ]; then
-    state="DISABLED"
-  else
-    state="ENABLED"
+# KEY's source this run: "config file" when claude-config.toml itself
+# carries a conforming row, else "legacy file" when its legacy sentinel is
+# present, else "default" -- install.sh's own report-only mirror of
+# _config_location_value's precedence (state-file row authoritative;
+# legacy file consulted only when the key is entirely absent from the
+# state file), not a second implementation of that precedence.
+_config_key_source() {
+  local key="$1" dir="$2"
+  local state_file="$dir/$_CONFIG_STATE_FILENAME"
+  if _config_read_key_from_file "$key" "$state_file" >/dev/null; then
+    printf 'config file'
+    return 0
   fi
-  printf '  %s: %s (%s)\n' "$human_name" "$state" "$sentinel_path"
-  # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
-  # unexpanded here, naming the literal env var in the diagnostic message.
-  printf '    the only path this scope checks — never falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is set\n'
+  local legacy_filename
+  legacy_filename=$(_config_schema_field "$key" legacy-filename)
+  if [ -f "$dir/$legacy_filename" ]; then
+    printf 'legacy file'
+    return 0
+  fi
+  printf 'default'
+}
+
+# Schema-driven, replacing the old scope=machine-promptable/machine/account
+# reporters: every key's effective value now resolves through
+# _config_value, so one function reports all fourteen. For a
+# config-dir-or-home key (worktree_required, autonomous_shipping), also
+# prints $HOME/.claude's own value/source alongside the resolved config
+# dir's when the two differ -- the union means either can be the reason a
+# key reads as enabled, and the old reporter's "DIVERGED" display existed
+# for exactly this diagnosability.
+_report_config_key() {
+  local key="$1" human_name="$2" docs_anchor="$3" resolution="$4"
+  local value status
+  value=$(_config_value "$key") && status=0 || status=$?
+  if [ "$status" -ne 0 ]; then
+    # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
+    # unexpanded here, naming the literal env var in the diagnostic message.
+    printf '  %s: could not resolve (CLAUDE_CONFIG_DIR is a relative path, or $HOME is unset/empty)\n' "$human_name"
+    printf '    docs: %s\n' "$docs_anchor"
+    return 0
+  fi
+  local source
+  if [ -n "$_REPORT_CONFIG_DIR" ]; then
+    source=$(_config_key_source "$key" "$_REPORT_CONFIG_DIR")
+  else
+    # Only reachable for worktree_required (row 18's
+    # legacy-probe-on-resolution-failure): _config_value still resolved via
+    # a raw $HOME/.claude probe even though the config dir itself could not
+    # be resolved at all, so there is no config-dir-side state/legacy file
+    # to check here.
+    source="legacy file"
+  fi
+  printf '  %s: %s (source: %s)\n' "$human_name" "$value" "$source"
   printf '    docs: %s\n' "$docs_anchor"
-  if [ ! -f "$sentinel_path" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
-    local cta_verb="to enable"
-    # Keyed off default_state, matching what state="$default_state" already
-    # printed above for the absent case, so the CTA can't desync from the
-    # printed state even when polarity is an unrecognized value.
-    [ -z "$expected_content" ] && [ "$default_state" = "enabled" ] && cta_verb="to disable"
-    if [ -n "$expected_content" ]; then
-      # $expected_content is unquoted in this example command -- fine while
-      # every content-mode row's value is a single word (only "dollars"
-      # today); quote it if a future row's value ever has a space.
-      printf '    → %s: echo %s > "%s"\n' "$cta_verb" "$expected_content" "$sentinel_path"
-    else
-      printf '    → %s: touch "%s"\n' "$cta_verb" "$sentinel_path"
-    fi
+  if [ "$resolution" = "config-dir-or-home" ] && [ -n "$_REPORT_CONFIG_DIR" ] \
+     && [ -n "$_REPORT_HOME_DIR" ] && [ "$_REPORT_HOME_DIR" != "${_REPORT_CONFIG_DIR%/}" ]; then
+    local home_value home_source
+    home_value=$(_config_location_value "$key" "$_REPORT_HOME_DIR")
+    home_source=$(_config_key_source "$key" "$_REPORT_HOME_DIR")
+    printf '    %s: %s (source: %s)\n' "$_REPORT_HOME_DIR" "$home_value" "$home_source"
   fi
 }
 
-# Read-only: creates and removes nothing. Called after
-# configure_machine_level_opt_ins so a just-prompted row's hint can be
-# suppressed. Resolves machine-scope state the way _lib_config_dir()
-# (claude/.claude/hooks/_lib.sh) would: CLAUDE_CONFIG_DIR when it names a
-# directory other than $HOME/.claude, else $HOME/.claude alone. When the two
-# differ, both paths' state are printed and flagged as diverged rather than
-# picking one — the prompt above only ever mutates $HOME/.claude, but some
-# sentinel readers honor only CLAUDE_CONFIG_DIR with no fallback, so which
-# copy is "the real one" genuinely depends on the specific sentinel.
+# Read-only: creates and removes nothing. Reports every config-keys.psv key
+# (schema order), then the four repo markers. Called after
+# configure_machine_level_opt_ins so a just-prompted repo-marker row's hint
+# can be suppressed -- no config key needs that suppression, since none of
+# their CTAs exist any more (row 39: a hand-editable file, not a raw
+# touch/rm target, is the sanctioned way to change a non-promptable key).
 report_sentinel_inventory() {
   echo ""
   echo "=== Opt-in sentinel inventory ==="
-  local diverged_config_dir=""
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-    local normalized_config_dir="${CLAUDE_CONFIG_DIR%/}"
-    if [ "$normalized_config_dir" != "${HOME%/}/.claude" ]; then
-      diverged_config_dir="$normalized_config_dir"
-    fi
-  fi
+  _REPORT_CONFIG_DIR=$(_lib_config_dir) || _REPORT_CONFIG_DIR=""
+  _REPORT_HOME_DIR=""
+  [ -n "${HOME:-}" ] && _REPORT_HOME_DIR="${HOME%/}/.claude"
 
-  local sentinel_index=0 entry path_template scope human_name prompt_description default_state docs_anchor expected_content polarity
-  for entry in "${SENTINEL_INVENTORY[@]}"; do
-    IFS='|' read -r path_template scope human_name prompt_description default_state docs_anchor expected_content polarity <<< "$entry"
-    case "$scope" in
-      machine-promptable | machine)
-        _report_machine_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor" "$diverged_config_dir"
-        ;;
-      repo)
-        _report_repo_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor"
-        ;;
-      account)
-        _report_account_sentinel "$sentinel_index" "$path_template" "$human_name" "$default_state" "$docs_anchor" "$expected_content" "$polarity"
-        ;;
+  local -a schema_lines=()
+  local line
+  while IFS= read -r line; do
+    schema_lines+=("$line")
+  done < "$_CONFIG_SCHEMA_FILE"
+  local key type default resolution legacy_probe legacy_import legacy_filename \
+    legacy_polarity human_name docs_anchor prompt_description
+  for line in "${schema_lines[@]}"; do
+    case "$line" in
+      ''|'#'*) continue ;;
     esac
+    IFS='|' read -r key type default resolution legacy_probe legacy_import legacy_filename \
+      legacy_polarity human_name docs_anchor prompt_description <<< "$line"
+    _report_config_key "$key" "$human_name" "$docs_anchor" "$resolution"
+  done
+
+  local sentinel_index=0 entry path_template human_name_repo docs_anchor_repo
+  for entry in "${REPO_MARKER_INVENTORY[@]}"; do
+    IFS='|' read -r path_template human_name_repo docs_anchor_repo <<< "$entry"
+    _report_repo_sentinel "$sentinel_index" "$path_template" "$human_name_repo" "$docs_anchor_repo"
     sentinel_index=$((sentinel_index + 1))
   done
 }
 # INSTALL_TEST_FIXTURE: sentinel-inventory — end
+
+# INSTALL_TEST_FIXTURE: legacy-config-migration — start
+# Executed, not sourced: sourcing would turn on set -u/pipefail for the
+# rest of this script, fatal on an empty array under macOS system bash 3.2
+# (the same reason given above for not sourcing _stow_migration_lib.sh).
+# Runs before the interactive opt-in prompts below so a freshly-imported
+# legacy value is what those prompts (and the reporter) see. A failed
+# migration does not abort the rest of install.sh -- matching the shape at
+# this file's project-scope-plugin-install step below.
+"$REPO_DIR/claude/.claude/scripts/migrate-legacy-config.sh" \
+  || echo "[install] warning: legacy config migration failed, run claude/.claude/scripts/migrate-legacy-config.sh directly to retry" >&2
+# INSTALL_TEST_FIXTURE: legacy-config-migration — end
 
 configure_machine_level_opt_ins
 report_sentinel_inventory

@@ -7,39 +7,42 @@ import subprocess
 from pathlib import Path
 
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
+_CONFIG_SH = Path(__file__).resolve().parents[1] / "_config.sh"
+_CONFIG_KEYS_PSV = Path(__file__).resolve().parents[1] / "config-keys.psv"
 _BASH = shutil.which("bash") or "/bin/bash"
 
 _FIXTURE_START = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — start\n"
 _FIXTURE_END = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — end"
-_INVENTORY_START = "# INSTALL_TEST_FIXTURE: sentinel-inventory — start\n"
-_INVENTORY_END = "# INSTALL_TEST_FIXTURE: sentinel-inventory — end"
 
 
-def _real_prompt_description(path_template: str) -> str:
-    """Field-3 text for the SENTINEL_INVENTORY row whose field-1
-    path-template matches exactly. Lets a `TestRealSentinelPaths` test pass
-    the row's actual description through `_prompt_sentinel_opt_in`, instead
-    of a synthetic placeholder — the only way any test exercises the real
-    field-3 text through the real prompting function, since
-    configure_machine_level_opt_ins's own TTY gate can't be driven from a
-    subprocess pipe. This doesn't cover configure_machine_level_opt_ins's
-    own field-routing loop (untested end-to-end, same TTY-gate limitation);
+def _real_prompt_description(key: str) -> str:
+    """config-keys.psv's prompt-description column for KEY. Lets a
+    TestRealSentinelPaths test pass the row's actual description through
+    `_prompt_sentinel_opt_in`, instead of a synthetic placeholder -- the
+    only way any test exercises the real prompt-description text through
+    the real prompting function, since configure_machine_level_opt_ins's
+    own TTY gate can't be driven from a subprocess pipe. This doesn't cover
+    configure_machine_level_opt_ins's own field-routing loop (untested
+    end-to-end, same TTY-gate limitation);
     test_install_sh_sentinel_inventory.py's
     TestSentinelInventoryArray.test_nonzero_entry_count covers a different,
-    narrower seam — command substitution at array-sourcing time, not the
+    narrower seam -- command substitution at array-sourcing time, not the
     loop's runtime field order."""
-    install_text = _INSTALL_SH.read_text()
-    start = install_text.find(_INVENTORY_START)
-    assert start != -1, f"{_INVENTORY_START!r} not found in {_INSTALL_SH}"
-    end = install_text.find(_INVENTORY_END, start)
-    assert end != -1, f"{_INVENTORY_END!r} not found after start marker in {_INSTALL_SH}"
-    block = install_text[start:end]
-    rows = [line.strip()[1:-1] for line in block.splitlines() if line.strip().startswith('"')]
-    matches = [r for r in rows if r.split("|")[0] == path_template]
+    schema_text = _CONFIG_KEYS_PSV.read_text()
+    rows = [line for line in schema_text.splitlines() if line and not line.startswith("#")]
+    matches = [r for r in rows if r.split("|")[0] == key]
     assert len(matches) == 1, (
-        f"expected exactly one SENTINEL_INVENTORY row for {path_template!r}, found {len(matches)}"
+        f"expected exactly one config-keys.psv row for {key!r}, found {len(matches)}"
     )
-    return matches[0].split("|")[3]
+    return matches[0].split("|")[10]
+
+
+def _config_sh_prelude() -> str:
+    """install.sh:421's own `. "$REPO_DIR/claude/.claude/hooks/_config.sh"`
+    line, sourced the real (not extracted) file at its absolute test-time
+    path -- _prompt_sentinel_opt_in now reads/writes through
+    _config_value/_config_set, both defined only in _config.sh."""
+    return f'. "{_CONFIG_SH}"\n'
 
 
 def _extract_opt_ins_block() -> str:
@@ -65,31 +68,34 @@ def _extract_opt_ins_block() -> str:
 
 
 def _run_prompt_sentinel_opt_in(
-    sentinel_path: Path,
+    home: Path,
+    key: str,
     stdin_text: str,
     human_name: str = "Test sentinel",
     description: str = "A test sentinel description.",
-    home: Path | None = None,
 ) -> subprocess.CompletedProcess:
-    """Define _prompt_sentinel_opt_in and call it directly with the three
-    positional args, feeding `stdin_text` to its `read -r -p` prompt.
+    """Source _config.sh, define _prompt_sentinel_opt_in, and call it
+    directly with the three positional args, feeding `stdin_text` to its
+    `read -r -p` prompt.
 
     Exercises the prompt logic directly (bypassing the `[ -t 0 ]` TTY gate,
     which only wraps configure_machine_level_opt_ins) the same way
     test_install_sh_local_bin_path.py exercises ensure_local_bin_on_path.
 
-    home: overrides $HOME in the subprocess so it matches sentinel_path's
-    own "<home>/.claude/..." prefix — the function's own $HOME/.claude
-    path-confinement guardrail needs the two to agree, same as real usage.
-    Defaults to sentinel_path's own grandparent (".../home/.claude/x" ->
-    ".../home") when the caller doesn't pass one explicitly.
+    `key` must be a real config-keys.psv key -- _config_value/_config_set
+    both refuse (return non-zero) on an unknown key, so a synthetic
+    path-shaped string no longer exercises this function meaningfully now
+    that the prompt reads/writes through the schema instead of a
+    caller-supplied path.
     """
     env = dict(os.environ)
-    env["HOME"] = str(home if home is not None else sentinel_path.parent.parent)
+    env["HOME"] = str(home)
+    env.pop("CLAUDE_CONFIG_DIR", None)
     script = (
         "set -e\n"
+        + _config_sh_prelude()
         + _extract_opt_ins_block()
-        + f'\n_prompt_sentinel_opt_in "{sentinel_path}" "{human_name}" "{description}"\n'
+        + f'\n_prompt_sentinel_opt_in "{key}" "{human_name}" "{description}"\n'
     )
     return subprocess.run(
         [_BASH, "-c", script],
@@ -105,8 +111,11 @@ def _run_configure_machine_level_opt_ins(
     env: dict, stdin: str | None
 ) -> subprocess.CompletedProcess:
     """Define both functions and call configure_machine_level_opt_ins, the
-    real install.sh call site — used for the TTY-gate test, where stdin is
-    None (closed pipe) rather than a piped answer string."""
+    real install.sh call site -- used for the TTY-gate test, where stdin is
+    None (closed pipe) rather than a piped answer string. configure_
+    machine_level_opt_ins's own `[ ! -t 0 ]` short-circuit fires before it
+    ever touches $_CONFIG_SCHEMA_FILE, so this doesn't need _config.sh
+    sourced first."""
     script = "set -e\n" + _extract_opt_ins_block() + "\nconfigure_machine_level_opt_ins\n"
     return subprocess.run(
         [_BASH, "-c", script],
@@ -119,38 +128,31 @@ def _run_configure_machine_level_opt_ins(
 
 
 class TestPromptSentinelOptIn:
-    def test_path_outside_home_claude_refused(self, tmp_path: Path) -> None:
-        """Defense-in-depth: both real call sites hardcode a safe
-        $HOME/.claude/... path, but the function itself must still refuse a
-        path outside that prefix rather than silently touching/removing it —
-        a future non-hardcoded call site should fail loudly, not silently."""
-        home = tmp_path / "home"
-        outside_path = tmp_path / "elsewhere" / "not-under-home-claude"
+    """Generic y/n/bare-Enter/EOF logic, exercised via
+    permission_prompt_tracking -- an ordinary promptable, non-enforcement-
+    critical key. TestRealSentinelPaths below covers the other real
+    promptable keys' own human-name/prompt-description text specifically."""
 
-        result = _run_prompt_sentinel_opt_in(outside_path, "y\n", home=home)
-
-        assert result.returncode != 0, (
-            "a sentinel_path outside $HOME/.claude must be refused, not silently written"
-        )
-        assert not outside_path.exists()
-        assert "refuses" in result.stderr
+    _KEY = "permission_prompt_tracking"
 
     def test_absent_sentinel_y_creates_it(self, tmp_path: Path) -> None:
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
+        home = tmp_path / "home"
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "y\n")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "y\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file(), "answering y must create the sentinel"
-        assert "enabled: created" in result.stdout
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "permission_prompt_tracking = true\n", "answering y must write true"
+        assert "→ enabled" in result.stdout
 
     def test_absent_sentinel_bare_enter_stays_absent(self, tmp_path: Path) -> None:
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
+        home = tmp_path / "home"
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "\n")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert not sentinel.exists(), (
+        assert not (home / ".claude" / "claude-config.toml").exists(), (
             "a bare Enter on the absent-sentinel prompt must default to N — "
             "no filesystem change for a scripted 'yes \"\"' or an unanswered prompt"
         )
@@ -164,64 +166,99 @@ class TestPromptSentinelOptIn:
         never run, with no diagnostic. `input=""` (no trailing newline)
         closes stdin immediately, forcing the true-EOF path rather than the
         empty-line path `\\n` alone exercises."""
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
+        home = tmp_path / "home"
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "")
 
         assert result.returncode == 0, (
             f"EOF on read must not abort the script under set -e; stderr={result.stderr!r}"
         )
-        assert not sentinel.exists()
+        assert not (home / ".claude" / "claude-config.toml").exists()
         assert "leaving" in result.stdout
 
     def test_present_sentinel_bare_enter_stays_present(self, tmp_path: Path) -> None:
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
-        sentinel.parent.mkdir(parents=True)
-        sentinel.write_text("")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "claude-config.toml").write_text(
+            "permission_prompt_tracking = true\n"
+        )
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "\n")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file(), (
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "permission_prompt_tracking = true\n", (
             "a bare Enter on the present-sentinel prompt must default to Y — "
             "an already-enabled setting must not be silently disabled"
         )
         assert "keeping" in result.stdout
 
     def test_present_sentinel_n_removes_it(self, tmp_path: Path) -> None:
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
-        sentinel.parent.mkdir(parents=True)
-        sentinel.write_text("")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "claude-config.toml").write_text(
+            "permission_prompt_tracking = true\n"
+        )
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "n\n")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "n\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert not sentinel.exists(), "answering n must remove the sentinel"
-        assert "disabled: removed" in result.stdout
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "permission_prompt_tracking = false\n", (
+            "answering n must write false"
+        )
+        assert "→ disabled" in result.stdout
 
     def test_absent_sentinel_uppercase_y_creates_it(self, tmp_path: Path) -> None:
         """[Yy]* is the sole differentiator on the absent-sentinel branch
         (anything else falls through to the "leave disabled" default) — an
         uppercase Y must match it, not just lowercase y."""
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
+        home = tmp_path / "home"
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "Y\n")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "Y\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file()
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "permission_prompt_tracking = true\n"
 
     def test_present_sentinel_uppercase_n_removes_it(self, tmp_path: Path) -> None:
         """[Nn]* is the sole differentiator on the present-sentinel branch
         (anything else falls through to the "keep enabled" default) — an
         uppercase N must match it, not just lowercase n."""
-        sentinel = tmp_path / "home" / ".claude" / "sentinel-required"
-        sentinel.parent.mkdir(parents=True)
-        sentinel.write_text("")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "claude-config.toml").write_text(
+            "permission_prompt_tracking = true\n"
+        )
 
-        result = _run_prompt_sentinel_opt_in(sentinel, "N\n")
+        result = _run_prompt_sentinel_opt_in(home, self._KEY, "N\n")
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert not sentinel.exists()
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "permission_prompt_tracking = false\n"
+
+
+class TestPathConfinementGuardRemoved:
+    """install.sh:424-435's hard $HOME/.claude/-prefix confinement guard on
+    _prompt_sentinel_opt_in's first argument is gone (row 39): the argument
+    is now a config-keys.psv key name, not a caller-supplied path, so there
+    is nothing left to confine. A bare key like "permission_prompt_tracking"
+    never matched the old guard's `"$HOME/.claude/"*` prefix pattern and
+    would have been refused by it -- this pins the removal didn't leave
+    some other check silently refusing the same input."""
+
+    def test_bare_key_argument_is_accepted_not_refused(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+
+        result = _run_prompt_sentinel_opt_in(home, "permission_prompt_tracking", "y\n")
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "refuses" not in result.stderr
+        assert (home / ".claude" / "claude-config.toml").exists()
 
 
 class TestConfigureMachineLevelOptIns:
@@ -258,49 +295,62 @@ class TestConfigureMachineLevelOptIns:
 
 
 class TestRealSentinelPaths:
-    """`_prompt_sentinel_opt_in` exercised with the exact paths/names
-    configure_machine_level_opt_ins actually calls it with — the generic
-    prompt-logic tests above use a synthetic path; these pin the real call
-    site's two invocations specifically."""
+    """`_prompt_sentinel_opt_in` exercised with the exact keys/human-names
+    configure_machine_level_opt_ins's schema-driven loop actually calls it
+    with -- the generic prompt-logic tests in TestPromptSentinelOptIn use a
+    single representative key; these pin four of the real promptable rows
+    specifically."""
 
-    def test_worktree_required_sentinel_created_on_y(self, tmp_path: Path) -> None:
-        sentinel = tmp_path / "home" / ".claude" / "worktree-required"
+    def test_worktree_required_key_written_on_y(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
         result = _run_prompt_sentinel_opt_in(
-            sentinel, "y\n", "Worktree enforcement", "test description"
+            home, "worktree_required", "y\n", "Worktree enforcement", "test description"
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file()
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "worktree_required = true\n"
 
-    def test_autonomous_shipping_required_sentinel_created_on_y(self, tmp_path: Path) -> None:
-        sentinel = tmp_path / "home" / ".claude" / "autonomous-shipping-required"
+    def test_autonomous_shipping_key_written_on_y(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
         result = _run_prompt_sentinel_opt_in(
-            sentinel, "y\n", "Autonomous shipping", "test description"
+            home, "autonomous_shipping", "y\n", "Autonomous shipping", "test description"
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file()
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "autonomous_shipping = true\n"
 
-    def test_error_mode_nudge_enabled_sentinel_created_on_y(self, tmp_path: Path) -> None:
-        """Passes the row's real field-3 text (not a synthetic placeholder
-        like the two tests above) — see _real_prompt_description."""
-        sentinel = tmp_path / "home" / ".claude" / ".error-mode-nudge-enabled"
+    def test_error_mode_nudge_key_written_on_y(self, tmp_path: Path) -> None:
+        """Passes the row's real prompt-description text (not a synthetic
+        placeholder like the two tests above) — see
+        _real_prompt_description."""
+        home = tmp_path / "home"
         result = _run_prompt_sentinel_opt_in(
-            sentinel,
+            home,
+            "error_mode_nudge",
             "y\n",
             "Error-mode analysis nudge",
-            _real_prompt_description(".error-mode-nudge-enabled"),
+            _real_prompt_description("error_mode_nudge"),
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file()
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "error_mode_nudge = true\n"
 
-    def test_cost_ledger_enabled_sentinel_created_on_y(self, tmp_path: Path) -> None:
-        """Passes the row's real field-3 text (not a synthetic placeholder
-        like the two tests above) — see _real_prompt_description."""
-        sentinel = tmp_path / "home" / ".claude" / ".cost-ledger-enabled"
+    def test_cost_ledger_recording_key_written_on_y(self, tmp_path: Path) -> None:
+        """Passes the row's real prompt-description text (not a synthetic
+        placeholder like the two tests above) — see
+        _real_prompt_description."""
+        home = tmp_path / "home"
         result = _run_prompt_sentinel_opt_in(
-            sentinel,
+            home,
+            "cost_ledger_recording",
             "y\n",
             "Cost ledger recording",
-            _real_prompt_description(".cost-ledger-enabled"),
+            _real_prompt_description("cost_ledger_recording"),
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert sentinel.is_file()
+        assert (
+            home / ".claude" / "claude-config.toml"
+        ).read_text() == "cost_ledger_recording = true\n"
