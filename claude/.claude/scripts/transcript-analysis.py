@@ -5898,13 +5898,9 @@ _OWN_BASH_WAIT_SHAPES: tuple[str, ...] = (
     _BASH_WAIT_SLEEP_POLL, _BASH_WAIT_OTHER, _BASH_WAIT_NO_COMMAND,
 )
 
-# A `sleep <number>` in shell command position: at the string start, after a
-# separator (`;`, `&`, `|`, newline), or after a reserved word that can
-# precede a simple command (`do`, `then`, `else`). That reserved-word list is
-# the POSIX Shell Command Language's own list of what precedes a simple
-# command, not the two sampled separators. `\b` before `do`/`then`/`else`
-# keeps it from firing inside `sudo` or `docker` (no word boundary before
-# `d` in either).
+# Matches `sleep <number>` at string start, after `;`/`&`/`|`/newline, or
+# after `do`/`then`/`else` (word-boundary-guarded so it doesn't fire inside
+# `sudo`/`docker`).
 _SLEEP_POLL_COMMAND_RE = re.compile(r"(?:\A|[;&|\n]|\b(?:do|then|else))[ \t]*sleep[ \t]+[0-9]")
 
 
@@ -6221,11 +6217,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     attribution_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
     attribution_band_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
     attribution_shares: dict[str, list[float]] = {attribution: [] for attribution in _CACHE_REBUILD_ATTRIBUTIONS}
-    # Own-Bash wait-shape sub-split (see
-    # .claude/plans/idle-gap-sleep-poll-attribution.md's Approach section) --
-    # zero-seeded for the same zero-state-row reason as attribution_* above.
-    # Populated only for candidates whose bash_shape is not None, i.e. the
-    # subset of the "waiting on own Bash call" row.
+    # Own-Bash wait-shape sub-split. Zero-seeded for the same zero-state-row
+    # reason as attribution_* above. Populated only for candidates whose
+    # bash_shape is not None -- the subset of the "waiting on own Bash call" row.
     bash_shape_rebuilds: dict[str, int] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0)
     bash_shape_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
     bash_shape_band_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)

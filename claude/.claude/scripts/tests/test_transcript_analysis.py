@@ -7927,8 +7927,8 @@ class TestAttributeIdleGapCause:
     needing a full transcript fixture. Covers
     .claude/plans/subagent-idle-gap-cause-attribution.md's Verification
     section's precedence, self-scoping, and clock-skew cases, plus the
-    bash_shape/no-command/other-command split -- sleep-poll wait follows
-    the winning Bash marker, not window order."""
+    bash_shape/no-command/other-command split. Sleep-poll wait follows the
+    winning Bash marker, not window order."""
 
     def test_bash_tool_result_at_gap_end_attributes_to_own_bash_call_with_high_covered_share(self):
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest -k foo")])
@@ -8134,10 +8134,11 @@ class TestAttributeIdleGapCause:
         assert bash_shape is None
 
     def test_bash_tool_use_with_no_input_yields_no_command_recorded_shape(self):
-        """A Bash tool_use block with no `input` key at all (not just a
-        non-string command) must still win the cause via its matching
-        tool_use_id, with the shape degrading to 'no command recorded'
-        rather than raising on a missing key."""
+        """A Bash tool_use block with no `input` key at all must still win
+        the cause via its matching tool_use_id. The shape degrades to 'no
+        command recorded' rather than raising on the missing key. This is
+        distinct from TestClassifyBashWaitShape's present-but-non-string
+        case."""
         prior_turn = _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "tool-1", "name": "Bash"}])
         window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z")]
         _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
@@ -8253,15 +8254,20 @@ class TestClassifyBashWaitShape:
         assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
 
     def test_heredoc_body_sleep_classifies_as_sleep_poll(self):
-        """Textual match with no shell parsing: a `sleep 5` inside a heredoc
-        body counts, matching via the same newline branch as a real
-        multi-line script -- the heredoc edge case this class's own
-        docstring promises."""
+        """Heredoc bodies match via the same newline-separator branch as a
+        multi-line script."""
         command = "cat <<'EOF'\nsleep 5\nEOF"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_pipe_separated_sleep_classifies_as_sleep_poll(self):
+        command = "some-command | sleep 5"
         assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
 
     def test_none_command_classifies_as_no_command_recorded(self):
         assert _mod._classify_bash_wait_shape(None) == _mod._BASH_WAIT_NO_COMMAND
+
+    def test_non_string_command_classifies_as_no_command_recorded(self):
+        assert _mod._classify_bash_wait_shape(12345) == _mod._BASH_WAIT_NO_COMMAND
 
 
 class TestCacheRebuildExcessPricing:
