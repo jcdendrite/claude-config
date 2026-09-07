@@ -383,7 +383,16 @@ run_check_mode() {
   read_latest_usage "$1" || check_refuse "usage-block-missing"
 
   local nudge_disabled=false
-  [ -f "$CONFIG_DIR/.handoff-nudge-disabled" ] && nudge_disabled=true
+  # Delegates to _config_enabled's handoff_nudge schema row
+  # (presence-disables, default true). Exit code 2 (unresolvable) can't
+  # reach here -- this function's own top-of-body guard already refused on
+  # an unresolved CONFIG_DIR. The case below still distinguishes exit 2
+  # from exit 1 defensively, matching this key's documented fail direction
+  # in config-schema-audit.md.
+  _config_enabled handoff_nudge
+  case "$?" in
+    1) nudge_disabled=true ;;
+  esac
 
   # Same all-fields-zero condition the fire path logs as schema drift, minus
   # the marker and log write.
@@ -484,9 +493,13 @@ _lib_valid_session_id_component "$SESSION_ID" || exit 0
 [ -n "$CONFIG_DIR" ] || exit 0
 
 # Kill-switch: suppress nudge for automated pipelines or user opt-out.
-if [ -f "$CONFIG_DIR/.handoff-nudge-disabled" ]; then
-  exit 0
-fi
+# Delegates to _config_enabled's handoff_nudge schema row (presence-disables,
+# default true). Exit code 2 (unresolvable) can't reach here either, same
+# reason as run_check_mode's call site above.
+_config_enabled handoff_nudge
+case "$?" in
+  1) exit 0 ;;
+esac
 
 # Subagent gate: only nudge in the main session, not in subagents.
 if [ -n "$AGENT_TYPE" ]; then

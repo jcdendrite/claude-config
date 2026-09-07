@@ -3462,23 +3462,114 @@ def _autonomous_shipping_sentinel_present(home: Path, config_dir: str) -> bool:
     return result.returncode == 0
 
 
+# _lib_worktree_enforcement_active — direct unit coverage for the
+# machine-sentinel delegation arm only (the committed-repo-sentinel and
+# per-repo-optout arms are exercised via a bare filesystem check with no
+# config-dir involvement, so they're left to this function's callers'
+# integration tests). worktree_required is the highest-blast-radius of the
+# five enforcement-critical keys and the only one whose schema row carries
+# legacy-probe-on-resolution-failure: true, so a config-dir resolution
+# failure still probes the legacy $HOME/.claude location rather than
+# falling through to "not enforced" the way every other key's row does.
+
+
+def _worktree_enforcement_active(repo_root: Path, env: dict) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_worktree_enforcement_active "$1"', "bash", str(repo_root)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestWorktreeEnforcementActive:
+    def test_inactive_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert not _worktree_enforcement_active(
+            repo, {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+
+    def test_active_when_config_dir_absent_sentinel_but_home_claude_has_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Union, not swap: a resolved config dir differentiated from
+        $HOME/.claude, holding no sentinel of its own, must not mask a
+        sentinel armed at the legacy $HOME/.claude location."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "worktree-required").touch()
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _worktree_enforcement_active(
+            repo, {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir), "PATH": os.environ["PATH"]}
+        )
+
+    def test_active_when_config_dir_unresolvable_but_home_claude_has_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """worktree_required's schema row alone carries
+        legacy-probe-on-resolution-failure: true, so a relative
+        CLAUDE_CONFIG_DIR (resolution failure) still probes the legacy
+        $HOME/.claude location instead of falling through to "not
+        enforced" -- the opposite of every other config-dir-or-home key's
+        row."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "worktree-required").touch()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _worktree_enforcement_active(
+            repo, {"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+    def test_inactive_when_config_dir_unresolvable_and_home_empty(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert not _worktree_enforcement_active(
+            repo, {"HOME": "", "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
+
+
+# _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
+# sentinel-presence check only, not the full autonomous-shipping-active
+# verdict. Zero-arity: delegates to _config_enabled's autonomous_shipping
+# schema row, which resolves and unions both locations itself, so these
+# tests drive it via CLAUDE_CONFIG_DIR/HOME env vars instead of a
+# positional argument.
+# The per-repo optout is covered separately by TestAutonomousShippingActive
+# below, which calls through this helper.
+
+
+def _autonomous_shipping_sentinel_present_status(home: Path | str, config_dir: str | None = None) -> int:
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+    if config_dir is not None:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_autonomous_shipping_sentinel_present"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode
+
+
 class TestAutonomousShippingSentinelPresent:
     def test_absent_when_neither_location_has_sentinel(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
-        assert not _autonomous_shipping_sentinel_present(home, str(config_dir))
-
-    def test_absent_when_home_empty_and_neither_location_has_sentinel(
-        self, tmp_path: Path
-    ) -> None:
-        """Mirrors test_absent_when_neither_location_has_sentinel above with
-        HOME empty instead of populated. Covers the unguarded $HOME-empty
-        case documented on the helper itself."""
-        config_dir = tmp_path / "profile"
-        config_dir.mkdir(parents=True)
-        assert not _autonomous_shipping_sentinel_present("", str(config_dir))
+        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 1
 
     def test_present_when_config_dir_has_sentinel(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
@@ -3486,7 +3577,7 @@ class TestAutonomousShippingSentinelPresent:
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
         (config_dir / "autonomous-shipping-required").touch()
-        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 0
 
     def test_present_when_only_legacy_home_claude_sentinel_present(
         self, tmp_path: Path
@@ -3500,44 +3591,45 @@ class TestAutonomousShippingSentinelPresent:
         (home / ".claude" / "autonomous-shipping-required").touch()
         config_dir = tmp_path / "profile"
         config_dir.mkdir(parents=True)
-        assert _autonomous_shipping_sentinel_present(home, str(config_dir))
+        assert _autonomous_shipping_sentinel_present_status(home, str(config_dir)) == 0
 
-    def test_absent_on_empty_config_dir_argument(self, tmp_path: Path) -> None:
+    def test_present_when_config_dir_unset_and_home_claude_has_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        """No CLAUDE_CONFIG_DIR set: the resolved config dir and the literal
+        $HOME/.claude legacy location are the same directory, so the
+        sentinel there governs with no union arm involved at all."""
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         (home / ".claude" / "autonomous-shipping-required").touch()
-        assert not _autonomous_shipping_sentinel_present(home, "")
+        assert _autonomous_shipping_sentinel_present_status(home) == 0
 
-    def test_absent_on_wrong_arity(self, tmp_path: Path) -> None:
-        """Extra positional so $2 stays bound under set -u, isolating the
-        [ "$#" -eq 1 ] guard itself — mirrors
-        TestAutonomousShippingActive.test_inactive_on_wrong_arity below."""
+    def test_absent_when_config_dir_unresolvable(self, tmp_path: Path) -> None:
+        """autonomous_shipping's config-keys.psv row carries
+        legacy-probe-on-resolution-failure: false, unlike worktree_required
+        -- a config-dir resolution failure (relative CLAUDE_CONFIG_DIR) must
+        not fall through to a raw $HOME/.claude probe, even with a sentinel
+        sitting right there, and _config_enabled's exit code 2 propagates
+        through unchanged."""
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         (home / ".claude" / "autonomous-shipping-required").touch()
         result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'set -u; . {_LIB_SH}; _lib_autonomous_shipping_sentinel_present "$1" "$2"',
-                "bash",
-                str(tmp_path / "profile"),
-                "unexpected-extra-arg",
-            ],
+            ["bash", "-c", f". {_LIB_SH}; _lib_autonomous_shipping_sentinel_present"],
             capture_output=True,
             text=True,
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            env={"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]},
             check=False,
         )
-        assert result.returncode != 0
-        assert "unbound variable" not in result.stderr
+        assert result.returncode == 2
 
 
 # _lib_autonomous_shipping_active — direct unit coverage.
 #
-# _lib_worktree_enforcement_active has no such coverage anywhere in this
-# suite; only its callers' integration tests guard it. This function does
-# not inherit that gap — see
+# See TestWorktreeEnforcementActive above for _lib_worktree_enforcement_active's
+# own direct coverage of its config-dir-delegation arm. This function's
+# central guarantee is the one _lib_worktree_enforcement_active does not
+# share — see
 # test_inactive_when_repo_commits_required_file_but_machine_file_absent
 # below for the property that most needs pinning.
 
@@ -3773,6 +3865,52 @@ class TestPermissionPromptTrackingActive:
         fails deterministically rather than depending on ambient
         root-filesystem state."""
         assert not _permission_prompt_tracking_active({"HOME": "/", "PATH": os.environ["PATH"]})
+
+
+# _lib_round_consult_gate_disabled — direct unit coverage. Delegates to
+# _config_enabled's round_consult_gate schema row (presence-disables,
+# default true, i.e. armed) but cannot collapse exit codes 1 (disabled) and
+# 2 (unresolvable config dir) the way a bare `! _config_enabled ...` would:
+# this gate must stay armed (not disabled) on a resolution failure, the
+# opposite verdict a naive negation would produce.
+
+
+def _round_consult_gate_disabled(env: dict) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f". {_LIB_SH}; _lib_round_consult_gate_disabled"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestRoundConsultGateDisabled:
+    def test_not_disabled_when_sentinel_absent(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        assert not _round_consult_gate_disabled({"HOME": str(home), "PATH": os.environ["PATH"]})
+
+    def test_disabled_when_sentinel_present(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert _round_consult_gate_disabled({"HOME": str(home), "PATH": os.environ["PATH"]})
+
+    def test_not_disabled_when_config_dir_unresolvable(self, tmp_path: Path) -> None:
+        """The critical case this function's own case-statement exists for:
+        an unresolvable config dir (relative CLAUDE_CONFIG_DIR) must leave
+        the gate armed, even with a disable sentinel sitting right at
+        $HOME/.claude -- a bare `! _config_enabled round_consult_gate`
+        would instead treat _config_enabled's exit code 2 the same as its
+        exit code 1 and wrongly report disabled."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert not _round_consult_gate_disabled(
+            {"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
+        )
 
 
 # --- Shared credential-guard constants -------------------------------------

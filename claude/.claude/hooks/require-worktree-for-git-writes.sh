@@ -333,7 +333,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
   [ -z "$rec_type" ] && continue
   case "$rec_type" in
     SENTINEL)
-      emit_deny_folding_fresh_lock_context "$field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, or use the EnterWorktree tool."
+      emit_deny_folding_fresh_lock_context "$field1. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too)). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — either change the session cwd into an existing worktree under .claude/worktrees/, or use the EnterWorktree tool."
       exit 0
       ;;
     CD)
@@ -378,7 +378,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
       # whatever `running_cwd` currently holds), an unresolved cd earlier
       # in this command, or an unresolved/ambiguous `-C`.
       if [ "$in_group" = "1" ] || [ "$op" = "||" ] || [ "$op" = "&" ] || [ "$c_status" = "UNRESOLVED" ] || ! $resolvable; then
-        emit_deny_folding_fresh_lock_context "'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd."
+        emit_deny_folding_fresh_lock_context "'git $subcmd' is a write whose effective working directory cannot be safely determined (a cd/-C target needing shell expansion, a write inside a subshell/command-substitution/backtick group, a write reached via '||' or backgrounded with '&', or more than one global -C flag), and this session is running in a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too)). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run this as a literal 'cd <worktree-path> && git ...' or 'git -C <worktree-path> ...' with a plain path — not a variable, glob, subshell, or backgrounded cd."
         exit 0
       fi
 
@@ -389,7 +389,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         LITERAL)
           resolved_c=$(cd "$running_cwd" 2>/dev/null && cd "$c_path" 2>/dev/null && pwd -P 2>/dev/null)
           if [ -z "$resolved_c" ]; then
-            emit_deny_folding_fresh_lock_context "'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+            emit_deny_folding_fresh_lock_context "'git $subcmd -C $c_path' targets a working directory that does not exist or is unreachable from '$running_cwd'. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too)). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
             exit 0
           fi
           effective_cwd="$resolved_c"
@@ -414,7 +414,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         read -r eff_common_dir
       } < <(cd "$effective_cwd" 2>/dev/null && _lib_capped git rev-parse --absolute-git-dir --path-format=absolute --git-common-dir 2>/dev/null)
       if [ -z "$eff_git_dir" ] || [ -z "$eff_common_dir" ] || [ "$eff_common_dir" != "$REPO_GIT_COMMON_DIR" ]; then
-        emit_deny_folding_fresh_lock_context "'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
+        emit_deny_folding_fresh_lock_context "'git $subcmd' targets a working directory outside this repository (or its git state could not be determined), so it cannot be confirmed safe. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too)). To exempt this repo from machine-level enforcement, add .claude/worktree-optout."
         exit 0
       fi
 
@@ -425,7 +425,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         WAS_UNLOCKED=false
         _lib_worktree_lock_absent "$eff_git_dir" && WAS_UNLOCKED=true
         COLLISION_REASON=$(_lib_worktree_collision_guard "$effective_cwd" "$REPO_GIT_COMMON_DIR") || {
-          emit_deny_folding_fresh_lock_context "'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required)."
+          emit_deny_folding_fresh_lock_context "'git $subcmd' — $COLLISION_REASON. This is a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too))."
           exit 0
         }
         if $WAS_UNLOCKED; then
@@ -434,7 +434,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         continue
       fi
 
-      emit_deny_folding_fresh_lock_context "'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level ~/.claude/worktree-required). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree). See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
+      emit_deny_folding_fresh_lock_context "'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active (repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too)). To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree). See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
       exit 0
       ;;
     *)

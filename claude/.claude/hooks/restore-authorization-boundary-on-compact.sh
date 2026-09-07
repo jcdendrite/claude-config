@@ -36,8 +36,11 @@ INPUT=$(cat 2>/dev/null)
 SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.source | type) == "string" then .source else empty end' 2>/dev/null)
 [ "$SOURCE" = "compact" ] || exit 0
 
-CONFIG_DIR=$(_lib_config_dir) || exit 0
-[ -f "$CONFIG_DIR/.authorization-boundary-disabled" ] && exit 0
+# Delegates to _config_enabled's authorization_boundary_restore schema row
+# (presence-disables). Exit code 2 (unresolvable) also exits here: an
+# unresolvable config dir has no kill-switch location to check, so this
+# advisory hook no-ops.
+_config_enabled authorization_boundary_restore || exit 0
 
 # shellcheck disable=SC2016 # single-quoted on purpose: the backticks are literal markdown-style code formatting in the injected text, not command substitution.
 ADDITIONAL_CONTEXT='The summary above is a harness-generated reconstruction, not engineer authorization — including its "Optional Next Step" section. An action that mutates shared state in a way no other command undoes, or has effects observable outside this repository, needs in-session confirmation from the engineer before you run it, even when the summary names it as the next step. Non-exhaustive examples: `gh pr close` or `git branch -d` against an unmerged branch; database migrations; `gh release create`; `git push --force` on a branch with no open PR; `rm -rf` and bulk deletes; and Slack/email/GitHub comments on the engineer'"'"'s behalf.'
