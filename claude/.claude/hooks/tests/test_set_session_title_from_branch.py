@@ -494,3 +494,12 @@ class TestSetSessionTitleFromBranch:
         assert _title(
             feature_clone, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)}
         ) == "clone/feature"
+
+    def test_unresolvable_config_dir_no_custom_title(self, feature_clone, isolated_home):
+        """A relative CLAUDE_CONFIG_DIR can't be resolved by _lib_config_dir
+        -- _config_enabled's exit code 2 is folded into this hook's own
+        no-custom-title outcome (today's auto-titler runs unchanged), the
+        same as the kill switch being present."""
+        assert _title(
+            feature_clone, isolated_home, extra_env={"CLAUDE_CONFIG_DIR": "relative/path"}
+        ) is None

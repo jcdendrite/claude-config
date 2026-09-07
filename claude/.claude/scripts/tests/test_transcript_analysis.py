@@ -7900,15 +7900,20 @@ class TestCacheEfficiencyArgparseWiring:
 
 @pytest.fixture()
 def cost_ledger_enabled(tmp_path, monkeypatch):
-    """Isolated config dir carrying the cost-ledger opt-in sentinel. Patches
-    _mod's own config_dir binding, not scope.config_dir: cost-ledger isn't in
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR, so its sentinel check
-    (config_dir() / ".cost-ledger-enabled") reads the shim's own import,
-    never scope.py's _resolve_cost_roots."""
+    """Isolated config dir carrying the cost-ledger opt-in sentinel. Sets
+    CLAUDE_CONFIG_DIR explicitly, rather than relying on
+    _isolate_transcript_corpus_lookups' autouse fixture landing on the same
+    literal tmp-path string by coincidence: _cost_ledger_report's sentinel
+    check goes through _config.config_enabled, which resolves config_dir via
+    _config.py's own independent binding, not _mod's -- patching _mod's
+    config_dir binding alone has no effect on it. Setting the env var instead
+    makes both _mod.config_dir() (the ledger-path resolution
+    _cost_ledger_path() reads) and _config.config_enabled()'s own resolution
+    agree on the same directory."""
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
-    monkeypatch.setattr(_mod, "config_dir", lambda: cfg_dir)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
     return cfg_dir
 
 
@@ -10715,6 +10720,30 @@ class TestCostLedgerSentinelGate:
         with pytest.raises(SystemExit) as exc_info:
             _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
         assert exc_info.value.code != 0
+        assert cost_ledger_file.read_text() == before
+
+    def test_record_exits_when_config_dir_unresolvable_distinct_from_missing_sentinel(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """_config.config_enabled("cost_ledger_recording") returning None
+        (config dir unresolvable) is distinguished from a resolved dir that
+        simply lacks the sentinel file (test_record_refuses_without_sentinel
+        above) -- forces the condition via _config's own config_dir binding,
+        the one _config.config_enabled actually reads (see cost_ledger_enabled
+        fixture's docstring for why patching _mod's binding has no effect
+        on it)."""
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod._config, "config_dir", _raise_value_error)
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        before = cost_ledger_file.read_text()
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
 
     def test_record_refuses_without_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
@@ -20584,6 +20613,74 @@ class TestPrCostReportOrchestration:
         _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert len(calls) == 1
+
+
+class TestPrCostRecordingConfigDirUnresolvable:
+    """_config.config_enabled("pr_cost_recording", ...) returning None --
+    distinct from a resolved account simply lacking .pr-cost-enabled. Not
+    reachable through account_config_dir itself (root.parent is always a
+    concrete Path, per this call site's own comment), so these force the
+    condition directly through _config.config_enabled rather than through
+    any real config-dir input."""
+
+    def test_single_account_exits_1_with_its_own_diagnostic(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording":
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
+
+    def test_all_accounts_skips_the_affected_account_and_continues_the_sweep(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """acct_a's own config_enabled call is forced to None; acct_b's own
+        call is untouched and opted in normally -- the sweep must count
+        acct_a via skipped_other and still record acct_b's row, rather than
+        aborting the whole run on the first account's unresolvable dir."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_b / ".pr-cost-enabled").touch()  # acct_a deliberately forced to None below
+        proj_b = roots[1] / "-home-user-testrepo"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        merged_prs = [{
+            "number": 1, "headRefName": "feature-a", "additions": 1, "deletions": 1,
+            "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+        }]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
+
+        real_config_enabled = _mod._config.config_enabled
+
+        def _fake_config_enabled(key, config_dir_override=None):
+            if key == "pr_cost_recording" and config_dir_override == acct_a:
+                return None
+            return real_config_enabled(key, config_dir_override=config_dir_override)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+
+        args = _pr_cost_args(record=True, machine_label="ci1", all_accounts=True)
+        _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+
+        rows_b = _mod._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        assert len(rows_b) == 1
+        assert not (acct_a / "pr-cost-ledger.tsv").exists()
+        captured = capsys.readouterr()
+        assert "account-1's config directory could not be resolved -- skipped" in captured.err
+        assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
 
 
 class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:

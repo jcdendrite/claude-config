@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
+import _config
 from _config_dir import config_dir
 
 # corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
@@ -7196,20 +7197,27 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         _print_cost_ledger_read(existing_rows, args, roots)
         return
 
-    try:
-        sentinel_path = config_dir() / ".cost-ledger-enabled"
-    except ValueError as exc:
-        # Reachable even when ledger_path above resolved cleanly:
-        # COST_LEDGER_PATH being set skips _cost_ledger_path()'s own
-        # config_dir() call entirely, so this is not a redundant guard.
-        print(f"cost-ledger: {exc}", file=sys.stderr)
+    # No config_dir_override -- this is the single-account path, not the
+    # --all-accounts loop below, which passes its own account_config_dir.
+    cost_ledger_recording_enabled = _config.config_enabled("cost_ledger_recording")
+    if cost_ledger_recording_enabled is None:
+        # Distinguishes "config dir unresolvable" from "disabled" -- the
+        # single message below would otherwise misdiagnose an unresolvable
+        # CLAUDE_CONFIG_DIR as a missing opt-in, the same three-way branch
+        # _cost_ledger_path() above already makes for its own ValueError.
+        print(
+            "cost-ledger: --record could not resolve the Claude Code config"
+            " directory (CLAUDE_CONFIG_DIR is set to a relative path, or"
+            " $HOME is unset/empty) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    if not sentinel_path.exists():
-        # Hardcodes the conventional ~/.claude path rather than sentinel_path
-        # itself -- same don't-print-a-resolved-home-rooted-path discipline
-        # as the ledger-file-missing message above, applied to a fixed
-        # docstring instead of an f-string since CLAUDE_CONFIG_DIR overrides
-        # are rare enough that the canonical hint reads clearer.
+    if not cost_ledger_recording_enabled:
+        # Hardcodes the conventional ~/.claude path rather than the resolved
+        # config dir -- same don't-print-a-resolved-home-rooted-path
+        # discipline as the ledger-file-missing message above, applied to a
+        # fixed docstring instead of an f-string since CLAUDE_CONFIG_DIR
+        # overrides are rare enough that the canonical hint reads clearer.
         print(
             "cost-ledger: --record requires the opt-in sentinel ~/.claude/.cost-ledger-enabled"
             " -- see docs/cost-ledger.md",
@@ -8456,12 +8464,34 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             )
             continue
 
-        sentinel_path = account_config_dir / ".pr-cost-enabled"
-        if not sentinel_path.exists():
+        pr_cost_recording_enabled = _config.config_enabled(
+            "pr_cost_recording", config_dir_override=account_config_dir
+        )
+        if pr_cost_recording_enabled is None:
+            # account_config_dir is always a concrete, already-resolved
+            # directory here (root.parent) -- not expected to be reachable
+            # in practice -- handled explicitly anyway so a future
+            # account_config_dir computation change fails loud rather than
+            # silently misreporting "not opted in".
             if all_accounts:
-                # account-N, not sentinel_path, to avoid a resolved
-                # home-rooted path in output -- same discipline as the
-                # single-account refusal message below.
+                print(
+                    f"pr-cost: account-{ordinal}'s config directory could not be resolved --"
+                    " skipped, see docs/pr-cost.md",
+                    file=sys.stderr,
+                )
+                skipped_other += 1
+                continue
+            print(
+                "pr-cost: --record could not resolve the Claude Code config directory --"
+                " see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not pr_cost_recording_enabled:
+            if all_accounts:
+                # account-N, not the resolved config dir, to avoid a
+                # resolved home-rooted path in output -- same discipline as
+                # the single-account refusal message below.
                 print(
                     f"pr-cost: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
                     " skipped, see docs/pr-cost.md",
@@ -8469,9 +8499,9 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                 )
                 skipped_no_sentinel += 1
                 continue
-            # Prints the conventional path, not sentinel_path, to avoid a
-            # resolved home-rooted path in output -- same discipline as
-            # cost-ledger's equivalent message above.
+            # Prints the conventional path, not the resolved config dir, to
+            # avoid a resolved home-rooted path in output -- same discipline
+            # as cost-ledger's equivalent message above.
             print(
                 "pr-cost: --record requires the opt-in sentinel ~/.claude/.pr-cost-enabled --"
                 " see docs/pr-cost.md",

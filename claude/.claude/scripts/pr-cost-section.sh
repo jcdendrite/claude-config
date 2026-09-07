@@ -14,16 +14,11 @@ set -euo pipefail
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
 
-config_dir=$(_lib_config_dir) || exit 1
-
-sentinel_path="$config_dir/pr-cost-disclosure"
-mode=$(cat "$sentinel_path" 2>/dev/null) || mode=""
-# Trims space/tab only, not newline, so a blank line anywhere in the
-# sentinel is preserved rather than collapsed -- a two-line file can never
-# equal "dollars" after this trim, matching the exact-one-line contract.
-mode="${mode#"${mode%%[![:blank:]]*}"}"
-mode="${mode%"${mode##*[![:blank:]]}"}"
-mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+# _config_value's exit code 2 (config dir unresolvable) is folded into this
+# script's own exit 1 (sentinel disabled, unreadable, or malformed) by the
+# `|| exit 1` below -- pr_cost_disclosure's own content-matches trim/fold
+# lives once, in _config.sh.
+mode=$(_config_value pr_cost_disclosure) || exit 1
 [[ "$mode" == "dollars" ]] || exit 1
 
 branch=$(git rev-parse --abbrev-ref HEAD)

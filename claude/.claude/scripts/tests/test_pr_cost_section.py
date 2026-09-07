@@ -381,6 +381,24 @@ class TestSentinelWrongValue:
         assert result.stdout == ""
 
 
+class TestConfigDirUnresolvable:
+    """A relative CLAUDE_CONFIG_DIR can't be resolved by _lib_config_dir --
+    _config_value's exit code 2 is folded into this script's own exit 1
+    (sentinel disabled, unreadable, or malformed) by the `|| exit 1` on the
+    _config_value call, rather than crashing or guessing enabled."""
+
+    def test_no_stdout_and_exit_one(self, tmp_path, script_fixture):
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        env = {**_base_test_env(), "CLAUDE_CONFIG_DIR": "relative/path"}
+        result = subprocess.run(
+            [str(script_fixture)], cwd=str(cwd), capture_output=True, text=True, check=False, env=env,
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+
+
 class TestSentinelEnabledDetachedHead:
     def test_no_stdout_and_exit_two(self, tmp_path, script_fixture):
         repo, _bare = _make_repo_with_remote(tmp_path)
@@ -457,20 +475,21 @@ class TestStderrDiagnosticsDiscardedOnSuccess:
 
 
 class TestSentinelBlankLineThenDollars:
-    """Guards the deliberate narrowing: a leading blank line makes the
-    sentinel read as two lines, judged disabled -- a future edit that
-    widens the trim to collapse interior/leading newlines must fail this."""
+    """pr-cost-section.sh delegates to _config_value's content-matches
+    handling, which strips leading/trailing [:space:] (including LF) --
+    see _config.sh's _config_location_value comment on this divergence from
+    a [:blank:]-only trim. A leading blank line is stripped along with the
+    rest of the whitespace run, so this sentinel resolves as enabled."""
 
-    def test_judged_disabled_not_enabled(self, tmp_path, script_fixture):
-        cwd = tmp_path / "cwd"
-        cwd.mkdir()
+    def test_judged_enabled_not_disabled(self, tmp_path, script_fixture):
+        repo, _bare = _make_repo_with_remote(tmp_path)
         config_dir = tmp_path / "claude_config"
         _write_sentinel(config_dir, "\ndollars\n")
 
-        result = _run_script(script_fixture, cwd, config_dir)
+        result = _run_script(script_fixture, repo, config_dir)
 
-        assert result.returncode == 1
-        assert result.stdout == ""
+        assert result.returncode == 0
+        assert result.stdout == _EXPECTED_COST_BLOCK
 
 
 class TestCostBodyWithShellMetacharacters:

@@ -100,9 +100,10 @@ if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
 fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
 
-if [ -f "$CONFIG_DIR/.consume-durable-continuity-disabled" ]; then
-  exit 0
-fi
+# Delegates to _config_enabled's consume_durable_continuity schema row
+# (presence-disables). Exit code 2 (unresolvable) can't reach here — the
+# resolution failure above already exited.
+_config_enabled consume_durable_continuity || exit 0
 
 # Read stdin directly. PostToolUse does not need a deny response.
 # Fail-open on malformed input: an orphaned continuity file is harmless; a

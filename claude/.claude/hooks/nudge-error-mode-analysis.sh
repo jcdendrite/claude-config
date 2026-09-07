@@ -83,10 +83,9 @@ TRANSCRIPT_PATH=""
 
 # 2. Opt-in gate: dormant unless the contributor has explicitly armed the
 # hook. Absent this file, every invocation exits here before doing any
-# transcript work.
-if [ ! -f "$CONFIG_DIR/.error-mode-nudge-enabled" ]; then
-  exit 0
-fi
+# transcript work. Delegates to _config_enabled's error_mode_nudge schema
+# row (presence-enables); exit code 2 (unresolvable) also exits here.
+_config_enabled error_mode_nudge || exit 0
 
 # 3. Subagent gate: only nudge in the main session, not in subagents.
 if [ -n "$AGENT_TYPE" ]; then
