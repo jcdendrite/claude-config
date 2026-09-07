@@ -481,3 +481,14 @@ The pooled subagent ratio (5.2%) sits far under both the 0.3947 break-even and t
 **Verdict: decline.** Both criteria fail, exactly the outcome the plan named as expected before the run. No `experimental.cacheTtl` edit ships from this plan. The instrument change ships regardless — the origin split and switch-delta pricing are now a permanent, rerunnable part of `cache-rebuild --this-repo`, not a one-off scan, so a future re-measurement (a corpus shift, a change in subagent dispatch volume or duration) costs one command, not a new plan.
 
 Two follow-ups named, neither pursued here: (1) if long in-dispatch `Bash` stalls dominate the 300–3600s gaps, cutting the stall — this repo already mandates `select-tests.py` over the full suite in agents — shrinks both `W5m` and `X`, and is the first thing to re-examine before ever revisiting `cacheTtl`; (2) per-agent-type attribution, which the oracle bound's own dispersion result gives no reason to build, since even the ex-post-best-case subpopulation misses the floor by an order of magnitude, so a selective lever restricted to real agent-type policy would fare no better.
+
+## From `handoff-threshold-cost-audit.md` — "Did raising the handoff hard-block floor to 470,000 tokens (PR #769, inherited unchanged by PR #782) cut cost?" (2026-09-06)
+
+Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-studies/handoff-hard-block-position.md).
+
+| Question | Verdict | Headline figure (scope) |
+|---|---|---|
+| Does the mechanism-engagement gate confirm the floor raise fired at the right boundary, and nowhere else? | Yes, and the falsifiable no-shift-at-#782 prediction holds | Block rate 29.8%→4.2% same-machine (macOS), 3.5% pooled across both machines' after-era data; no detectable shift at the 2026-08-31 sub-boundary (#782) across 21 after-era block fires spanning seven days |
+| Does cost per shipped PR improve? | Yes — a clean win | Mean $/PR fell 47.5% ($49.55→$26.01, pooled n=19 before / n=49 after); both machines' own after-era medians sit at or below the before-era median |
+| Does handoff/continuation overhead fall, and does deep-tail spend absorb some of the savings? | Both, in the predicted direction | Startup-burn share 3.6%→2.1–2.3% (both machines); share of session dollars past the advisory threshold 57.6%→77.3% (pooled) |
+| Does review quality decline under the raised floor? | No | Reviewer dispatch/finding volume roughly doubled between checkpoints against a ~1.45x rise in active branches on the one machine where both eras are directly comparable — engagement outpaced corpus growth |
