@@ -505,7 +505,7 @@ Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-stud
 
 - Block rate is already 3.5% of fires — any further raise can only shave a small, already-capped intervention rate.
 - The only depth-versus-cost measurement in the corpus (the `mean_context_at_turn` bucketing behind the `ABS_CAP` retune) rises monotonically through its deepest bucket (300k+), with no observed turnaround.
-- The rising deep-tail spend share (this study's Tier 3 arm B) is a signal about the unchanged 150,000 advisory threshold, not the 470,000 floor — it argues for keeping the hard-block backstop in place while that region grows, not for weakening it.
+- The rising deep-tail spend share this study measured is a signal about the unchanged 150,000 advisory threshold, not the 470,000 floor — it argues for keeping the hard-block backstop in place while that region grows, not for weakening it.
 
 Two follow-up checks the consult named as cheap and worth running before closing this, both run same-day against this machine's own reachable corpus (4 of 6 declared accounts; cross-machine data unreachable from this session):
 
@@ -516,7 +516,7 @@ Neither follow-up surfaces evidence favoring a higher floor. No code or config c
 
 **2026-09-07 cross-machine confirmation.** These figures were captured and reported by the same peer macOS Claude Code session that contributed this study's before-era figures, using the same shipped subcommands — not independently re-run or verified by this session. Two accounts were skipped for missing data: one has no `.handoff-nudge.log`, the other no `pr-cost-ledger.tsv`. The rest is aggregated, with no per-account breakdown retained. Neither check moves the verdict:
 
-- **`pr-cost` re-bucketing** clears a trustworthy sample one bucket deeper than either machine has managed before: 300–400k has n=12 ($54.15/PR, $0.1327/1k output tokens), out of 219 deduped `claude-config` ledger rows. 400–500k (n=3) and 500k+ (n=2) are still too thin to evaluate. The floor's own censoring effect isn't a Linux-only artifact of thin local data — even this richer corpus can't ground a value above 400,000.
+- **`pr-cost` re-bucketing** clears a trustworthy sample one bucket deeper than either machine has managed before: 300–400k has n=12 ($54.15/PR, $0.1327/1k output tokens), out of 219 deduped `claude-config` ledger rows. 400–500k (n=3) and 500k+ (n=2) are still too thin to evaluate. The floor's own censoring effect isn't an artifact of this machine's thinner local data — even this richer corpus can't ground a value above 400,000.
 - **Block-fire classification** finds 29 of 31 after-era fires carry `ignored=4`, and 2 predate the field and are unclassifiable. Zero fires show a lower count — the same zero-false-positive shape, on a larger sample.
 
-Pooled across both machines: 56 after-era block fires, 53 with `ignored=4`, 3 unclassifiable, zero with a lower count. That total coincidentally matches the original study's own Tier 0 pooled estimate. The two counts come from different point-in-time snapshots, though, so this shouldn't be read as the corpus holding still.
+Pooled across both machines: 56 after-era block fires, 53 with `ignored=4`, 3 unclassifiable, zero with a lower count. That total coincidentally matches the original study's own pooled after-era block-fire estimate. The two counts come from different point-in-time snapshots, though, so this shouldn't be read as the corpus holding still.
