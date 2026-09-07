@@ -1418,6 +1418,9 @@ _lib_valid_session_id_component() {
 #   within the 60-minute idle window; evicts the marker (dead/unreadable
 #   PID, or aged-out mtime) and returns 1 otherwise, so a session that
 #   never cleaned up can't wedge a gate open indefinitely.
+# - A capped-out cat/find read (past _lib_capped's 5s timeout, e.g. a
+#   stalled NFS mount) evicts the marker the same as a dead PID or an
+#   aged-out mtime, rather than hanging the caller.
 # - Session-id validation lives here so callers can't forget it. An empty
 #   or path-escaping id returns 1 having touched the filesystem not at all.
 # - Reports only liveness, not a verdict on the tool call: a 1 withholds a
@@ -1462,13 +1465,13 @@ _lib_active_bypass_marker_live() {
   # the marker's removal even though `tr` succeeds on empty stdin; a `set -e`
   # caller would then abort mid-gate-check rather than fall through to the
   # eviction below. No caller sets `-e` today — this keeps that from mattering.
-  stored_pid=$(cat "$marker" 2>/dev/null | tr -d '[:space:]') || true
+  stored_pid=$(_lib_capped cat "$marker" 2>/dev/null | _lib_capped tr -d '[:space:]') || true
   # `find -mmin -60` mirrors require-routing-read.sh's own freshness idiom.
   # This is not a hard age cap: the touch-on-use wrapper below slides this
   # same 60-minute window forward on every gating call that finds the marker
   # live.
   if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null \
-    && [ -n "$(find "$marker" -mmin -60 2>/dev/null)" ]; then
+    && [ -n "$(_lib_capped find "$marker" -mmin -60 2>/dev/null)" ]; then
     return 0
   fi
   rm -f "$marker" 2>/dev/null
@@ -1505,7 +1508,7 @@ _lib_active_bypass_marker_live_and_touch() {
   # silent, matching the eviction idiom in the predicate above: a touch
   # failure must not turn a verdict this call already committed to into a
   # hook-process abort.
-  touch -c "$config_dir/$marker_dir_name/$session_id" 2>/dev/null || true
+  _lib_capped touch -c "$config_dir/$marker_dir_name/$session_id" 2>/dev/null || true
   return 0
 }
 
@@ -1555,6 +1558,37 @@ _lib_stray_marker_hint() {
   _lib_capped git -C "$repo_root" ls-files --error-unmatch .claude/worktree-required \
     >/dev/null 2>&1 && return 0
   printf '%s' " Note: .claude/worktree-required is present but untracked — an accidental stray copy activates enforcement exactly like a committed one. Commit it if intentional, or remove it if it was created by accident."
+}
+
+# _lib_hook_claude_pid
+# Resolves this hook's own Claude Code main-process PID. Hooks are direct
+# children of `claude`, so $PPID is already that process, unlike
+# _lib_resolve_claude_pid's ancestor walk below (for callers, such as a Bash
+# tool script, that sit one or more hops further away).
+#
+# Validate-then-select: an unusable $CLAUDE_PID must fall back to $PPID, not
+# abort the caller, so substitution can't happen before the checks below run.
+# Accepted only within one hop of $PPID (itself, or its immediate parent --
+# the shim case) so an unrelated live process can't be named. Shared by
+# capture-session-id.sh (SessionStart, SubagentStart) and
+# record-session-end.sh (SessionEnd), both of which need this identical
+# resolution.
+#
+# Always prints something (falls back to $PPID) and returns 0; the printed
+# value can still be empty if $PPID itself is empty, so callers must check
+# for that themselves and decide their own failure message, mirroring
+# capture-session-id.sh's own post-call check.
+# Usage: CLAUDE_PID=$(_lib_hook_claude_pid)
+_lib_hook_claude_pid() {
+  local resolved_claude_pid=$PPID
+  if [ -n "${CLAUDE_PID:-}" ] && [[ $CLAUDE_PID =~ ^[0-9]+$ ]]; then
+    local ppid_parent
+    ppid_parent=$(_lib_capped ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')
+    if [ "$CLAUDE_PID" = "$PPID" ] || { [ -n "$ppid_parent" ] && [ "$CLAUDE_PID" = "$ppid_parent" ]; }; then
+      resolved_claude_pid=$CLAUDE_PID
+    fi
+  fi
+  printf '%s\n' "$resolved_claude_pid"
 }
 
 # _lib_resolve_claude_pid

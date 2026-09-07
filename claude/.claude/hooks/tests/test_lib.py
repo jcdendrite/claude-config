@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from helpers import DEFAULT_TEST_SESSION_ID, HOOKS_DIR, bash_input, build_path_without, run_hook
 
-from .conftest import _worktree_lock_reason
+from .conftest import _worktree_lock_reason, assert_cap_engaged
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -771,6 +771,58 @@ def test_lib_emit_allow_with_context_degrades_to_no_output_when_jq_absent(tmp_pa
     assert result.stderr == "", repr(result.stderr)
 
 
+def test_lib_hook_claude_pid_equal_to_ppid_is_accepted() -> None:
+    """`_run_lib_call` spawns bash directly (no intervening shell), so that
+    bash process's own $PPID is this pytest process's pid -- matching
+    $CLAUDE_PID exactly, the no-shim disjunct."""
+    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
+    result = _run_lib_call("_lib_hook_claude_pid", env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
+def test_lib_hook_claude_pid_equal_to_ppids_parent_is_accepted() -> None:
+    """The shim disjunct: $CLAUDE_PID equals $PPID's immediate parent, not
+    $PPID itself. An intervening `sh` forks the bash process that sources
+    _lib.sh, so that bash's own $PPID is the shim's (sh's) pid, and
+    $CLAUDE_PID (this test's own pid) is that shim's parent."""
+    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
+    result = subprocess.run(
+        ["sh", "-c", f'bash -c ". {_LIB_SH}; _lib_hook_claude_pid"'],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
+def test_lib_hook_claude_pid_rejects_unrelated_live_pid() -> None:
+    """A numeric, live $CLAUDE_PID outside the one-hop bound (not $PPID, not
+    $PPID's immediate parent) must be rejected, falling back to $PPID -- the
+    sole invariant the one-hop design exists to enforce. A `sleep` child of
+    pytest is live but not an ancestor of the harness process at all."""
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        env = {**os.environ, "CLAUDE_PID": str(sleeper.pid)}
+        result = _run_lib_call("_lib_hook_claude_pid", env)
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == str(os.getpid())
+    finally:
+        sleeper.terminate()
+        sleeper.wait()
+
+
+def test_lib_hook_claude_pid_rejects_non_numeric_value() -> None:
+    """A non-numeric $CLAUDE_PID must fall back to $PPID rather than being
+    compared against it or used as-is."""
+    env = {**os.environ, "CLAUDE_PID": "abc"}
+    result = _run_lib_call("_lib_hook_claude_pid", env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
 def test_lib_worktree_lock_absent_reports_absent_under_eacces(tmp_path: Path) -> None:
     """`[ -e ... ]` can't distinguish "doesn't exist" from "exists but
@@ -1412,6 +1464,103 @@ def test_active_bypass_marker_live_and_touch_toctou_stub_touch_deletes_marker_fi
         "the wrapper must still grant the verdict already committed before the race"
     )
     assert not marker.exists(), "touch -c must not resurrect a marker evicted mid-race"
+
+
+@pytest.mark.timing
+def test_active_bypass_marker_live_find_hang_capped_withholds_bypass(tmp_path) -> None:
+    """Regression test for the `_lib_capped` wrap around this predicate's
+    `find -mmin -60` freshness check. A `find` that hangs past the 5s cap
+    must not hang the hook process, and the unresolved freshness read must
+    not grant the bypass -- the same fail-safe posture a dead PID or an
+    aged-out marker gets. Same PATH-stub technique as
+    test_active_bypass_marker_live_and_touch_toctou_stub_touch_deletes_marker_first
+    above and test_hung_jq_denied_within_timeout elsewhere in this file. The
+    stub sleeps past the cap, then -- only if not killed -- execs the real
+    `find`, which would emit the marker's own path and grant the bypass; a
+    working cap kills the stub before that exec runs, so this fails on a
+    missing/broken `_lib_capped` wrap instead of passing regardless of
+    whether the cap engaged."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-find-hang", str(os.getpid()))
+
+    real_find = shutil.which("find")
+    if not real_find:
+        pytest.skip("find not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    stub_dir = tmp_path / "stub-bin-find"
+    stub_dir.mkdir()
+    stub_find = stub_dir / "find"
+    stub_find.write_text(f'#!/bin/bash\nsleep 10\nexec {real_find} "$@"\n')
+    stub_find.chmod(0o755)
+
+    with assert_cap_engaged():
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. {_LIB_SH}; _lib_active_bypass_marker_live "$1" "$2"',
+                "bash",
+                _MARKER_DIR_NAME,
+                "sess-find-hang",
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+    assert result.returncode != 0, (
+        "a capped-out find must withhold the bypass, not grant it on an "
+        "unresolved freshness check"
+    )
+    assert not marker.exists(), "a capped-out freshness read must evict the marker"
+
+
+@pytest.mark.timing
+def test_active_bypass_marker_live_cat_hang_capped_withholds_bypass(tmp_path) -> None:
+    """Regression test for the `_lib_capped` wrap around this predicate's
+    `cat` read of the marker's stored PID. A `cat` that hangs past the 5s
+    cap must not hang the hook process, and the unresolved PID read must
+    not grant the bypass. Same PATH-stub technique as the find-hang test
+    above: the stub sleeps past the cap, then -- only if not killed -- execs
+    the real `cat`, which would emit the marker's stored PID and grant the
+    bypass; a working cap kills the stub before that exec runs, so this
+    fails on a missing/broken `_lib_capped` wrap instead of passing
+    regardless of whether the cap engaged."""
+    marker = _write_active_bypass_marker(tmp_path, "sess-cat-hang", str(os.getpid()))
+
+    real_cat = shutil.which("cat")
+    if not real_cat:
+        pytest.skip("cat not found in PATH")
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    stub_dir = tmp_path / "stub-bin-cat"
+    stub_dir.mkdir()
+    stub_cat = stub_dir / "cat"
+    stub_cat.write_text(f'#!/bin/bash\nsleep 10\nexec {real_cat} "$@"\n')
+    stub_cat.chmod(0o755)
+
+    with assert_cap_engaged():
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. {_LIB_SH}; _lib_active_bypass_marker_live "$1" "$2"',
+                "bash",
+                _MARKER_DIR_NAME,
+                "sess-cat-hang",
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path), "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+    assert result.returncode != 0, (
+        "a capped-out cat must withhold the bypass, not grant it on an "
+        "unresolved PID read"
+    )
+    assert not marker.exists(), "a capped-out PID read must evict the marker"
 
 
 def test_active_bypass_marker_live_never_advances_mtime(tmp_path) -> None:

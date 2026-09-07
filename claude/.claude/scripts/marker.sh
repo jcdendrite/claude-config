@@ -585,15 +585,18 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         rm -f "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
         # Best-effort: bounds this session's own recorded-but-unwritten
-        # cumulative-review subject to this gate run. Session-suffixed so
-        # this only ever removes this session's subject, never another
-        # session's still-pending one. Repo-root resolution is unrelated to
-        # the session-scoped removal above, so a failure here must not abort
-        # it -- skip the subject cleanup instead.
+        # cumulative-review subject, and its step-4 diff-file artifact, to
+        # this gate run. Session-suffixed so this only ever removes this
+        # session's own artifacts, never another session's still-pending
+        # ones. Repo-root resolution is unrelated to the session-scoped
+        # removal above, so a failure here must not abort it -- skip the
+        # artifact cleanup instead.
         if REPO_ROOT=$(_resolve_repo_root 2>/dev/null); then
-          rm -f "$CONFIG_DIR/cumulative-review-subject-markers/$(_marker_lib_repo_hash "$REPO_ROOT").$SESSION_ID"
+          REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+          rm -f "$CONFIG_DIR/cumulative-review-subject-markers/$REPO_HASH.$SESSION_ID"
+          rm -f "$CONFIG_DIR/cumulative-review-diff-markers/$REPO_HASH.$SESSION_ID"
         else
-          printf 'marker.sh: could not resolve repo root; skipping cumulative-review subject cleanup.\n' >&2
+          printf 'marker.sh: could not resolve repo root; skipping cumulative-review subject and diff-file cleanup.\n' >&2
         fi
         ;;
       respond-pr)
@@ -615,6 +618,13 @@ case "$SUBCOMMAND" in
     esac
     ;;
   clear-stale)
+    # Sweeps only .*-active.d/ below. cumulative-review-subject-markers/ and
+    # cumulative-review-diff-markers/ are unreachable here, so a session
+    # killed before `deactivate ready-for-review` leaks that session's
+    # artifact indefinitely. Accepted as a low-cost gap:
+    #   - each artifact is bounded to one session
+    #   - overwritten on the next gate pass
+    #   - revisit only if unbounded accumulation shows up in practice
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
     EVICTED=0
