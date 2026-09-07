@@ -314,6 +314,36 @@ class TestComputeReviewRoundCosts:
         assert r["main_dollars"] == pytest.approx(0.20)
         assert r["unpriced_turns"] == 1
 
+    def test_unrecognized_model_turn_inside_dispatched_subagent_increments_unpriced_turns(self, fake_projects):
+        """_price_dispatch has its own unpriced_turns accumulation,
+        independent of the main-thread loop's equivalent above -- an
+        unrecognized-model turn inside a dispatched subagent's own
+        transcript increments the round's unpriced_turns and contributes
+        no dollars to agent_dollars."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [
+                _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z"),  # $1.00
+                _priced(
+                    "some-unrecognized-model-id", input=100_000, branch="feat",
+                    ts="2026-08-01T10:00:20.000Z",
+                ),
+            ],
+        )
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["agent_dollars"] == pytest.approx(1.00)
+        assert r["unpriced_turns"] == 1
+
     def test_skill_round_immediately_followed_by_slash_round_produces_two_correct_rounds(self, fake_projects):
         """A Skill-shape round immediately followed by a /slash-shape round,
         with zero fresh-user-prompt records between them, produces exactly
@@ -432,15 +462,14 @@ class TestComputeReviewRoundCosts:
         assert pct == pytest.approx(100.0)  # round dollars == branch total in this fixture
 
     def test_gitbranch_drift_inside_a_round_window_attributes_dollars_to_the_opening_branch(self, fake_projects):
-        """(cumulative /code-review finding, revision -- row 12a) A round's
-        dollars must land in the branch_totals bucket the round itself is
-        keyed to even when the session's own gitBranch changes between the
-        round's opening record and its window end. One session, one open
-        window: the opening record fires the code-review Skill block on
-        feat-a; a later main-thread record inside the same window, on
-        feat-b, also dispatches a subagent (exercises both accumulation
-        sites the fix names -- the priced turn and _price_dispatch's
-        return -- not just the first); a fresh user prompt then closes the
+        """A round's dollars must land in the branch_totals bucket the
+        round itself is keyed to even when the session's own gitBranch
+        changes between the round's opening record and its window end. One
+        session, one open window: the opening record fires the code-review
+        Skill block on feat-a; a later main-thread record inside the same
+        window, on feat-b, also dispatches a subagent (exercises both
+        accumulation sites -- the priced turn and _price_dispatch's return
+        -- not just the first); a fresh user prompt then closes the
         window. The round's own branch_key stays feat-a, and both the
         drifted main-thread turn's dollars and the subagent dispatch's
         dollars land in feat-a's branch_totals bucket -- feat-b gets no
@@ -474,8 +503,8 @@ class TestComputeReviewRoundCosts:
         """Paired with the drift test above: a main-thread record added
         after the window closes, carrying no gitBranch of its own, still
         attributes to feat-b via the ordinary forward-pass carry-forward --
-        proving the row-12a fix changes in-window attribution only,
-        leaving out-of-window (non-round) attribution exactly as it was."""
+        proving the fix changes in-window attribution only, leaving
+        out-of-window (non-round) attribution exactly as it was."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _priced(
@@ -543,20 +572,19 @@ class TestComputeReviewRoundCosts:
         assert [r["skill"] for r in data["rounds"]] == ["code-review"]
 
     def test_skill_filter_is_a_pure_output_filter_invariant_to_dollars_and_list_membership(self, fake_projects):
-        """(engineer decision, row 19) skill_filter never narrows
-        round-window detection -- only which already-detected rounds are
-        returned. Fixture is the shape a detection-time narrowing would
-        mis-bound: a code-review invocation immediately followed by a
-        plan-review invocation, with no fresh user prompt between them, so
-        the plan-review opener is the code-review round's own closing
-        bound. If skill_filter narrowed detection instead, excluding
-        plan-review would stop it from closing the code-review window,
-        letting the code-review round's own turns extend past it and
-        inflate its own dollar figure. Passing skill_filter={"code-review"}
-        must yield the same code-review round -- identical main_dollars,
-        agent_dollars, and agents -- as passing no filter at all. Also
-        carries forward the list-membership coverage the pre-row-19 test
-        this replaces provided (mirroring
+        """skill_filter never narrows round-window detection -- only which
+        already-detected rounds are returned. Fixture is the shape a
+        detection-time narrowing would mis-bound: a code-review invocation
+        immediately followed by a plan-review invocation, with no fresh
+        user prompt between them, so the plan-review opener is the
+        code-review round's own closing bound. If skill_filter narrowed
+        detection instead, excluding plan-review would stop it from
+        closing the code-review window, letting the code-review round's
+        own turns extend past it and inflate its own dollar figure.
+        Passing skill_filter={"code-review"} must yield the same
+        code-review round -- identical main_dollars, agent_dollars, and
+        agents -- as passing no filter at all. Also asserts
+        list-membership directly (mirroring
         test_branch_filter_narrows_rounds_but_not_branch_totals's pattern):
         data["rounds"] must contain no plan-review entry when
         skill_filter={"code-review"} is passed, so a skill_filter bug that
@@ -643,6 +671,41 @@ class TestComputeReviewRoundCosts:
         r = data["rounds"][0]
         assert r["agent_dollars"] == pytest.approx(0.0)
         assert r["dangling"] == 1
+
+    def test_root_idx_keeps_identically_named_branches_in_different_roots_from_merging(
+        self, tmp_path, monkeypatch,
+    ):
+        """(root_idx, branch) keying keeps two different roots'
+        identically-named branches from merging into one branch_totals/
+        round row -- two roots here each carry a session on a branch named
+        "feat", and each must land in its own distinct branch_totals entry
+        and its own round, keyed by differing root_idx."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj_a = roots[0] / "-home-user-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        proj_b = roots[1] / "-home-user-repo-b"
+        proj_b.mkdir(parents=True)
+        _write_jsonl(proj_b / "sess-b.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        resolved_roots = [root.resolve() for root in roots]
+        session_iter = list(corpus.iter_sessions(roots[0], "*")) + list(corpus.iter_sessions(roots[1], "*"))
+        data = review_rounds.compute_review_round_costs(session_iter, resolved_roots=resolved_roots)
+        assert {r["branch_key"] for r in data["rounds"]} == {(0, "feat"), (1, "feat")}
+        assert set(data["branch_totals"]) == {(0, "feat"), (1, "feat")}
+        assert data["branch_totals"][(0, "feat")] == pytest.approx(0.20)
+        assert data["branch_totals"][(1, "feat")] == pytest.approx(0.40)
 
 
 class TestCmdReviewRoundCost:
@@ -765,7 +828,7 @@ class TestCmdReviewRoundCost:
         """--skill NAME narrows what is printed to that one REVIEW_SKILLS
         member, ignoring the other two entirely -- it is a post-hoc output
         filter over already-detected rounds, never a detection-time
-        narrowing (row 19)."""
+        narrowing."""
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _priced(
                 "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
@@ -783,13 +846,12 @@ class TestCmdReviewRoundCost:
         assert "rounds=1  (code-review=0  plan-review=1  ready-for-review=0)" in out
 
     def test_gitbranch_drift_inside_round_window_prints_coherent_reconciliation_line(self, fake_projects, capsys):
-        """(cumulative /code-review finding, revision -- row 12a) The same
-        gitBranch-drift fixture at the CLI layer: the printed
+        """The same gitBranch-drift fixture at the CLI layer: the printed
         reconciliation line reads 100.0% (all of the branch's dollars fell
         inside its one round) and the corpus-wide "Non-round dollars"
-        footer is not negative -- the pre-revision accumulator produced a
-        200%/-100% reconciliation-line output on this exact shape, so it
-        stays a permanent required case rather than a one-off check."""
+        footer is not negative -- guards the round/branch-totals
+        reconciliation identity under mid-window branch drift; kept as a
+        permanent regression case, not a one-off check."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _priced(
