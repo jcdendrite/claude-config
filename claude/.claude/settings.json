@@ -76,6 +76,9 @@
   "agentPushNotifEnabled": true,
   "disableArtifact": true,
   "disableWorkflows": true,
+  "attribution": {
+    "sessionUrl": false
+  },
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
