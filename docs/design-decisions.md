@@ -1358,7 +1358,7 @@ Record the fix's merge SHA here once this change merges, together with the range
 
 ## 61. Declined a `SessionStart` + `additionalContext` per-subagent injection mechanism for orchestrator-only CLAUDE.md content (2026-09-03)
 
-An external critique argued the orchestrator-only block in `claude/.claude/CLAUDE.md` (Agent Briefing, Model & Effort Routing) — 9,656 bytes as of commit `a3b74ce7` — is paid by every dispatched subagent with no reader (`sed -n '98,136p' claude/.claude/CLAUDE.md | wc -c`). It proposed injecting the block only at session start instead, before any delegation decision, sparing every subagent dispatch the block's context cost. The proposal was considered and declined, not deferred, for four reasons in descending weight:
+An external critique (Gemini) argued the orchestrator-only block in `claude/.claude/CLAUDE.md` (Agent Briefing, Model & Effort Routing) — 9,656 bytes as of commit `a3b74ce7` — is paid by every dispatched subagent with no reader (`sed -n '98,136p' claude/.claude/CLAUDE.md | wc -c`). It proposed injecting the block only at session start instead, before any delegation decision, sparing every subagent dispatch the block's context cost. The proposal was considered and declined, not deferred, for four reasons in descending weight:
 
 1. **It converts a vendor-guaranteed load into a locally-scripted one whose failure is silent.** A missing, non-executable, or erroring `SessionStart` hook drops the block:
    - No denial.
