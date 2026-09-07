@@ -99,4 +99,5 @@ consume_durable_continuity|bool|true|config-dir|false|config-dir|.consume-durabl
 commit_stall_block|bool|true|config-dir|false|config-dir|.commit-stall-block-disabled|presence-disables|Commit-stall auto-advance|docs/commit-stall-block.md|
 session_title_from_branch|bool|true|config-dir|false|config-dir|.session-title-disabled|presence-disables|Branch-based session-title (machine-wide)|docs/hooks.md § Utility hooks|
 round_consult_gate|bool|true|config-dir|false|config-dir|.round-consult-gate-disabled|presence-disables|Round-3 architect-consult gate|docs/hooks.md § Gate hooks|
+round_consult_round2_pilot|bool|false|config-dir|false|config-dir|.round-consult-round2-pilot|presence-enables|Round-2 architect-consult pilot cap override (time-boxed)|docs/hooks.md § Gate hooks|
 authorization_boundary_restore|bool|true|config-dir|false|config-dir|.authorization-boundary-disabled|presence-disables|Authorization-boundary restore on compact|docs/hooks.md § Utility hooks|
