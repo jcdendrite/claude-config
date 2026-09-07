@@ -18,6 +18,7 @@ from helpers import (
     read_input,
     run_hook,
     run_hook_advisory,
+    symlink_hooks_lib_chain,
 )
 
 CONSUME_HOOK = HOOKS_DIR / "consume-durable-continuity-file-on-read.sh"
@@ -49,14 +50,13 @@ def _install_resume_context_script_at(config_dir: Path) -> Path:
     """Like helpers.install_resume_context_script, but symlinks into an
     arbitrary CONFIG_DIR/scripts/ rather than isolated_home/.claude/scripts/
     — needed for CLAUDE_CONFIG_DIR cases, where CONFIG_DIR is not
-    isolated_home/.claude. Also symlinks CONFIG_DIR/hooks/_lib.sh:
-    resume-context.sh sources it via a path relative to its own $0, which
-    resolves to CONFIG_DIR/hooks/_lib.sh here, not isolated_home's."""
+    isolated_home/.claude. Also symlinks CONFIG_DIR/hooks/_lib.sh and its
+    chain (see helpers.symlink_hooks_lib_chain): resume-context.sh sources
+    _lib.sh via a path relative to its own $0, which resolves to
+    CONFIG_DIR/hooks/_lib.sh here, not isolated_home's."""
     hooks_dir = config_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    lib_link = hooks_dir / "_lib.sh"
-    if not lib_link.exists():
-        lib_link.symlink_to(HOOKS_DIR / "_lib.sh")
+    symlink_hooks_lib_chain(hooks_dir)
     scripts_dir = config_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     link = scripts_dir / "resume-context.sh"
