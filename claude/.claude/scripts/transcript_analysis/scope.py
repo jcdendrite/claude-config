@@ -30,7 +30,45 @@ from _config_dir import (
 )
 from transcript_analysis.corpus import _parse_ts, iter_sessions, read_session_file
 
-PROJECTS_DIR = config_dir() / "projects"
+
+def __getattr__(name: str) -> Path:
+    """PEP 562 lazy module attribute: resolves config_dir()/"projects" on
+    first access of PROJECTS_DIR, not at import time, so importing this
+    module never pays for a $HOME-unset resolution failure before any
+    caller actually needs a scan root. Mirrors analyze-context.py's own
+    CLAUDE_DIR/PROJECTS_DIR/SESSION_META_DIR lazy-attribute convention.
+    """
+    if name != "PROJECTS_DIR":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _projects_dir()
+
+
+def _projects_dir() -> Path:
+    """Resolve PROJECTS_DIR for this module's own internal callers.
+
+    A bare `PROJECTS_DIR` reference inside one of this module's own function
+    bodies reads the module's global namespace directly and never reaches
+    __getattr__ above -- only external `scope.PROJECTS_DIR` attribute access
+    does. Caching the resolved value as a real module global (rather than in
+    a private variable) means a bare internal reference resolves once this
+    has run, and a direct `scope.PROJECTS_DIR = ...` reassignment (main()'s
+    --config-dir handling, or a test's monkeypatch.setattr(scope,
+    "PROJECTS_DIR", ...)) -- which sets that same module global directly and
+    bypasses __getattr__ -- is honored here exactly as it already is for
+    external attribute access, without a separate override check.
+    """
+    if "PROJECTS_DIR" not in globals():
+        try:
+            globals()["PROJECTS_DIR"] = config_dir() / "projects"
+        except ValueError as exc:
+            # Every cmd_* handler reaches this transitively via
+            # resolve_scan_roots/_resolve_project_scope with no try/except of
+            # its own -- catch here, once, rather than at ~25 call sites,
+            # matching token-analyzer.py's own _projects_dir print-and-exit
+            # convention for the same $HOME-unset failure.
+            print(f"_projects_dir: {exc}", file=sys.stderr)
+            sys.exit(2)
+    return globals()["PROJECTS_DIR"]
 
 
 def _path_to_project_slug(path: str) -> str:
@@ -224,7 +262,7 @@ def _iter_scoped_sessions(
     `str(exc)`, which embeds the offending path.
     """
     if roots is None:
-        roots = (PROJECTS_DIR,)
+        roots = (_projects_dir(),)
     wanted = set(slugs)
     visited_dirs: set[Path] = set()
     multi_root = len(roots) > 1
@@ -299,8 +337,8 @@ def resolve_scan_roots(parsed: argparse.Namespace) -> list[Path]:
 
     An explicit top-level --config-dir overrides everything else, returning
     that one directory's projects/ subdirectory alone. Absent that, the base
-    is PROJECTS_DIR (this module's own global -- still config_dir()/"projects"
-    at import, still reassignable via monkeypatch.setattr(scope, "PROJECTS_DIR",
+    is PROJECTS_DIR (this module's own global -- lazily config_dir()/"projects"
+    on first access, still reassignable via monkeypatch.setattr(scope, "PROJECTS_DIR",
     ...)) plus each of declared_transcript_roots()'s own projects/
     subdirectory, deduped by resolved real path. PROJECTS_DIR is listed
     first, so the active profile is always scanned first -- the "active
@@ -316,8 +354,8 @@ def resolve_scan_roots(parsed: argparse.Namespace) -> list[Path]:
     if config_dir_arg:
         return [Path(config_dir_arg) / "projects"]
 
-    roots = [PROJECTS_DIR]
-    seen_resolved = {PROJECTS_DIR.resolve()}
+    roots = [_projects_dir()]
+    seen_resolved = {_projects_dir().resolve()}
     for declared_root in declared_transcript_roots():
         candidate = declared_root / "projects"
         resolved = candidate.resolve()
@@ -387,7 +425,7 @@ def _resolve_project_scope(
     a divergence reachable today.
     """
     if roots is None:
-        roots = (PROJECTS_DIR,)
+        roots = (_projects_dir(),)
     if args.this_repo:
         slugs = getattr(args, "_this_repo_slugs", None)
         if slugs is None:
@@ -520,14 +558,24 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     defines --summary today, so a bare summary check would silently narrow
     a future subcommand that happens to add a same-named flag.
     """
+    try:
+        resolved_config_dir = config_dir()
+    except ValueError as exc:
+        # Every one of _SUBCOMMANDS_WITH_OWN_CONFIG_DIR's ~15 cmd_* handlers
+        # reaches this transitively with no try/except of its own -- catch
+        # here, once, matching this function's own --config-dir-extra
+        # refusals' stderr+exit(2) convention above.
+        print(f"{subcommand}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     if subcommand == "cost" and bool(getattr(args, "summary", False)):
-        return [config_dir() / "projects"]
+        return [resolved_config_dir / "projects"]
 
     extra_config_dirs: list[str] = getattr(args, "extra_config_dirs", None) or []
 
     config_dirs: list[Path] = []
     seen_resolved: set[Path] = set()
-    for candidate in (config_dir(), *declared_transcript_roots()):
+    for candidate in (resolved_config_dir, *declared_transcript_roots()):
         resolved = candidate.resolve()
         if resolved in seen_resolved:
             continue

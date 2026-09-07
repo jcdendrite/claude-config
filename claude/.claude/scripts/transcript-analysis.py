@@ -1170,6 +1170,7 @@ _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     "architect-consult",  # require-architect-consult.sh
     "invisible-commit-content",  # deny-invisible-commit-content.sh
     "no-op-dispatch",  # deny-no-op-dispatch.sh
+    "config-write-shape",  # enforce-config-write-shape.sh
     # Legacy-only: no active hook emits this wording. Each member is kept
     # permanently so an older recorded transcript still classifies.
     "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
@@ -7195,7 +7196,14 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         _print_cost_ledger_read(existing_rows, args, roots)
         return
 
-    sentinel_path = config_dir() / ".cost-ledger-enabled"
+    try:
+        sentinel_path = config_dir() / ".cost-ledger-enabled"
+    except ValueError as exc:
+        # Reachable even when ledger_path above resolved cleanly:
+        # COST_LEDGER_PATH being set skips _cost_ledger_path()'s own
+        # config_dir() call entirely, so this is not a redundant guard.
+        print(f"cost-ledger: {exc}", file=sys.stderr)
+        sys.exit(1)
     if not sentinel_path.exists():
         # Hardcodes the conventional ~/.claude path rather than sentinel_path
         # itself -- same don't-print-a-resolved-home-rooted-path discipline
@@ -8834,8 +8842,16 @@ def _read_bounded_log_lines(log_path: Path) -> list[str]:
 
 
 def _print_nudge_log_diagnostic() -> None:
-    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if present."""
-    log_path = config_dir() / ".handoff-nudge.log"
+    """Read ~/.claude/.handoff-nudge.log and report schema-drift count if
+    present. Silently skips the diagnostic (never raises) when config_dir()
+    can't resolve, since the primary report this footer follows has already
+    printed and succeeded. Matches _read_bounded_log_lines' own
+    absent/unreadable-file degrade above."""
+    try:
+        config_directory = config_dir()
+    except ValueError:
+        return
+    log_path = config_directory / ".handoff-nudge.log"
     lines = _read_bounded_log_lines(log_path)
     drift_count = sum(1 for ln in lines if ln.startswith("schema-drift"))
     if drift_count:
@@ -10709,7 +10725,15 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
             print(f"  ({unpriced_turns:,} unpriced turns / {unpriced_tokens:,} tokens excluded from priced spend)")
         return
 
-    log_entries = _parse_nudge_log_entries(config_dir() / ".handoff-nudge.log")
+    try:
+        config_directory = config_dir()
+    except ValueError as exc:
+        # Mirrors _cost_ledger_path's callers' own stderr+exit convention.
+        # The rest of this report can't locate the recorded corpus it
+        # backtests against without a resolved config dir.
+        print(f"rearm-backtest: {exc}", file=sys.stderr)
+        sys.exit(1)
+    log_entries = _parse_nudge_log_entries(config_directory / ".handoff-nudge.log")
     lags, excluded_count = _operator_response_lag_from_log(session_traces, log_entries)
     if lags:
         sorted_lags = sorted(lags)

@@ -163,6 +163,46 @@ def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
     assert tmp_path / "projects" == scope_mod.PROJECTS_DIR
 
 
+def test_scope_import_does_not_crash_when_home_unset(monkeypatch):
+    """Importing transcript_analysis.scope must not raise even when $HOME is
+    unset/empty and CLAUDE_CONFIG_DIR is not set -- PROJECTS_DIR resolves
+    lazily, on first access, not at import time, so an importer that never
+    touches PROJECTS_DIR (e.g. analyze-context.py's own `--help` path) never
+    pays for a $HOME-unset resolution failure it doesn't need to hit."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location(
+        "transcript_analysis_scope_home_unset_case", scope_path
+    )
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)  # must not raise
+
+
+def test_resolve_scan_roots_default_root_when_home_unset(monkeypatch, tmp_path):
+    """resolve_scan_roots' own internal `PROJECTS_DIR` references -- converted
+    to `_projects_dir()` calls so they go through PEP 562 lazy resolution --
+    must still resolve correctly when $HOME is unset. A bare-name reference
+    left unconverted after PROJECTS_DIR became a lazy module attribute would
+    raise NameError here: a bare global reference inside the module's own
+    function bodies never reaches scope.py's __getattr__, unlike external
+    `scope.PROJECTS_DIR` attribute access.
+    """
+    monkeypatch.setenv("HOME", "")
+    config_dir = tmp_path / "active-account"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    scope_path = _SCRIPT.parent / "transcript_analysis" / "scope.py"
+    spec = importlib.util.spec_from_file_location(
+        "transcript_analysis_scope_resolve_roots_home_unset_case", scope_path
+    )
+    scope_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scope_mod)
+
+    roots = scope_mod.resolve_scan_roots(argparse.Namespace())
+
+    assert roots == [config_dir / "projects"]
+
+
 class TestConfigDirFlag:
     """--config-dir reassigns scope.PROJECTS_DIR after argument parsing,
     distinct from the CLAUDE_CONFIG_DIR-at-import-time behavior
@@ -11205,6 +11245,26 @@ class TestSpendOverThreshold:
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert int(cols["Sessions"]) == 1
 
+    def test_nudge_log_diagnostic_footer_swallows_unresolvable_config_dir(
+        self, fake_projects, capsys, monkeypatch
+    ):
+        """An unresolvable config dir (e.g. $HOME unset) inside the trailing
+        _print_nudge_log_diagnostic() footer must not crash an
+        already-successful report -- the primary table has already printed."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == "100.0%"
+        assert "Diagnostic" not in out
+
 
 # ---------------------------------------------------------------------------
 # audit-routing-shape
@@ -16219,6 +16279,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-architect-consult.sh", "architect-consult"),
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
     ("deny-no-op-dispatch.sh", "no-op-dispatch"),
+    ("enforce-config-write-shape.sh", "config-write-shape"),
 )
 
 
@@ -18941,6 +19002,24 @@ class TestRearmBacktestReport:
         _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "1 excluded" in out
+
+    def test_unresolvable_config_dir_exits_cleanly(self, fake_projects, capsys, monkeypatch):
+        """An unresolvable config dir (e.g. $HOME unset) at the
+        .handoff-nudge.log read exits 1 with a diagnostic, rather than an
+        uncaught ValueError traceback -- mirrors _cost_ledger_path's own
+        callers' stderr+exit convention."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+
+        def _raise_value_error():
+            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
+
+        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        assert exc_info.value.code == 1
+        assert "HOME is unset or empty" in capsys.readouterr().err
 
     def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
         """A session on a 200k-context-window model crosses its own real fire

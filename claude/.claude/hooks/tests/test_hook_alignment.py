@@ -1,10 +1,10 @@
 """Three-layer hook alignment test suite.
 
 Layer 0 — Docs coverage: every .sh hook in claude/.claude/hooks/ (excluding
-_lib.sh) must have its own list-item entry in docs/hooks.md.
+_lib.sh and _config.sh) must have its own list-item entry in docs/hooks.md.
 
 Layer 1 — Static checks: every .sh hook in claude/.claude/hooks/ and
-plugins/*/hooks/ (excluding _lib.sh siblings) must declare a
+plugins/*/hooks/ (excluding _lib.sh/_config.sh siblings) must declare a
 `# hook-class: <value>` header on line 2 with a valid value, and hooks
 matching gate-naming prefixes or the EXPLICIT_GATES set must declare
 `# hook-class: gate`. Layer 1 also pins each gate-backed review skill to the
@@ -69,25 +69,34 @@ _MAIN_HOOKS_DIR = _REPO_ROOT / "claude" / ".claude" / "hooks"
 _PLUGIN_HOOKS_DIRS = list((_REPO_ROOT / "plugins").glob("*/hooks"))
 
 
+# Shared helper libraries, not hooks -- sourced by hooks/scripts, never
+# themselves registered on a PreToolUse/PostToolUse matcher or documented as
+# a standalone hook in docs/hooks.md.
+_HELPER_LIBRARY_NAMES: frozenset[str] = frozenset({"_lib.sh", "_config.sh"})
+
+
 def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/.
 
-    Excludes each directory's _lib.sh by default. Pass include_lib=True to
-    sweep those too. Each detector's default follows from its own
-    self-match risk against _lib.sh:
-    - `include_lib=True` (used only by the `\\s` detector) -- that detector
-      is safe against _lib.sh because it isn't defined there.
-    - The bare-jq and inline-matcher detectors stay excluded because each
-      is itself defined inside _lib.sh using the exact primitive it
-      detects -- including it would be a guaranteed self-match.
+    Excludes both shared helper libraries (_lib.sh, _config.sh) by default.
+    Pass include_lib=True to add _lib.sh back in -- used only by the `\\s`
+    detector, which is safe against _lib.sh because it isn't defined there.
+    _config.sh stays excluded even then: it exists only under
+    claude/.claude/hooks/, so folding it into ALL_HOOKS_AND_LIBS would break
+    test_all_hooks_and_libs_includes_every_lib_sh's one-_lib.sh-per-directory
+    count invariant. The bare-jq and inline-matcher detectors stay excluded
+    from _lib.sh because each is itself defined inside _lib.sh using the
+    exact primitive it detects -- including it would be a guaranteed
+    self-match.
     """
+    excluded = {"_config.sh"} if include_lib else _HELPER_LIBRARY_NAMES
     hooks: list[Path] = []
     for sh in sorted(_MAIN_HOOKS_DIR.glob("*.sh")):
-        if include_lib or sh.name != "_lib.sh":
+        if sh.name not in excluded:
             hooks.append(sh)
     for hooks_dir in _PLUGIN_HOOKS_DIRS:
         for sh in sorted(hooks_dir.glob("*.sh")):
-            if include_lib or sh.name != "_lib.sh":
+            if sh.name not in excluded:
                 hooks.append(sh)
     return hooks
 
@@ -1033,6 +1042,103 @@ class TestHookClassHeader:
             f"{hook.name}: emit_deny() defined at line {emit_deny_line + 1} but "
             f"_lib.sh sourced at line {lib_source_line + 1} — "
             "emit_deny must be defined BEFORE sourcing _lib.sh"
+        )
+
+
+# A `"$COMMAND"` occurrence on one of these line shapes is a legitimate use,
+# not a raw-text detection check that should instead read COMMAND_UNQUOTED:
+# the quote-strip assignment that computes COMMAND_UNQUOTED itself, a call
+# into a _lib_command_invokes_*_subcmd helper (which quote-strips
+# internally), the TRIMMED assignment feeding the allowlist arm's own
+# raw-text pattern matches, an emit_deny/message line, and a comment.
+
+# These four forms are unconditionally safe regardless of what else shares
+# the line: the strip-quotes call and the subcmd-resolver call each handle
+# quote-stripping themselves (internally or via their argument), TRIMMED= is
+# the one assignment feeding the allowlist arm's own deliberately-raw
+# pattern matches, and a comment is not executable.
+_COMMAND_UNCONDITIONALLY_ALLOWED_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r'_lib_strip_shell_quotes\s+"\$COMMAND"'),
+    re.compile(r'_lib_command_invokes_\w+_subcmd\s+"\$COMMAND"'),
+    re.compile(r"^\s*TRIMMED="),
+    re.compile(r"^\s*#"),
+)
+
+# A line combining one of these detection operators with a literal
+# "$COMMAND" is doing its OWN raw-text substring/regex match — an inline
+# `grep ... "$COMMAND" && emit_deny "..."` idiom reads $COMMAND directly
+# just as much as a bare detection line would, so `emit_deny` appearing on
+# the same line must not launder it past this check.
+_COMMAND_DETECTION_OPERATOR_PATTERN = re.compile(
+    r"\bgrep\b|\begrep\b|\bfgrep\b|=~|\bcase\b|\bawk\b|\bsed\b"
+)
+
+_COMMAND_MESSAGE_ONLY_PATTERN = re.compile(r"emit_deny\b")
+
+# Gate hooks that call the shared `_lib_shape_match`/`_lib_redirect_candidates`
+# engine in _lib.sh -- auto-discovered by source-text reference rather than
+# hand-maintained, so a future hook adopting this same engine (and inheriting
+# its COMMAND_UNQUOTED invariant) is automatically enrolled below too. Not
+# GATE_HOOKS as a whole: most gate hooks have no COMMAND_UNQUOTED variable and
+# no raw-text detection check of this shape at all, so parametrizing over all
+# of them would flag pre-existing, unrelated hooks this invariant was never
+# extended to.
+_RAW_COMMAND_DETECTION_HOOKS = [
+    hook for hook in GATE_HOOKS
+    if re.search(r"_lib_shape_match|_lib_redirect_candidates", hook.read_text())
+]
+
+
+@pytest.mark.parametrize(
+    "hook", _RAW_COMMAND_DETECTION_HOOKS, ids=[h.name for h in _RAW_COMMAND_DETECTION_HOOKS]
+)
+def test_raw_command_detection_checks_read_unquoted_copy(hook: Path) -> None:
+    """Every `"$COMMAND"` occurrence must be one of the allowed forms above,
+    not a new detection check reading raw $COMMAND directly.
+
+    A shell quote landing inside a scanned token defeats a substring/regex
+    match against unstripped $COMMAND while a real shell executes the
+    command identically to its unquoted form — the bug class that let a
+    no-gate-release agent forge a review marker via
+    `~/.claude/scripts/"marker".sh write code-review` past both Stage 1's
+    fast-reject and the gate-release-authority raw-text detector in
+    enforce-marker-script-shape.sh. Fails loudly, naming the offending
+    line, so a future raw-$COMMAND detection check added here is caught
+    immediately rather than rediscovered by a future security review.
+    Vacuously passes for a gate hook with no "$COMMAND" occurrence at all.
+
+    A line is allowed only if it's one of the four unconditionally-safe
+    forms, or it references "$COMMAND" with no detection operator present
+    (a pure `emit_deny "... $COMMAND ..."` message line) — a same-line
+    `grep ... "$COMMAND" && emit_deny "denied"` idiom is still a raw-text
+    detection check and must not pass just because emit_deny also appears
+    on that line.
+
+    Known residual: this check only catches a same-line pairing of
+    `"$COMMAND"` and a detection operator. A two-line indirection
+    (`X="$COMMAND"; case "$X" in ...`) reproduces the identical unquoted-
+    scan bug shape without either line matching both conditions, and is
+    not caught here.
+    """
+    hook_name = hook.name
+    lines = hook.read_text().splitlines()
+    for lineno, line in enumerate(lines, start=1):
+        if '"$COMMAND"' not in line:
+            continue
+        if any(
+            pattern.search(line)
+            for pattern in _COMMAND_UNCONDITIONALLY_ALLOWED_PATTERNS
+        ):
+            continue
+        if _COMMAND_MESSAGE_ONLY_PATTERN.search(
+            line
+        ) and not _COMMAND_DETECTION_OPERATOR_PATTERN.search(line):
+            continue
+        pytest.fail(
+            f'{hook_name}:{lineno}: raw-text check reads "$COMMAND" directly '
+            f"instead of quote-stripped COMMAND_UNQUOTED — a quote landing "
+            f"inside a scanned token defeats a substring/regex match against "
+            f"unstripped text. Line: {line.strip()!r}"
         )
 
 

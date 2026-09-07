@@ -100,27 +100,54 @@ def _iso(offset_seconds: float = 0) -> str:
 @pytest.fixture()
 def fake_projects(tmp_path, monkeypatch):
     """Local, not the conftest.py fixture of the same name: _walk()'s default
-    root reads this file's own module-level PROJECTS_DIR, not scope.PROJECTS_DIR,
-    so this must patch _mod.PROJECTS_DIR directly rather than merge into the
-    shared fixture's scope.PROJECTS_DIR/config_dir patches."""
+    root reads this file's own module-level _projects_dir() cache, not
+    scope.PROJECTS_DIR, so this must patch _mod._projects_dir_cache directly
+    rather than merge into the shared fixture's scope.PROJECTS_DIR/config_dir
+    patches."""
     projects = tmp_path / "projects"
     proj_a = projects / "-home-user-repo"
     proj_b = projects / "-home-user-other"
     proj_a.mkdir(parents=True)
     proj_b.mkdir(parents=True)
-    monkeypatch.setattr(_mod, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(_mod, "_projects_dir_cache", projects)
     return proj_a, proj_b
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
-    """PROJECTS_DIR is computed at import time from config_dir(); a fresh
-    import with CLAUDE_CONFIG_DIR set resolves under that directory instead
-    of ~/.claude."""
+    """_projects_dir() resolves config_dir()/"projects" lazily, on first
+    call, not at import time; with CLAUDE_CONFIG_DIR set, it resolves under
+    that directory instead of ~/.claude."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     spec = importlib.util.spec_from_file_location("token_analyzer_config_dir_case", _SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert tmp_path / "projects" == mod.PROJECTS_DIR
+    assert tmp_path / "projects" == mod._projects_dir()
+
+
+def test_import_does_not_crash_when_home_unset(monkeypatch):
+    """Module import must succeed even when $HOME is unset/empty and
+    CLAUDE_CONFIG_DIR is not set -- _projects_dir() resolves config_dir()
+    lazily, on first call, not at import time."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    spec = importlib.util.spec_from_file_location("token_analyzer_home_unset_case", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # must not raise
+
+
+def test_projects_dir_exits_cleanly_when_home_unset(monkeypatch, capsys):
+    """Calling _projects_dir() prints a clean diagnostic and exits 2, rather
+    than an uncaught ValueError traceback, when $HOME is unset/empty and
+    CLAUDE_CONFIG_DIR is not set."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    spec = importlib.util.spec_from_file_location("token_analyzer_home_unset_access_case", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with pytest.raises(SystemExit) as exc_info:
+        mod._projects_dir()
+    assert exc_info.value.code == 2
+    assert "HOME is unset or empty" in capsys.readouterr().err
 
 
 def test_per_model_totals(fake_projects):

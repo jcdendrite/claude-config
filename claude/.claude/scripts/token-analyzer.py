@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """token-analyzer.py — per-model token breakdown across Claude Code sessions. No network; no writes."""
 import argparse
+import sys
 import time
 from collections import defaultdict
 from collections.abc import Sequence
@@ -13,7 +14,27 @@ from transcript_analysis.corpus import read_session_file
 from transcript_analysis.pricing import dedup_turns_by_request_id
 from transcript_analysis.render import _content_text, _fam
 
-PROJECTS_DIR = config_dir() / "projects"
+_projects_dir_cache: Path | None = None
+
+
+def _projects_dir() -> Path:
+    """Lazily resolve config_dir()/"projects" on first use rather than at
+    import time, so a bare `import` never pays for a $HOME-unset resolution
+    failure. Matches mark-terminal.py's/post-crash-sessions.py's
+    print-and-exit convention on that failure. Tests patch
+    `_projects_dir_cache` directly, mirroring scope.PROJECTS_DIR's own
+    reassignment idiom.
+    """
+    global _projects_dir_cache
+    if _projects_dir_cache is None:
+        try:
+            _projects_dir_cache = config_dir() / "projects"
+        except ValueError as exc:
+            print(f"token-analyzer: {exc}", file=sys.stderr)
+            sys.exit(2)
+    return _projects_dir_cache
+
+
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 JUDGMENT_SKILLS = frozenset({
     "code-review", "plan-review", "security-review",
@@ -39,7 +60,7 @@ def _walk(since: float | None = None, roots: Sequence[Path] | None = None):
     family_totals = defaultdict(lambda: {"n": 0, "inp": 0, "out": 0, "cc": 0, "cr": 0})
     sessions = []
     if roots is None:
-        roots = (PROJECTS_DIR,)
+        roots = (_projects_dir(),)
     for root in roots:
         for jsonl in sorted(root.glob("*/*.jsonl")):
             if since is not None and jsonl.stat().st_mtime < since:

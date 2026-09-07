@@ -40,6 +40,13 @@ def test_empty_string_claude_config_dir_falls_back_to_home(tmp_path, monkeypatch
     assert config_dir() == tmp_path / ".claude"
 
 
+def test_empty_home_and_unset_claude_config_dir_raises_value_error(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", "")
+    with pytest.raises(ValueError, match="HOME is unset or empty"):
+        config_dir()
+
+
 # ---------------------------------------------------------------------------
 # declared_transcript_roots()
 # ---------------------------------------------------------------------------

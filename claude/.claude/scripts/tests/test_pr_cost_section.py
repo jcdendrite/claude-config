@@ -27,6 +27,13 @@ from .conftest import _base_test_env, _make_repo_with_remote
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "pr-cost-section.sh"
 _LIB_SH = Path(__file__).parent.parent.parent / "hooks" / "_lib.sh"
+# _lib.sh sources _config.sh from its own directory (BASH_SOURCE-relative) --
+# every fixture below that copies _lib.sh needs this sibling copied alongside
+# it too, or that source fails outright.
+_CONFIG_SH = Path(__file__).parent.parent.parent / "hooks" / "_config.sh"
+# config-keys.psv is a required sibling of _config.sh for the same
+# BASH_SOURCE-relative reason.
+_CONFIG_KEYS_PSV = Path(__file__).parent.parent.parent / "hooks" / "config-keys.psv"
 
 # The complete block pr-cost-section.sh emits on exit 0. Written out as a
 # literal rather than composed from parts, because composing it would
@@ -165,6 +172,8 @@ def script_fixture(tmp_path) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_fake_transcript_analysis_source())
@@ -189,6 +198,8 @@ def failing_script_fixture(tmp_path) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_failing_transcript_analysis_source())
@@ -214,6 +225,8 @@ def partial_output_failing_script_fixture(tmp_path) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_failing_transcript_analysis_source_with_partial_stdout())
@@ -238,6 +251,8 @@ def stderr_diagnostics_script_fixture(tmp_path) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_fake_transcript_analysis_source_with_stderr_diagnostics())
@@ -263,6 +278,8 @@ def metacharacters_script_fixture(tmp_path) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_fake_transcript_analysis_source_with_metacharacters())
@@ -288,6 +305,8 @@ def table_row_script_fixture(tmp_path) -> Path:
     script_copy.chmod(0o755)
 
     shutil.copy(_LIB_SH, hooks_dir / "_lib.sh")
+    shutil.copy(_CONFIG_SH, hooks_dir / "_config.sh")
+    shutil.copy(_CONFIG_KEYS_PSV, hooks_dir / "config-keys.psv")
 
     fake = scripts_dir / "transcript-analysis.py"
     fake.write_text(_fake_transcript_analysis_source_ending_in_table_row())

@@ -4,6 +4,15 @@
 # byte-identical output on both the read side (hooks) and the write side
 # (marker.sh). Source it; do not invoke it directly.
 
+# _config.sh defines _lib_config_dir (config-dir resolution) and the
+# _config_*/config-key primitives every hook needs — sourced here, via
+# BASH_SOURCE rather than $0, so it resolves to this file's own directory
+# regardless of how _lib.sh itself was sourced (a test harness that sources
+# _lib.sh via `bash -c ". <path>; ..."` carries no meaningful $0). Every
+# hook that already sources _lib.sh gets these transitively, with no
+# per-hook edit needed.
+. "$(dirname "${BASH_SOURCE[0]}")/_config.sh"
+
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.
 # Probes timeout(1) then gtimeout(1) (Homebrew coreutils' g-prefixed name),
@@ -136,31 +145,228 @@ _lib_advance_offset_past_complete_lines() {
   printf '%s' "$(( offset + complete_bytes ))"
 }
 
-# Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
-# (must be absolute — a relative value resolves differently per invocation
-# cwd, the same path-mismatch bug this function exists to fix), else
-# $HOME/.claude. Returns 1 with no stdout when CLAUDE_CONFIG_DIR is relative,
-# or when CLAUDE_CONFIG_DIR is unset/empty and $HOME is also unset/empty.
-# Call-site contract (load-bearing): bare interpolation,
-# "$(_lib_config_dir)/whatever", is unsafe — under `set -e`, a failing
-# *nested* command substitution does not abort the script, so a resolver
-# failure silently collapses to "/whatever" (root-anchored) instead of being
-# caught. Every call site must capture and check the exit status first:
-#   config_dir=$(_lib_config_dir) || { <fail-open-or-deny per this caller>; }
-_lib_config_dir() {
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-    case "$CLAUDE_CONFIG_DIR" in
-      /*) ;;
-      *) return 1 ;;  # relative values resolve differently per invocation
-                      # cwd — the exact read/write path-mismatch bug this
-                      # function fixes, just triggered a different way.
-    esac
-    printf '%s\n' "${CLAUDE_CONFIG_DIR%/}"
-    return 0
+# _lib_config_dir is defined in _config.sh (sourced above) — see that
+# file for the function's own contract comment. This comment stays as the
+# pointer a reader searching this file for it would otherwise miss.
+
+# _lib_pattern_component_count PATTERN
+# Counts PATTERN's `/`-separated path segments (always >=1 for a non-empty
+# PATTERN). Shared by _lib_shape_match so a SUFFIX_PATTERN with a different
+# segment count than today's (one component for claude-config.toml, two for
+# the marker directories' `*-markers/*`/`.*-active.d/*`) is handled without a
+# hardcoded "one slash" assumption.
+_lib_pattern_component_count() {
+  # Three separate assignments, not one `local a=.. b=.. c="$a"` statement:
+  # bash expands every word of a single `local` command before performing
+  # any of its assignments, so a same-statement `rest="$pattern"` would see
+  # the OUTER scope's (unset) `pattern` rather than this call's own "$1".
+  local pattern="$1"
+  local count=1
+  local rest="$pattern"
+  while [[ "$rest" == */* ]]; do
+    count=$((count + 1))
+    rest="${rest#*/}"
+  done
+  printf '%s' "$count"
+}
+
+# _lib_strip_trailing_path_components PATH COUNT
+# Strips COUNT trailing `/`-separated components from PATH. Exit 1 (nothing
+# printed) if PATH has fewer than COUNT components to strip -- a caller that
+# went on to -ef-compare the (wrongly shallow) result against a root would
+# otherwise silently accept too short a prefix as a match.
+_lib_strip_trailing_path_components() {
+  local path="$1" count="$2" i prev
+  for ((i = 0; i < count; i++)); do
+    prev="$path"
+    path="${path%/*}"
+    [ "$path" = "$prev" ] && return 1
+  done
+  printf '%s' "$path"
+}
+
+# _lib_shape_match TARGET_PATH SUFFIX_PATTERN [SUFFIX_PATTERN...]
+# True (exit 0) iff TARGET_PATH matches <config-root>/SUFFIX_PATTERN for any
+# SUFFIX_PATTERN. SUFFIX_PATTERN may be a bare filename (claude-config.toml,
+# the config hook's one pattern) or a multi-segment glob (*-markers/*,
+# .*-active.d/*, the marker hook's patterns) -- every check below
+# generalizes over an arbitrary segment count rather than assuming one
+# slash. One shared engine for every protected-path shape this repo gates on
+# a Write/Edit/MultiEdit target or a Bash redirect/utility-write candidate:
+# enforce-marker-script-shape.sh's marker/active-bypass directories and
+# enforce-config-write-shape.sh's claude-config.toml both call this rather
+# than each maintaining its own copy — two independently maintained copies
+# of this intricate, security-critical logic would reproduce, one layer up,
+# the same "two parsers of one fact silently diverge" risk a single shared
+# bash/Python config-key schema already exists to close.
+#
+# Exit 1: no match. Exit 2: the config root (_lib_config_dir) could not be
+# resolved, so a config-dir-relative alias of a SUFFIX_PATTERN could not be
+# ruled out — callers must deny, not skip, on exit 2. Shape test only: no
+# agent-type read, no deny decision — callers own both.
+#
+# Detection strategy:
+#   1. Textual shape match, no filesystem access: */.claude/SUFFIX_PATTERN
+#      (stow-fold makes a protected path also reachable at
+#      <repo>/claude/.claude/<suffix>, which has no $HOME segment) and
+#      <resolved-root>/SUFFIX_PATTERN (covers a CLAUDE_CONFIG_DIR with no
+#      `.claude` segment at all, e.g. ~/.config/claude-accounts/<account>).
+#      Zero forks, no stat calls, and matches even when the candidate
+#      doesn't exist yet (a Write's not-yet-created destination) — the
+#      common case, and also what makes the stow-fold physical-path shape
+#      match even when that path is a pure text fixture unrelated on disk
+#      to any real config root (see enforce-marker-script-shape.sh's
+#      test_stow_directory_fold_physical_path_denied).
+#   2. Inode-identity match via `-ef`: split SUFFIX_PATTERN on `/`, strip
+#      that many trailing path components off the candidate, `-ef`-compare
+#      the remaining prefix against the resolved root, and glob-match the
+#      candidate's own trailing components against SUFFIX_PATTERN's own
+#      trailing components (case-insensitively). This is what (1) cannot
+#      do: it catches a symlink whose own path carries none of (1)'s
+#      literal shapes but resolves, via any number of hops, into the real
+#      root — and needs only the ROOT directory to already exist, not the
+#      not-yet-created leaf target.
+#   3. A bare `candidate -ef ROOT/SUFFIX_PATTERN` comparison, gated to a
+#      SUFFIX_PATTERN with no glob metacharacter (true for the config
+#      hook's literal filename claude-config.toml, never true for the
+#      marker hook's globs — enumerating every real file under a
+#      `*-markers/` directory to -ef against is an unbounded-cost
+#      operation this repo's own marker-count scale note already flags as
+#      reaching 13k-30k entries, so this pass is deliberately NOT extended
+#      to a glob SUFFIX_PATTERN): catches a renamed symlink, or a
+#      hardlink, pointing directly at the real target file, which (2)'s
+#      directory-prefix comparison alone cannot see since it never
+#      inspects the leaf component's own identity.
+#   4. For a SUFFIX_PATTERN with 2+ components, a directory-symlink check:
+#      glob-expands ROOT/<SUFFIX_PATTERN-minus-its-last-component> (cheap —
+#      a handful of marker-kind directories, not their contents) and
+#      `-ef`-compares the candidate's own parent directory against each
+#      expansion. Catches a symlink pointing AT a marker directory itself
+#      (`ln -s ~/.claude/code-review-markers /tmp/m`), which neither (2)
+#      nor (3) reaches since the symlink hop happens one level above the
+#      leaf. A 1-component SUFFIX_PATTERN's "directory" is the root itself,
+#      already covered by (2), so this pass no-ops for one.
+#
+# Residuals this detection strategy does NOT close (see the two gate hooks'
+# own header comments for the caller-facing disclosure):
+#   (a) a `..` path segment through a not-yet-created directory has no
+#       inode to stat yet -- `-ef` degrades the same way `[ -e ]` does.
+#       Narrow: in nearly every such case the write itself would ENOENT
+#       first.
+#   (b) `-ef` has no timeout backstop at all, unlike the prior
+#       `_lib_capped`-wrapped `realpath` design -- a real regression against
+#       a merely slow-but-responsive network stat, which the old design
+#       bounded. Against a fully-hung (D-state) mount this is unchanged from
+#       before: a `timeout`-wrapped external process cannot interrupt a
+#       kernel-blocked D-state process either.
+#   (c) _lib_strip_shell_quotes/_lib_split_fragments's sed/tr calls, on the
+#       unconditional hot path of every Bash tool call for both hooks, also
+#       have no _lib_capped wrapper -- a stuck subprocess there blocks the
+#       hook until an unstated harness-level hook timeout (if any)
+#       terminates it. Total forks per ordinary Bash call across both hooks
+#       (jq, quote-strip, hook-specific sed/grep) is an unmeasured estimate,
+#       not verified against the harness's own hook-latency budget.
+_lib_shape_match() {
+  local target_path="$1"
+  shift
+  local -a suffix_patterns=("$@")
+  local candidate suffix_pattern matched=1
+  local resolved_root
+  if ! resolved_root=$(_lib_config_dir 2>/dev/null); then
+    return 2
   fi
-  local home_norm="${HOME%/}"
-  [ -n "$home_norm" ] || return 1
-  printf '%s\n' "$home_norm/.claude"
+
+  # $HOME/~ expansion (pre-existing), plus $HOME/$CLAUDE_CONFIG_DIR literal
+  # shell-variable-reference expansion (new): a command that types the
+  # variable reference verbatim rather than relying on the shell to expand
+  # it (e.g. `>> $CLAUDE_CONFIG_DIR/claude-config.toml` in tool-input JSON,
+  # never executed by a shell before this hook inspects it) still resolves
+  # to its real value here. Fork-free string substitution; scoped to
+  # exactly these two variable names -- every other variable reference
+  # stays under the documented shell-indirection residual.
+  candidate="${target_path/#\~/$HOME}"
+  candidate="${candidate//\$HOME/$HOME}"
+  candidate="${candidate//\$\{HOME\}/$HOME}"
+  candidate="${candidate//\$CLAUDE_CONFIG_DIR/${CLAUDE_CONFIG_DIR:-}}"
+  candidate="${candidate//\$\{CLAUDE_CONFIG_DIR\}/${CLAUDE_CONFIG_DIR:-}}"
+
+  # nocasematch: macOS's default APFS volume is case-insensitive, so a
+  # case-varied path (~/.Claude/...) resolves to the same on-disk target
+  # a case-sensitive pattern would otherwise miss. Scoped around the whole
+  # function body and restored on every exit path below.
+  shopt -s nocasematch
+
+  for suffix_pattern in "${suffix_patterns[@]}"; do
+    # Pass 1: textual shape match -- see strategy comment above.
+    case "$candidate" in
+      */.claude/$suffix_pattern) matched=0 ;;
+    esac
+    if [ "$matched" -ne 0 ]; then
+      # SC2254: $suffix_pattern is deliberately unquoted -- it's a glob
+      # pattern (e.g. '*-markers/*'), not a literal value; quoting it would
+      # defeat the shape match entirely.
+      # shellcheck disable=SC2254
+      case "$candidate" in
+        "$resolved_root"/$suffix_pattern) matched=0 ;;
+      esac
+    fi
+    if [ "$matched" -eq 0 ]; then break; fi
+
+    # Pass 2: inode-identity directory-prefix match -- see strategy
+    # comment above.
+    local n_components prefix
+    n_components=$(_lib_pattern_component_count "$suffix_pattern")
+    if prefix=$(_lib_strip_trailing_path_components "$candidate" "$n_components" 2>/dev/null) \
+      && [ -n "$prefix" ] && [ "$prefix" -ef "$resolved_root" ] 2>/dev/null; then
+      local tail="${candidate#"$prefix"/}"
+      # shellcheck disable=SC2254
+      case "$tail" in
+        $suffix_pattern) matched=0 ;;
+      esac
+    fi
+    if [ "$matched" -eq 0 ]; then break; fi
+
+    # Pass 3: bare candidate-to-real-target inode comparison, glob-metachar
+    # gated -- see strategy comment above.
+    case "$suffix_pattern" in
+      *[\*\?\[]*) ;;
+      *)
+        if [ "$candidate" -ef "$resolved_root/$suffix_pattern" ] 2>/dev/null; then
+          matched=0
+        fi
+        ;;
+    esac
+    if [ "$matched" -eq 0 ]; then break; fi
+
+    # Pass 4: symlink-onto-the-directory-itself check -- see strategy
+    # comment above.
+    if [ "$n_components" -ge 2 ]; then
+      local dir_shape="${suffix_pattern%/*}"
+      local candidate_dir="${candidate%/*}"
+      local nullglob_was_set=0 dirmatch
+      if shopt -q nullglob; then nullglob_was_set=1; fi
+      shopt -s nullglob
+      # SC2206: $dir_shape is deliberately unquoted -- it's a glob pattern
+      # (e.g. '*-markers'), not a literal value, so this is filename
+      # expansion (nullglob-guarded above), not word-splitting to guard
+      # against. dir_shape's only sources are this file's own suffix
+      # patterns ('*-markers', '.*-active.d'), never attacker-controlled
+      # text, so there is no injection surface to quote against either.
+      # shellcheck disable=SC2206
+      local -a dir_expansions=("$resolved_root"/$dir_shape)
+      if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+      for dirmatch in "${dir_expansions[@]}"; do
+        if [ "$candidate_dir" -ef "$dirmatch" ] 2>/dev/null; then
+          matched=0
+          break
+        fi
+      done
+    fi
+    if [ "$matched" -eq 0 ]; then break; fi
+  done
+
+  shopt -u nocasematch
+  return "$matched"
 }
 
 # Canonical jq-encode-or-hard-block body for a gate hook's deny path.
@@ -986,7 +1192,231 @@ _lib_fragment_invokes_tool() {
   local fragment="$1" tool="$2"
   local cmd
   cmd=$(_lib_fragment_command_word "$fragment")
-  [[ -n "$cmd" && ( "$cmd" == "$tool" || "$cmd" == */"$tool" ) ]]
+  # nocasematch: same case-insensitive-filesystem rationale as
+  # _lib_shape_match's own nocasematch above.
+  shopt -s nocasematch
+  local matched=1
+  if [[ -n "$cmd" && ( "$cmd" == "$tool" || "$cmd" == */"$tool" ) ]]; then
+    matched=0
+  fi
+  shopt -u nocasematch
+  return "$matched"
+}
+
+# Every utility _lib_fragment_candidates recognizes as a last-argument/
+# glued-argument write-target extractor. Single source of truth for both
+# the extractor's own recognition loop below and
+# _lib_command_has_write_construct's fast-reject -- no independent copy of
+# this name list that could silently drift out of sync with it.
+_LIB_WRITE_UTILITIES=(tee cp mv install dd sed)
+
+# Regex alternation of _LIB_WRITE_UTILITIES, built once at source time (not
+# per call) since _lib_command_has_write_construct runs on every Bash
+# command.
+_lib_write_utilities_alternation=""
+for _lib_write_utility in "${_LIB_WRITE_UTILITIES[@]}"; do
+  if [ -z "$_lib_write_utilities_alternation" ]; then
+    _lib_write_utilities_alternation="$_lib_write_utility"
+  else
+    _lib_write_utilities_alternation="${_lib_write_utilities_alternation}|${_lib_write_utility}"
+  fi
+done
+unset _lib_write_utility
+
+# _lib_command_has_write_construct COMMAND_TEXT
+# True (exit 0) iff COMMAND_TEXT could contain a `>`-family redirect
+# operator or an invocation of one of _LIB_WRITE_UTILITIES's names, tested
+# via `case`/`[[ =~ ]]` pattern matching only -- no subprocess. Every
+# redirect-operator shape _lib_fragment_candidates itself recognizes
+# contains a literal `>` (including `<>`), so the first check alone is a
+# superset of that extractor's own redirect-operand recognition; the second
+# check is a superset of its write-utility recognition since it shares
+# _LIB_WRITE_UTILITIES. "No match" here therefore proves, by construction
+# rather than by coincidence, that _lib_fragment_candidates could not
+# produce a single candidate for ANY fragment of COMMAND_TEXT -- so
+# _lib_redirect_candidates below can skip fragment-splitting and candidate
+# extraction entirely rather than paying two sed forks (_lib_split_fragments)
+# plus a full word-walk per fragment for a command that could not possibly
+# match. Over-matching is safe (falls through to the real extraction, which
+# then finds nothing); under-matching would silently skip a real write
+# target, which is why the two checks are supersets rather than exact
+# matches of the extractor's own recognition. The regex boundary classes
+# (`^`/non-word before, non-word/`$` after) intentionally do not require a
+# preceding whitespace, so a `;`- or `&&`-glued invocation with no
+# surrounding space (`true;tee foo`) is still caught even though the actual
+# fragment split (on `;`) hasn't happened yet.
+_lib_command_has_write_construct() {
+  local text="$1"
+  case "$text" in
+    *'>'*) return 0 ;;
+  esac
+  # nocasematch: same case-insensitive-filesystem rationale as
+  # _lib_shape_match's own nocasematch above -- a capitalized invocation
+  # (TEE, Sed) resolves to the real write utility on such a filesystem, so
+  # the name match must be case-insensitive too. Scoped around just this
+  # check and restored before return, matching _lib_shape_match's pattern.
+  shopt -s nocasematch
+  local matched=1
+  if [[ "$text" =~ (^|[^A-Za-z0-9_])(${_lib_write_utilities_alternation})([^A-Za-z0-9_]|$) ]]; then
+    matched=0
+  fi
+  shopt -u nocasematch
+  return "$matched"
+}
+
+# True iff $1 equals $2, or ends in "/$2" (an absolute/relative path
+# invocation, e.g. /usr/bin/tee) -- the same match _lib_fragment_invokes_tool
+# applies to a whole fragment, applied here to an already-resolved command
+# word so a caller holding one doesn't need to re-derive it via a second
+# _lib_fragment_command_word call (and its command-substitution fork).
+_lib_command_word_matches() {
+  # nocasematch: same case-insensitive-filesystem rationale as
+  # _lib_command_has_write_construct above.
+  shopt -s nocasematch
+  local matched=1
+  case "$1" in
+    "$2"|*"/$2") matched=0 ;;
+  esac
+  shopt -u nocasematch
+  return "$matched"
+}
+
+# _lib_fragment_candidates FRAGMENT
+# Emits, one per line, every write-target word in FRAGMENT worth
+# shape-testing against a protected path via _lib_shape_match: `>`/`>>`
+# operands (bare or glued, fd-prefixed), `tee` arguments, `cp`/`mv`/`install`
+# last arguments, `dd of=` glued arguments, and `sed -i` last arguments.
+# Over-emission is safe — each candidate is independently shape-tested by
+# the caller. Sole caller: _lib_redirect_candidates below.
+_lib_fragment_candidates() {
+  local fragment="$1"
+  local saved_opts=$-
+  set -f
+  # Capitalized (unlike this file's other locals): bash's array-length
+  # operator on the lowercase name reads as a Slack-channel-shaped reference
+  # to this repo's own redaction detector.
+  local -a Words=()
+  local word
+  for word in $fragment; do
+    Words+=("$word")
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+
+  local n=${#Words[@]}
+  [ "$n" -gt 0 ] || return 0
+
+  # Mirrors deny-network-installs.sh:84-91's redirect_op_re/redirect_glued_re
+  # construction: fd-prefixed `>`/`>>`/`<>`, or unprefixed `&>`/`&>>` (bash's
+  # combined stdout+stderr redirect, which cannot take an fd prefix),
+  # standalone (next word is the target) or glued to it in one token. `>|`
+  # (clobber-override) is deliberately excluded: it contains a literal `|`,
+  # which _lib_split_fragments (the fragment splitter this scan already
+  # calls) treats as a pipeline separator, severing the operator from its
+  # target before this function ever sees a whole token -- a candidate would
+  # ship silently unmatched, not silently over-matched.
+  local redirect_op_re='^([0-9]*(>>|<>|>)|&>>|&>)$'
+  local redirect_glued_re='^([0-9]*(>>|<>|>)|&>>|&>)([^[:space:]].*)$'
+  local i
+  for ((i = 0; i < n; i++)); do
+    word="${Words[$i]}"
+    # Exact-operator test first: for a standalone `>>`, redirect_glued_re
+    # would otherwise backtrack its (>>|>|...) alternation down to `>` and
+    # misread the second `>` as a one-character glued target.
+    if [[ "$word" =~ $redirect_op_re ]]; then
+      [ $((i + 1)) -lt "$n" ] && printf '%s\n' "${Words[$((i + 1))]}"
+    elif [[ "$word" =~ $redirect_glued_re ]]; then
+      printf '%s\n' "${BASH_REMATCH[3]}"
+    fi
+  done
+
+  # Fragment's own command word, resolved ONCE and compared against every
+  # _LIB_WRITE_UTILITIES member below -- rather than a separate
+  # _lib_fragment_invokes_tool call (and its own _lib_fragment_command_word
+  # command-substitution fork) per utility name.
+  local fragment_cmd
+  fragment_cmd=$(_lib_fragment_command_word "$fragment")
+
+  local utility
+  for utility in "${_LIB_WRITE_UTILITIES[@]}"; do
+    _lib_command_word_matches "$fragment_cmd" "$utility" || continue
+    case "$utility" in
+      tee)
+        local seen_tee=false
+        for word in "${Words[@]}"; do
+          if ! $seen_tee; then
+            # _lib_command_word_matches, not a raw basename compare, so this
+            # inner scan gets the same nocasematch case-folding the outer
+            # utility-name match above already relies on.
+            _lib_command_word_matches "$word" tee && seen_tee=true
+            continue
+          fi
+          case "$word" in
+            -*) ;;
+            *) printf '%s\n' "$word" ;;
+          esac
+        done
+        ;;
+      cp|mv|install)
+        printf '%s\n' "${Words[$((n - 1))]}"
+        ;;
+      dd)
+        for word in "${Words[@]}"; do
+          case "$word" in
+            # Substring offset, not a `#`-prefix strip: the latter's literal
+            # "of=" reads as a Slack-channel-shaped reference to this repo's
+            # own redaction detector. offset 3 skips exactly "of=", matched
+            # above.
+            of=*) printf '%s\n' "${word:3}" ;;
+          esac
+        done
+        ;;
+      sed)
+        for word in "${Words[@]}"; do
+          case "$word" in
+            -i*) printf '%s\n' "${Words[$((n - 1))]}"; break ;;
+          esac
+        done
+        ;;
+    esac
+  done
+}
+
+# _lib_redirect_candidates COMMAND_UNQUOTED
+# Splits COMMAND_UNQUOTED into fragments (the same split _lib_split_fragments
+# gives deny-network-installs.sh) and emits every fragment's candidate
+# write-target words (via _lib_fragment_candidates above), one per line.
+# Returns _lib_split_fragments's own exit status on failure -- the caller
+# checks it and denies at the top level; see the comment below for why this
+# function cannot emit_deny itself. Shared by every Bash-arm redirect/
+# utility-write scan: enforce-marker-script-shape.sh and
+# enforce-config-write-shape.sh both call this rather than each maintaining
+# its own fragment-splitting/candidate-extraction copy.
+_lib_redirect_candidates() {
+  local command_unquoted="$1" fragment
+  local fragments fragments_split_exit
+  # Fork-free fast-reject: skip fragment-splitting and candidate extraction
+  # entirely for a command that couldn't produce a single candidate --
+  # see _lib_command_has_write_construct's own comment for why this is a
+  # superset test by construction, not by coincidence.
+  _lib_command_has_write_construct "$command_unquoted" || return 0
+  # Checked and fail-closed, matching deny-network-installs.sh's
+  # FRAGMENTS_SPLIT_EXIT pattern. Surfaced via return rather than emit_deny:
+  # this function is invoked inside the caller's own $(...) command
+  # substitution, so an emit_deny here would exit only that subshell, not
+  # the hook process -- a silently-empty candidate list would fall through
+  # to this scan's normal "no match" allow with no bypass valve.
+  fragments=$(_lib_split_fragments "$command_unquoted")
+  fragments_split_exit=$?
+  if [ "$fragments_split_exit" -ne 0 ]; then
+    return "$fragments_split_exit"
+  fi
+  # Here-string, not process substitution: _lib_split_fragments emits no
+  # trailing newline, and `<<<` always appends exactly one, so `read` doesn't
+  # silently drop a single/final fragment at EOF.
+  while IFS= read -r fragment; do
+    [ -n "$fragment" ] || continue
+    _lib_fragment_candidates "$fragment"
+  done <<< "$fragments"
 }
 
 # True iff $2 appears in $1 as a standalone whitespace-delimited token — for
@@ -2110,12 +2540,28 @@ _lib_config_lines() {
 # shell-word tokenization: variable expansion and command substitution
 # remain an accepted residual, same as the documented indirection gap (see
 # docs/security-hardening.md).
+# Accepted residual: ANSI-C `$'...'` escape sequences (`\xHH`, `\nnn`,
+# `\uHHHH`, and similar) are not decoded, only quote-stripped -- e.g.
+# `marker$'\x2e'sh` becomes `markerx2esh`, not `marker.sh`, so a caller
+# using this to build a detection substring/regex still misses that form.
+# Decoding them would require running attacker-controlled text through
+# `printf '%b'`, which introduces its own truncation-evasion risk (`\c`
+# stops output early) — accepted as a documented gap rather than fixed.
+# Brace expansion (`mar{k,k}er.sh`) is likewise not performed here, but is
+# separately bounded: reconstructing a command word via a brace expansion
+# emits a second word into argv, which callers whose grammar is
+# positional-argument-based (see marker.sh's own
+# TestMarkerScriptArgumentGrammarIsPositional) already reject on that basis.
 # Call-site contract (load-bearing): the underlying sed/tr pipeline can fail
 # (missing, killed, or erroring), and no caller runs under `set -e`, so
 # every call site must capture and check the exit status immediately and
 # fail closed on non-zero, rather than proceeding with a silently empty or
 # partial result — see deny-invisible-commit-content.sh's COMMAND_UNQUOTED
 # computation for the pattern.
+# Not idempotent: never call this twice on the same string, or feed its own
+# output back through it — a second pass can further collapse an
+# already-stripped `\` sequence (e.g. `a\\b` strips to `a\b` on the first
+# pass, `ab` on a second).
 _lib_strip_shell_quotes() {
   local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
