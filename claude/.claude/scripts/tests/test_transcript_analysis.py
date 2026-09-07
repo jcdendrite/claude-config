@@ -8234,6 +8234,32 @@ class TestClassifyBashWaitShape:
         command = 'echo "done; sleep 5"'
         assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
 
+    def test_newline_separated_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` on its own line inside a multi-line Bash script --
+        the newline-separator branch of the sleep-poll regex."""
+        command = "set -e\nsleep 5\necho done"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_then_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` guarded by an `if`/`then` conditional -- the
+        `then` reserved-word branch of the sleep-poll regex."""
+        command = "if x; then sleep 5; fi"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_else_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` guarded by an `if`/`else` conditional -- the
+        `else` reserved-word branch of the sleep-poll regex."""
+        command = "if x; then true; else sleep 5; fi"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_heredoc_body_sleep_classifies_as_sleep_poll(self):
+        """Textual match with no shell parsing: a `sleep 5` inside a heredoc
+        body counts, matching via the same newline branch as a real
+        multi-line script -- the heredoc edge case this class's own
+        docstring promises."""
+        command = "cat <<'EOF'\nsleep 5\nEOF"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
     def test_none_command_classifies_as_no_command_recorded(self):
         assert _mod._classify_bash_wait_shape(None) == _mod._BASH_WAIT_NO_COMMAND
 
