@@ -22,8 +22,14 @@ depends on:
      resolution) resolves to an existing file relative to its source file's
      own directory -- catches a link left one directory level too shallow
      after a file's directory depth changed.
+  6. No external `docs/design-decisions.md §N` or `#N` citation, in the
+     hooks, scripts, and agents that cite into this directory, still
+     targets a legacy number a prior migration reassigned to a different
+     decision -- that citation shape resolves to unrelated content instead
+     of erroring, so a stranding rename ships silently rather than failing
+     loudly.
 
-Checking logic for assertions 1 through 5 is factored into standalone
+Checking logic for assertions 1 through 6 is factored into standalone
 `_*_violations()` functions that take a file list rather than reading
 DESIGN_DECISIONS_DIR directly, so TestFaultInjection below can exercise the
 same logic against a synthetic tmp_path corpus instead of only the real one.
@@ -70,6 +76,45 @@ _CONVERTED_CITATION_RE = re.compile(r"\[§(\d+)\]\(([^)]+)\)")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _CITATION_LINK_TEXT_RE = re.compile(r"^§\d+$")
 
+# §59 and §60 now resolve to docs/design-decisions/code-reviews-fix-route-unifies-42s.md
+# and code-reviews-marker-short-circuit-left.md respectively -- a stale
+# citation to either number for the decision that formerly held it would
+# still resolve, just to the wrong file, so assertion 4's resolution-only
+# check can't catch this shape.
+_REASSIGNED_LEGACY_NUMBERS: tuple[int, ...] = (59, 60)
+# Matches both citation glyphs seen across the corpus for the same legacy
+# number -- e.g. guard-settings-session-keysshs-default-branch.md (legacy
+# §54) is cited as both `§54` (_lib.sh) and `#54` (test_lib.py).
+_EXTERNAL_CITATION_NUMBER_RE = re.compile(r"[§#](\d+)")
+# A bare §N/#N is ambiguous -- handoff/SKILL.md's own §1-§7 section numbers,
+# and test-conventions/test-evaluation's §N anchors, are cited throughout
+# this same live-code surface. A citation only counts as targeting
+# docs/design-decisions.md when this token appears on the same line as the
+# number or an adjacent one -- the corpus wraps a citation across a line
+# break (e.g. "docs/design-decisions.md\n    §44's motivating scenario)")
+# but never across more than one.
+_DESIGN_DECISIONS_ANCHOR_RE = re.compile(r"design-decisions\.md")
+# Live code/test/agent surface where an external §N/#N citation into this
+# directory is load-bearing. Recursive **/*.py under hooks/ and scripts/
+# reaches each directory's tests/ subdirectory and
+# claude/.claude/scripts/transcript_analysis/'s subpackage in one entry --
+# no nested *.sh files exist under either, so those globs stay non-recursive.
+# claude-skills/skills/tests/test_skills.py and repo-root install.sh are
+# named explicitly rather than swept in by a directory glob: each is the
+# sole citing file in its tree, and neither tree is otherwise live code.
+# Excludes CLAUDE.md, skills, docs/, and .claude/rules|plans -- prose
+# surfaces where a citation cluster like "§37, §42, §45" needs a
+# citation-list parser this check doesn't attempt.
+_LIVE_CODE_CITATION_GLOBS: tuple[tuple[Path, str], ...] = (
+    (CLAUDE_DIR / "hooks", "*.sh"),
+    (CLAUDE_DIR / "hooks", "**/*.py"),
+    (CLAUDE_DIR / "scripts", "*.sh"),
+    (CLAUDE_DIR / "scripts", "**/*.py"),
+    (CLAUDE_DIR / "agents", "*.md"),
+    (REPO_ROOT / "claude-skills" / "skills" / "tests", "*.py"),
+    (REPO_ROOT, "install.sh"),
+)
+
 
 def _decision_files(directory: Path = DESIGN_DECISIONS_DIR) -> list[Path]:
     return sorted(directory.glob("*.md"))
@@ -94,6 +139,26 @@ def test_corpus_is_non_empty() -> None:
     than failing, so this standalone check is what actually catches a
     misconfigured or empty DESIGN_DECISIONS_DIR."""
     _assert_corpus_non_empty(_decision_files())
+
+
+_RULE_FILENAME_GRAMMAR_RE = re.compile(r"Filename grammar\.\*\* `([^`]+)`")
+
+
+def test_rule_file_filename_grammar_matches_enforced_regex() -> None:
+    """Pins .claude/rules/design-decisions.md's stated filename-grammar
+    regex to _FILENAME_RE, the regex actually enforced below, so the two
+    can't silently drift apart the way they did before this test existed."""
+    rule_path = REPO_ROOT / ".claude" / "rules" / "design-decisions.md"
+    rule_text = rule_path.read_text(encoding="utf-8")
+    match = _RULE_FILENAME_GRAMMAR_RE.search(rule_text)
+    assert match, (
+        f"{rule_path}: 'Filename grammar.' bullet not found or reworded -- "
+        "update _RULE_FILENAME_GRAMMAR_RE to match its current phrasing."
+    )
+    assert match.group(1) == _FILENAME_RE.pattern, (
+        f"{rule_path} states {match.group(1)!r} but _FILENAME_RE enforces "
+        f"{_FILENAME_RE.pattern!r} -- keep both in sync."
+    )
 
 
 def _filename_grammar_violations(paths: list[Path]) -> list[str]:
@@ -271,6 +336,56 @@ def test_relative_links_resolve_to_existing_files() -> None:
     assert not violations, "\n".join(violations)
 
 
+def _live_code_citation_files() -> list[Path]:
+    this_file = Path(__file__).resolve()
+    files: list[Path] = []
+    for directory, pattern in _LIVE_CODE_CITATION_GLOBS:
+        files.extend(path for path in directory.glob(pattern) if path.is_file())
+    return [path for path in files if path.resolve() != this_file]
+
+
+def _design_decisions_citation_numbers(text: str) -> set[int]:
+    """Every §N/#N in `text` that cites docs/design-decisions.md, per the
+    same-line-or-adjacent-line proximity anchor described above
+    _DESIGN_DECISIONS_ANCHOR_RE -- excludes a §N/#N belonging to an
+    unrelated document's own section numbering."""
+    lines = text.splitlines()
+    anchor_lines = {
+        index for index, line in enumerate(lines) if _DESIGN_DECISIONS_ANCHOR_RE.search(line)
+    }
+    numbers: set[int] = set()
+    for index, line in enumerate(lines):
+        if not anchor_lines & {index - 1, index, index + 1}:
+            continue
+        numbers.update(int(m.group(1)) for m in _EXTERNAL_CITATION_NUMBER_RE.finditer(line))
+    return numbers
+
+
+def _reassigned_citation_violations(
+    paths: list[Path],
+    reassigned_numbers: tuple[int, ...] = _REASSIGNED_LEGACY_NUMBERS,
+) -> list[str]:
+    stale_numbers = set(reassigned_numbers)
+    violations: list[str] = []
+    for path in paths:
+        cited_numbers = _design_decisions_citation_numbers(path.read_text(encoding="utf-8"))
+        for number in sorted(cited_numbers & stale_numbers):
+            violations.append(f"{path}: cites reassigned legacy §{number}")
+    return violations
+
+
+def test_no_live_citation_to_reassigned_legacy_numbers() -> None:
+    """Assertion 6: no hook, script, or agent citing into
+    docs/design-decisions/ still targets §59 or §60, the two legacy numbers
+    the 2026-08-24 split reassigned to a different decision each -- see the
+    comment above _REASSIGNED_LEGACY_NUMBERS for why a resolution-only
+    check would miss this."""
+    paths = _live_code_citation_files()
+    assert paths, "no live-code citation files found -- scan scope may be misconfigured"
+    violations = _reassigned_citation_violations(paths)
+    assert not violations, "\n".join(violations)
+
+
 class TestFaultInjection:
     """Negative-fixture coverage: each test builds a synthetic
     design-decisions/-shaped directory in tmp_path containing exactly the
@@ -351,3 +466,47 @@ class TestFaultInjection:
         checked, violations = _relative_link_violations(_decision_files(nested))
         assert checked == 1
         assert violations and "hooks.md" in violations[0]
+
+    def test_reassigned_citation_detected(self, tmp_path: Path) -> None:
+        stale_hook = tmp_path / "some-hook.sh"
+        stale_hook.write_text(
+            "# see docs/design-decisions.md §59 for the corpus basis, and\n"
+            "# docs/design-decisions.md §54 for the unrelated invariant.\n",
+            encoding="utf-8",
+        )
+        violations = _reassigned_citation_violations(
+            [stale_hook], reassigned_numbers=(59,)
+        )
+        # §54 is a real, recognized design-decisions.md citation too (not a
+        # reassigned one) -- proves the check reports only the reassigned
+        # number it was asked about, not every citation it sees.
+        assert len(violations) == 1
+        assert "§59" in violations[0]
+
+    def test_reassigned_citation_detected_hash_form(self, tmp_path: Path) -> None:
+        stale_hook = tmp_path / "another-hook.sh"
+        stale_hook.write_text(
+            "# see docs/design-decisions.md #59 for the corpus basis.\n",
+            encoding="utf-8",
+        )
+        violations = _reassigned_citation_violations(
+            [stale_hook], reassigned_numbers=(59,)
+        )
+        assert len(violations) == 1
+        assert "§59" in violations[0]
+
+    def test_unrelated_document_section_number_not_flagged(self, tmp_path: Path) -> None:
+        """A `§N`-shaped citation into a document other than
+        docs/design-decisions.md -- e.g. handoff/SKILL.md's own §3.5
+        subsection numbering -- must not be treated as a design-decisions
+        citation just because the digit matches a reassigned number."""
+        unrelated_hook = tmp_path / "some-other-hook.sh"
+        unrelated_hook.write_text(
+            "# Verbatim copy of handoff/SKILL.md's §3.5 categorization-rule "
+            "anchor shapes.\n",
+            encoding="utf-8",
+        )
+        violations = _reassigned_citation_violations(
+            [unrelated_hook], reassigned_numbers=(3,)
+        )
+        assert violations == []
