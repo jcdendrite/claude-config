@@ -343,7 +343,7 @@ def test_attribution_sessionurl_stays_false_in_stow_source_settings() -> None:
     This proves the *declared* config state — `attribution.sessionUrl` is
     `false` in the stow-source settings file — not that the harness actually
     suppresses the trailer at runtime. That live-session verification lives
-    outside pytest (see docs/design-decisions.md §60); this test only pins
+    outside pytest (see docs/design-decisions.md §63); this test only pins
     the declaration so a future edit can't drop it silently.
     """
     settings = json.loads(_SETTINGS_PATH.read_text())
@@ -361,7 +361,7 @@ def test_attribution_sessionurl_stays_false_in_repo_local_settings() -> None:
     This proves the *declared* config state only, in the repo-root
     `.claude/settings.json` that a non-stow clone or cloud container also
     sees. Whether project scope actually honors `attribution` there is
-    unverified (docs/design-decisions.md §60); this test only pins the
+    unverified (docs/design-decisions.md §63); this test only pins the
     declaration.
     """
     settings = json.loads(_REPO_LOCAL_SETTINGS_PATH.read_text())
@@ -379,7 +379,7 @@ def test_attribution_sessionurl_stays_false_in_repo_local_settings() -> None:
     ids=[str(p.relative_to(_REPO_ROOT)) for p in _ATTRIBUTION_SETTINGS_PATHS],
 )
 def test_attribution_commit_and_pr_stay_unset_in_both_settings(path: Path) -> None:
-    """Guards against reintroducing the falsy-empty-string trap §60 names.
+    """Guards against reintroducing the falsy-empty-string trap §63 names.
 
     `attribution.commit: ""` is not a no-op. An empty string is falsy, so
     the harness treats it the same as unset and ships the session trailer
@@ -396,7 +396,7 @@ def test_attribution_commit_and_pr_stay_unset_in_both_settings(path: Path) -> No
         f"beyond `sessionUrl` in {path.relative_to(_REPO_ROOT)} — "
         f"`commit`/`pr` must stay unset, since an empty `commit` makes "
         f"the session trailer the sole trailer instead of suppressing "
-        f"it (docs/design-decisions.md §60)"
+        f"it (docs/design-decisions.md §63)"
     )
 
 
