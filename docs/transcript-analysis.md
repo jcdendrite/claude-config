@@ -44,7 +44,7 @@ This union amplifies two costs, both linearly in the number of declared roots:
 - **Scan time.** Measured on one workstation: ~9s per root at top-level scope, ~16s per root with `--include-subagents`. A four-root union runs roughly 35–65s against ~9s at one root — expect a per-root progress line on stderr above one root so a long-running scan doesn't read as hung. The one narrowing control, if a given invocation needs to run faster or scope to fewer accounts: pass an explicit single top-level `--config-dir PATH`, which overrides the union back to exactly one root (see "Scoping to this repo" above and the `cost`/`context-distribution`/`context-composition` sections below for their own separate, repeatable `--config-dir`).
 - **Redaction's ordinal fingerprint.** `cost` and `audit-routing --redact` already read every project's transcript bytes to build their redact map, even under `--this-repo` (see the `cost` section's `--config-dir` contract below) — a structural fingerprint of the operator's other local projects. A declared-roots union multiplies both the bytes read and that fingerprint's information content: the ordinals now encode which projects exist across every declared account, not just one. Two redacted reports built from the **same** declared-roots file assign the same `account-N` to the same physical root regardless of which profile produced either report, which makes them correlatable by ordinal across time — a property that did not exist before this file was populated, even though neither report reveals `account-2`'s real name. Two reports built from **different** declared-roots files are not comparable; a changed root set can renumber every ordinal. This comparability guarantee excludes `cost --summary`: it always resolves to exactly one root, so its own per-root `cost: account-N: scanned …` line has no second root in the same run to be ordinally consistent against, and its `account-N` for the active root is not guaranteed to match the ordinal a full (non-`--summary`) report built from the same declared-roots file assigns that same physical root.
 
-Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. Every other subcommand — `audit-routing-samples`, `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list.
+Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. Every other subcommand — `audit-routing-samples`, `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list. `subagent-mix` and `review-round-cost` are outside this three-bucket split entirely: both redact branch names (and, for `subagent-mix`, `subagent_type` values) under more than one root via `account-N/branch-N`-style opaque labels, disclosing the raw value only under `--this-repo` — see their own sections below for the full contract.
 
 `context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
 
@@ -986,6 +986,52 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **`--check-pr-status`.** Additionally lists every branch with no PR match at all (neither merged nor closed-unmerged) by its last local-activity age in days, oldest first -- a *candidate* abandoned branch, reported as a raw age value rather than a hard classification, since a branch with no PR match may simply not be finished yet. Prints no branch name in either mode.
 
 **When to reach for it.** Run the default mode alongside `pr-cost`/`cost-trend` to see whether a cost change coincided with a shift in session/branch shape (more sessions per branch, more startup burn) rather than a genuine reduction in total spend. Run `--check-pr-status` to spot old branches with local activity and no PR at all.
+
+---
+
+## review-round-cost
+
+**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (both the `Skill` tool_use path and the `/slash` path), closes it at the next round-open or the next fresh user prompt, and prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
+- `--branches B1,B2,...` -- filter to specific branches (default: all)
+- `--since DATE` / `--until DATE` -- inclusive absolute date bounds (`YYYY-MM-DD`) on each round's own opening timestamp, matching `judgment-pair`'s convention. These narrow which *rounds* are counted, not which turns are priced -- a branch's "branch $" denominator in the reconciliation line below is always its full, unwindowed corpus total, so a `--since`-narrowed run compares in-window round dollars against all-time branch spend.
+- `--skill NAME` -- restrict round detection to one of `code-review`/`plan-review`/`ready-for-review` (default: all three). A non-matching skill's own invocations are ignored entirely, including as a window-closing boundary -- an ignored skill's own invocation no longer closes a preceding in-scope round early the way it would with no `--skill` filter.
+
+**Round detection caveats.**
+- **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
+- **A mid-review user interjection closes the window early.** The window closes at the first fresh user prompt *or* the next round-open, whichever comes first -- a user message sent partway through a review (before the reviewer's own output lands) ends the round there, and everything after it belongs to whatever comes next, not to the interrupted round.
+- **A round open at session end is priced through the last record.** No closing fresh user prompt and no next invocation before EOF still prices every turn and dispatch through the transcript's end -- never dropped or thrown on.
+
+**Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The corpus-wide "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted, never silently dropped or priced at `$0`.
+
+**PR numbers.** This subcommand prints branch names only, never a PR number -- compose with `pr-link --branches B1,B2,...` (against this command's own `--this-repo` output) to map a reported branch to its GitHub PR, rather than embedding a `gh` join here (see the architecture doc's package/shim import-direction note for why).
+
+**Redaction.** Follows `subagent-mix`'s own contract exactly (see its section above): under more than one scan root, a branch name prints raw only under `--this-repo` (`account-<K>/<branch>`), else opaque (`account-<K>/branch-<N>`), with `DO NOT PUBLISH` on stdout and stderr; under a single root there is nothing to redact, so branch names print raw unconditionally. This is a stronger de-anonymization/correlation key than any prior redacted subcommand's aggregate-only output: `subagent-mix`'s own `CR`/`PR`/`RR` columns disclose per-skill *counts* per branch today, but never a dated dollar series the way this table's per-round `date`/`main $`/`agent $` columns do -- the same acknowledgment `redaction.py`'s docstring already makes for an exact-cent dollar column, extended here to a per-branch, per-round, dated one.
+
+**Sample output.**
+```
+REVIEW ROUND COST SOURCES (this repo; 1 root)
+
+account-1/some-feature-branch
+  rounds=6  (code-review=3  plan-review=1  ready-for-review=2)
+  round $12.40 of $31.75 branch $ (39.1%)
+   #  skill              n  date        main $   agent $  agents   total $
+   1  plan-review        1  2026-08-02    0.41      1.88       4      2.29
+   2  code-review        1  2026-08-03    0.55      2.10       5      2.65
+
+Totals: 4 branches, 19 rounds (code-review=11  plan-review=4  ready-for-review=4)
+Mean rounds per branch: 4.75
+Mean $ per round — code-review 2.41  plan-review 1.90  ready-for-review 1.12
+Non-round dollars: 61.2% of branch dollars fell outside every round window
+Dangling dispatches inside round windows: 2 (no readable meta.json/jsonl pair)
+Unpriced turns inside round windows: 0
+```
+
+`#` is the branch-wide round ordinal; `n` is that skill's own ordinal within the branch (the sub-breakdown). A skill with zero rounds anywhere in scope prints `no data` for its own "Mean $ per round" entry, never a computed `0.00` or a division-by-zero.
+
+**When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` collapses a whole branch to one figure with no round-level breakdown. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
 
 ---
 

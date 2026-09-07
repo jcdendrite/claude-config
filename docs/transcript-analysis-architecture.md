@@ -13,17 +13,20 @@ subcommand handler. Leaf logic with no dependency on any `cmd_*` function, plus 
 
 Every command-group module moves in leafward first: the shim imports it, never the reverse, so no
 circular import is possible while `cmd_*` functions remain split across both the shim and the
-package. `cost.py` and `reviewer_yield.py` are the only modules the shim imports back into (not
-just from) — cost-ledger, review-trace, and subagent-mix still call their public functions from
-the shim until those phases migrate too.
+package. `cost.py`, `reviewer_yield.py`, and `review_rounds.py` are the only modules the shim
+imports back into (not just from) — cost-ledger and review-trace still call their public functions
+from the shim until those phases migrate too.
 
 ## The package
 
 ### `corpus.py`
 
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
-`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), and
-`_parse_ts`. No dependency on scope resolution, redaction, or pricing — every other module
+`SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
+and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
+join, reused recursively by `review_rounds.py`'s nested-dispatch descent since the function's own
+`jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR` layout resolves identically for a subagent's own
+transcript file). No dependency on scope resolution, redaction, or pricing — every other module
 (and the shim) builds on this one.
 
 ### `scope.py`
@@ -86,9 +89,21 @@ verdict (findings-found/zero-finding/unclassified), and scoring cited-path edit 
 (`compute_reviewer_yield_data`). Imports `corpus`, `pricing`, `render`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention. `compute_reviewer_yield_data` is the one
 public name here, reached from the still-unmigrated cost-ledger code in the shim;
-`_is_reviewer_subagent_type` and `_index_subagent_dispatches` are also reached bare from
-still-unmigrated review-trace and subagent-mix code respectively — see the two-module exception
-noted above.
+`_is_reviewer_subagent_type` is also reached bare from still-unmigrated review-trace code — see
+the exception noted above.
+
+### `review_rounds.py`
+
+The review-round-cost command family: `cmd_review_round_cost` and every helper used only by it —
+per-branch review-round-window detection across both the `Skill` tool_use and `/slash` invocation
+shapes, and recursive per-round subagent dollar attribution via `corpus._index_subagent_dispatches`'
+toolUseId join (`compute_review_round_costs`). Imports `corpus`, `pricing`, `redaction`, `render`,
+and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
+`cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
+when absent, never `cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread
+round-opening record never needs. `REVIEW_SKILLS` is the one public name here, back-imported by
+the still-unmigrated `cmd_judgment_pair` in the shim for its own `--skills` default — a second
+entry in the one-directional exception noted above.
 
 ## Sibling scripts
 
