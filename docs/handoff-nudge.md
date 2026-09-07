@@ -33,7 +33,7 @@ Revisit this default via an extended `rearm-backtest` once escalation-fire data 
 
 **Recovering from a hard block.** This is sticky within a session — the estimate only grows, so once it has reached `HANDOFF_NUDGE_BLOCK_AT` every later re-arm in that same session hard-blocks too, with no in-session reset. Three routes out:
 
-- **Kill-switch** (`touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge-disabled"`) — suppresses every future fire, including the hard block, the same as it already suppresses the advisory nudge.
+- **Kill-switch** (`printf 'handoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"`) — suppresses every future fire, including the hard block, the same as it already suppresses the advisory nudge.
 - **`/handoff`** — the intended way out. It captures state in a `/tmp` file and resumes in a fresh session, whose own estimate starts back below `HANDOFF_NUDGE_BLOCK_AT`.
 - **The `/handoff` active-bypass marker** (`<config-dir>/.handoff-active.d/<session_id>`) — set by `activate-handoff-bypass.sh` the moment the handoff skill loads (the skill's own `marker.sh activate handoff` step is its first instructed step, and is a fallback for the rare case that hook doesn't fire), live until the skill deactivates it or the session ends. It keeps a qualifying re-arm advisory instead of blocking, so the block can't truncate `/handoff`'s own multi-turn write.
 
@@ -41,19 +41,19 @@ Revisit this default via an extended `rearm-backtest` once escalation-fire data 
 
 ## How to disable
 
-Touch the kill-switch file to suppress nudges globally:
+Set the `handoff_nudge` config key to `false` to suppress nudges globally:
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge-disabled"
+printf 'handoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Remove the file to re-enable:
+Set it back to `true` to re-enable (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
 
 ```bash
-rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.handoff-nudge-disabled"
+printf 'handoff_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-The hook checks for this file before reading the transcript. It is useful when running `claude -p` pipelines or automated test harnesses where the nudge would produce noise.
+The hook checks this key before reading the transcript. It is useful to turn off when running `claude -p` pipelines or automated test harnesses where the nudge would produce noise.
 
 ## Querying the current estimate (`--check`)
 
