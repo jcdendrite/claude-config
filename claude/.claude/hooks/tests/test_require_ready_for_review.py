@@ -793,8 +793,8 @@ class TestRequireReadyForReview:
     ):
         """GH-869: the active-marker check runs before the fragment-split
         fail-closed deny but after _lib_strip_shell_quotes's own deny, so a
-        live marker does not rescue a total sed absence: that earlier deny
-        still fires, and the marker is left untouched."""
+        live marker does not rescue a total sed absence. That earlier deny
+        still fires and leaves the marker untouched."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -819,9 +819,9 @@ class TestRequireReadyForReview:
         self, isolated_home, repo_on_feature_branch
     ):
         """The active-marker check runs before the command-shape filter, so
-        a non-gated command also evicts an orphaned dead-PID marker even
-        though the command itself is allowed (it never reaches a gated
-        shape)."""
+        a non-gated command also evicts an orphaned dead-PID marker. The
+        command itself is still allowed, since it never reaches a gated
+        shape."""
         sid = "session-dead-pid-non-gated"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
         marker_dir.mkdir(parents=True)
@@ -864,6 +864,39 @@ class TestRequireReadyForReview:
         assert marker.stat().st_mtime > old_time + 1, (
             "a live marker must refresh even when the gated command's cwd "
             "is not a git repo"
+        )
+
+    def test_live_marker_authorizes_push_on_a_different_branch_than_activation(
+        self, isolated_home, repo_on_feature_branch
+    ):
+        """A live marker authorizes a push on a branch unrelated to whatever
+        context it was originally activated under. The marker was never
+        scoped to a specific PR/branch, before or after this diff. The
+        widened refresh trigger only makes this pre-existing non-scoping
+        newly reachable more often, not new in kind. See
+        test_non_gated_command_advances_active_marker_mtime for the refresh
+        mechanism itself, pinned separately."""
+        sid = "session-cross-branch-reuse"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        marker = marker_dir / sid
+        marker.write_text(str(os.getpid()))
+
+        # A branch unrelated to whatever PR the marker was activated under --
+        # the marker was never branch-scoped, before or after this diff.
+        subprocess.run(
+            ["git", "checkout", "-q", "-b", "unrelated-pr-branch"],
+            cwd=repo_on_feature_branch,
+            check=True,
+        )
+
+        assert (
+            run_hook(
+                READY_FOR_REVIEW_HOOK,
+                bash_input("git push origin unrelated-pr-branch", session_id=sid),
+                cwd=repo_on_feature_branch,
+            )
+            == "allow"
         )
 
     # -- Completion-marker check ------------------------------------------
