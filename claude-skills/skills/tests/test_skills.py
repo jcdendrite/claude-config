@@ -1056,10 +1056,9 @@ class TestPrDescriptionProseTighteningPassWiring:
         end = body.index("## Checks", start)
         return body[start:end]
 
-    def test_declares_account_scoped_opt_out_sentinel(self):
+    def test_declares_config_get_invocation(self):
         section = self._prose_section()
-        assert "pr-description-tighten-prose-optout" in section
-        assert "Cost section's gate above" in section
+        assert "config-get.sh pr_description_tighten_prose" in section
 
     def test_section_placed_before_checks(self):
         """Order-sensitive: the pass must run before ## Checks so the
@@ -4495,27 +4494,26 @@ class TestTranscriptAnalysisScopeConfirmationContract:
 
 
 # A literal ~/.claude/$HOME/.claude/${HOME}/.claude prefix on a per-account-
-# state path — a state subdirectory, or a log/sentinel this diff migrates —
-# is a functional bug under a non-personal CLAUDE_CONFIG_DIR account, unlike
-# a stowed path (agents/, hooks/, rules/, scripts/, skills/), which resolves
+# state path — a state subdirectory, a log, or claude-config.toml (the one
+# state file config-keys.psv's schema-driven keys resolve through) — is a
+# functional bug under a non-personal CLAUDE_CONFIG_DIR account, unlike a
+# stowed path (agents/, hooks/, rules/, scripts/, skills/), which resolves
 # identically under every account; the directory alternation mirrors
-# enforce-marker-script-shape.sh:314. worktree-required and
-# autonomous-shipping-required are deliberately excluded — those two sentinels
-# keep a literal ~/.claude mention by design, unioned with the config-dir form
-# rather than migrated (see CLAUDE.md's Shipping section and README's
-# "Worktree enforcement").
+# enforce-marker-script-shape.sh's own _marker_shape_match glob pair.
+# worktree_required and autonomous_shipping are deliberately excluded —
+# those two config-keys.psv keys carry resolution: config-dir-or-home, a
+# union with the literal $HOME/.claude location rather than a fully
+# migrated-away path (see docs/config-file.md and README's "Worktree
+# enforcement").
 _PER_ACCOUNT_STATE_PATH_RE = re.compile(
     r"(~|\$HOME|\$\{HOME\})/\.claude/"
     r"(handoffs/|briefs/|issue-triage/|plans/|projects/|sessions/"
     r"|[^/\s\"'`]*-markers/|\.[^/\s\"'`]*\.d/|output-preferences\.md"
     r"|pii-patterns\.md|credential-file-guard\.md|credential-value-patterns\.md"
-    r"|data-file-read-guard\.md|private-projects\.md|track-permission-prompts"
-    r"|\.permission-prompt-log\.jsonl"
-    r"|\.error-mode-nudge-enabled|\.error-mode-nudge\.log"
-    r"|\.handoff-nudge-disabled|\.handoff-nudge\.log"
-    r"|\.commit-stall-block-disabled|\.commit-stall-block\.log"
-    r"|\.cost-ledger-enabled|\.consume-durable-continuity-disabled"
-    r"|\.session-title-disabled)"
+    r"|data-file-read-guard\.md|private-projects\.md"
+    r"|\.permission-prompt-log\.jsonl|\.error-mode-nudge\.log"
+    r"|\.handoff-nudge\.log|\.commit-stall-block\.log"
+    r"|claude-config\.toml)"
 )
 
 # The marker triple (settings.json permission rules, hook command strings,
@@ -4654,6 +4652,14 @@ class TestPerAccountStatePathContract:
 
     def test_does_not_flag_issue_triage_config_dir_prose(self):
         match = _PER_ACCOUNT_STATE_PATH_RE.search("<config-dir>/issue-triage/run.md")
+        assert match is None
+
+    def test_flags_claude_config_toml_state_path(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("~/.claude/claude-config.toml")
+        assert match is not None
+
+    def test_does_not_flag_claude_config_toml_config_dir_prose(self):
+        match = _PER_ACCOUNT_STATE_PATH_RE.search("<config-dir>/claude-config.toml")
         assert match is None
 
     @pytest.mark.parametrize("skill_md_path", _all_skill_md_paths(), ids=lambda p: str(p))

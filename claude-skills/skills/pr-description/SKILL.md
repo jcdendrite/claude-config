@@ -100,7 +100,7 @@ account enabling this for one engagement should not assume the fields are harmle
 
 ## Prose tightening pass
 
-Gate: resolve `config_dir` exactly as the Cost section's gate above; skip the pass if `$config_dir/pr-description-tighten-prose-optout` exists (any content, or none), else dispatch `tighten-prose` by name against the drafted body file, leaving the cost block (`<!-- pr-cost:start -->` / `<!-- pr-cost:end -->`), the `## Deferred review findings` block, and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+Gate: run `~/.claude/scripts/config-get.sh pr_description_tighten_prose`. On exit 0, dispatch `tighten-prose` by name against the drafted body file, leaving the cost block (`<!-- pr-cost:start -->` / `<!-- pr-cost:end -->`), the `## Deferred review findings` block, and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Exit 1 (disabled) skips the pass; exit 3 (config dir unresolvable) also skips it, failing toward off like every other config-dir-only key's resolution-failure behavior (see `docs/config-file.md`). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
 
 ## Checks
 

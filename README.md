@@ -261,7 +261,7 @@ Configuration options spanning machine-local, project-local, and user-local sett
 
 ### Worktree enforcement
 
-`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via a `worktree-required` sentinel at `<config-dir>/worktree-required`, checked as a union with the legacy `~/.claude/worktree-required` so a sentinel armed before `CLAUDE_CONFIG_DIR` adoption still activates).
+`require-worktree-for-git-writes.sh` denies non-read-only git operations (`commit`, `push`, `rebase`, `reset`, `merge`, `checkout`, etc.) unless the session runs inside a linked git worktree. Read-only commands (`status`, `log`, `diff`, `fetch`, `show`, `blame`, etc.) are always allowed. The hook is opt-in per repo (via a committed `.claude/worktree-required` sentinel) or per machine (via the `worktree_required` config key, checked as a union with the legacy `~/.claude/worktree-required` location so a value armed before `CLAUDE_CONFIG_DIR` adoption still activates — see [`docs/config-file.md`](docs/config-file.md)).
 
 The race it prevents: concurrent Claude Code sessions sharing a working tree can step on each other — one session's `git reset --hard`, `git stash`, or `git checkout` silently wipes another session's uncommitted edits. See [Claude Code issue #34327](https://github.com/anthropics/claude-code/issues/34327) for examples of this failure mode in the wild.
 
@@ -309,13 +309,13 @@ To opt out, delete `.claude/worktree-required`.
 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
-If you work across many repos and want enforcement everywhere without adding a marker to each:
+If you work across many repos and want enforcement everywhere without adding a marker to each, set the `worktree_required` config key:
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/worktree-required"
+printf 'worktree_required = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-This activates enforcement for every git repo on your machine. Any repo that already has a committed `.claude/worktree-required` is unaffected (it was already enforcing). To exempt a specific repo from machine-level enforcement:
+See [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract. This activates enforcement for every git repo on your machine. Any repo that already has a committed `.claude/worktree-required` is unaffected (it was already enforcing). To exempt a specific repo from machine-level enforcement:
 
 ```bash
 mkdir -p .claude && touch .claude/worktree-optout
@@ -335,13 +335,15 @@ Without this, a `git add -A` in a repo that never got the per-repo `.gitignore` 
 
 ### Autonomous shipping
 
-If the agent ends its turn asking whether you want to review the diff before it commits — even after finishing the work you asked for — this is the setting that removes that pause. `advance-past-commit-stall.sh` (a `Stop` hook) force-continues the turn through `/code-review` → commit → `/ready-for-review` → PR-open, stopping only before merge, whenever the machine-level sentinel below is set and the current repo carries no `.claude/autonomous-shipping-optout`. A repo cannot grant this by committing anything — only this machine-level file can; see [`claude/.claude/hooks/_lib.sh`](claude/.claude/hooks/_lib.sh)'s `_lib_autonomous_shipping_active`.
+If the agent ends its turn asking whether you want to review the diff before it commits — even after finishing the work you asked for — this is the setting that removes that pause. `advance-past-commit-stall.sh` (a `Stop` hook) force-continues the turn through `/code-review` → commit → `/ready-for-review` → PR-open, stopping only before merge, whenever the machine-level `autonomous_shipping` config key resolves true and the current repo carries no `.claude/autonomous-shipping-optout`. A repo cannot grant this by committing anything — only this machine-level key can; see [`claude/.claude/hooks/_lib.sh`](claude/.claude/hooks/_lib.sh)'s `_lib_autonomous_shipping_active`.
 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
+printf 'autonomous_shipping = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
+
+See [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract.
 
 To exempt a specific repo:
 
@@ -353,15 +355,15 @@ See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire pred
 
 ### PR cost disclosure
 
-`pr-description` can embed the PR body's cost block — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary`. Off by default; gated by a mode read from a sentinel scoped to the Claude account, not to the repo.
+`pr-description` can embed the PR body's cost block — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary`. Off by default; gated by the `pr_cost_disclosure` config key, scoped to the Claude account, not to the repo.
 
 ```bash
-echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
+printf 'pr_cost_disclosure = dollars\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its content (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another.
+The key resolves to exactly one config dir (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its value (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another — see [`docs/config-file.md`](docs/config-file.md) for the file format and resolution precedence.
 
-The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this key's state alongside every other opt-in.
 
 ### Prose tightening pass
 

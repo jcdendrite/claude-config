@@ -3,10 +3,10 @@
 ## Activation
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
+printf 'autonomous_shipping = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-`./install.sh` offers this interactively on every run (see `README.md`'s "install.sh machine-level opt-ins" section) — the command above is the non-interactive/scripted alternative. A repo cannot grant this by committing anything; only this machine-level file can. To exempt one repo while the machine-level sentinel stays on: `mkdir -p .claude && touch .claude/autonomous-shipping-optout`.
+`./install.sh` offers this interactively on every run (see `README.md`'s "install.sh machine-level opt-ins" section) — the command above is the non-interactive/scripted alternative; see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract. A repo cannot grant this by committing anything; only this machine-level key can. To exempt one repo while the machine-level key stays on: `mkdir -p .claude && touch .claude/autonomous-shipping-optout`.
 
 ## What the hook does
 
@@ -18,32 +18,32 @@ touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"
 - `permission_mode` is not `plan`.
 - `prompt_id` differs from the last one this hook fired on for this session — at most one forced continuation per user turn.
 - The **final sentence** of the last assistant message asks permission to commit, push, or open a PR (case-insensitive phrasing match: "want me to", "should I", "shall I", and similar, paired with commit/push/open a PR), and that sentence does not also carry an exclusion phrase (`merge`, `--force`, `failing`, `blocked`, and similar).
-- `_lib_autonomous_shipping_active` holds for the resolved repo — the machine-level sentinel above is set, and the repo carries no `.claude/autonomous-shipping-optout`.
+- `_lib_autonomous_shipping_active` holds for the resolved repo — the machine-level `autonomous_shipping` config key above resolves true, and the repo carries no `.claude/autonomous-shipping-optout`.
 - Work is actually pending: a dirty tree, HEAD ahead of its configured upstream, or (the common state before a branch's first push) no upstream configured at all.
 
 The `reason` text names the next step explicitly: `/code-review` → commit (path-scoped staging, never stage-all) → `/ready-for-review` → PR-open, stopping before merge — merge stays human-only regardless of this setting.
 
 ## How to disable
 
-**Mid-session:** press `Esc` to interrupt the current turn before the hook fires, or run `touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block-disabled"` via the `!` shell escape — this kill switch is always effective regardless of the sentinel state and needs no repo change:
+**Mid-session:** press `Esc` to interrupt the current turn before the hook fires, or set `commit_stall_block = false` via the `!` shell escape — this kill switch is always effective regardless of `autonomous_shipping`'s own state and needs no repo change:
 
 ```bash
-! touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block-disabled"
+! printf 'commit_stall_block = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Remove it to re-enable:
+Set it back to `true` to re-enable (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
 
 ```bash
-! rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.commit-stall-block-disabled"
+! printf 'commit_stall_block = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-**Per repo, while the machine-level sentinel stays on:**
+**Per repo, while the machine-level key stays on:**
 
 ```bash
 mkdir -p .claude && touch .claude/autonomous-shipping-optout
 ```
 
-**Everywhere:** remove the machine-level sentinel itself (`rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/autonomous-shipping-required"`).
+**Everywhere:** turn off the machine-level `autonomous_shipping` config key (`printf 'autonomous_shipping = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"`).
 
 ## Fire predicate and the exclusion-window tradeoff
 

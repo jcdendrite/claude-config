@@ -6,19 +6,19 @@
 
 ## How to enable
 
-The hook is **opt-in** — dormant unless armed:
+The hook is **opt-in** — dormant unless the `error_mode_nudge` config key resolves true:
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.error-mode-nudge-enabled"
+printf 'error_mode_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Remove the file to disable it again:
+Set it back to `false` to disable it again (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
 
 ```bash
-rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.error-mode-nudge-enabled"
+printf 'error_mode_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Without this file, every invocation exits before reading the transcript or spawning `transcript-analysis.py`. Unlike the sibling `nudge-handoff-near-context-cap.sh` hook (opt-out, on by default), this nudge is off by default for every contributor and must be explicitly turned on per machine.
+Without this key resolving true, every invocation exits before reading the transcript or spawning `transcript-analysis.py`. Unlike the sibling `nudge-handoff-near-context-cap.sh` hook (opt-out, on by default), this nudge is off by default for every contributor and must be explicitly turned on per machine.
 
 ## Log location
 

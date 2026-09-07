@@ -995,7 +995,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
-- `--record` — append the current ISO week's row instead of reading. Requires the opt-in sentinel `<config-dir>/.cost-ledger-enabled` and `--machine-label`.
+- `--record` — append the current ISO week's row instead of reading. Requires the `cost_ledger_recording` config key (`config-get.sh cost_ledger_recording` exits 0 — see [`docs/config-file.md`](config-file.md)) and `--machine-label`.
 - `--machine-label LABEL` — required with `--record`: an opaque per-machine token matching `^[a-z0-9]{1,8}$`, rejected case-insensitively against this machine's hostname.
 - `--force` — with `--record`, overwrite an existing row for the same (week, machine) pair instead of refusing.
 - `--note TEXT` — free-text note for `--record`'s row (what changed in the workflow this week). Must not contain `|` or a newline.

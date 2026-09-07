@@ -3,10 +3,10 @@
 ## Activation
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/track-permission-prompts"
+printf 'permission_prompt_tracking = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Opt-in, per machine, off by default. Shipped to every stow user of this repo but inert until this sentinel exists — see [`claude/.claude/hooks/_lib.sh`](../claude/.claude/hooks/_lib.sh)'s `_lib_permission_prompt_tracking_active`.
+Opt-in, per machine, off by default. Shipped to every stow user of this repo but inert until the `permission_prompt_tracking` config key resolves true — see [`claude/.claude/hooks/_lib.sh`](../claude/.claude/hooks/_lib.sh)'s `_lib_permission_prompt_tracking_active` and [`docs/config-file.md`](config-file.md) for the file's hand-edit contract.
 
 ## What the hook does
 
@@ -15,20 +15,20 @@ Opt-in, per machine, off by default. Shipped to every stow user of this repo but
 On each fire, the hook:
 
 1. Self-checks `hook_event_name == "Notification"` (defense-in-depth — does not rely solely on the `settings.json` matcher).
-2. Exits silently unless the sentinel above is present.
+2. Exits silently unless the `permission_prompt_tracking` config key above resolves true.
 3. Runs the raw payload through `_lib_redact_credential_shaped_strings` (`_lib.sh`) — the same credential-value redaction walk `redact-credential-values.sh` uses, extracted to a shared function precisely so both callers stay in sync.
 4. Merges in a `logged_at` field (ISO 8601, UTC).
 5. Appends the result to the log (see below) and `chmod 600`s it on every append.
 
 ## How to disable
 
-Remove the sentinel:
+Set the key back to `false` (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
 
 ```bash
-rm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/track-permission-prompts"
+printf 'permission_prompt_tracking = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-There is no per-repo opt-out. This mechanism only appends to a local log and changes no git/PR/tool behavior, and its whole purpose is a cross-repo frequency view — a per-repo opt-out would fragment the aggregate the feature exists to produce, for no privacy benefit the sentinel above doesn't already provide.
+There is no per-repo opt-out. This mechanism only appends to a local log and changes no git/PR/tool behavior, and its whole purpose is a cross-repo frequency view — a per-repo opt-out would fragment the aggregate the feature exists to produce, for no privacy benefit the config key above doesn't already provide.
 
 ## Log location and format
 
