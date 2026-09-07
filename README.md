@@ -109,7 +109,18 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 **Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
 
-**Migration notes (delete once obsolete):** As of the `settings.base.json` split, `settings.json` is generated — produced by `render-settings.sh` from `settings.base.json`. If your local `~/.claude/settings.json` is a stale symlink pointing at the tracked `claude/.claude/settings.json` path, a session-local write (theme, tui, model, and similar) that opens the dangling symlink with `O_CREAT` recreates a regular file back inside the tracked checkout at that path. This repo's `.gitignore` entry for that path keeps such a file out of ordinary `git add`/`commit` flows, but it can still confuse a local checkout. Re-run `install.sh` to replace the stale symlink with a fresh render; delete a stray `claude/.claude/settings.json` if one turns up in your checkout in the meantime. `install.sh` also wires `check-settings-render.sh` into `~/.bashrc`/`~/.zshrc`, so a still-dangling or missing `settings.json` prints a stderr warning on every new shell until this is fixed.
+A dirty working-tree `claude/.claude/settings.json` (from a prior `/theme`/`/config` write through the old symlink) blocks the pull with "local changes would be overwritten" — `git stash` (or commit) it first.
+
+A stray untracked `claude/.claude/settings.json` (recreated by a session opening a not-yet-migrated symlink) blocks pull/revert with "untracked working tree file would be overwritten" — remove or back it up first.
+
+A machine running several Claude Code profiles under separate `CLAUDE_CONFIG_DIR` values only gets its default `$HOME/.claude` profile rendered by `install.sh`. Every other profile's `settings.json` symlink dangles after this split with nothing in the repo rendering it, and Claude Code treats that as silent absence: no deny rules apply, no hooks fire, and no diagnostic is shown. Render it by hand until a per-profile install path ships: `CLAUDE_CONFIG_DIR=<profile-dir> <path-to-claude-config-checkout>/claude/.claude/scripts/render-settings.sh`. This requires `claude/.claude/` to already be stowed or symlinked into `<profile-dir>` by some other means, since `install.sh` never places `settings.base.json` there itself. Without that precondition met, the command exits early with a "settings.base.json not found" error.
+
+**Migration notes (delete once obsolete):** As of the `settings.base.json` split:
+
+- `settings.json` is generated — produced by `render-settings.sh` from `settings.base.json`.
+- If your local `~/.claude/settings.json` is a stale symlink pointing at the tracked `claude/.claude/settings.json` path, a session-local write (theme, tui, model, and similar) that opens the dangling symlink with `O_CREAT` recreates a regular file back inside the tracked checkout at that path. This repo's `.gitignore` entry for that path keeps such a file out of ordinary `git add`/`commit` flows, but it can still confuse a local checkout.
+- Re-run `install.sh` to replace the stale symlink with a fresh render; delete a stray `claude/.claude/settings.json` if one turns up in your checkout in the meantime.
+- `install.sh` also wires `ensure-settings-render.sh` into `~/.bashrc`/`~/.zshrc`, so a still-dangling or missing `settings.json` is repaired — not merely flagged — by re-running the render on every new shell. It prints a stderr message pointing back at this checkout's `install.sh` only if that repair render itself fails.
 
 ## What this installs
 
@@ -251,12 +262,12 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 - **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, settings.json conventions, and test-tree packaging.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
 - **`settings.base.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)).
-  - Configured with **sonnet** as the default model; the escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`).
-  - Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+  - Ships no repo-chosen default `model` — a fresh install relies on Claude Code's own built-in default until your first `/config`. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`).
   - `settings.json` — the file Claude Code actually reads — is generated, not hand-edited.
   - `claude/.claude/scripts/render-settings.sh` merges `settings.base.json` with an optional, untracked `settings.overlay.json` and writes the result; `install.sh` runs this automatically.
-  - In-app settings writes (`claude auto-mode reset`, UI toggles) land in that generated file and are silently discarded on the next render — expected behavior, not a bug.
-  - `theme` and `tui` are the one exception: the render reads them back from the file's current contents first, so those two survive.
+  - A top-level key neither `settings.base.json` nor the overlay's closed key set claims — `model`, `effortLevel`, `theme`, `tui`, and any other key Claude Code writes directly into the live file — carries forward unchanged from the file's own current contents on every render, so an in-app write (`/config`, `/theme`, `claude auto-mode reset`) survives rather than being discarded.
+  - `autoMode` is not such a key: it's part of the overlay's own closed allowlist, so deleting it from `settings.overlay.json` actually clears it on the next render instead of persisting — see [`docs/auto-mode.md`](docs/auto-mode.md#what-to-put-in-settingsoverlayjson) for the full overlay contract.
+  - `ANTHROPIC_MODEL`/`CLAUDE_CODE_EFFORT_LEVEL`, exported from your shell profile, are honored by Claude Code directly and need no `settings.json` write at all — the machine-wide alternative to `/config`/`/effort` (see [Machine-specific overrides](#machine-specific-overrides)).
 
 ### Scripts
 

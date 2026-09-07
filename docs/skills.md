@@ -92,7 +92,7 @@ Two bundled skills are name-only instead of fully disabled — they are availabl
 | `/run` | Launches and drives "this project's app" — claude-config is dotfiles, no app to drive. Out of scope. |
 | `/schedule` | Cron-scheduled remote agents (routines). Not part of this repo's skill-authoring / review-pipeline workflow. |
 | `/security-review` | Superseded by `/code-review` specialist routing (ciso-reviewer agent fires automatically). |
-| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); remaining env/model/theme edits are trivial direct file changes. |
+| `/update-config` | Bundled generic settings.json editor. Redundant with `/review-permissions` (permissions.allow), `/claude-hook-review` (hooks), `/skill-review` (skill bodies), and `/agent-review` (agent bodies); `model`/`theme` are set via `/config`/`/theme` and persist automatically across renders, and private `env` values belong in `settings.overlay.json` (see [Auto mode](auto-mode.md#what-to-put-in-settingsoverlayjson)). |
 | `/verify` | Manual-verification skill that drives the app to confirm a change. Same scope mismatch as `/run` — claude-config skills and hooks are verified via `pytest claude/.claude/`. |
 
 ### Re-enable for your session
@@ -109,7 +109,7 @@ Persistent per-project: add to the repository's own `.claude/settings.local.json
 }
 ```
 
-`.claude/settings.local.json` is per-repository, not per-user — there is no untracked settings file at the user's home config directory, only `~/.claude/settings.json` (tracked, shared by every stow consumer). A re-enable added this way applies to sessions in this one repository. It overrides `settings.json` at the same scope, so the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
+`.claude/settings.local.json` is per-repository, not per-user — a re-enable added this way applies to sessions in this one repository. It overrides `settings.json` at the same scope, so the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. This repo's untracked, home-config-directory `settings.overlay.json` (see [Auto mode](auto-mode.md#what-to-put-in-settingsoverlayjson)) does not cover `skillOverrides` — its allowed key set is `autoMode`, `env`, `skillListingBudgetFraction`, and a narrow `permissions.defaultMode` exception — so a global re-enable still has no untracked home outside per-repo `.claude/settings.local.json`. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
 
 ## Skill evals
 
