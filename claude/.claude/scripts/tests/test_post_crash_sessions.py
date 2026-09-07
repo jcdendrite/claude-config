@@ -1924,7 +1924,7 @@ def test_classify_registry_dead_after_boot_indeterminate_sibling_not_promoted(tm
     )
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert (
-        "Every tracked dead_after_boot instance recorded a graceful SessionEnd, but another "
+        "Every tracked post-boot process instance recorded a graceful SessionEnd, but another "
         "registry entry for this session could not be confirmed dead or dated"
     ) in row.detail
 
@@ -1946,7 +1946,7 @@ def test_classify_registry_dead_after_boot_indeterminate_sibling_no_transcript_n
     )
     assert row.classification == _mod.CLASS_UNKNOWN
     assert (
-        "Every tracked dead_after_boot instance recorded a graceful SessionEnd, but another "
+        "Every tracked post-boot process instance recorded a graceful SessionEnd, but another "
         "registry entry for this session could not be confirmed dead or dated"
     ) in row.detail
 
@@ -1969,7 +1969,7 @@ def test_classify_registry_dead_after_boot_mtime_unknown_sibling_not_promoted(tm
     )
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert (
-        "Every tracked dead_after_boot instance recorded a graceful SessionEnd, but another "
+        "Every tracked post-boot process instance recorded a graceful SessionEnd, but another "
         "registry entry for this session could not be confirmed dead or dated"
     ) in row.detail
 
@@ -2017,17 +2017,79 @@ def test_classify_lookup_dead_pid_partially_covered_stays_possible_crash_with_se
 
 def test_classify_registry_dead_before_boot_fully_covered_stays_resumable(tmp_path):
     """The dead_before_boot arm never threads session_end_records into
-    _graceful_end_coverage at all -- per the plan's Out-of-scope section,
-    this structural sibling of the intercepted dead_after_boot branch must
-    stay CLASS_RESUMABLE even when a SessionEnd record would otherwise
-    fully cover the entry, pinning the decision against a future refactor
-    that widens the coverage check to this branch too."""
+    _graceful_end_coverage at all, so this structural sibling of the
+    intercepted dead_after_boot branch must stay CLASS_RESUMABLE even when a
+    SessionEnd record would otherwise fully cover the entry. Pins the decision
+    against a future refactor that widens the coverage check to this branch
+    too."""
     entry = _registry_entry(mtime=500.0, config_dir=tmp_path)
     transcript = _transcript_info(last_activity=500.0, has_main=True)
     record = _session_end_record(pid=entry.pid, mtime=600.0, config_dir=tmp_path)
     records = {(tmp_path.resolve(), entry.pid): record}
     row = _mod._classify_session(
         "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_RESUMABLE
+
+
+def test_classify_registry_dead_before_boot_sibling_confirmed_dead_after_boot_is_clean_exit(tmp_path):
+    """The tool's own motivating workflow: a pre-boot registry entry (crash,
+    then reboot) plus a post-boot registry entry fully covered by a
+    SessionEnd record (resumed, and this time exited cleanly). The
+    dead_before_boot sibling must not block promotion off the post-boot
+    instance's exculpatory evidence."""
+    pre_boot_entry = _registry_entry(pid=100, mtime=500.0, config_dir=tmp_path)
+    post_boot_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=101, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 101): record}
+    row = _mod._classify_session(
+        "s1", [pre_boot_entry, post_boot_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "explained by the reboot itself" in row.detail
+    assert "every tracked process instance for this session" not in row.detail
+
+
+def test_classify_registry_dead_before_boot_sibling_confirmed_dead_after_boot_no_transcript_is_clean_exit(tmp_path):
+    """Same pre-boot-sibling promotion as the transcript case above, but with
+    no main transcript -- the no-transcript branch of
+    _confirmed_clean_exit_detail_with_pre_boot_sibling must still promote to
+    Confirmed clean exit, with the no-transcript wording and the
+    pre-boot-sibling detail text both present."""
+    pre_boot_entry = _registry_entry(pid=100, mtime=500.0, config_dir=tmp_path)
+    post_boot_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=False)
+    record = _session_end_record(pid=101, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 101): record}
+    row = _mod._classify_session(
+        "s1", [pre_boot_entry, post_boot_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "No main transcript was found for this session" in row.detail
+    assert "explained by the reboot itself" in row.detail
+
+
+def test_classify_registry_dead_before_boot_and_dead_after_boot_with_indeterminate_sibling_not_promoted(tmp_path):
+    """Three registry entries for one session: a dead_before_boot entry
+    (explained by the reboot), a dead_after_boot entry fully covered by a
+    SessionEnd record, and an indeterminate-liveness sibling whose stored
+    proc_start is missing. dead_after_boot_fully_confirmed must stay False
+    since the indeterminate sibling isn't accounted for by dead_before_boot,
+    dead_after_boot, or coverage, so the session takes the dead_before_boot
+    early-return path and stays CLASS_RESUMABLE rather than being promoted."""
+    pre_boot_entry = _registry_entry(pid=100, mtime=500.0, config_dir=tmp_path)
+    post_boot_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    indeterminate_entry = _registry_entry(pid=102, mtime=1500.0, proc_start=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=101, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 101): record}
+    row = _mod._classify_session(
+        "s1", [pre_boot_entry, post_boot_entry, indeterminate_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({102: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
         session_end_records=records,
     )
     assert row.classification == _mod.CLASS_RESUMABLE
@@ -2374,6 +2436,34 @@ def test_build_report_sanitizes_control_bytes_across_cwd_branch_and_session_id_i
     report = _mod.build_report(
         config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 2000.0,
     )
+    for redact in (False, True):
+        output = _mod.render_report(report, redact=redact)
+        assert "\x1b" not in output
+        assert "\x07" not in output
+
+
+def test_build_report_sanitizes_hostile_control_bytes_in_session_end_reason(tmp_path):
+    """reason is read through _sanitize_for_terminal in _read_session_end_records
+    and then embedded into the confirmed-clean-exit detail sentence -- this
+    exercises that path end-to-end, the same way the sibling tests above do
+    for version, transcript-filename session id, and cwd/gitBranch/sessionId."""
+    hostile_reason = "prompt_input_exit\x1b]0;pwned\x07"
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-hostile-reason"
+    entry_path = _write_registry_entry(sessions_dir, dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id=session_id, reason=hostile_reason)
+    os.utime(record_path, (2500.0, 2500.0))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "prompt_input_exit]0;pwned" in row.detail
+    assert "\x1b" not in row.detail
+    assert "\x07" not in row.detail
     for redact in (False, True):
         output = _mod.render_report(report, redact=redact)
         assert "\x1b" not in output

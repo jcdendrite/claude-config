@@ -101,9 +101,9 @@ the dead-entry list's length to equal the registry branch's full
 `registry_entries` count, so a sibling registry entry for the same session
 with indeterminate liveness or an unreadable mtime blocks promotion even
 though every `dead_after_boot` instance matched a record. This is an
-intentional design decision, fixed during review, not an incidental gap: an
-unresolved sibling could still be a genuine crash instance, and pid-keying
-alone gives no other way to rule that out. A future simplification of
+intentional design decision, not an incidental gap: an unresolved sibling
+could still be a genuine crash instance, and pid-keying alone gives no other
+way to rule that out. A future simplification of
 `_all_entries_explained` back to a bare `covered == total` would silently
 reintroduce that false-promotion case.
 
