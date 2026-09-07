@@ -27,6 +27,9 @@ _RENDER_END = "# INSTALL_TEST_FIXTURE: render-settings-invoke — end"
 _HARDENING_START = "# INSTALL_TEST_FIXTURE: continuity-hardening — start\n"
 _HARDENING_END = "# INSTALL_TEST_FIXTURE: continuity-hardening — end"
 
+_RC_HELPERS_START = "# INSTALL_TEST_FIXTURE: rc-block-helpers — start\n"
+_RC_HELPERS_END = "# INSTALL_TEST_FIXTURE: rc-block-helpers — end"
+
 
 def _extract_block(start_marker: str, end_marker: str) -> str:
     """Same marker-delimited extraction strategy as the other
@@ -38,6 +41,24 @@ def _extract_block(start_marker: str, end_marker: str) -> str:
     end = install_text.find(end_marker, start)
     assert end != -1, f"{end_marker!r} not found after start marker in {_INSTALL_SH}"
     return install_text[start + len(start_marker) : end]
+
+
+def _extract_span(start_marker: str, end_marker: str) -> str:
+    """Return install.sh's raw text from start_marker's own line through the
+    end of end_marker's line, inclusive of both markers and everything
+    between them. Unlike _extract_block, which returns only the content
+    *between* one marker pair, this spans across several fixture blocks plus
+    whatever bare statements sit between them (e.g. the ensure_settings_render
+    call site, which M2 deliberately leaves unwrapped by any fixture marker
+    -- see TestRcInvocationPrecedesRenderCall below), preserving their
+    original relative order rather than concatenating separately-extracted
+    strings that would drop it."""
+    install_text = _INSTALL_SH.read_text()
+    start = install_text.find(start_marker)
+    assert start != -1, f"{start_marker!r} not found in {_INSTALL_SH}"
+    end = install_text.find(end_marker, start)
+    assert end != -1, f"{end_marker!r} not found after start marker in {_INSTALL_SH}"
+    return install_text[start : end + len(end_marker)]
 
 
 def _make_package(pkg_root: Path, base_content: dict) -> None:
@@ -234,3 +255,65 @@ class TestAbortsOnRenderFailure:
         assert result.returncode != 0, "the render step must still abort"
         assert oct((home / ".claude").stat().st_mode)[-3:] == "700"
         assert oct(claude_json.stat().st_mode)[-3:] == "600"
+
+
+class TestRcInvocationPrecedesRenderCall:
+    """M2's acceptance criterion: the renamed rc-invocation function's call
+    site sits immediately before render-settings-invoke -- adjacency, not
+    merely "somewhere above" -- so a failed first render still gets the
+    repairing rc block installed. The relevant INSTALL_TEST_FIXTURE markers
+    wrap only the function *definitions*; the call site itself is found by
+    text search, not by reusing a definition fixture's own marker."""
+
+    def test_call_site_sits_immediately_before_the_render_invoke_marker(self) -> None:
+        install_text = _INSTALL_SH.read_text()
+        call_needle = "\nensure_settings_render\n"
+        call_index = install_text.index(call_needle)
+        marker_index = install_text.index(_RENDER_START)
+
+        assert call_index < marker_index, (
+            "ensure_settings_render's call site must sit before the "
+            "render-settings-invoke start marker"
+        )
+
+        between = install_text[call_index + len(call_needle) : marker_index]
+        non_comment_lines = [
+            line for line in between.splitlines() if line.strip() and not line.strip().startswith("#")
+        ]
+        assert not non_comment_lines, (
+            "no statement other than the call itself may sit between "
+            f"ensure_settings_render and render-settings-invoke; found {non_comment_lines!r}"
+        )
+
+    def test_rc_block_is_installed_even_when_the_render_fails(self, tmp_path: Path) -> None:
+        """Runs the real rc-block-helpers, settings-render-rc, and
+        render-settings-invoke blocks concatenated in their original file
+        order -- including the bare ensure_settings_render call site between
+        them -- against a base file that forces the render to fail. The rc
+        block must still be installed despite the subsequent abort, which is
+        the whole point of M2's reordering: a fresh install whose first
+        render fails must not also lose its own repair mechanism."""
+        home = tmp_path / "home"
+        home.mkdir()
+        repo_dir = tmp_path / "repo"
+        scripts_dir = repo_dir / "claude" / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        # No settings.base.json -- render-settings.sh's own missing-base
+        # check fails the render.
+
+        script = "set -e\n" + _extract_span(_RC_HELPERS_START, _RENDER_END)
+        result = subprocess.run(
+            ["bash", "-c", script, "run_rc_block_then_render"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "HOME": str(home), "REPO_DIR": str(repo_dir)},
+        )
+
+        assert result.returncode != 0, "the render step must still abort"
+        bashrc = (home / ".bashrc").read_text()
+        assert "ensure-settings-render.sh" in bashrc, (
+            f"the rc block must be installed despite the render failure; stderr={result.stderr!r}"
+        )
+        assert not (home / ".claude" / "settings.json").exists()

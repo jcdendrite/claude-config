@@ -425,8 +425,8 @@ stow_unadopt_entry() {
 # anchored differently -- see install.sh's stow-adopt-ignore comment).
 # Shared by install.sh's un-adopt loop and its --ignore-arg construction so
 # both see one derivation instead of two hardcoded name lists. Never reports
-# plans/, handoffs/, or briefs/, even when physically present and untracked
-# -- see the exclusion below.
+# plans/, handoffs/, briefs/, settings.json, or settings.overlay.json, even
+# when physically present and untracked -- see the exclusion below.
 stow_untracked_package_entries() {
   local repo_dir="$1"
   local package_dir="$repo_dir/claude/.claude"
@@ -491,8 +491,15 @@ stow_untracked_package_entries() {
     # separately in install.sh) -- excluded here so a failure in that path
     # before it unlinks the symlink can't fall through to this function's
     # callers, which un-adopt via a bare `mv` with no such backup.
+    # settings.json and settings.overlay.json are render-settings.sh's own
+    # generated output, not stow --adopt leftovers -- reported here they
+    # would be un-adopted by this function's callers via a bare `mv`,
+    # permanently resurrecting the write-through bug this migration exists
+    # to close. install.sh seeds their own --ignore args directly (the same
+    # split plans/handoffs/briefs already use) since they need no backup
+    # migration of their own.
     case "$name" in
-      plans | handoffs | briefs) continue ;;
+      plans | handoffs | briefs | settings.json | settings.overlay.json) continue ;;
     esac
     is_tracked=false
     for tracked in "${tracked_names[@]}"; do

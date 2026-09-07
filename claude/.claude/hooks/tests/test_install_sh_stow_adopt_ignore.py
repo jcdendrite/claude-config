@@ -234,6 +234,49 @@ class TestStowAdoptIgnorePattern:
             f"under-escaped pattern; stow output: {result.stderr!r}"
         )
 
+    def test_stray_settings_json_is_removed_before_stow_runs(self, tmp_path: Path) -> None:
+        """M8: a stray real claude/.claude/settings.json -- the row-14
+        write-through shape, where a session that opened the pre-rename
+        dangling settings.json symlink recreated its old checkout-relative
+        target -- must be removed before stow runs, mechanizing the manual
+        cleanup README.md's migration note otherwise asks consumers to do by
+        hand."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        stray = pkg_root / "claude" / ".claude" / "settings.json"
+        stray.write_text('{"stray": true}')
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not stray.exists(), (
+            f"a stray claude/.claude/settings.json must be removed before "
+            f"stow runs; stow output: {result.stderr!r}"
+        )
+
+    def test_symlinked_settings_json_is_left_in_place_before_stow_runs(
+        self, tmp_path: Path
+    ) -> None:
+        """The removal guard's [ ! -L ... ] arm: a claude/.claude/settings.json
+        that is already a symlink (the normal, already-migrated shape stow
+        itself manages) must not be swept up by the stray-real-file cleanup --
+        only the real-file branch is exercised by
+        test_stray_settings_json_is_removed_before_stow_runs above."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        symlinked = pkg_root / "claude" / ".claude" / "settings.json"
+        symlinked.symlink_to("/dev/null")
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert symlinked.is_symlink(), (
+            f"a claude/.claude/settings.json that is already a symlink must "
+            f"be left in place, not removed; stow output: {result.stderr!r}"
+        )
+
 
 def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
     """Runs the real --ignore-arg-construction loop from the extracted
@@ -264,6 +307,25 @@ def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) 
         check=False,
         env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
     )
+
+
+class TestIgnoreArgsSeedRenderOutputNames:
+    """M8: settings.json and settings.overlay.json are render-settings.sh's
+    own generated output, not tracked package content -- seeded into
+    stow_ignore_args the same way plans/handoffs/briefs already are, so a
+    not-yet-migrated stray copy is left alone rather than aborting stow."""
+
+    def test_ignore_args_include_settings_json_and_overlay(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_ignore_arg_construction_only(pkg_root, home, stub="")
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        ignore_args = result.stdout.splitlines()
+        assert "--ignore=^\\.claude/settings\\.json$" in ignore_args, ignore_args
+        assert "--ignore=^\\.claude/settings\\.overlay\\.json$" in ignore_args, ignore_args
 
 
 class TestIgnoreArgConstructionRegexEscapeFailure:
