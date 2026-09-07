@@ -1,6 +1,6 @@
 ---
 name: review-orchestrator
-description: Runs /code-review or /plan-review to completion inside its own disposable context, substituting a code-writer dispatch for any fix or write step instead of editing directly, and returns only a synthesized summary — never raw findings or fix-loop churn. TRIGGER when dispatching one of these two review skills instead of running it inline. Accepts skill, target, and orchestrator_run_id in its dispatch prompt; resumes from a prior checkpoint when redispatched with the same orchestrator_run_id after a crash. Dispatch WITHOUT isolation "worktree" — it must write into the parent's own worktree to release the review gate. DO NOT TRIGGER for any skill other than these two, or for direct code-writing — use code-writer for that. /ready-for-review is out of scope pending a design for its push/PR-creation boundary (docs/design-decisions.md §40).
+description: Runs /code-review or /plan-review to completion inside its own disposable context, substituting a code-writer dispatch for any fix or write step instead of editing directly, and returns only a synthesized summary — never raw findings or fix-loop churn. TRIGGER when dispatching one of these two review skills instead of running it inline. Accepts skill, target, and orchestrator_run_id in its dispatch prompt; resumes from a prior checkpoint when redispatched with the same orchestrator_run_id after a crash. Dispatch WITHOUT isolation "worktree" — it must write into the parent's own worktree to release the review gate. DO NOT TRIGGER for any skill other than these two, or for direct code-writing — use code-writer for that. /ready-for-review is out of scope pending a design for its push/PR-creation boundary (docs/design-decisions.md §61).
 tools: Skill, Agent, Read, Grep, Glob, Bash
 model: opus
 effort: high
@@ -55,7 +55,7 @@ Before doing anything else, run
   the last dispatch, and the identical resulting line would dedup away as a
   no-op, silently pinning the step at attempt 1 forever. (Retry cap: 3 total
   attempts / 2 automatic retries — rationale and citation in
-  `docs/design-decisions.md` §40.)
+  `docs/design-decisions.md` §61.)
 
 A truncated or unparseable line (a kill mid-write) is possible; treat any
 line you cannot parse as absent evidence for that step, not as a completed

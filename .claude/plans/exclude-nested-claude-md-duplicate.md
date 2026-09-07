@@ -14,7 +14,7 @@ Every Claude Code session working in the claude-config repo, and every subagent 
 > {
 >   "claudeMdExcludes": [
 >     "**/monorepo/CLAUDE.md",
->     "/path/to/monorepo/other-team/.claude/rules/**"
+>     "/home/<user>/monorepo/other-team/.claude/rules/**"
 >   ]
 > }
 > ```

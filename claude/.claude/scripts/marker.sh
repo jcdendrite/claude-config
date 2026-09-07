@@ -36,11 +36,16 @@ Subcommands:
              live, historical, or absent. Takes no skill argument. Evicts a
              stale (dead-PID) active-bypass marker for this session as a
              side effect of classifying it.
+  check      Report whether a completion marker already matches the
+             current state, without writing anything. Exit 0 and print
+             "match" if it does, exit 1 and print "no-match" if it
+             doesn't.
 
 Valid (subcommand, skill) combinations:
   write       code-review | skill-review | plan-review | ready-for-review | cumulative-review
   activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
+  check       code-review
 EOF
 }
 
@@ -145,6 +150,44 @@ _guard_staged_vs_unstaged() {
   fi
 }
 
+# _hash_staged_diff CAP_MODE REPO_ROOT [PATHSPEC...]
+# Hashes the staged diff (optionally scoped to PATHSPEC) via
+# `git diff --cached | sha256sum`, printing the hash and returning 0 on
+# success. CAP_MODE is "capped" to run the git call through _lib_capped's 5s
+# timeout, or "uncapped" to run it directly -- write call sites run uncapped
+# since they run once per completed review, while status/check call sites
+# cap it since they run on every invocation.
+# pipefail is scoped to just this call: a timed-out (or otherwise failed)
+# git leaves sha256sum hashing empty stdin, which succeeds and yields a real
+# (non-empty) hash, so an emptiness check alone can't catch it -- git's own
+# exit status has to gate the hash instead.
+# Prints nothing and returns 1 on failure (non-zero git exit, or an empty
+# hash despite a zero exit).
+_hash_staged_diff() {
+  local cap_mode="$1" repo_root="$2"; shift 2
+  local -a diff_args=(-C "$repo_root" diff --cached)
+  # -- only when PATHSPECs are given, matching each call site's own
+  # pre-refactor invocation exactly (a bare `diff --cached --` is equivalent
+  # to `diff --cached` to git, but the two are different argv shapes).
+  [ "$#" -gt 0 ] && diff_args+=(-- "$@")
+  local -a diff_cmd
+  case "$cap_mode" in
+    capped) diff_cmd=(_lib_capped git "${diff_args[@]}") ;;
+    uncapped) diff_cmd=(git "${diff_args[@]}") ;;
+    *)
+      printf '_hash_staged_diff: invalid cap_mode %s (want capped or uncapped)\n' "$cap_mode" >&2
+      return 2
+      ;;
+  esac
+  local hash git_exit
+  set -o pipefail
+  hash=$("${diff_cmd[@]}" | sha256sum | awk '{print $1}')
+  git_exit=$?
+  set +o pipefail
+  [ "$git_exit" -eq 0 ] && [ -n "$hash" ] || return 1
+  printf '%s' "$hash"
+}
+
 # _status_glob_has_match DIR PREFIX
 # True iff some file in DIR whose name begins with PREFIX exists, regardless
 # of content -- used by `status` to tell "historical" (a marker exists for
@@ -219,6 +262,80 @@ _status_report_active_bypass() {
   fi
 }
 
+# _marker_mtime_epoch TARGET
+# Prints TARGET's mtime as a Unix epoch, GNU stat first then BSD/macOS stat --
+# same probe order as ask-new-dependency-disclosure.sh's _file_size (not
+# shared via _lib.sh; that hook's comment names this as the canonical form).
+# Capped at 5s via _lib_capped_for, matching _hash_staged_diff capped's own
+# rationale: a check call (unlike write) reads state it doesn't control, so
+# a stalled stat must not hang the gate it's backing.
+_marker_mtime_epoch() {
+  local target="$1"
+  _lib_capped_for 5 stat -c%Y -- "$target" 2>/dev/null || _lib_capped_for 5 stat -f%m -- "$target" 2>/dev/null
+}
+
+# _resolve_code_review_check_max_age_seconds
+# Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
+# deliberately conservative, ungrounded choice (docs/design-decisions.md
+# §60). Malformed override (empty, zero, non-digit, zero-padded, or 9+
+# digits) falls back to the default -- same guard shape as
+# nudge-long-turn-subagent.sh's resolve_threshold.
+_resolve_code_review_check_max_age_seconds() {
+  case "${CODE_REVIEW_CHECK_MAX_AGE_SECONDS:-}" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) CODE_REVIEW_CHECK_MAX_AGE_SECONDS=86400 ;;
+    *) ;;
+  esac
+}
+
+# _code_review_marker_fresh_age MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX MAX_AGE_SECONDS
+# Prints the age in seconds of the freshest file in MARKERS_DIR matching
+# GLOB_PREFIX that holds EXPECTED_VALUE as a whole line and is younger than
+# MAX_AGE_SECONDS, and returns 0. Prints nothing and returns 1 when no such
+# file exists. Called only after _lib_marker_value_present has already
+# confirmed at least one hash match. That single-grep call stays the cheap
+# common-case check for "no hash match at all". This loop only runs once a
+# hash match exists, and narrows that match set down to non-stale files.
+# The candidates loop below is O(n) in GLOB_PREFIX's accumulated marker
+# count. That's bounded today because this repo's own worktree-enforced
+# hashing keys REPO_HASH to an ephemeral per-branch path rather than a
+# stable long-lived one. A non-worktree-enforced repo would scale
+# unboundedly here, since completion markers are never pruned.
+_code_review_marker_fresh_age() {
+  local markers_dir="$1" expected_value="$2" glob_prefix="$3" max_age_seconds="$4"
+  local nullglob_was_set=0
+  if shopt -q nullglob; then nullglob_was_set=1; fi
+  shopt -s nullglob
+  local -a candidates=("$markers_dir/$glob_prefix"*)
+  if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
+
+  local now candidate mtime age best_age=""
+  now=$(date +%s)
+  # A failed or non-numeric `now` must not fall through to the arithmetic
+  # below. An empty $now makes `age = -mtime`, a large negative number that
+  # trivially passes the `-lt max_age_seconds` check. Fail closed here the
+  # same way the `check code-review` arm further below treats an
+  # empty/failed staged-diff hash as no-match.
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  for candidate in "${candidates[@]}"; do
+    [ -f "$candidate" ] || continue
+    # Capped at 5s for the same reason _marker_mtime_epoch is: check reads a
+    # marker file it doesn't control.
+    _lib_capped_for 5 grep -qFx -e "$expected_value" -- "$candidate" 2>/dev/null || continue
+    mtime=$(_marker_mtime_epoch "$candidate")
+    [ -n "$mtime" ] || continue
+    age=$(( now - mtime ))
+    # Clamp a future-mtime marker (clock skew, restore tooling) to 0 rather
+    # than reporting a negative age, which would otherwise pass the
+    # freshness check unconditionally.
+    [ "$age" -lt 0 ] && age=0
+    if [ "$age" -lt "$max_age_seconds" ] && { [ -z "$best_age" ] || [ "$age" -lt "$best_age" ]; }; then
+      best_age="$age"
+    fi
+  done
+  [ -n "$best_age" ] || return 1
+  printf '%s' "$best_age"
+}
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -245,7 +362,7 @@ ARG2="${2:-}"
 
 # Validate arg count per subcommand.
 case "$SUBCOMMAND" in
-  write|activate|deactivate)
+  write|activate|deactivate|check)
     if [ -z "$ARG2" ]; then
       usage
       exit 2
@@ -282,8 +399,7 @@ case "$SUBCOMMAND" in
         # Compute before redirecting: `>` truncates the marker before the
         # pipeline runs, so a failed hash would destroy a valid marker and
         # silently force a re-review. Same shape in every arm below.
-        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
-        [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
+        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT") || { printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/code-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/code-review-markers/$REPO_HASH.$SESSION_ID"
@@ -296,8 +412,7 @@ case "$SUBCOMMAND" in
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (both stowed
         # and plugin locations) plus plan-review/ROUTING.md, matching what
         # require-skill-review.sh checks at commit time.
-        MARKER_VALUE=$(git -C "$REPO_ROOT" diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
-        [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
+        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md') || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID"
@@ -563,9 +678,10 @@ case "$SUBCOMMAND" in
 
     # code-review: hash of the whole-repo staged diff -- same recipe as the
     # `write code-review` arm above. Capped so a stalled git diff can't hang
-    # the whole status report; a killed process yields an empty value, which
-    # _status_report_completion_marker already treats as absent/historical.
-    CODE_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached | sha256sum | awk '{print $1}')
+    # the whole status report; a failed or killed hash attempt yields an
+    # empty value, which _status_report_completion_marker already treats as
+    # absent/historical.
+    CODE_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT")
     if _status_report_completion_marker code-review "$CONFIG_DIR/code-review-markers" "$REPO_HASH_PREFIX" "$CODE_REVIEW_VALUE"; then
       _status_reconciliation_flag code-review "$REPO_ROOT"
     fi
@@ -573,7 +689,7 @@ case "$SUBCOMMAND" in
     # skill-review: same recipe as the `write skill-review` arm above,
     # scoped to the SKILL.md/ROUTING.md pathspecs.
     SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
-    SKILL_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" diff --cached -- "${SKILL_REVIEW_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
+    SKILL_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"
     fi
@@ -625,5 +741,56 @@ case "$SUBCOMMAND" in
     _status_report_active_bypass respond-pr ".respond-pr-active.d" "$SESSION_ID"
     _status_report_active_bypass memory-skill ".memory-skill-active.d" "$SESSION_ID"
     _status_report_active_bypass handoff ".handoff-active.d" "$SESSION_ID"
+    ;;
+  check)
+    case "$SKILL" in
+      code-review)
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        # Same hash recipe as the `write code-review` arm. Read-only: no
+        # SESSION_ID needed since this never writes.
+        # A hash that can't be computed (`_hash_staged_diff` returns 1) must
+        # read as no-match, not match. This is the short-circuit
+        # /code-review consults before skipping its specialist panel, so
+        # failing open here would silently skip a real review.
+        #
+        # Capped unlike `write code-review`'s git calls, since `check` runs
+        # on every `/code-review` invocation rather than only on a completed
+        # review. A timeout here degrades to no-match, never a false match.
+        MARKER_VALUE=$(_hash_staged_diff capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
+        # Checked against the SHA-256 hash of an empty diff, computed here
+        # rather than hardcoded so no single line embeds the full hex
+        # digest. Not a separate `git diff --cached --quiet` probe. Two
+        # decoupled git calls can diverge under transient contention (index
+        # lock, background git process). A stale marker can then read as a
+        # match even though this call already proved the diff empty.
+        #
+        # This also covers `ready-for-review` step 3's invocation of
+        # `/code-review` with nothing staged, where a stale empty-diff
+        # marker from an unrelated earlier review could otherwise silently
+        # skip that cumulative-diff review.
+        EMPTY_DIFF_HASH=$(printf '' | sha256sum | awk '{print $1}')
+        if [ "$MARKER_VALUE" = "$EMPTY_DIFF_HASH" ]; then
+          printf 'no-match\n'
+          exit 1
+        fi
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # A hash match older than CODE_REVIEW_CHECK_MAX_AGE_SECONDS reads as
+        # no-match too. See docs/design-decisions.md for why this age bound
+        # applies only here, not to the write/commit-gate side.
+        if _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH."; then
+          _resolve_code_review_check_max_age_seconds
+          if FRESH_AGE=$(_code_review_marker_fresh_age "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH." "$CODE_REVIEW_CHECK_MAX_AGE_SECONDS"); then
+            printf 'match age_seconds=%s\n' "$FRESH_AGE"
+            exit 0
+          fi
+        fi
+        printf 'no-match\n'
+        exit 1
+        ;;
+      *)
+        printf "marker.sh: 'check %s' is not valid. 'check' supports: code-review\n" "$SKILL" >&2
+        exit 2
+        ;;
+    esac
     ;;
 esac

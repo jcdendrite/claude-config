@@ -780,22 +780,22 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 
 **Sample output.** From a live `--this-repo` run against this repo's own transcript corpus:
 ```
-CACHE REBUILD SOURCES (this repo (31 project dirs); 4 roots)
+CACHE REBUILD SOURCES (this repo (32 project dirs); 4 roots)
 
 ## Cache-rebuild report (last 30d, threshold >= 100,000 cache-write tokens)
 
-Calls scanned: 33,549
-Calls writing >= 100,000 tokens: 77 (0.2% of calls)
-Per-call write distribution: min=101,351  median=182,851  p90=380,770  max=667,554
+Calls scanned: 32,297
+Calls writing >= 100,000 tokens: 78 (0.2% of calls)
+Per-call write distribution: min=101,351  median=181,764  p90=380,770  max=667,554
 
 ## Cause breakdown
 
 Cause                               Calls   Share
 session start                           0    0.0%
-idle 5m-1h                             18   23.4%
-idle >1h                               33   42.9%
+idle 5m-1h                             15   19.2%
+idle >1h                               35   44.9%
 model switch                            0    0.0%
-unexplained                            26   33.8%
+unexplained                            28   35.9%
 excluded (timestamp anomaly)            0    0.0%
 
 ## Idle-gap concurrency split [unverified]
@@ -805,14 +805,14 @@ account, had a call inside the gap window. This is an association, not proof
 the operator was attending that other session. [unverified]
 
                               Rebuilds     Excess $
-Another session active              48        51.17
-Everything idle (a break)            3         2.36
-Total idle-gap rebuilds             51        53.53
+Another session active              46        51.48
+Everything idle (a break)            4         2.91
+Total idle-gap rebuilds             50        54.39
 
 ## Idle-gap excess by account
 
 Account           Rebuilds     Excess $
-account-1               51        53.53
+account-1               50        54.39
 account-2                0         0.00
 account-3                0         0.00
 account-4                0         0.00
@@ -820,8 +820,38 @@ account-4                0         0.00
 ## Idle-gap rebuilds by origin
 
 Origin      Rebuilds     Excess $
-main              31        40.83
-subagent          20        12.70
+main              34        43.49
+subagent          16        10.90
+
+## Subagent idle-gap cause attribution [unverified]
+
+Sub-classifies the subagent row above (idle 5m-1h and idle >1h pooled,
+so the rows below sum exactly to that row) by the last marker record
+found in each gap's own window, scanning forward:
+  - a tool_result for that call's own Bash tool_use -> waiting on own Bash call
+  - a background-task notification -> waiting on background task
+  - a coordinator message -> waiting on coordinator message
+  - no marker at all -> unattributed
+Last marker before the gap-closing call wins. 5m-1h $ restricts Excess $
+to the idle 5m-1h band only, the band a cacheTtl switch could actually
+rescue (idle >1h stays cold under either tier). Median cov. is the
+median (marker_ts - gap_start_ts) / gap_seconds across each row's own
+attributed candidates, not clamped to [0, 1]: near 100% means the
+marker sits at the gap's end and the attribution is tight, a low value
+means the marker landed early and most of the gap is still unexplained.
+It renders n/a whenever the winning marker's own timestamp is missing
+or unparseable, which never changes the cause itself. Main origin is
+excluded: experimental.cacheTtl cannot reach main-conversation traffic,
+so a main-origin split would have no lever to point at. A large
+'unattributed' share means the marker taxonomy is incomplete, not that
+the gaps are causeless -- a transcript records the marker the harness
+delivered, never a statement of why the subagent was idle. [unverified]
+
+Cause                             Rebuilds     Excess $      5m-1h $  Median cov.
+waiting on own Bash call                 8         7.39         7.39        97.1%
+waiting on background task               5         2.23         1.49        99.7%
+waiting on coordinator message           3         1.28         1.28        99.7%
+unattributed                             0         0.00         0.00          n/a
 
 ## Cache-write tier switch delta (5m -> 1h), threshold-independent
 
@@ -838,7 +868,7 @@ read it as reconciliation context only.
 
 Origin                W5m              X    Ratio       Net$
 main                    0              0     0.0%       0.00
-subagent      117,012,337      6,167,704     5.3%    -183.78
+subagent      113,815,802      5,606,921     4.9%    -181.69
 
 ## Subagent per-dispatch dispersion (ex-post oracle bound)
 
@@ -846,12 +876,12 @@ Dispatches selected by their own realized ratio, which a policy fixed
 before the dispatch cannot do -- a one-sided test for whether a
 selective lever is excluded, never a validation that one would work.
 
-Subagent dispatches (dispatches with any 5m-tier write): 787
-Dispatches individually clearing their own break-even ratio: 15
-Their share of per-dispatch subagent W5m (not the pooled row above): 6.7%
-Net $ restricted to clearing dispatches: 6.18
+Subagent dispatches (dispatches with any 5m-tier write): 770
+Dispatches individually clearing their own break-even ratio: 13
+Their share of per-dispatch subagent W5m (not the pooled row above): 6.3%
+Net $ restricted to clearing dispatches: 5.89
 
-  (0 of 117,012,337 pooled subagent W5m tokens landed in no dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound above has exact W5m coverage, not merely assumed)
+  (0 of 113,815,802 pooled subagent W5m tokens landed in no dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound above has exact W5m coverage, not merely assumed)
 ```
 
 The `main` row's `W5m`/`X` are genuinely zero in this corpus: every main-thread cache write observed here landed on the 1-hour tier already, never the 5-minute tier — consistent with the vendor's own statement that subagents, not the main conversation, get the 5-minute tier by default on a subscription (`.claude/plans/subagent-idle-gap-cache-rebuild-split.md`, or the vendor's prompt-caching doc directly).
@@ -866,6 +896,20 @@ bill.
 **Idle-gap excess by account** prints only under a multi-root scope (`--config-dir` or a populated `~/.claude/transcript-config-dirs`), one zero-seeded row per account ordinal so a valid-but-empty root still renders instead of vanishing from the breakdown.
 
 **Idle-gap rebuilds by origin** classifies each idle-gap rebuild as `main` or `subagent`, per record via the transcript's own `isSidechain` flag rather than by which source file it came from — an inline sidechain record living inside the main transcript file still counts as `subagent`. Unlike the by-account table above, this prints unconditionally (a corpus with no sidechain records at all still renders a zero-valued `subagent` row).
+
+**Subagent idle-gap cause attribution** sub-classifies the `subagent` row above (pooling `idle 5m-1h` and `idle >1h`, so its four rows sum exactly to that row) by the last marker record found in each gap's own window, scanning forward:
+
+- a `tool_result` for that call's own Bash `tool_use` → `waiting on own Bash call`
+- a `[SYSTEM NOTIFICATION - NOT USER INPUT]` background-task record → `waiting on background task`
+- a "The coordinator sent a message while you were working" record → `waiting on coordinator message`
+- no marker at all → `unattributed`
+
+Last marker wins, since the question is what released the subagent, and the last marker before the gap-closing call is by construction the one nearest that release. Each leg is self-scoped rather than filtered by origin:
+
+- Bash leg: matches only a `tool_use_id` the prior call itself emitted.
+- Meta legs: require both `isMeta` and `isSidechain` true on the record.
+
+**`Median cov.`** is the median share of each attributed gap the winning marker covered (`(marker_ts - gap_start_ts) / gap_seconds`, not clamped to `[0, 1]`). Near 100% means the marker sits at the gap's end; a low value means it landed early and most of the gap is still unexplained. This measures attribution tightness only — a transcript records the marker the harness delivered, never a statement of why the subagent was idle. It renders `n/a` whenever the winning marker's own timestamp is missing or unparseable, which never changes the cause itself — only its covered-share disclosure. **`5m-1h $`** restricts `Excess $` to the `idle 5m-1h` band only, the only band a `cacheTtl` switch could actually rescue — `idle >1h` rebuilds stay cold under either tier. **Main origin is excluded**: `experimental.cacheTtl` cannot reach main-conversation traffic (see the switch-delta section below), so a main-origin split would have no lever to point at. A large `unattributed` share means the marker taxonomy is incomplete, not that the underlying gaps are causeless — the follow-up is another marker sweep, not a lever choice.
 
 **Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row's `Net$` has no corresponding lever in this plan's scope** — `experimental.cacheTtl` is set in subagent frontmatter and cannot reach main-conversation traffic at all, so treat the `main` row as reconciliation context (confirming the origin split adds up against the corpus-wide total), not as an actionable figure.
 

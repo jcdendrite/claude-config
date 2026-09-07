@@ -9,9 +9,14 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, build_path_without
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+
+# _lib.sh's slow-path tail calls are hardcoded to `_lib_capped_for 2 tail
+# ...` -- not overridable via env var, so this mirrors that literal rather
+# than reading it from the shell source.
+SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS = 2
 
 
 def _run_lib_fn(fn_call: str) -> str:
@@ -23,6 +28,22 @@ def _run_lib_fn(fn_call: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _advance_offset(
+    transcript: Path, offset: int, current_size: int, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_advance_offset_past_complete_lines."""
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'. "{LIB_SH}"; _lib_advance_offset_past_complete_lines "$1" "$2" "$3"',
+            "_advance_offset", str(transcript), str(offset), str(current_size),
+        ],
+        capture_output=True,
+        text=True,
+        env=env if env is not None else os.environ,
+    )
 
 
 def _hash_diff_text(text: str) -> subprocess.CompletedProcess:
@@ -506,6 +527,125 @@ class TestLibActivePlanHash:
         second = _active_plan_hash(repo)
         assert first != ""
         assert first == second
+
+
+class TestLibAdvanceOffsetPastCompleteLines:
+    """Unit tests for _lib_advance_offset_past_complete_lines -- shared by
+    nudge-handoff-near-context-cap.sh and nudge-long-turn-subagent.sh for
+    mid-write transcript safety when resuming an incremental scan from a
+    stored byte offset. The two hooks' own tests cover that each wires this
+    helper in; these tests cover the helper's own branch selection and
+    boundary behavior."""
+
+    def test_offset_already_equal_to_current_size_returns_offset_unchanged(self, tmp_path):
+        """Zero new bytes since the last scan -- the boundary short-circuit
+        ahead of both the fast and slow path."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, size, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
+
+    def test_fast_path_advances_to_current_size_when_file_ends_in_newline(self, tmp_path):
+        """The file's last byte is a newline, so everything up to
+        current_size is complete lines -- the one-`tail -c 1`-read fast
+        path, the common case for a Claude Code transcript."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, 0, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
+
+    def test_slow_path_stops_before_incomplete_trailing_line(self, tmp_path):
+        """The file currently ends mid-line (caught mid-write) -- the slow
+        path must stop at the last complete line's newline, not at
+        current_size."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        complete_prefix_size = len("line one\nline two\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, 0, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(complete_prefix_size)
+
+    def test_slow_path_from_nonzero_offset_counts_only_the_new_slice(self, tmp_path):
+        """Resuming from a nonzero offset: only newlines in the unread slice
+        (offset+1..current_size) count toward the returned boundary, not
+        newlines before the offset."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\nline three\npartial")
+        offset = len("line one\n")
+        complete_prefix_size = len("line one\nline two\nline three\n")
+        size = transcript.stat().st_size
+        result = _advance_offset(transcript, offset, size)
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(complete_prefix_size)
+
+    @pytest.mark.timing
+    def test_slow_path_tail_timeout_returns_offset_unchanged(self, tmp_path):
+        """The slow path's `tail -c +N` calls are capped via
+        _lib_capped_for(2) -- a stalled tail must not hang the scan, and per
+        the function's own documented limitation must degrade to OFFSET
+        unchanged rather than partial progress."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        real_tail = shutil.which("tail")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "tail"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-c" ] && [[ "$2" == +* ]]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_tail} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        offset = 0
+        size = transcript.stat().st_size
+        start = time.monotonic()
+        result = _advance_offset(
+            transcript, offset, size,
+            env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(offset), "a timed-out slow-path scan must return OFFSET unchanged"
+        # No upper bound: 5/8 trials clocked 4.0-4.8s with no extra system
+        # load, an empirically observed baseline rather than a guessed
+        # margin -- the invariant that matters is not hanging for the ~10s
+        # stub sleep, which the lower bound alone already rules out.
+        assert elapsed >= SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS - 0.5, (
+            f"expected the {SLOW_PATH_TAIL_TIMEOUT_CAP_SECONDS}s _lib_capped_for timeout to fire (stub sleeps 10s "
+            f"if it does not), took {elapsed:.1f}s for this single call"
+        )
+
+    def test_tail_absent_from_path_freezes_offset_at_current_size(self, tmp_path):
+        """The function's own doc comment in _lib.sh documents this exact
+        gap: total absence of `tail` from PATH makes the fast path's
+        `tail -c 1` read return empty output (command-not-found, not a real
+        last byte), which is indistinguishable from the file genuinely
+        ending in a newline -- so the fast path fires and silently and
+        permanently freezes the offset at CURRENT_SIZE, even though this
+        transcript is caught mid-write with no trailing newline."""
+        transcript = tmp_path / "t.jsonl"
+        transcript.write_text("line one\nline two\npartial-no-newline")
+        size = transcript.stat().st_size
+        farm_dir = tmp_path / "path-without-tail"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tail", farm_dir)
+        result = _advance_offset(
+            transcript, 0, size,
+            env={**os.environ, "PATH": restricted_path},
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == str(size)
 
 
 class TestLibIsRepoPlanFile:

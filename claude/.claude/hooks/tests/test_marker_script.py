@@ -2720,6 +2720,457 @@ class TestMarkerScriptStatusReconciliationFlag:
         assert "reconciliation flag" not in result.stdout
 
 
+class TestMarkerScriptCheck:
+    """`marker.sh check code-review` reports, without writing anything,
+    whether an existing code-review marker already matches the current
+    staged diff -- the short-circuit `/code-review`'s Step 0.1 consults
+    before dispatching its specialist panel."""
+
+    SID = "test-session-check"
+
+    def test_match_when_marker_hash_equals_current_staged_diff(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+
+    def test_no_match_when_no_marker_exists(self, isolated_home, git_repo):
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_no_match_when_marker_hash_is_stale(self, isolated_home, git_repo):
+        write_marker(isolated_home, git_repo, "0" * 64, session_id=self.SID)
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_no_match_when_hash_matches_but_marker_is_older_than_the_age_bound(
+        self, isolated_home, git_repo
+    ):
+        """A marker past the default 24h freshness bound must read as
+        no-match even though its hash still matches the current staged diff
+        -- an old marker doesn't prove the diff was reviewed recently enough
+        to trust as a skip-review signal (docs/design-decisions.md)."""
+        marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        stale_time = time.time() - 86400 - 60  # just past the 24h default
+        os.utime(marker, (stale_time, stale_time))
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_check_max_age_env_override_narrows_the_freshness_bound(
+        self, isolated_home, git_repo
+    ):
+        """CODE_REVIEW_CHECK_MAX_AGE_SECONDS overrides the 24h default -- a
+        marker within the default window but past the lowered override must
+        still read as no-match."""
+        marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        old_time = time.time() - 120
+        os.utime(marker, (old_time, old_time))
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CODE_REVIEW_CHECK_MAX_AGE_SECONDS": "60"},
+        )
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_freshness_bound_is_a_strict_less_than_not_at_or_under(
+        self, isolated_home, git_repo
+    ):
+        """`_code_review_marker_fresh_age` uses `age -lt max_age_seconds` --
+        a marker at or past the bound must read as stale (no-match), while
+        comfortably under it must still read as fresh (match). Uses an
+        overridden bound with a slack margin wide enough to absorb the
+        subprocess-invocation latency between `os.utime` and marker.sh's own
+        `date +%s` read (a 1-second margin against the wall clock is not
+        reliable across a real subprocess call). This mirrors
+        nudge-long-turn-subagent.sh's own exact-boundary threshold test for
+        its sibling malformed-value guard shape."""
+        bound_seconds = 120
+        under_bound_marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        under_time = time.time() - bound_seconds + 30  # comfortably under the bound
+        os.utime(under_bound_marker, (under_time, under_time))
+        under_result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CODE_REVIEW_CHECK_MAX_AGE_SECONDS": str(bound_seconds)},
+        )
+        assert under_result.returncode == 0, under_result.stderr
+        assert under_result.stdout.strip().startswith("match")
+
+        at_bound_marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        at_time = time.time() - bound_seconds  # age >= bound_seconds by check time
+        os.utime(at_bound_marker, (at_time, at_time))
+        at_result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CODE_REVIEW_CHECK_MAX_AGE_SECONDS": str(bound_seconds)},
+        )
+        assert at_result.returncode == 1
+        assert at_result.stdout.strip().startswith("no-match")
+
+    def test_max_age_override_can_widen_the_bound_not_only_narrow_it(
+        self, isolated_home, git_repo
+    ):
+        """CODE_REVIEW_CHECK_MAX_AGE_SECONDS must be read on the passing
+        side too, not only to narrow the bound (the narrowing direction is
+        already covered above) -- a marker past the 24h default that's
+        still within a widened override must match."""
+        marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        thirty_hours_ago = time.time() - (30 * 3600)
+        os.utime(marker, (thirty_hours_ago, thirty_hours_ago))
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CODE_REVIEW_CHECK_MAX_AGE_SECONDS": str(40 * 3600)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+
+    def test_freshness_scan_finds_a_fresh_marker_behind_a_stale_one(
+        self, isolated_home, git_repo
+    ):
+        """Two markers can share the same repo-hash prefix and the same
+        hash matching the current staged diff -- one from an earlier
+        session past the freshness bound, one from a later session still
+        within it. _code_review_marker_fresh_age's candidate loop must keep
+        scanning past the stale match rather than stopping at the first
+        candidate it encounters. The stale session id sorts before the
+        fresh one so a premature-return bug would surface here as a false
+        no-match."""
+        diff_hash = staged_diff_hash(git_repo)
+        stale_marker = write_marker(isolated_home, git_repo, diff_hash, session_id="aaa-stale-session")
+        stale_time = time.time() - 86400 - 60  # just past the 24h default
+        os.utime(stale_marker, (stale_time, stale_time))
+
+        fresh_marker = write_marker(isolated_home, git_repo, diff_hash, session_id="zzz-fresh-session")
+        fresh_time = time.time() - 120
+        os.utime(fresh_marker, (fresh_time, fresh_time))
+
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+        age = int(result.stdout.strip().split("age_seconds=")[1])
+        assert age < 130, f"expected the fresh marker's age (~120s), got {age}"
+
+    @pytest.mark.parametrize("malformed_value", ["", "0", "not-a-number", "0340", "999999999"])
+    def test_malformed_max_age_override_falls_back_to_the_24h_default(
+        self, isolated_home, git_repo, malformed_value
+    ):
+        """A malformed CODE_REVIEW_CHECK_MAX_AGE_SECONDS (empty, literal
+        zero, non-digit, zero-padded, or 9+ digits) must fall back to the
+        24h default rather than degrading toward 0 (every marker reads
+        stale) or an unbounded value (every marker reads fresh) -- pinned
+        by checking both sides of the real 24h boundary under the same
+        malformed override."""
+        fresh_marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        fresh_time = time.time() - 86400 + 120  # just under the 24h default
+        os.utime(fresh_marker, (fresh_time, fresh_time))
+        fresh_result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CODE_REVIEW_CHECK_MAX_AGE_SECONDS": malformed_value},
+        )
+        assert fresh_result.returncode == 0, fresh_result.stderr
+        assert fresh_result.stdout.strip().startswith("match")
+
+        stale_marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        stale_time = time.time() - 86400 - 120  # just over the 24h default
+        os.utime(stale_marker, (stale_time, stale_time))
+        stale_result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"CODE_REVIEW_CHECK_MAX_AGE_SECONDS": malformed_value},
+        )
+        assert stale_result.returncode == 1
+        assert stale_result.stdout.strip().startswith("no-match")
+
+    def test_no_match_after_staged_diff_changes_past_the_marker(self, isolated_home, git_repo):
+        """A marker recorded for the diff at write time must not still read
+        as a match once the staged diff has moved on -- a false match here
+        would silently skip a real review."""
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=git_repo, check=True)
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_date_failure_reads_as_no_match_not_maximally_fresh(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """If `date +%s` fails, `_code_review_marker_fresh_age` must return
+        1 (no fresh marker) rather than let an empty $now turn the age
+        arithmetic into a large negative number that trivially passes the
+        freshness bound -- a fail-open here would silently skip a real
+        review whenever `date` is unavailable or errors."""
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "date"
+        stub.write_text("#!/bin/bash\nexit 1\n")
+        stub.chmod(0o755)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_future_mtime_age_is_clamped_to_zero_not_negative(self, isolated_home, git_repo):
+        """A marker whose mtime is in the future (clock skew, restore
+        tooling) must clamp age to 0 and still report a match rather than
+        surface a nonsensical negative age_seconds -- the clamp must not
+        itself turn into a reject path that masks a hash match."""
+        marker = write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        future_time = time.time() + 3600
+        os.utime(marker, (future_time, future_time))
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+        assert "age_seconds=-" not in result.stdout
+
+    def test_no_match_after_the_reviewed_change_is_committed(self, isolated_home, git_repo):
+        """Committing advances HEAD and empties the index, so the staged
+        diff `check` recomputes no longer equals what the marker recorded --
+        a stale marker from before a commit must not read as a match."""
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        subprocess.run(["git", "commit", "-q", "-m", "reviewed change"], cwd=git_repo, check=True)
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    @pytest.mark.timing
+    def test_hash_computation_times_out_to_no_match(self, isolated_home, git_repo, tmp_path):
+        """The `_hash_staged_diff` call `check` makes is capped via
+        _lib_capped -- a stalled `git diff --cached` must not hang `check`
+        indefinitely, and a killed call must fall through to no-match,
+        never a false match. Mirrors `status`'s own
+        test_code_review_value_computation_times_out_gracefully for the
+        same underlying call."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 4 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped timeout to fire (stub sleeps 10s if "
+            f"it does not), took {elapsed:.1f}s"
+        )
+
+    @pytest.mark.timing
+    def test_stat_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
+        """`_marker_mtime_epoch`'s own `stat -c%Y`/`stat -f%m` calls are each
+        individually capped via `_lib_capped_for(5)` -- a stalled `stat` must
+        not hang `check` indefinitely, and a killed call must fall through to
+        no-match, never a false match on an unresolvable mtime."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_stat = shutil.which("stat")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "stat"
+        stub.write_text(f'#!/bin/bash\nsleep 10\nexec {real_stat} "$@"\n')
+        stub.chmod(0o755)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        # Both the GNU and BSD stat forms are individually capped at 5s and
+        # tried in sequence, so the bounded worst case is ~10s, not a hang.
+        assert elapsed < 14.5, (
+            f"expected both 5s _lib_capped_for stat timeouts to fire (stub "
+            f"sleeps 10s per call if they do not), took {elapsed:.1f}s"
+        )
+
+    @pytest.mark.timing
+    def test_grep_stall_reads_as_no_match_not_a_hang(self, isolated_home, git_repo, tmp_path):
+        """`_code_review_marker_fresh_age`'s own `grep -qFx` call is capped
+        via `_lib_capped_for(5)` -- a stalled `grep` must not hang `check`
+        indefinitely, and a killed call must fall through to no-match, never
+        a false match on an unverified marker value. `_lib_marker_value_present`
+        makes an earlier, identically-shaped `grep -qFx` call on the same
+        marker file (the cheap common-case hash check `check` runs first), so
+        the stub only stalls from the second `-qFx` invocation onward --
+        isolating `_code_review_marker_fresh_age`'s own call."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_grep = shutil.which("grep")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "grep"
+        invocation_counter = tmp_path / "grep-qFx-invocation-count"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-qFx" ]; then\n'
+            f'  count=$(( $(cat {invocation_counter} 2>/dev/null || echo 0) + 1 ))\n'
+            f'  printf "%s" "$count" > {invocation_counter}\n'
+            '  if [ "$count" -ge 2 ]; then\n'
+            '    sleep 10\n'
+            '  fi\n'
+            'fi\n'
+            f'exec {real_grep} "$@"\n'
+        )
+        stub.chmod(0o755)
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+
+        start = time.monotonic()
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+        assert elapsed < 9.5, (
+            f"expected the 5s _lib_capped_for grep timeout to fire (stub "
+            f"sleeps 10s if it does not), took {elapsed:.1f}s"
+        )
+
+    def test_only_one_git_diff_invocation_on_the_check_path(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`check code-review` makes exactly one git call: `_hash_staged_diff`'s
+        `git diff --cached`. A second, separately-timed git call would
+        reintroduce a window where the two calls could observe different
+        index states under contention and produce a false match. A stub that
+        would hang on a `--quiet`-shaped invocation but answer normally
+        otherwise proves no `--quiet` call is made on this path. The
+        invocation log's single `diff --cached`-shaped line proves
+        `_hash_staged_diff` is only called once. A marker matching the real
+        staged diff is written first so the run also exercises the match
+        branch through this single-call path, rather than passing vacuously
+        the way an unconditional no-match would."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        invocation_log = tmp_path / "git-invocation-args"
+        stub.write_text(
+            '#!/bin/bash\n'
+            f'echo "$@" >> {invocation_log}\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$5" = "--quiet" ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        result = _run(
+            ["check", "code-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+        invocations = invocation_log.read_text().splitlines() if invocation_log.exists() else []
+        assert not any("--quiet" in line for line in invocations), (
+            f"expected no --quiet-shaped git invocation on the check path, got: {invocations}"
+        )
+        diff_cached_invocations = [
+            line
+            for line in invocations
+            if re.match(r"^-C \S+ diff --cached$", line)
+        ]
+        assert len(diff_cached_invocations) == 1, (
+            f"expected exactly one `-C <root> diff --cached`-shaped git "
+            f"invocation on the check path, got: {invocations}"
+        )
+
+    def test_no_match_on_empty_staged_diff_even_if_marker_matches_empty_hash(
+        self, isolated_home, git_repo
+    ):
+        """Empty staged diff must never read as a match. `ready-for-review`'s
+        step 3 invokes `/code-review` with nothing staged (it reviews the
+        cumulative PR diff instead), and a marker some earlier empty-diff
+        review left behind must not falsely short-circuit that review."""
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "land the fixture's staged change"],
+            cwd=git_repo,
+            check=True,
+        )
+        empty_diff_hash = hashlib.sha256(b"").hexdigest()
+        write_marker(isolated_home, git_repo, empty_diff_hash, session_id=self.SID)
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 1
+        assert result.stdout.strip().startswith("no-match")
+
+    def test_check_requires_no_session_file(self, isolated_home, git_repo):
+        """check is read-only and never resolves a session id, unlike
+        write/activate/deactivate -- it must not exit 2 for a missing
+        session file the way TestMarkerScriptSessionMissing pins for those."""
+        write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=self.SID)
+        result = _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+    def test_check_writes_no_marker(self, isolated_home, git_repo):
+        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        _run(["check", "code-review"], cwd=git_repo, home=isolated_home)
+        assert list(marker_dir.iterdir()) == []
+
+    def test_check_missing_skill_argument_exits_2(self, isolated_home, git_repo):
+        result = _run(["check"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+
+    def test_check_unsupported_skill_exits_2(self, isolated_home, git_repo):
+        result = _run(["check", "skill-review"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "code-review" in result.stderr
+
+    def test_check_code_review_extra_arg_exits_2(self, isolated_home, git_repo):
+        result = _run(["check", "code-review", "extra"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+
+
 class TestMarkerScriptArgumentGrammarIsPositional:
     """Regression guard for an invariant enforce-marker-script-shape.sh's
     gate-release-authority arm depends on: marker.sh's argument grammar is
