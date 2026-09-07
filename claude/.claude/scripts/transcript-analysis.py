@@ -37,7 +37,13 @@ from _config_dir import config_dir
 # scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
 # scope.PROJECTS_DIR.
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
-from transcript_analysis.corpus import SUBAGENT_SUBDIR, _parse_ts, _read_session_file_partitioned, iter_sessions
+from transcript_analysis.corpus import (
+    SUBAGENT_SUBDIR,
+    _index_subagent_dispatches,
+    _parse_ts,
+    _read_session_file_partitioned,
+    iter_sessions,
+)
 from transcript_analysis.cost import (
     # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
     # a private helper directly, or a monkeypatch retarget). cmd_cost/cmd_cost_trend,
@@ -113,15 +119,21 @@ from transcript_analysis.render import (
     _sanitize_table_cell,
     _strip_task_notifications,
 )
+from transcript_analysis.review_rounds import (
+    # REVIEW_SKILLS is read bare by this file's own still-monolithic
+    # cmd_judgment_pair (its own --skills default) -- the one-directional
+    # exception documented in docs/transcript-analysis-architecture.md.
+    REVIEW_SKILLS,
+    cmd_review_round_cost,
+)
 from transcript_analysis.reviewer_yield import (
-    # The seven names below are read only via _mod.<name> from test files (unit-testing a
+    # The six names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
-    # _index_subagent_dispatches, the two _REVIEWER_VERDICT_* names, and
+    # the two _REVIEWER_VERDICT_* names, and
     # _REVIEWER_YIELD_ACTIVE_FLOOR/_REVIEWER_YIELD_INSUFFICIENT.
     # Also read bare by this file's own still-monolithic code:
     #   cmd_reviewer_yield                                          -> p_reviewer_yield.set_defaults
     #   _is_reviewer_subagent_type                                  -> _review_trace_session_events
-    #   _index_subagent_dispatches                                  -> cmd_subagent_mix
     #   _REVIEWER_VERDICT_* / _REVIEWER_YIELD_ACTIVE_FLOOR / _REVIEWER_YIELD_INSUFFICIENT -> _reviewer_gap_pp
     _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
     _REVIEWER_VERDICT_FINDINGS_FOUND,
@@ -132,7 +144,6 @@ from transcript_analysis.reviewer_yield import (
     _dispatch_self_reference_keys,  # noqa: F401
     _extract_cited_paths,  # noqa: F401
     _index_session_edits,  # noqa: F401
-    _index_subagent_dispatches,
     _is_reviewer_subagent_type,
     _normalize_cited_path,  # noqa: F401
     _reviewer_yield_cited_keys,  # noqa: F401
@@ -984,8 +995,6 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                     first = False
                     print(f"{row_label:<40} {thread:<10} {_sanitize_table_cell(tool_name):<20} {nbytes:>18,}")
 
-
-REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
 # subagents' tool-result byte grouping bucket for every mcp__<server>__<tool>
 # tool name — an MCP server name is a per-account integration identifier, so
@@ -11765,6 +11774,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_workstream_cost.set_defaults(func=cmd_workstream_cost)
+
+    p_review_round_cost = sub.add_parser(
+        "review-round-cost",
+        help=(
+            "Per-branch review-round dollar cost: prices every code-review/plan-review/"
+            "ready-for-review invocation's own window (main-thread turns plus every subagent"
+            " dispatched inside it), with a round-vs-non-round reconciliation line. Corpus-wide,"
+            " no gh calls."
+        ),
+    )
+    _add_project_scope_args(p_review_round_cost)
+    p_review_round_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
+    p_review_round_cost.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_review_round_cost.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_review_round_cost.add_argument(
+        "--skill", metavar="NAME", choices=sorted(REVIEW_SKILLS),
+        help="Print only rounds for one skill name (default: all three); never narrows detection.",
+    )
+    p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
