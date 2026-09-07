@@ -8743,6 +8743,68 @@ class TestCacheRebuildIdleGapAttribution:
             1, "0.46", "0.46", "n/a",
         )
 
+    def test_multiple_candidates_in_same_bucket_uses_true_median_not_mean(self, fake_projects, capsys):
+        """Three Bash-attributed candidates, each in its own subagent group,
+        with covered shares 10%/90%/95% -- the median (90%) diverges from
+        the mean (65%), so this pins statistics.median against a
+        mean/first/last-value regression that every other test in this
+        class (at most one candidate per bucket) can't catch."""
+        marker_offsets = [
+            ("sess-median-a", "2026-08-01T10:00:36.000Z"),  # 36/360 = 10.0%
+            ("sess-median-b", "2026-08-01T10:05:24.000Z"),  # 324/360 = 90.0%
+            ("sess-median-c", "2026-08-01T10:05:42.000Z"),  # 342/360 = 95.0%
+        ]
+        for session_id, marker_ts in marker_offsets:
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+            subagent_records = [
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                    request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+                ),
+                _user_msg([_tool_result("tool-1", "ok")], ts=marker_ts),
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+                ),
+            ]
+            subagent_records[0]["isSidechain"] = True
+            subagent_records[2]["isSidechain"] = True
+            _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            3, "1.38", "1.38", "90.0%",
+        )
+
+    def test_timestampless_winning_marker_still_attributes_cause_with_na_median_cov(self, fake_projects, capsys):
+        """Report-level regression test for the timestamp-fallback bug this
+        round fixed: a winning Bash tool_result with no timestamp field at
+        all must still land in waiting-on-own-Bash-call, not unattributed,
+        rendering Median cov. as n/a rather than crashing or misattributing."""
+        session_id = "sess-no-ts-marker"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "pytest")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")]),  # no ts -- the fixed fallback shape
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH) == (
+            1, "0.46", "0.46", "n/a",
+        )
+
     def test_no_subagent_idle_gap_rebuilds_renders_all_four_attribution_rows_zero_seeded(
         self, fake_projects, capsys
     ):

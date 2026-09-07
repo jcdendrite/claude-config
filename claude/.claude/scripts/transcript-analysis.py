@@ -5875,11 +5875,7 @@ _CACHE_REBUILD_ATTRIBUTIONS: tuple[str, ...] = (
     _ATTR_OWN_BASH, _ATTR_BACKGROUND_TASK, _ATTR_COORDINATOR, _ATTR_UNATTRIBUTED,
 )
 
-# Harness-emitted marker literals inside an isMeta+isSidechain user record's
-# plain-string message.content -- Claude Code writes these, not anything in
-# this repository (a repo-wide grep for both strings and their near-variants
-# returns zero hits in any .py/.sh/.md file here), so a harness release can
-# change either one without notice.
+# Claude Code emits these marker literals, not this repo -- a harness release can change either one without notice.
 _BACKGROUND_TASK_MARKER_PREFIX = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
 _COORDINATOR_MESSAGE_MARKER_PREFIX = "The coordinator sent a message while you were working"
 
