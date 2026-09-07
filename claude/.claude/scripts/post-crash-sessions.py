@@ -971,6 +971,26 @@ def _confirmed_clean_exit_detail(
     return f"{clean_exit_note} No main transcript was found for this session.{subagent_note}"
 
 
+def _confirmed_clean_exit_detail_with_pre_boot_sibling(
+    newest_record: SessionEndRecord, *, pre_boot_mtime: float, boot_time: float,
+    has_main_transcript: bool, subagent_note: str,
+) -> str:
+    """Detail sentence for a session with a dead_before_boot entry (explained
+    by the reboot, not by a SessionEnd record) alongside a dead_after_boot
+    instance confirmed by one. Wording differs from _confirmed_clean_exit_detail
+    because only the post-boot instance was actually checked."""
+    reason_note = f"reason {newest_record.reason}" if newest_record.reason else "no reason recorded"
+    clean_exit_note = (
+        f"an earlier registry entry (written {_fmt_ts(pre_boot_mtime)}, before boot at {_fmt_ts(boot_time)}) "
+        "predates the last boot and is explained by the reboot itself, not by a SessionEnd record; "
+        "a graceful SessionEnd was recorded for every process instance tracked since boot "
+        f"(newest: {reason_note}, {_fmt_ts(newest_record.mtime)})."
+    )
+    if has_main_transcript:
+        return f"{clean_exit_note} A transcript exists for this session."
+    return f"{clean_exit_note} No main transcript was found for this session.{subagent_note}"
+
+
 def _recent_transcript_only_ids(
     transcripts: dict[str, TranscriptInfo],
     known_session_ids: set[str],
@@ -1105,7 +1125,17 @@ def _classify_session(
             if liveness[("registry", e.pid)] == "dead" and e.mtime is None
         ]
 
-        if dead_before_boot:
+        covered, total, matched_records = _graceful_end_coverage(dead_after_boot, session_end_records)
+        # A dead_before_boot sibling is explained by the reboot itself, not by a
+        # SessionEnd record, so its count is folded into this deficit check instead
+        # of disqualifying confirmation on its own.
+        dead_after_boot_fully_confirmed = (
+            bool(dead_after_boot)
+            and len(dead_before_boot) + total == len(registry_entries)
+            and covered == total
+        )
+
+        if dead_before_boot and not dead_after_boot_fully_confirmed:
             newest = max(dead_before_boot, key=lambda e: e.mtime)
             cwd = (transcript.cwd if has_main_transcript else None) or newest.cwd
             branch = transcript.git_branch if has_main_transcript else None
@@ -1130,23 +1160,15 @@ def _classify_session(
                 "the process's death is unexplained by a reboot, which is what an unclean application "
                 "crash looks like, but a deliberate clean exit looks identical."
             )
-            covered, total, matched_records = _graceful_end_coverage(dead_after_boot, session_end_records)
-            # _read_registry applies no crash-window filter (unlike _read_lookup_entries),
-            # so dead_after_boot already reflects every process instance a
-            # window-limited lookup read could know about too -- the registry's own
-            # full-coverage check never needs to consult lookup_entries separately.
-            # This branch enters the coverage check unconditionally and relies entirely on
-            # _all_entries_explained's total == len(entries) term to reject a session with an
-            # indeterminate-liveness or undated sibling.
-            # The lookup branch below instead gates entry to its whole block on
-            # `not indeterminate_lookups` and routes an indeterminate-sibling session to a
-            # differently-worded CLASS_UNKNOWN before _all_entries_explained is ever reached.
-            fully_confirmed = _all_entries_explained(registry_entries, covered, total)
+            # dead_after_boot_fully_confirmed rejects an indeterminate-liveness or
+            # undated sibling, like _all_entries_explained, but also tolerates a
+            # dead_before_boot sibling (already explained by the reboot).
+            fully_confirmed = dead_after_boot_fully_confirmed
             if fully_confirmed:
                 coverage_note = ""
             elif covered == total:
                 coverage_note = (
-                    " Every tracked dead_after_boot instance recorded a graceful SessionEnd, but "
+                    " Every tracked post-boot process instance recorded a graceful SessionEnd, but "
                     "another registry entry for this session could not be confirmed dead or dated, "
                     "so this session is not being classified as a confirmed clean exit."
                 )
@@ -1162,9 +1184,16 @@ def _classify_session(
                 # matched_records is non-empty here: this branch only runs inside
                 # `if dead_after_boot:`, so total >= 1 and covered == total >= 1.
                 newest_record = max(matched_records, key=lambda r: r.mtime)
-                detail = _confirmed_clean_exit_detail(
-                    newest_record, has_main_transcript=has_main_transcript, subagent_note=subagent_note,
-                )
+                if dead_before_boot:
+                    pre_boot_newest = max(dead_before_boot, key=lambda e: e.mtime)
+                    detail = _confirmed_clean_exit_detail_with_pre_boot_sibling(
+                        newest_record, pre_boot_mtime=pre_boot_newest.mtime, boot_time=boot_time,
+                        has_main_transcript=has_main_transcript, subagent_note=subagent_note,
+                    )
+                else:
+                    detail = _confirmed_clean_exit_detail(
+                        newest_record, has_main_transcript=has_main_transcript, subagent_note=subagent_note,
+                    )
                 return SessionRow(
                     session_id, CLASS_CONFIRMED_CLEAN_EXIT, cwd, branch, last_activity,
                     detail, entry_count, _cwd_missing(cwd), config_dir=row_config_dir,

@@ -1,5 +1,6 @@
 #!/bin/bash
 # hook-class: informational
+set -uo pipefail
 # SessionEnd hook: records that this Claude Code process shut down
 # gracefully, so post-crash-sessions.py can tell a deliberate clean exit
 # apart from a crash once the process is dead. See
