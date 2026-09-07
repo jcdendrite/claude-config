@@ -18,6 +18,36 @@
 
 set -uo pipefail
 
+# The keys holding one machine's own state, which must never ship as the
+# config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
+# via path traversal, not a literal top-level match — see guarded_value below.
+# Defined here, ahead of the direct-invocation mode below, so that mode
+# never depends on code that runs later in the script.
+GUARDED_KEYS_JSON='[
+  "model",
+  "effortLevel",
+  "skipAutoPermissionPrompt",
+  "skipWorkflowUsageWarning",
+  "modelSettings",
+  "fastMode",
+  "disableBypassPermissionsMode",
+  "theme",
+  "tui",
+  "env.CLAUDE_CODE_EFFORT_LEVEL",
+  "env.ANTHROPIC_MODEL"
+]'
+
+# Direct-invocation mode for tests and render-settings.sh's own drift check
+# (its dotted-path carry-forward rule): prints GUARDED_KEYS_JSON as JSON and exits, bypassing the
+# hook's stdin tool-input protocol entirely. Must run before _lib.sh is
+# sourced and before any stdin is read — a CLI invocation here supplies no
+# piped tool-input JSON, and _lib_parse_tool_input_or_deny is fail-closed on
+# that, so placing this check any later would make the mode unreachable.
+if [ "${1:-}" = "--print-guarded-keys" ]; then
+  printf '%s\n' "$GUARDED_KEYS_JSON"
+  exit 0
+fi
+
 # Every git call below is capped via _lib_capped — see _lib.sh for the cap and its fallback behavior.
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs
 # these git calls uncapped, so a stalled git (locked index, network mount)
@@ -89,20 +119,6 @@ if [ -z "$DEFAULT_BRANCH" ] || ! _lib_capped git -C "$CWD" show "origin/$DEFAULT
 else
   MAIN_CONTENT=$(_lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" 2>/dev/null)
 fi
-
-# The keys holding one machine's own state, which must never ship as the
-# config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
-# via path traversal, not a literal top-level match — see guarded_value below.
-GUARDED_KEYS_JSON='[
-  "model",
-  "effortLevel",
-  "skipAutoPermissionPrompt",
-  "skipWorkflowUsageWarning",
-  "theme",
-  "tui",
-  "env.CLAUDE_CODE_EFFORT_LEVEL",
-  "env.ANTHROPIC_MODEL"
-]'
 
 # Name the guarded keys whose staged value differs from the default branch. Notes:
 # - One jq call, not one per key: hooks fire on every matching tool call, so a

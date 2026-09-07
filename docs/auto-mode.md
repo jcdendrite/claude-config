@@ -76,6 +76,10 @@ default for your own sessions by adding to `~/.claude/settings.json`:
 `defaultMode` sets the *mode*, not the *model* — the session-model requirement
 above still applies regardless of how auto mode is activated.
 
+A brand-new install ships with no repo-chosen default `model` in
+`settings.base.json`, relying on Claude Code's own built-in default until
+your first `/config`.
+
 ## Hard-floor deny rules
 
 `settings.base.json` in this repo ships a `permissions.deny` list, rendered

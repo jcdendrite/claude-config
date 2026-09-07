@@ -1,12 +1,14 @@
 """Tests for guard-settings-session-keys.sh."""
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 
 import pytest
 from helpers import (
+    CLAUDE_DIR,
     HOOKS_DIR,
     bash_input,
     build_path_without,
@@ -17,6 +19,7 @@ from helpers import (
 )
 
 GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
+SETTINGS_BASE_JSON = CLAUDE_DIR / "settings.base.json"
 
 # The deny reason is prose; the key list is the only structured part, so
 # pull that segment out and compare as a set. Asserting on the raw sentence
@@ -220,7 +223,7 @@ def settings_repo_dangling_symref_candidate_probe_file_absent(tmp_path):
     )
     settings_dir = repo / "claude" / ".claude"
     settings_dir.mkdir(parents=True)
-    settings_file = settings_dir / "settings.json"
+    settings_file = settings_dir / "settings.base.json"
     return repo, settings_file
 
 
@@ -506,7 +509,7 @@ class TestGuardSettingsSessionKeys:
         )
 
     def test_deny_message_mentions_settings_json(self, settings_repo):
-        """Deny reason must reference settings.json so the agent knows what to unstage."""
+        """Deny reason must reference settings.base.json so the agent knows what to unstage."""
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         reason = run_hook_reason(
@@ -515,7 +518,7 @@ class TestGuardSettingsSessionKeys:
             cwd=repo,
         )
         assert reason is not None
-        assert "settings.json" in reason
+        assert "settings.base.json" in reason
         assert "model" in reason or "effortLevel" in reason
 
     def test_deny_message_names_only_the_changed_keys(self, settings_repo):
@@ -1266,3 +1269,106 @@ class TestGuardSettingsSessionKeys:
             )
             == "allow"
         )
+
+    def test_model_settings_change_denies_commit(self, settings_repo):
+        """modelSettings, written by /effort, must block -- backfilled key (M3/M4)."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "modelSettings": {"effort": "high"}}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add modelSettings'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_fast_mode_change_denies_commit(self, settings_repo):
+        """fastMode, written by /fast, must block -- backfilled key (M3/M4)."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal", "fastMode": true}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add fastMode'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_disable_bypass_permissions_mode_change_denies_commit(self, settings_repo):
+        """disableBypassPermissionsMode, Claude-Code-written, must block -- backfilled key (M3/M4)."""
+        repo, settings_file = settings_repo
+        stage_settings(
+            repo,
+            settings_file,
+            '{"model": "sonnet", "effortLevel": "normal",'
+            ' "disableBypassPermissionsMode": true}\n',
+        )
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'add disableBypassPermissionsMode'"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+
+class TestPrintGuardedKeysMode:
+    """--print-guarded-keys (M3): a direct-invocation escape hatch giving
+    tests and render-settings.sh's own rule-4 drift check a real artifact to
+    compare against instead of source-scanning GUARDED_KEYS_JSON."""
+
+    def test_print_guarded_keys_prints_json_and_exits_zero_with_no_stdin(self):
+        result = subprocess.run(
+            [str(GUARD_SETTINGS_SESSION_KEYS_HOOK), "--print-guarded-keys"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        guarded_keys = json.loads(result.stdout)
+        assert "model" in guarded_keys
+        assert "env.CLAUDE_CODE_EFFORT_LEVEL" in guarded_keys
+        assert "env.ANTHROPIC_MODEL" in guarded_keys
+
+
+class TestBaseKeyPlacementDisjointness:
+    """Regression guards for settings.base.json's own top-level key set,
+    pinning the placement decisions M3/M4/Phase 0 made -- see
+    test_render_settings.py's TestBaseOverlayDisjointness for the sibling
+    check against the overlay's allowed key set."""
+
+    def test_base_top_level_keys_disjoint_from_guarded_keys(self):
+        """Regression guard: a future contributor re-adding `model`
+        (or any other app-written key) to settings.base.json would
+        reintroduce the revert-on-every-render bug this carry-forward
+        design exists to fix."""
+        result = subprocess.run(
+            [str(GUARD_SETTINGS_SESSION_KEYS_HOOK), "--print-guarded-keys"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        guarded_keys = set(json.loads(result.stdout))
+        base_keys = set(json.loads(SETTINGS_BASE_JSON.read_text()).keys())
+        overlap = base_keys & guarded_keys
+        assert overlap == set(), f"settings.base.json sets guarded key(s): {overlap}"
+
+    def test_agent_push_notif_enabled_absent_from_base(self):
+        """agentPushNotifEnabled falls through to general carry-forward
+        (M3 rule 3), the same as theme/tui -- it is not a base key or an
+        overlay-allowed key (Phase 0 decision)."""
+        base_keys = set(json.loads(SETTINGS_BASE_JSON.read_text()).keys())
+        assert "agentPushNotifEnabled" not in base_keys

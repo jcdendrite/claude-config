@@ -69,7 +69,6 @@
       "Bash(cleanup-idle-open-pr-worktrees)"
     ]
   },
-  "model": "sonnet",
   "disableArtifact": true,
   "disableWorkflows": true,
   "skillOverrides": {

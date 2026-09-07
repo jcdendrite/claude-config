@@ -1,8 +1,10 @@
 """Tests for render-settings.sh.
 
 Each test builds its own scratch $CLAUDE_CONFIG_DIR under tmp_path and
-invokes the real script via subprocess -- no shim needed, since the script's
-only external dependency is jq itself.
+invokes the real script via subprocess. Most tests need no shim, since the
+script's main external dependency is jq; TestChmodPortability's CI-portable
+regression case is the one exception, prepending a fake chmod that
+reproduces BSD chmod's `--` rejection to PATH.
 """
 from __future__ import annotations
 
@@ -15,19 +17,34 @@ from pathlib import Path
 import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "render-settings.sh"
+_SETTINGS_BASE_JSON = Path(__file__).resolve().parents[2] / "settings.base.json"
+_GUARD_HOOK = Path(__file__).resolve().parents[2] / "hooks" / "guard-settings-session-keys.sh"
+
+# The overlay's closed top-level allowlist (M5), excluding the conditionally
+# admissible `permissions` -- see TestBaseOverlayDisjointness, which mirrors
+# TestBaseKeyPlacementDisjointness in test_guard_settings_session_keys.py.
+OVERLAY_ALLOWED_TOP_LEVEL_KEYS = {"autoMode", "env", "skillListingBudgetFraction"}
 
 
 def _write_json(path: Path, content: dict | list) -> None:
     path.write_text(json.dumps(content))
 
 
-def _run_script(*args: str, config_dir: Path) -> subprocess.CompletedProcess:
+def _run_script(
+    *args: str,
+    config_dir: Path,
+    cwd: Path | None = None,
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(_SCRIPT), *args],
         capture_output=True,
         text=True,
+        cwd=cwd,
         env=env,
         check=False,
     )
@@ -35,6 +52,27 @@ def _run_script(*args: str, config_dir: Path) -> subprocess.CompletedProcess:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _rule4_dotted_paths_from_render_settings() -> list[str]:
+    """render-settings.sh's own RULE4_DOTTED_PATHS_JSON, via its print interface.
+
+    Mirrors guard-settings-session-keys.sh's --print-guarded-keys mode --
+    both are drift-check interfaces only, not on the render's hot path (see
+    render-settings.sh's own comment on why it doesn't shell out to
+    guard-settings-session-keys.sh on every render). This is comparing two
+    independently-maintained literals for drift, not standing in for
+    actually exercising rule 4 (TestShallowCarryForward's rule-4 cases
+    already do that through the real script).
+    """
+    result = subprocess.run(
+        [str(_SCRIPT), "--print-rule4-dotted-paths"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
 
 
 class TestNoOverlay:
@@ -52,18 +90,6 @@ class TestNoOverlay:
 
 
 class TestOverlayMerge:
-    def test_overlay_key_wins_over_base_key(self, tmp_path: Path) -> None:
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"enabled": False, "otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"enabled": True})
-
-        result = _run_script(config_dir=config_dir)
-
-        assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered == {"enabled": True, "otherKey": "base-value"}
-
     def test_overlay_array_replaces_base_array_rather_than_concatenating(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
@@ -73,7 +99,7 @@ class TestOverlayMerge:
         )
         _write_json(
             config_dir / "settings.overlay.json",
-            {"enabled": True, "autoMode": {"environment": ["$defaults", "overlay-entry"]}},
+            {"autoMode": {"environment": ["$defaults", "overlay-entry"]}},
         )
 
         result = _run_script(config_dir=config_dir)
@@ -89,13 +115,16 @@ class TestOverlayMerge:
         # Deliberately no settings.overlay.json at the default path -- only
         # the explicitly-named alternate overlay should be read.
         alt_overlay = tmp_path / "alt-overlay.json"
-        _write_json(alt_overlay, {"enabled": True})
+        _write_json(alt_overlay, {"autoMode": {"environment": ["$defaults"]}})
 
         result = _run_script(str(alt_overlay), config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered == {"enabled": True, "otherKey": "base-value"}
+        assert rendered == {
+            "otherKey": "base-value",
+            "autoMode": {"environment": ["$defaults"]},
+        }
 
     def test_explicit_overlay_argument_naming_nonexistent_file_renders_base_only(
         self, tmp_path: Path
@@ -114,10 +143,10 @@ class TestOverlayMerge:
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered == {"otherKey": "base-value"}
 
-    def test_overlay_autoMode_without_enabled_key_survives_unmodified(self, tmp_path: Path) -> None:
-        """An absent `enabled` key must not trigger the strip -- pins the
-        `null == false` branch of the strip condition, distinct from the
-        explicit `enabled: false` case covered elsewhere."""
+    def test_overlay_autoMode_entirely_replaces_base_autoMode(self, tmp_path: Path) -> None:
+        """Confirms the merge of an overlay-allowed key is shallow whole-
+        value replacement (jq `+`), not a deep merge -- the overlay's
+        autoMode entirely replaces base's rather than combining with it."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(
@@ -134,41 +163,6 @@ class TestOverlayMerge:
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered["autoMode"] == {"environment": ["$defaults"]}
-
-
-class TestEnabledFalseStripsAutoMode:
-    def test_strips_autoMode_from_base_when_overlay_disables(self, tmp_path: Path) -> None:
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(
-            config_dir / "settings.base.json",
-            {"autoMode": {"environment": ["$defaults"]}, "otherKey": "base-value"},
-        )
-        _write_json(config_dir / "settings.overlay.json", {"enabled": False})
-
-        result = _run_script(config_dir=config_dir)
-
-        assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert "autoMode" not in rendered
-        assert rendered["otherKey"] == "base-value"
-
-    def test_strips_autoMode_even_when_overlay_itself_supplies_one(self, tmp_path: Path) -> None:
-        """enabled:false must fail closed regardless of what the overlay's
-        own autoMode says -- not just when the overlay omits autoMode."""
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"autoMode": {"environment": ["$defaults"]}})
-        _write_json(
-            config_dir / "settings.overlay.json",
-            {"enabled": False, "autoMode": {"environment": ["$defaults", "leaked-entry"]}},
-        )
-
-        result = _run_script(config_dir=config_dir)
-
-        assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert "autoMode" not in rendered
 
 
 class TestMissingBase:
@@ -213,7 +207,7 @@ class TestOverlayValidation:
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         overlay = config_dir / "settings.overlay.json"
-        _write_json(overlay, {"enabled": True})
+        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}})
         overlay.chmod(0o000)
         try:
             result = _run_script(config_dir=config_dir)
@@ -228,7 +222,10 @@ class TestOverlayValidation:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"enabled": True, "notAllowed": "x"})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"autoMode": {"environment": ["$defaults"]}, "notAllowed": "x"},
+        )
 
         result = _run_script(config_dir=config_dir)
 
@@ -242,7 +239,10 @@ class TestOverlayValidation:
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         _write_json(
             config_dir / "settings.overlay.json",
-            {"enabled": True, "leakedToken": "sk-should-never-appear"},
+            {
+                "autoMode": {"environment": ["$defaults"]},
+                "leakedToken": "sk-should-never-appear",
+            },
         )
 
         result = _run_script(config_dir=config_dir)
@@ -252,21 +252,293 @@ class TestOverlayValidation:
         assert "sk-should-never-appear" not in result.stderr
         assert not (config_dir / "settings.json").exists()
 
-    @pytest.mark.parametrize("bad_enabled", ["false", 0, None])
-    def test_non_boolean_enabled_is_rejected(self, tmp_path: Path, bad_enabled: object) -> None:
-        """jq's == is type-strict, so a string/number enabled would otherwise
-        silently fail to strip autoMode -- pins the reject-outright fix
-        instead of a silent fail-open."""
+
+class TestOverlayAllowlist:
+    """Closed top-level allowlist plus the env namespace-rule guard."""
+
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "BASH_ENV",
+            "NODE_OPTIONS",
+            "LD_PRELOAD",
+            "PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "PYTHONPATH",
+            "GIT_SSH_COMMAND",
+        ],
+    )
+    def test_env_name_outside_namespace_is_rejected(self, tmp_path: Path, bad_name: str) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"enabled": bad_enabled})
+        _write_json(config_dir / "settings.overlay.json", {"env": {bad_name: "x"}})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert "not a JSON boolean" in result.stderr
+        assert bad_name in result.stderr
         assert not (config_dir / "settings.json").exists()
+
+    @pytest.mark.parametrize(
+        "good_name",
+        [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_ENABLE_TELEMETRY",
+            "DISABLE_TELEMETRY",
+        ],
+    )
+    def test_env_name_matching_namespace_with_string_value_is_accepted(
+        self, tmp_path: Path, good_name: str
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {good_name: "some-value"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["env"][good_name] == "some-value"
+
+    def test_non_object_env_value_is_rejected_with_diagnostic_not_jq_error(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": "not-an-object"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "non-object env value" in result.stderr
+        assert "jq: error" not in result.stderr
+
+    def test_null_env_value_is_rejected_with_diagnostic_not_jq_error(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": None})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "non-object env value" in result.stderr
+        assert "jq: error" not in result.stderr
+
+    def test_namespace_matching_env_name_with_non_string_value_is_rejected(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": 123}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "ANTHROPIC_BASE_URL" in result.stderr
+
+    def test_non_object_permissions_value_is_rejected_with_diagnostic_not_jq_error(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": "not-an-object"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "non-object permissions value" in result.stderr
+        assert "jq: error" not in result.stderr
+
+    def test_null_permissions_value_is_rejected_with_diagnostic_not_jq_error(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": None})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "non-object permissions value" in result.stderr
+        assert "jq: error" not in result.stderr
+
+    def test_permissions_object_with_extra_key_is_rejected_naming_it(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"permissions": {"defaultMode": "plan", "deny": ["Bash(rm *)"]}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "deny" in result.stderr
+
+    @pytest.mark.parametrize(
+        "bad_key",
+        ["hooks", "statusLine", "enabledPlugins", "extraKnownMarketplaces", "model", "notAllowed"],
+    )
+    def test_overlay_top_level_key_outside_allowlist_is_rejected(self, tmp_path: Path, bad_key: str) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {bad_key: "x"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert bad_key in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+    def test_overlay_with_only_autoMode_and_skillListingBudgetFraction_is_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"autoMode": {"environment": ["$defaults"]}, "skillListingBudgetFraction": 0.2},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["autoMode"] == {"environment": ["$defaults"]}
+        assert rendered["skillListingBudgetFraction"] == 0.2
+
+
+class TestDefaultModeNestedException:
+    """permissions.defaultMode is a narrow, value-guarded nested
+    exception outside the top-level allowlist."""
+
+    @pytest.mark.parametrize("accepted_mode", ["default", "plan"])
+    def test_accepted_default_mode_overrides_merged_result(self, tmp_path: Path, accepted_mode: str) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["a"]}})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": accepted_mode}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["permissions"]["defaultMode"] == accepted_mode
+        assert rendered["permissions"]["deny"] == ["a"]
+
+    def test_base_set_default_mode_is_overridden_by_overlay_accepted_value(self, tmp_path: Path) -> None:
+        """Confirms M11's nested override applies on top of rule 1's
+        wholesale permissions merge even when base already sets the path."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {"permissions": {"deny": ["a"], "defaultMode": "default"}},
+        )
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "plan"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["permissions"]["defaultMode"] == "plan"
+        assert rendered["permissions"]["deny"] == ["a"]
+
+    def test_bypass_permissions_is_refused_naming_alternatives(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "bypassPermissions"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "bypassPermissions" in result.stderr
+        assert "--permission-mode" in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+    def test_accept_edits_is_refused(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "acceptEdits"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "acceptEdits" in result.stderr
+
+    def test_auto_is_refused_pending_classifier_verification(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "auto"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "auto" in result.stderr
+
+    def test_dont_ask_is_refused_pending_verification(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "dontAsk"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "dontAsk" in result.stderr
+
+    def test_unknown_default_mode_value_is_refused(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "not-a-real-mode"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "not-a-real-mode" in result.stderr
+
+    def test_default_mode_does_not_reopen_deny(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["Bash(sudo *)"]}})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "plan"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["permissions"]["deny"] == ["Bash(sudo *)"]
+
+
+class TestRefusalPreservesPriorRender:
+    """An overlay validation failure must not touch the pre-existing
+    $target -- the property the whole plan exists to protect."""
+
+    def test_overlay_validation_failure_leaves_prior_target_byte_identical(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["Bash(sudo *)"]}})
+        target = config_dir / "settings.json"
+        prior_content = json.dumps(
+            {"permissions": {"deny": ["Bash(sudo *)"]}, "hooks": {"PreToolUse": []}}
+        )
+        target.write_text(prior_content)
+        _write_json(config_dir / "settings.overlay.json", {"notAllowed": "x"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert target.read_text() == prior_content
 
 
 class TestOverlayChmodHardening:
@@ -278,7 +550,7 @@ class TestOverlayChmodHardening:
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         overlay = config_dir / "settings.overlay.json"
-        _write_json(overlay, {"enabled": True})
+        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}})
         overlay.chmod(0o644)
 
         result = _run_script(config_dir=config_dir)
@@ -304,7 +576,7 @@ class TestOverlayChmodHardening:
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         overlay = config_dir / "settings.overlay.json"
-        _write_json(overlay, {"enabled": True, "notAllowed": "x"})
+        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}, "notAllowed": "x"})
         overlay.chmod(0o644)
 
         result = _run_script(config_dir=config_dir)
@@ -312,18 +584,127 @@ class TestOverlayChmodHardening:
         assert result.returncode != 0
         assert (overlay.stat().st_mode & 0o777) == 0o600
 
-    def test_overlay_is_chmod_600_when_non_boolean_enabled_is_rejected(self, tmp_path: Path) -> None:
+    def test_overlay_is_chmod_600_when_env_namespace_violation_is_rejected(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         overlay = config_dir / "settings.overlay.json"
-        _write_json(overlay, {"enabled": "false"})
+        _write_json(overlay, {"env": {"PATH": "/x"}})
         overlay.chmod(0o644)
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
         assert (overlay.stat().st_mode & 0o777) == 0o600
+
+
+class TestChmodPortability:
+    """BSD chmod does not accept -- as an end-of-options marker."""
+
+    def test_dash_leading_overlay_argument_is_not_parsed_as_a_flag(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "-oops.json", {"autoMode": {"environment": ["$defaults"]}})
+
+        result = _run_script("-oops.json", config_dir=config_dir, cwd=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["autoMode"] == {"environment": ["$defaults"]}
+
+    def test_bsd_style_chmod_shim_reports_no_warning_and_leaves_mode_600(self, tmp_path: Path) -> None:
+        """CI runs Linux, where GNU chmod accepts -- unconditionally and this
+        regression would still pass with the bug present. This shim
+        reproduces BSD chmod's -- rejection so the fix is enforceable on
+        every push, not just a one-time manual macOS run."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        overlay = config_dir / "settings.overlay.json"
+        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}})
+        overlay.chmod(0o644)
+
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_chmod = fake_bin / "chmod"
+        fake_chmod.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "--" ]; then\n'
+            '    echo "chmod: illegal option -- --" >&2\n'
+            "    exit 1\n"
+            "  fi\n"
+            "done\n"
+            'exec /bin/chmod "$@"\n'
+        )
+        fake_chmod.chmod(0o755)
+
+        result = _run_script(
+            config_dir=config_dir,
+            extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "could not chmod 600" not in result.stderr
+        assert (overlay.stat().st_mode & 0o777) == 0o600
+
+    def test_dash_leading_overlay_path_chmod_under_bsd_style_shim(self, tmp_path: Path) -> None:
+        """Intersection of the two regressions above: a dash-leading overlay
+        path must not reach the BSD-style chmod shim in a way that trips its
+        -- rejection, since the dash-guard's ./-prefixing changes the exact
+        argument chmod receives."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        overlay = config_dir / "-oops.json"
+        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}})
+        overlay.chmod(0o644)
+
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_chmod = fake_bin / "chmod"
+        fake_chmod.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = "--" ]; then\n'
+            '    echo "chmod: illegal option -- --" >&2\n'
+            "    exit 1\n"
+            "  fi\n"
+            "done\n"
+            'exec /bin/chmod "$@"\n'
+        )
+        fake_chmod.chmod(0o755)
+
+        result = _run_script(
+            "-oops.json",
+            config_dir=config_dir,
+            cwd=config_dir,
+            extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "could not chmod 600" not in result.stderr
+        assert (overlay.stat().st_mode & 0o777) == 0o600
+
+
+class TestDirectoryAtTarget:
+    """A directory at $target must not silently absorb the rendered file."""
+
+    def test_directory_at_target_refuses_render_without_moving_file_inside_it(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        target.mkdir()
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert target.is_dir()
+        assert list(target.iterdir()) == []
 
 
 class TestBaseValidation:
@@ -354,7 +735,7 @@ class TestIdempotency:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"enabled": True})
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["$defaults"]}})
 
         first = _run_script(config_dir=config_dir)
         assert first.returncode == 0, first.stderr
@@ -371,7 +752,8 @@ class TestThemeTuiPreservation:
     """theme/tui are written directly into the live settings.json by
     Claude Code's /theme and /tui commands, not by base or overlay, so a
     render must carry forward the target's pre-existing values instead of
-    discarding them."""
+    discarding them. Now an instance of M3's general rule-3 fallback, not a
+    hardcoded two-key special case."""
 
     def test_prior_target_theme_and_tui_survive_the_render(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -433,8 +815,9 @@ class TestThemeTuiPreservation:
         assert "tui" not in rendered
 
     def test_prior_target_null_theme_is_omitted_while_tui_survives(self, tmp_path: Path) -> None:
-        """The strip-nulls step in the extraction jq applies per-key: a null
-        theme alongside a set tui must not cause tui to be dropped too."""
+        """A null-valued carried key is treated as absent, matching this
+        mechanism's original theme/tui-only precedent, now applied to every
+        top-level key rule 3 might carry forward."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -522,7 +905,10 @@ class TestSymlinkWriteThroughRefusal:
     def test_target_symlink_is_replaced_not_written_through(self, tmp_path: Path) -> None:
         """The critical write-safety case: if settings.json is still a
         symlink into some other file when the render runs, the render must
-        replace the symlink itself -- never write through it."""
+        replace the symlink itself -- never write through it. The canary
+        file's own "canary" key is an unclaimed top-level key, so it
+        carries forward under M3 rule 3 like any other prior-render key --
+        that's the widened mechanism working as designed, not a leak."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -538,4 +924,317 @@ class TestSymlinkWriteThroughRefusal:
         assert result.returncode == 0, result.stderr
         assert canary.read_text() == canary_original_content
         assert not target.is_symlink()
-        assert json.loads(target.read_text()) == {"otherKey": "base-value"}
+        assert json.loads(target.read_text()) == {
+            "otherKey": "base-value",
+            "canary": "untouched",
+        }
+
+
+class TestShallowCarryForward:
+    """Eight cases covering carry-forward rules 1-4."""
+
+    def test_base_owned_key_wins_over_prior_files_value(self, tmp_path: Path) -> None:
+        """Rule 1: a key base sets wins over whatever the prior render had."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["current"]}})
+        _write_json(config_dir / "settings.json", {"permissions": {"deny": ["stale"]}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["permissions"] == {"deny": ["current"]}
+
+    def test_nested_key_removed_from_base_does_not_survive_from_prior_file(
+        self, tmp_path: Path
+    ) -> None:
+        """Rule 1, the deep-merge resurrection guard: a nested path present
+        in the prior render but absent from base's current permissions
+        object must not survive -- top-level-only merging, never jq `*`."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["a"]}})
+        _write_json(
+            config_dir / "settings.json",
+            {"permissions": {"deny": ["a", "b", "old-removed-hook-path"]}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["permissions"] == {"deny": ["a"]}
+
+    def test_overlay_allowed_key_absent_from_overlay_stays_absent(self, tmp_path: Path) -> None:
+        """Rule 2, the regression test for the bug plan-architect found:
+        deleting autoMode from the overlay (M6's own prescribed way to
+        disable it) must actually take effect on the next render, not
+        resurrect the prior render's value."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.json",
+            {"autoMode": {"environment": ["$defaults"]}, "otherKey": "v"},
+        )
+        # No settings.overlay.json this render.
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert "autoMode" not in rendered
+
+    def test_unclaimed_top_level_key_carries_forward(self, tmp_path: Path) -> None:
+        """Rule 3, the general fallback: model, once absent from both base
+        and overlay (M4), needs no key-specific case -- it carries forward
+        exactly like any other unclaimed top-level key."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.json", {"model": "opus", "otherKey": "v"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["model"] == "opus"
+
+    def test_theme_and_tui_still_preserved_under_the_widened_rule(self, tmp_path: Path) -> None:
+        """Rule 3: widening carry-forward from a hardcoded theme/tui pair to
+        every top-level key is not a regression on the original behavior --
+        see TestThemeTuiPreservation for the full theme/tui suite."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.json", {"theme": "dark", "tui": True, "otherKey": "v"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["theme"] == "dark"
+        assert rendered["tui"] is True
+
+    def test_rule4_dotted_paths_survive_when_overlay_sets_env_without_them(
+        self, tmp_path: Path
+    ) -> None:
+        """Rule 4: an overlay that sets env without the two app-written
+        dotted paths must not drop them -- rules 1-3 alone would, since env
+        itself is rule 2's territory and the overlay's own env object wins
+        wholesale over the prior render's."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": "1"}})
+        _write_json(
+            config_dir / "settings.json",
+            {
+                "env": {
+                    "CLAUDE_CODE_EFFORT_LEVEL": "high",
+                    "ANTHROPIC_MODEL": "opus",
+                    "DISABLE_TELEMETRY": "0",
+                },
+                "otherKey": "v",
+            },
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["env"] == {
+            "DISABLE_TELEMETRY": "1",
+            "CLAUDE_CODE_EFFORT_LEVEL": "high",
+            "ANTHROPIC_MODEL": "opus",
+        }
+
+    def test_overlay_set_rule4_path_wins_over_prior_files_value(self, tmp_path: Path) -> None:
+        """Rule 4's conditional, the regression test for the round-3
+        BLOCKER: an unconditional rule 4 would let the stale prior-file
+        value silently overwrite the overlay's own current setting."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_MODEL": "new-value"}})
+        _write_json(
+            config_dir / "settings.json",
+            {"env": {"ANTHROPIC_MODEL": "old-stale-value"}, "otherKey": "v"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["env"]["ANTHROPIC_MODEL"] == "new-value"
+
+    def test_rule4_creates_a_fresh_env_object_when_merged_result_has_none(
+        self, tmp_path: Path
+    ) -> None:
+        """Rule 4, the "no overlay at all" branch: the merged result from
+        rules 1-3 has no env key at all (no overlay sets one, and env is
+        rule 2's territory so it can't carry forward), yet the prior
+        render's env.CLAUDE_CODE_EFFORT_LEVEL must still survive."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.json",
+            {"env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}, "otherKey": "v"},
+        )
+        # No settings.overlay.json this render.
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered == {"otherKey": "v", "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}
+
+
+class TestRuleFourGuardedKeysCrossCheck:
+    def test_rule4_dotted_paths_match_print_guarded_keys_dotted_subset(self) -> None:
+        result = subprocess.run(
+            [str(_GUARD_HOOK), "--print-guarded-keys"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        guarded_keys = json.loads(result.stdout)
+        dotted_subset = sorted(k for k in guarded_keys if "." in k)
+        assert sorted(_rule4_dotted_paths_from_render_settings()) == dotted_subset
+
+
+class TestBaseOverlayDisjointness:
+    """Regression guard: git merge-tree's auto-merge can silently land one
+    of the overlay's allowed keys into base with no conflict marker.
+    Mirrors TestBaseKeyPlacementDisjointness in
+    test_guard_settings_session_keys.py."""
+
+    def test_base_top_level_keys_disjoint_from_overlay_allowed_keys(self) -> None:
+        base_keys = set(json.loads(_SETTINGS_BASE_JSON.read_text()).keys())
+        overlap = base_keys & OVERLAY_ALLOWED_TOP_LEVEL_KEYS
+        assert overlap == set(), f"settings.base.json sets overlay-allowed key(s): {overlap}"
+
+
+class TestEnabledKeyDeletion:
+    """enabled has no consumer anymore and no special-cased handling --
+    an overlay carrying it is refused the same as any other unrecognized
+    top-level key."""
+
+    def test_enabled_false_is_refused_as_an_unrecognized_key(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"enabled": False})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "enabled" in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+
+class TestStderrDisclosure:
+    """The canonical stderr-disclosure deliverable specified in Phase 1's
+    render-settings.sh bullet: change-triggered, name-only, never-value."""
+
+    def test_no_change_produces_no_disclosure_line(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["$defaults"]}})
+
+        first = _run_script(config_dir=config_dir)
+        assert first.returncode == 0, first.stderr
+
+        second = _run_script(config_dir=config_dir)
+        assert second.returncode == 0, second.stderr
+        assert "this render changed settings.json" not in second.stderr
+
+    def test_category_a_names_carried_forward_top_level_keys(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v1"})
+        _write_json(config_dir / "settings.json", {"theme": "dark", "otherKey": "v0"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "this render changed settings.json" in result.stderr
+        assert "carried forward top-level keys: theme" in result.stderr
+
+    def test_category_b_names_newly_applied_overlay_env_keys_by_dotted_path(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://x"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "env.ANTHROPIC_BASE_URL" in result.stderr
+
+    def test_category_c_names_overlay_set_default_mode(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": "plan"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "permissions.defaultMode=plan" in result.stderr
+
+    def test_combined_categories_a_and_b_both_named_in_one_render(self, tmp_path: Path) -> None:
+        """Closes the early-return-after-first-match gap: a newly-added
+        overlay env key must not hide behind an unrelated, simultaneous,
+        legitimate top-level carry-forward."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://x"}})
+        _write_json(config_dir / "settings.json", {"theme": "dark", "otherKey": "v"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "carried forward top-level keys: theme" in result.stderr
+        assert "env.ANTHROPIC_BASE_URL" in result.stderr
+
+    def test_env_value_never_appears_in_disclosure_only_the_dotted_path_does(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"env": {"ANTHROPIC_AUTH_TOKEN": "sk-secret-marker-token"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "env.ANTHROPIC_AUTH_TOKEN" in result.stderr
+        assert "sk-secret-marker-token" not in result.stderr
+
+    def test_carried_forward_key_value_never_appears_in_disclosure_only_the_name_does(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v1"})
+        _write_json(
+            config_dir / "settings.json",
+            {"theme": "should-not-leak-in-stderr", "otherKey": "v0"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "carried forward top-level keys: theme" in result.stderr
+        assert "should-not-leak-in-stderr" not in result.stderr
