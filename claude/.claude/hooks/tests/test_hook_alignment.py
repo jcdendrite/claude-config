@@ -181,6 +181,7 @@ _SKILLS_DIR = _REPO_ROOT / "claude-skills" / "skills"
 # assume the two modules share a convention.
 _SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
 _REPO_LOCAL_SETTINGS_PATH = _REPO_ROOT / ".claude" / "settings.json"
+_ATTRIBUTION_SETTINGS_PATHS = (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH)
 
 
 def _pretooluse_entries_for(hook: Path) -> list[dict]:
@@ -372,27 +373,31 @@ def test_attribution_sessionurl_stays_false_in_repo_local_settings() -> None:
     )
 
 
-def test_attribution_commit_and_pr_stay_unset_in_both_settings() -> None:
+@pytest.mark.parametrize(
+    "path",
+    _ATTRIBUTION_SETTINGS_PATHS,
+    ids=[str(p.relative_to(_REPO_ROOT)) for p in _ATTRIBUTION_SETTINGS_PATHS],
+)
+def test_attribution_commit_and_pr_stay_unset_in_both_settings(path: Path) -> None:
     """Guards against reintroducing the falsy-empty-string trap §60 names.
 
-    `attribution.commit: ""` is not a no-op: an empty string is falsy, so
-    the harness treats it the same as unset and the session trailer ships
-    as the *sole* trailer instead of being suppressed — the exact
-    regression the anthropics/claude-code#77830 reporter hit. Pinning that
+    `attribution.commit: ""` is not a no-op. An empty string is falsy, so
+    the harness treats it the same as unset and ships the session trailer
+    as the sole trailer instead of suppressing it. This is the exact
+    regression anthropics/claude-code#77830's reporter hit. Pinning that
     `commit`/`pr` stay absent from `attribution` in both settings files
     catches a well-intentioned future edit that adds one, believing it
     also suppresses a trailer.
     """
-    for path in (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH):
-        settings = json.loads(path.read_text())
-        attribution_keys = set(settings.get("attribution", {}))
-        assert attribution_keys <= {"sessionUrl"}, (
-            f"attribution has key(s) {attribution_keys - {'sessionUrl'}} "
-            f"beyond `sessionUrl` in {path.relative_to(_REPO_ROOT)} — "
-            f"`commit`/`pr` must stay unset, since an empty `commit` makes "
-            f"the session trailer the sole trailer instead of suppressing "
-            f"it (docs/design-decisions.md §60)"
-        )
+    settings = json.loads(path.read_text())
+    attribution_keys = set(settings.get("attribution", {}))
+    assert attribution_keys <= {"sessionUrl"}, (
+        f"attribution has key(s) {attribution_keys - {'sessionUrl'}} "
+        f"beyond `sessionUrl` in {path.relative_to(_REPO_ROOT)} — "
+        f"`commit`/`pr` must stay unset, since an empty `commit` makes "
+        f"the session trailer the sole trailer instead of suppressing "
+        f"it (docs/design-decisions.md §60)"
+    )
 
 
 def test_schedulewakeup_stays_denied_in_settings() -> None:
