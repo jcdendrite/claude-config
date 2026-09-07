@@ -83,7 +83,7 @@ It states the sub-shape finding qualitatively and withholds the machine-wide cou
 
 - **G1 — Claude Code owns the `tool_use` block shape and the marker literals; a harness release can change either without notice.** [verified: `transcript-analysis.py:5887-5889`] Vendor owns the emitting side.
 - **G2 — A transcript carries no per-call execution-time field, so a recorded command's elapsed window cannot be separated from permission-prompt wait or operator idle.** [verified: `docs/cost-levers-considered.md:244`] Vendor owns the schema.
-- **G3 — No mechanism reaches this stall: backgrounding converts a blocking wait into an equally long idle wait absent independent work to interleave, and `Monitor` has no periodic heartbeat to refresh the cache TTL.** [verified: `docs/cost-levers-considered.md:245`, `docs/design-decisions.md` §49] Both are vendor-side capabilities; dissolving the dependence needs a harness feature, not a plan.
+- **G3 — No mechanism reaches this stall: backgrounding converts a blocking wait into an equally long idle wait absent independent work to interleave, and `Monitor` has no periodic heartbeat to refresh the cache TTL.** [verified: `docs/cost-levers-considered.md:245`, `docs/design-decisions.md` §49] Backgrounding's limit is genuinely vendor-side — `run_in_background`'s detach-without-approval-shortcut semantics are a mechanism-design property, not a repo config choice. `Monitor`'s missing heartbeat is not: it's a consequence of this repo's own `ScheduleWakeup` entry in `permissions.deny` (§49), reversible via the one-line settings edit §49 already documents, not a harness feature this plan would have to wait on.
 
 **Assumptions:**
 
