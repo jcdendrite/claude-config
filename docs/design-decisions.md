@@ -1360,7 +1360,12 @@ Record the fix's merge SHA here once this change merges, together with the range
 
 An external critique argued the orchestrator-only block in `claude/.claude/CLAUDE.md` (Agent Briefing, Model & Effort Routing) — 9,656 bytes as of commit `a3b74ce7` — is paid by every dispatched subagent with no reader (`sed -n '98,136p' claude/.claude/CLAUDE.md | wc -c`). It proposed injecting the block only at session start instead, before any delegation decision, sparing every subagent dispatch the block's context cost. The proposal was considered and declined, not deferred, for four reasons in descending weight:
 
-1. **It converts a vendor-guaranteed load into a locally-scripted one whose failure is silent.** A missing, non-executable, or erroring `SessionStart` hook drops the block with no denial, no tool error, and no user-visible symptom — the session simply behaves as if Agent Briefing and Model & Effort Routing were never written. CLAUDE.md loading has no such failure mode, and the effect would land on every stow consumer in every repo.
+1. **It converts a vendor-guaranteed load into a locally-scripted one whose failure is silent.** A missing, non-executable, or erroring `SessionStart` hook drops the block:
+   - No denial.
+   - No tool error.
+   - No user-visible symptom — the session simply behaves as if Agent Briefing and Model & Effort Routing were never written.
+
+   CLAUDE.md loading has no such failure mode. The effect would land on every stow consumer in every repo.
 2. **It moves rules onto a surface of unmeasured adherence in order to improve adherence.** `additionalContext` enters as conversation-position text, not the memory block, and no measurement exists comparing the two — a self-defeating trade for a plan whose own goal is adherence.
 3. **The saving lands in the smaller cost slice.** The block would stay in the main thread, which carries 71.4% of dollar cost (§22 above), and be removed only from the 28.6% subagent slice. Spend is instead dominated 92.9% by idle-gap cache rebuilds, whose frequency is unrelated to byte count (`docs/cost-levers-considered.md`'s "Context cost root cause" entry).
 4. **Its premise is unverified in the general case.** The mechanism depends on `SessionStart` not firing for subagents. See the empirical finding below for what is and is not established about that premise.

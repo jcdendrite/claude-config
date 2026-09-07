@@ -89,8 +89,8 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
     (GH-783), `grep` for the path-filter match, `awk` for the line
-    count, `git` for the _lib_capped-wrapped show calls), omitting both
-    timeout(1) and gtimeout(1). Mirrors
+    count, `git` for the _lib_capped-wrapped show and cat-file -s
+    calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
     shape; skips (does not silently under-symlink) when a needed real
     binary is itself absent from the test machine."""
@@ -899,6 +899,48 @@ class TestCheckClaudeMdLength:
         masquerade as a working gate."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(200))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
+
+    def test_byte_cap_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, tmp_path
+    ):
+        """Byte-dimension analog of
+        test_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present:
+        stub_bin_without_timeout's PATH has no wc, exercising the byte
+        dimension's git-cat-file-s derivation without wc on PATH. File
+        stays a single line (well under the 200-line limit) so only the
+        byte dimension is in play."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_byte_cap_at_limit_allows_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, tmp_path
+    ):
+        """Companion allow case for the deny above: under the same PATH, a
+        file at the byte limit (not growing past it) must still pass."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
         stub_bin = stub_bin_without_timeout(tmp_path)
         assert (

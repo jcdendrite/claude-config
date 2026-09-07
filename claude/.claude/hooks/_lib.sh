@@ -1139,9 +1139,11 @@ _lib_command_invokes_tool_subcmd() {
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
 #
-# BYTE_LIMIT is optional and opt-in. When set, the byte check reuses the
-# same `git show ":$f"` / `git show "HEAD:$f"` reads already fetched for
-# the line-count check. check-skill-length.sh's call site omits it (2-arg
+# BYTE_LIMIT is optional and opt-in. When set, the byte check derives
+# counts via `git cat-file -s` rather than reusing the `git show` reads
+# captured for the line-count check — bash command substitution silently
+# drops embedded NUL bytes, which would undercount `wc -c` over that
+# captured content. check-skill-length.sh's call site omits it (2-arg
 # form, unchanged behavior). check-claude-md-length.sh passes it. Both
 # dimensions accumulate into the same $messages/$fail pair below,
 # producing one combined emit_deny call at the bottom rather than two.
@@ -1175,9 +1177,9 @@ _lib_command_invokes_tool_subcmd() {
 # The rev-parse and diff calls' cap-engagement characterization tests live
 # only in test_check_skill_length.py, valid for both callers because these
 # capped calls are caller-invariant. The two show calls (one per revision,
-# shared by the line-count and byte-count checks) have no dedicated
-# cap-engagement test anywhere, a pre-existing gap this extraction doesn't
-# close.
+# feeding the line-count check) and the two cat-file -s calls (one per
+# revision, feeding the byte-count check) have no dedicated cap-engagement
+# test anywhere, a pre-existing gap this extraction doesn't close.
 _lib_staged_length_gate() {
   local pattern="$1" over_limit_message="$2" byte_limit="${3:-}"
   _lib_command_invokes_git_subcmd "$COMMAND" commit
@@ -1220,8 +1222,8 @@ _lib_staged_length_gate() {
     fi
     if [ -n "$byte_limit" ]; then
       local new_bytes old_bytes
-      new_bytes=$(printf '%s' "$new_content" | wc -c | tr -d '[:space:]')
-      old_bytes=$(printf '%s' "$old_content" | wc -c | tr -d '[:space:]')
+      new_bytes=$(_lib_capped git cat-file -s ":$f" 2>/dev/null)
+      old_bytes=$(_lib_capped git cat-file -s "HEAD:$f" 2>/dev/null)
       [ -n "$new_bytes" ] || new_bytes=0
       [ -n "$old_bytes" ] || old_bytes=0
       if [ "$new_bytes" -gt "$byte_limit" ] && [ "$new_bytes" -gt "$old_bytes" ]; then
