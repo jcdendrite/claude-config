@@ -7924,8 +7924,9 @@ class TestAttributeIdleGapCause:
     """Direct unit tests for _attribute_idle_gap_cause -- hand-built
     prior_turn/window dicts, no fixture transcript and no
     _cache_rebuild_report run, so a marker-shape bug is pinned without
-    needing a full transcript fixture. Covers Verification's precedence,
-    self-scoping, and clock-skew cases."""
+    needing a full transcript fixture. Covers
+    .claude/plans/subagent-idle-gap-cause-attribution.md's Verification
+    section's precedence, self-scoping, and clock-skew cases."""
 
     def test_bash_tool_result_at_gap_end_attributes_to_own_bash_call_with_high_covered_share(self):
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest -k foo")])
@@ -8065,9 +8066,10 @@ class TestAttributeIdleGapCause:
         assert covered_share is None
 
     def test_two_bash_pairs_poll_loop_last_marker_wins_the_later_tool_result(self):
-        """Two Bash tool_use/tool_result pairs in one window (the
-        Context section's hand-sampled poll-loop shape) -- last-marker-wins
-        must pick the LATER tool_result's timestamp, not the first."""
+        """Two Bash tool_use/tool_result pairs in one window (the poll-loop
+        shape .claude/plans/subagent-idle-gap-cause-attribution.md's
+        Context section hand-sampled) -- last-marker-wins must pick the
+        LATER tool_result's timestamp, not the first."""
         prior_turn = _asst(
             "claude-sonnet-5", content=[_bash_use("tool-1", "sleep 30"), _bash_use("tool-2", "sleep 30")]
         )
