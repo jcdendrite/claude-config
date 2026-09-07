@@ -1389,6 +1389,9 @@ _lib_valid_session_id_component() {
 #   within the 60-minute idle window; evicts the marker (dead/unreadable
 #   PID, or aged-out mtime) and returns 1 otherwise, so a session that
 #   never cleaned up can't wedge a gate open indefinitely.
+# - A capped-out cat/find read (past _lib_capped's 5s timeout, e.g. a
+#   stalled NFS mount) evicts the marker the same as a dead PID or an
+#   aged-out mtime, rather than hanging the caller.
 # - Session-id validation lives here so callers can't forget it. An empty
 #   or path-escaping id returns 1 having touched the filesystem not at all.
 # - Reports only liveness, not a verdict on the tool call: a 1 withholds a
@@ -1433,13 +1436,13 @@ _lib_active_bypass_marker_live() {
   # the marker's removal even though `tr` succeeds on empty stdin; a `set -e`
   # caller would then abort mid-gate-check rather than fall through to the
   # eviction below. No caller sets `-e` today — this keeps that from mattering.
-  stored_pid=$(cat "$marker" 2>/dev/null | tr -d '[:space:]') || true
+  stored_pid=$(_lib_capped cat "$marker" 2>/dev/null | _lib_capped tr -d '[:space:]') || true
   # `find -mmin -60` mirrors require-routing-read.sh's own freshness idiom.
   # This is not a hard age cap: the touch-on-use wrapper below slides this
   # same 60-minute window forward on every gating call that finds the marker
   # live.
   if [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null \
-    && [ -n "$(find "$marker" -mmin -60 2>/dev/null)" ]; then
+    && [ -n "$(_lib_capped find "$marker" -mmin -60 2>/dev/null)" ]; then
     return 0
   fi
   rm -f "$marker" 2>/dev/null
@@ -1476,7 +1479,7 @@ _lib_active_bypass_marker_live_and_touch() {
   # silent, matching the eviction idiom in the predicate above: a touch
   # failure must not turn a verdict this call already committed to into a
   # hook-process abort.
-  touch -c "$config_dir/$marker_dir_name/$session_id" 2>/dev/null || true
+  _lib_capped touch -c "$config_dir/$marker_dir_name/$session_id" 2>/dev/null || true
   return 0
 }
 
