@@ -987,23 +987,33 @@ def install_resume_context_script(isolated_home: Path) -> Path:
     )
 
 
+def symlink_hooks_lib_chain(hooks_dir: Path) -> None:
+    """Symlink _lib.sh and its two BASH_SOURCE-relative siblings,
+    _config.sh and config-keys.psv, into an arbitrary hooks_dir -- the
+    single source of truth for this three-symlink chain, called by every
+    fixture/helper that needs a hooks/ dir where sourcing _lib.sh works.
+
+    _lib.sh sources _config.sh from its own directory; BASH_SOURCE does
+    not follow a symlink, so it resolves relative to the symlink's own
+    location, not _lib.sh's real target. config-keys.psv is a required
+    sibling of _config.sh for the same reason: _config.sh reads it via a
+    BASH_SOURCE-relative path too. Idempotent, so a caller that already
+    symlinked hooks/_lib.sh itself can call this unconditionally.
+    """
+    _symlink_if_absent(hooks_dir / "_lib.sh", HOOKS_DIR / "_lib.sh")
+    _symlink_if_absent(hooks_dir / "_config.sh", HOOKS_DIR / "_config.sh")
+    _symlink_if_absent(hooks_dir / "config-keys.psv", HOOKS_DIR / "config-keys.psv")
+
+
 def install_marker_script(isolated_home: Path) -> Path:
-    """Symlink the real marker.sh, and the _lib.sh/_config.sh/config-keys.psv
-    it sources, into an isolated $HOME/.claude/ -- so a hook or skill recipe
-    invoking marker.sh via `$CONFIG_DIR/scripts/marker.sh` resolves the real
-    script rather than a missing one. Idempotent, so a caller under the
+    """Symlink the real marker.sh, and the hooks/_lib.sh chain it sources,
+    into an isolated $HOME/.claude/ -- so a hook or skill recipe invoking
+    marker.sh via `$CONFIG_DIR/scripts/marker.sh` resolves the real script
+    rather than a missing one. Idempotent, so a caller under the
     `isolated_home` fixture (which already symlinks hooks/_lib.sh itself)
     can call this unconditionally.
-    _config.sh is a required sibling: _lib.sh sources it via a BASH_SOURCE-
-    relative path, which does not follow the _lib.sh symlink above.
-    config-keys.psv is a required sibling of _config.sh for the same
-    reason: _config.sh reads it via a BASH_SOURCE-relative path too.
     """
-    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_lib.sh", HOOKS_DIR / "_lib.sh")
-    _symlink_if_absent(isolated_home / ".claude" / "hooks" / "_config.sh", HOOKS_DIR / "_config.sh")
-    _symlink_if_absent(
-        isolated_home / ".claude" / "hooks" / "config-keys.psv", HOOKS_DIR / "config-keys.psv"
-    )
+    symlink_hooks_lib_chain(isolated_home / ".claude" / "hooks")
     return _symlink_if_absent(
         isolated_home / ".claude" / "scripts" / "marker.sh", SCRIPTS_DIR / "marker.sh"
     )
