@@ -2915,68 +2915,6 @@ _lib_round_consult_gate_disabled() {
   return 0
 }
 
-# Shared bounded-retry count for _lib_append_line_locked below, used by both
-# review-ledger.sh and log-reviewer-round.sh. Small and fixed: this runs
-# synchronously inside a hook or CLI script, so the worst-case added latency
-# is bounded retries * the sleep below.
-_LIB_APPEND_LOCK_RETRIES=5
-
-# _lib_append_line_locked FILE LOCK_FILE LINE
-# Sets a bare `trap ... EXIT` to release its lock, which per this repo's
-# shell-script-conventions rule silently clobbers any other EXIT trap
-# already registered in the calling process -- a future caller sharing this
-# primitive must ensure no other EXIT trap is active in the same process.
-# Shared by review-ledger.sh and log-reviewer-round.sh, which each need the
-# identical check-then-append critical section against a different state
-# file. Acquires a same-directory noclobber lock
-# (bash `set -o noclobber`, the idiom _lib_worktree_collision_guard already
-# establishes in this repo) around the check-then-append: no-ops if LINE
-# already exists verbatim in FILE, else appends it. The lock file's content
-# is the holder's PID. A lock whose PID is dead is evicted and retried
-# immediately, rather than waiting out every retry against a crashed
-# holder. This is the same PID-liveness eviction _lib_active_bypass_marker_live
-# uses for its own markers. It matters more here than at review-ledger.sh's
-# own call site, since a PostToolUse hook is more exposed to being killed
-# mid-lock by the harness's own hook timeout than a skill-invoked CLI
-# script. Falls through to an unlocked append after
-# _LIB_APPEND_LOCK_RETRIES failed acquisitions rather than blocking -- a
-# duplicate line from a lost race is a low-consequence outcome (an inflated
-# round count), not data loss. The lock is released via the EXIT trap noted
-# above, so it clears whether the append succeeds or fails.
-_lib_append_line_locked() {
-  local file="$1" line="$3"
-  # Deliberately not `local`: the EXIT trap below evaluates this lazily at
-  # script-exit time, after this function has already returned, and any
-  # `local` binding of the same name would be out of scope by then.
-  _LIB_APPEND_LOCK_PATH="$2"
-  local attempt=0 stored_pid
-  while [ "$attempt" -lt "$_LIB_APPEND_LOCK_RETRIES" ]; do
-    if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
-      trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
-      break
-    fi
-    stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
-      # Dead holder: evict now and retry acquisition on the very next
-      # iteration, with no sleep -- this is what makes eviction prompt
-      # rather than waiting out the remaining retries.
-      rm -f "$_LIB_APPEND_LOCK_PATH" 2>/dev/null
-      attempt=$((attempt + 1))
-      continue
-    fi
-    attempt=$((attempt + 1))
-    sleep 0.05
-  done
-  if [ -f "$file" ] && grep -qFx -e "$line" -- "$file" 2>/dev/null; then
-    # A dedup no-op must still count as activity on this file's own mtime,
-    # or a long-running branch's later no-op append leaves a stale mtime
-    # for a directory-wide 30-day sweep to delete out from under it.
-    touch -- "$file" 2>/dev/null
-    return 0
-  fi
-  printf '%s\n' "$line" >> "$file"
-}
-
 # _lib_resume_context_tmpdir_root
 # The one home for resume-context.sh's temp-dir-root formula
 # (${RESUME_CONTEXT_TMPDIR:-${TMPDIR:-/tmp}}), shared by the move itself and
