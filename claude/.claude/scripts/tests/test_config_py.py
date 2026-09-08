@@ -15,12 +15,31 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR
+from helpers import HOOKS_DIR, SCRIPTS_DIR
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _config import config_enabled, config_value, schema  # noqa: E402
 
 _CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
+_CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
+
+
+def _count_config_keys_psv_rows() -> int:
+    """Return config-keys.psv's row count via a plain line scan, independently
+    of schema()'s field-splitting parsing loop.
+    The blank/comment predicate below is a strict mirror of schema()'s own
+    (raw, non-stripped `not line` and `line.startswith("#")` over
+    `text.split("\\n")`), not an independently re-derived approximation.
+    This lets the count catch a parser bug in schema() -- e.g. a duplicate
+    key silently collapsing two rows into one dict entry -- instead of a
+    ground truth computed the same way schema() computes it."""
+    count = 0
+    for raw_line in _CONFIG_KEYS_PSV.read_text().split("\n"):
+        line = raw_line[:-1] if raw_line.endswith("\r") else raw_line
+        if not line or line.startswith("#"):
+            continue
+        count += 1
+    return count
 
 
 def _make_home(tmp_path: Path, monkeypatch) -> Path:
@@ -37,10 +56,8 @@ def _make_home(tmp_path: Path, monkeypatch) -> Path:
 
 
 class TestSchema:
-    def test_returns_all_fourteen_keys(self):
-        # 14 is config-keys.psv's own current row count -- update this
-        # literal deliberately whenever a key is added or removed there.
-        assert len(schema()) == 14
+    def test_key_count_matches_config_keys_psv_row_count(self):
+        assert len(schema()) == _count_config_keys_psv_rows()
 
     def test_worktree_required_row_matches_known_columns(self):
         row = schema()["worktree_required"]
