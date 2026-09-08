@@ -37,7 +37,13 @@ from _config_dir import config_dir
 # scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
 # scope.PROJECTS_DIR.
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
-from transcript_analysis.corpus import SUBAGENT_SUBDIR, _parse_ts, _read_session_file_partitioned, iter_sessions
+from transcript_analysis.corpus import (
+    SUBAGENT_SUBDIR,
+    _index_subagent_dispatches,
+    _parse_ts,
+    _read_session_file_partitioned,
+    iter_sessions,
+)
 from transcript_analysis.cost import (
     # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
     # a private helper directly, or a monkeypatch retarget). cmd_cost/cmd_cost_trend,
@@ -113,15 +119,21 @@ from transcript_analysis.render import (
     _sanitize_table_cell,
     _strip_task_notifications,
 )
+from transcript_analysis.review_rounds import (
+    # REVIEW_SKILLS is read bare by this file's own still-monolithic
+    # cmd_judgment_pair (its own --skills default) -- the one-directional
+    # exception documented in docs/transcript-analysis-architecture.md.
+    REVIEW_SKILLS,
+    cmd_review_round_cost,
+)
 from transcript_analysis.reviewer_yield import (
-    # The seven names below are read only via _mod.<name> from test files (unit-testing a
+    # The six names below are read only via _mod.<name> from test files (unit-testing a
     # private helper directly) -- cmd_reviewer_yield, _is_reviewer_subagent_type,
-    # _index_subagent_dispatches, the two _REVIEWER_VERDICT_* names, and
+    # the two _REVIEWER_VERDICT_* names, and
     # _REVIEWER_YIELD_ACTIVE_FLOOR/_REVIEWER_YIELD_INSUFFICIENT.
     # Also read bare by this file's own still-monolithic code:
     #   cmd_reviewer_yield                                          -> p_reviewer_yield.set_defaults
     #   _is_reviewer_subagent_type                                  -> _review_trace_session_events
-    #   _index_subagent_dispatches                                  -> cmd_subagent_mix
     #   _REVIEWER_VERDICT_* / _REVIEWER_YIELD_ACTIVE_FLOOR / _REVIEWER_YIELD_INSUFFICIENT -> _reviewer_gap_pp
     _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
     _REVIEWER_VERDICT_FINDINGS_FOUND,
@@ -132,7 +144,6 @@ from transcript_analysis.reviewer_yield import (
     _dispatch_self_reference_keys,  # noqa: F401
     _extract_cited_paths,  # noqa: F401
     _index_session_edits,  # noqa: F401
-    _index_subagent_dispatches,
     _is_reviewer_subagent_type,
     _normalize_cited_path,  # noqa: F401
     _reviewer_yield_cited_keys,  # noqa: F401
@@ -984,8 +995,6 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                     first = False
                     print(f"{row_label:<40} {thread:<10} {_sanitize_table_cell(tool_name):<20} {nbytes:>18,}")
 
-
-REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
 # subagents' tool-result byte grouping bucket for every mcp__<server>__<tool>
 # tool name — an MCP server name is a per-account integration identifier, so
@@ -5863,6 +5872,37 @@ _CACHE_REBUILD_IDLE_GAP_CAUSES: tuple[str, ...] = (_CAUSE_IDLE_5M_1H, _CAUSE_IDL
 # a subagent-file layout change (see _cache_rebuild_report's docstring).
 _CACHE_REBUILD_ORIGINS: tuple[str, ...] = ("main", "subagent")
 
+_ATTR_OWN_BASH = "waiting on own Bash call"
+_ATTR_BACKGROUND_TASK = "waiting on background task"
+_ATTR_COORDINATOR = "waiting on coordinator message"
+_ATTR_UNATTRIBUTED = "unattributed"
+
+# Print order for the subagent idle-gap cause-attribution table -- see
+# .claude/plans/subagent-idle-gap-cause-attribution.md's Approach section for
+# each cause's lever (or lack of one).
+_CACHE_REBUILD_ATTRIBUTIONS: tuple[str, ...] = (
+    _ATTR_OWN_BASH, _ATTR_BACKGROUND_TASK, _ATTR_COORDINATOR, _ATTR_UNATTRIBUTED,
+)
+
+# Claude Code emits these marker literals, not this repo -- a harness release can change either one without notice.
+_BACKGROUND_TASK_MARKER_PREFIX = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
+_COORDINATOR_MESSAGE_MARKER_PREFIX = "The coordinator sent a message while you were working"
+
+_BASH_WAIT_SLEEP_POLL = "sleep-poll wait"
+_BASH_WAIT_OTHER = "other Bash wait"
+_BASH_WAIT_NO_COMMAND = "no command recorded"
+
+# The own-Bash wait-shape table's printed row order follows this tuple's
+# definition order.
+_OWN_BASH_WAIT_SHAPES: tuple[str, ...] = (
+    _BASH_WAIT_SLEEP_POLL, _BASH_WAIT_OTHER, _BASH_WAIT_NO_COMMAND,
+)
+
+# Matches `sleep <number>` at string start, after `;`/`&`/`|`/newline, or
+# after `do`/`then`/`else` (word-boundary-guarded so it doesn't fire inside
+# `sudo`/`docker`).
+_SLEEP_POLL_COMMAND_RE = re.compile(r"(?:\A|[;&|\n]|\b(?:do|then|else))[ \t]*sleep[ \t]+[0-9]")
+
 
 def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> float | None:
     """Seconds since the previous call in this transcript's own turn
@@ -5898,6 +5938,94 @@ def _classify_cache_rebuild_cause(
     if model_changed:
         return _CAUSE_MODEL_SWITCH
     return _CAUSE_UNEXPLAINED
+
+
+def _classify_bash_wait_shape(command: str | None) -> str:
+    """Sub-classify the winning Bash marker's own recorded command text.
+
+    Textual, no shell parsing. A quoted or heredoc-embedded `sleep` counts
+    as a match, over-counting sleep-poll waits for text that only mentions
+    `sleep` without waiting on it. `sleep $VAR` (no literal leading digit)
+    does not match, under-counting sleep-poll waits by missing a real one.
+    """
+    if not isinstance(command, str):
+        return _BASH_WAIT_NO_COMMAND
+    if _SLEEP_POLL_COMMAND_RE.search(command):
+        return _BASH_WAIT_SLEEP_POLL
+    return _BASH_WAIT_OTHER
+
+
+def _attribute_idle_gap_cause(
+    prior_turn: dict, window: list[dict], *, gap_start_ts: float, gap_seconds: float
+) -> tuple[str, float | None, str | None]:
+    """Sub-classify one subagent-origin idle-gap candidate by the last
+    marker record found in `window` (the records strictly between
+    `prior_turn` and the rebuild call that closed the gap).
+
+    Last marker wins, scanning `window` forward: the question this answers
+    is what released the subagent, and the last marker before the
+    gap-closing call is by construction the one nearest that release.
+
+    Each leg is self-scoped rather than filtered by origin:
+
+    - Bash leg: matches only a `tool_use_id` `prior_turn` itself emitted
+      via a Bash `tool_use` block. Ids are unique, so another origin's
+      `tool_result` can never match.
+    - Meta legs (background-task, coordinator): require both `isMeta` and
+      `isSidechain` True on the record carrying them.
+
+    Returns (cause, covered_share, bash_shape). The winning marker's own
+    cause always wins, even when that marker's timestamp is missing or
+    unparseable -- treating a bad timestamp as "no marker at all" would let
+    precedence silently fall back to an earlier, unrelated marker's cause
+    instead of disclosing the gap via `covered_share`. covered_share is
+    (marker_ts - gap_start_ts) / gap_seconds when the winning marker's own
+    timestamp parses, None for _ATTR_UNATTRIBUTED or for an attributed
+    cause whose winning marker has no parseable timestamp. Not clamped to
+    [0, 1] -- a stray clock-skew marker timestamp outside the gap window
+    still yields a finite share rather than a silently clamped one.
+    bash_shape is `_classify_bash_wait_shape`'s label for the winning
+    marker's own recorded command when cause is _ATTR_OWN_BASH, None
+    otherwise.
+    """
+    bash_tool_use_ids: dict[str, str | None] = {}
+    for block in (prior_turn.get("message") or {}).get("content") or []:
+        if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+            continue
+        command = (block.get("input") or {}).get("command")
+        bash_tool_use_ids[block.get("id")] = command if isinstance(command, str) else None
+
+    last_cause: str | None = None
+    last_marker_ts: float | None = None
+    last_command: str | None = None
+    for rec in window:
+        content = (rec.get("message") or {}).get("content")
+        marker_cause: str | None = None
+        marker_command: str | None = None
+        if isinstance(content, list):
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("tool_use_id") in bash_tool_use_ids
+                ):
+                    marker_cause = _ATTR_OWN_BASH
+                    marker_command = bash_tool_use_ids[block.get("tool_use_id")]
+        elif isinstance(content, str) and rec.get("isMeta") and rec.get("isSidechain"):
+            if content.startswith(_BACKGROUND_TASK_MARKER_PREFIX):
+                marker_cause = _ATTR_BACKGROUND_TASK
+            elif content.startswith(_COORDINATOR_MESSAGE_MARKER_PREFIX):
+                marker_cause = _ATTR_COORDINATOR
+        if marker_cause is None:
+            continue
+        last_cause, last_marker_ts, last_command = marker_cause, _parse_ts(rec.get("timestamp")), marker_command
+
+    if last_cause is None:
+        return _ATTR_UNATTRIBUTED, None, None
+    bash_shape = _classify_bash_wait_shape(last_command) if last_cause == _ATTR_OWN_BASH else None
+    if last_marker_ts is None:
+        return last_cause, None, bash_shape
+    return last_cause, (last_marker_ts - gap_start_ts) / gap_seconds, bash_shape
 
 
 def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None, int]:
@@ -6080,6 +6208,22 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     # row rather than vanishing.
     origin_rebuilds: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0)
     origin_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
+    # Subagent-origin idle-gap cause attribution (see
+    # .claude/plans/subagent-idle-gap-cause-attribution.md's Approach
+    # section) -- zero-seeded for the same zero-state-row reason as the
+    # origin dicts above. attribution_shares holds each attributed
+    # candidate's covered_share for the table's per-row median.
+    attribution_rebuilds: dict[str, int] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0)
+    attribution_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
+    attribution_band_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
+    attribution_shares: dict[str, list[float]] = {attribution: [] for attribution in _CACHE_REBUILD_ATTRIBUTIONS}
+    # Own-Bash wait-shape sub-split. Zero-seeded for the same zero-state-row
+    # reason as attribution_* above. Populated only for candidates whose
+    # bash_shape is not None -- the subset of the "waiting on own Bash call" row.
+    bash_shape_rebuilds: dict[str, int] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0)
+    bash_shape_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
+    bash_shape_band_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
+    bash_shape_shares: dict[str, list[float]] = {shape: [] for shape in _OWN_BASH_WAIT_SHAPES}
     # W5m/X/switch-delta (Approach section) -- accumulated threshold-
     # independently (every in-scope 5m-tier write, not only tail calls),
     # since the 2x uplift a cacheTtl switch would charge applies to warm
@@ -6149,10 +6293,11 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             # records must never be classified against the other origin's
             # own prior call.
             chain_state: dict[str, dict] = {
-                origin: {"i": 0, "prev_ts": None, "prev_model": None} for origin in _CACHE_REBUILD_ORIGINS
+                origin: {"i": 0, "prev_ts": None, "prev_index": None, "prev_model": None}
+                for origin in _CACHE_REBUILD_ORIGINS
             }
 
-            for rec in group_records:
+            for idx, rec in enumerate(group_records):
                 if rec.get("type") != "assistant":
                     continue
                 msg = rec.get("message") or {}
@@ -6222,6 +6367,15 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                             unpriced_idle_gap_turns += 1
                             unpriced_idle_gap_tokens += turn_unpriced_tokens
                         else:
+                            attribution: str | None = None
+                            covered_share: float | None = None
+                            bash_shape: str | None = None
+                            if origin == "subagent":
+                                window = group_records[chain["prev_index"] + 1 : idx]
+                                attribution, covered_share, bash_shape = _attribute_idle_gap_cause(
+                                    group_records[chain["prev_index"]], window,
+                                    gap_start_ts=chain["prev_ts"], gap_seconds=gap_seconds,
+                                )
                             idle_gap_candidates.append({
                                 "session_key": session_key,
                                 "gap_start_ts": chain["prev_ts"],
@@ -6229,9 +6383,17 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                                 "excess_dollars": excess_dollars,
                                 "account_ordinal": account_ordinal,
                                 "origin": origin,
+                                "cause": cause,
+                                "attribution": attribution,
+                                "covered_share": covered_share,
+                                "bash_shape": bash_shape,
                             })
 
                 chain["prev_ts"] = cur_ts if cur_ts is not None else chain["prev_ts"]
+                # prev_index names the record prev_ts came from -- paired so
+                # a later candidate's window always starts right after the
+                # record whose timestamp is that candidate's gap_start_ts.
+                chain["prev_index"] = idx if cur_ts is not None else chain["prev_index"]
                 chain["prev_model"] = model
                 chain["i"] += 1
 
@@ -6277,6 +6439,22 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             per_account_excess[cand["account_ordinal"]] += cand["excess_dollars"]
         origin_rebuilds[cand["origin"]] += 1
         origin_excess[cand["origin"]] += cand["excess_dollars"]
+        attribution = cand["attribution"]
+        if attribution is not None:
+            attribution_rebuilds[attribution] += 1
+            attribution_excess[attribution] += cand["excess_dollars"]
+            if cand["cause"] == _CAUSE_IDLE_5M_1H:
+                attribution_band_excess[attribution] += cand["excess_dollars"]
+            if cand["covered_share"] is not None:
+                attribution_shares[attribution].append(cand["covered_share"])
+        bash_shape = cand["bash_shape"]
+        if bash_shape is not None:
+            bash_shape_rebuilds[bash_shape] += 1
+            bash_shape_excess[bash_shape] += cand["excess_dollars"]
+            if cand["cause"] == _CAUSE_IDLE_5M_1H:
+                bash_shape_band_excess[bash_shape] += cand["excess_dollars"]
+            if cand["covered_share"] is not None:
+                bash_shape_shares[bash_shape].append(cand["covered_share"])
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Cache-rebuild report ({title_since}, threshold >= {threshold:,} cache-write tokens)\n")
@@ -6332,6 +6510,68 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     print(f"{'Origin':<10} {'Rebuilds':>9} {'Excess $':>12}")
     for origin in _CACHE_REBUILD_ORIGINS:
         print(f"{origin:<10} {origin_rebuilds[origin]:>9,} {origin_excess[origin]:>12,.2f}")
+
+    print(
+        "\n## Subagent idle-gap cause attribution [unverified]\n\n"
+        "Sub-classifies the subagent row above (idle 5m-1h and idle >1h pooled,\n"
+        "so the rows below sum exactly to that row) by the last marker record\n"
+        "found in each gap's own window, scanning forward:\n"
+        "  - a tool_result for that call's own Bash tool_use -> waiting on own Bash call\n"
+        "  - a background-task notification -> waiting on background task\n"
+        "  - a coordinator message -> waiting on coordinator message\n"
+        "  - no marker at all -> unattributed\n"
+        "Last marker before the gap-closing call wins. 5m-1h $ restricts Excess $\n"
+        "to the idle 5m-1h band only, the band a cacheTtl switch could actually\n"
+        "rescue (idle >1h stays cold under either tier). Median cov. is the\n"
+        "median (marker_ts - gap_start_ts) / gap_seconds across each row's own\n"
+        "attributed candidates, not clamped to [0, 1]: near 100% means the\n"
+        "marker sits at the gap's end and the attribution is tight, a low value\n"
+        "means the marker landed early and most of the gap is still unexplained.\n"
+        "It renders n/a whenever the winning marker's own timestamp is missing\n"
+        "or unparseable, which never changes the cause itself. Main origin is\n"
+        "excluded: experimental.cacheTtl cannot reach main-conversation traffic,\n"
+        "so a main-origin split would have no lever to point at. A large\n"
+        "'unattributed' share means the marker taxonomy is incomplete, not that\n"
+        "the gaps are causeless -- a transcript records the marker the harness\n"
+        "delivered, never a statement of why the subagent was idle. [unverified]\n"
+    )
+    print(f"{'Cause':<32} {'Rebuilds':>9} {'Excess $':>12} {'5m-1h $':>12} {'Median cov.':>12}")
+    for attribution in _CACHE_REBUILD_ATTRIBUTIONS:
+        shares = attribution_shares[attribution]
+        median_cov = _pct_of(statistics.median(shares), 1.0) if shares else "n/a"
+        print(
+            f"{attribution:<32} {attribution_rebuilds[attribution]:>9,}"
+            f" {attribution_excess[attribution]:>12,.2f} {attribution_band_excess[attribution]:>12,.2f}"
+            f" {median_cov:>12}"
+        )
+
+    print(
+        "\n## Own-Bash wait shape [unverified]\n\n"
+        "Sub-splits the 'waiting on own Bash call' row above (the three rows\n"
+        "below sum exactly to it) by the shape of the winning Bash tool_use's\n"
+        "own recorded command:\n"
+        "  - a sleep <number> in shell command position -> sleep-poll wait\n"
+        "  - any other recorded command -> other Bash wait\n"
+        "  - no command recorded (a Bash block with no input) -> no command recorded\n"
+        "Only the gap-closing call's own winning command is classified, so a\n"
+        "repeated 'sleep N; check' loop is classified once per gap it closed,\n"
+        "not once per sleep. The match is textual, with no shell parsing.\n"
+        "A quoted or heredoc-embedded sleep counts as a match, over-counting\n"
+        "the row below for text that only mentions sleep without waiting on\n"
+        "it. sleep $VAR (no literal leading digit) does not match,\n"
+        "under-counting the row below by missing a real sleep-poll wait. A\n"
+        "high share there points at no lever: see docs/cost-levers-considered.md's\n"
+        "'From background-slow-bash-calls.md' section. [unverified]\n"
+    )
+    print(f"{'Shape':<32} {'Rebuilds':>9} {'Excess $':>12} {'5m-1h $':>12} {'Median cov.':>12}")
+    for shape in _OWN_BASH_WAIT_SHAPES:
+        shape_shares = bash_shape_shares[shape]
+        shape_median_cov = _pct_of(statistics.median(shape_shares), 1.0) if shape_shares else "n/a"
+        print(
+            f"{shape:<32} {bash_shape_rebuilds[shape]:>9,}"
+            f" {bash_shape_excess[shape]:>12,.2f} {bash_shape_band_excess[shape]:>12,.2f}"
+            f" {shape_median_cov:>12}"
+        )
 
     print(
         "\n## Cache-write tier switch delta (5m -> 1h), threshold-independent\n\n"
@@ -11617,6 +11857,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_workstream_cost.set_defaults(func=cmd_workstream_cost)
+
+    p_review_round_cost = sub.add_parser(
+        "review-round-cost",
+        help=(
+            "Per-branch review-round dollar cost: prices every code-review/plan-review/"
+            "ready-for-review invocation's own window (main-thread turns plus every subagent"
+            " dispatched inside it), with a round-vs-non-round reconciliation line. Corpus-wide,"
+            " no gh calls."
+        ),
+    )
+    _add_project_scope_args(p_review_round_cost)
+    p_review_round_cost.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
+    p_review_round_cost.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_review_round_cost.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_review_round_cost.add_argument(
+        "--skill", metavar="NAME", choices=sorted(REVIEW_SKILLS),
+        help="Print only rounds for one skill name (default: all three); never narrows detection.",
+    )
+    p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",

@@ -595,7 +595,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status)'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status|check[[:space:]]+code-review)'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -674,6 +674,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh clear-stale --dry-run
   ~/.claude/scripts/marker.sh resolve-session-id
   ~/.claude/scripts/marker.sh status
+  ~/.claude/scripts/marker.sh check code-review
 
 Chains of valid marker.sh operations joined by && are permitted. Chaining to
 any other command (except the blessed 'git commit' tail), or using ||/;,

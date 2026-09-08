@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 
+import pytest
 from helpers import HOOKS_DIR, bash_input, build_path_without, read_input, run_hook, run_hook_reason
 
 DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
@@ -27,8 +28,11 @@ def _call_mask_shell_quotes(text: str) -> str:
     source = DENY_INVISIBLE_COMMIT_CONTENT_HOOK.read_text()
     match = _MASK_SHELL_QUOTES_FUNCTION_RE.search(source)
     assert match is not None, "could not locate _mask_shell_quotes's definition in the hook source"
+    # _mask_shell_quotes calls _lib_capped_for (defined in _lib.sh), so
+    # _lib.sh must be sourced ahead of the extracted function body here too.
+    lib_path = HOOKS_DIR / "_lib.sh"
     result = subprocess.run(
-        ["bash", "-c", f'{match.group(0)}_mask_shell_quotes "$1"', "bash", text],
+        ["bash", "-c", f'. "{lib_path}"; {match.group(0)}_mask_shell_quotes "$1"', "bash", text],
         capture_output=True,
         text=True,
         check=True,
@@ -166,6 +170,20 @@ class TestDenyInvisibleCommitContent:
             bash_input("$'git' commit -m x && git commit -m y"),
         ) == "deny"
 
+    def test_ansi_c_multi_char_escape_git_word_second_commit_allowed(self):
+        """Documented residual (docs/security-hardening.md lines ~784-787):
+        the ANSI-C multi-character escape `$'\\x67it'` (`\\x67` is `g`)
+        contains a backslash, so `_mask_shell_quotes`'s single-safe-word
+        exception regex (`^[A-Za-z0-9._/-]+$`) never matches it and the span
+        stays blanked -- unlike the single-character-escape-free `$'git'`
+        case above, which the masker's `$`-drop/unquote path does recognize.
+        The blanked first fragment carries no visible `git` word, so arm 2
+        never counts it toward the multi-commit total and this allows."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("$'\\x67it' commit -m x && git commit -m y"),
+        ) == "allow"
+
     def test_mask_shell_quotes_ansi_c_multi_word_span_has_no_stray_dollar(self):
         """A multi-word ANSI-C-quoted span ($'fix && bar') falls into the
         blanking branch (its interior isn't a single safe word), which must
@@ -224,6 +242,16 @@ class TestDenyInvisibleCommitContent:
             bash_input("git commit -m 'fix && git commit'"),
         ) == "allow"
 
+    def test_multibyte_commit_message_mentioning_git_commit_as_text_allowed(self):
+        """Non-ASCII content inside a quoted `-m` value must not desync
+        `_mask_shell_quotes`'s per-character quote-state scan -- same allow
+        outcome as the ASCII-equivalent
+        test_commit_message_mentioning_git_commit_as_double_quoted_text_allowed."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m "cafe -> \U0001F389 && git commit"'),
+        ) == "allow"
+
     def test_heredoc_message_mentioning_git_add_as_text_allowed(self):
         """Pins the false-positive cost of closing the header's documented
         `$(...)`-side-effect known gap: a `$(...)` substitution inside a
@@ -251,6 +279,113 @@ class TestDenyInvisibleCommitContent:
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input('git commit -m "$(cat <<\'EOF\'\ngit commit\nEOF\n)"'),
         ) == "allow"
+
+    # ------------------------------------------------------------------ #
+    # Wrapper/commit co-occurrence and quote-embedded decoy fragment       #
+    # ------------------------------------------------------------------ #
+
+    def test_leading_clean_commit_then_wrapped_add_and_commit_denied(self):
+        """Confirmed bypass shape: a leading clean commit satisfies arm 1/
+        arm 2's own single-commit count, and the real `git add secret.txt &&
+        git commit -m y` runs invisibly inside `bash -c`. The wrapper/commit
+        co-occurrence pre-check denies outright on the `bash -c` token
+        alone, without needing to parse what runs inside it."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit --allow-empty -m "noop" && bash -c "git add secret.txt && git commit -m y"'),
+        ) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param('sh -c "true" && git commit -m x', id="sh_dash_c"),
+            pytest.param('zsh -c "true" && git commit -m x', id="zsh_dash_c"),
+            pytest.param('ksh -c "true" && git commit -m x', id="ksh_dash_c"),
+            pytest.param('dash -c "true" && git commit -m x', id="dash_dash_c"),
+            pytest.param("eval true && git commit -m x", id="eval"),
+            pytest.param("xargs true && git commit -m x", id="xargs"),
+            pytest.param("source ./script.sh && git commit -m x", id="source"),
+            pytest.param(". ./script.sh && git commit -m x", id="bare_dot_sourcing"),
+            pytest.param("perl -e 'print 1' && git commit -m x", id="perl_dash_e"),
+            pytest.param("python -c 'print(1)' && git commit -m x", id="python_dash_c"),
+            pytest.param("python2 -c 'print 1' && git commit -m x", id="python2_dash_c"),
+            pytest.param("python3 -c 'print(1)' && git commit -m x", id="python3_dash_c"),
+            pytest.param("ruby -e 'puts 1' && git commit -m x", id="ruby_dash_e"),
+            pytest.param("node -e 'console.log(1)' && git commit -m x", id="node_dash_e"),
+        ],
+    )
+    def test_execution_wrapper_token_denied(self, command):
+        """Each wrapper token in EXECUTION_WRAPPER_TOKEN_RE denies when it
+        co-occurs with a git-commit-shaped fragment -- `bash -c` alone
+        is already covered by test_bash_c_wrapped_chained_add_denied and
+        test_leading_clean_commit_then_wrapped_add_and_commit_denied above."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    def test_commit_message_mentioning_wrapper_token_as_text_denied(self):
+        """Accepted over-deny cost of the wrapper/commit co-occurrence
+        check: it does not parse quoting, so a plain, single commit whose
+        own `-m` message merely mentions a wrapper token as ordinary text
+        (documenting `xargs` usage here) still denies."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m "document xargs usage in README"'),
+        ) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param('git commit -m "evaluate the new pricing model"', id="eval_substring_in_evaluate"),
+            pytest.param('git commit -m "update resources and outsource docs"', id="source_substring_in_outsource"),
+        ],
+    )
+    def test_wrapper_token_as_substring_of_unrelated_word_allowed(self, command):
+        """The wrapper-token regex's word-boundary class correctly excludes
+        a token embedded as a substring of an unrelated English word --
+        "eval" inside "evaluate", "source" inside "resources" and
+        "outsource" -- so these must not be mistaken for the bare `eval`/
+        `source` tokens."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "allow"
+
+    def test_hyphen_compound_word_denied_as_accepted_over_deny_cost(self):
+        """Accepted over-deny cost documented in the header comment above:
+        a hyphen-joined compound word ("re-source") reads as the bare word
+        "source" under the wrapper-token regex's non-word-character
+        boundary class, which treats a hyphen as a legitimate boundary."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m "re-source the config"'),
+        ) == "deny"
+
+    def test_piped_xargs_commit_text_denied(self):
+        """GH-783: the fast-reject's word-walk has no chain-position
+        requirement -- it matches a bare `git` word followed, after any
+        global git flags, by a `commit` word anywhere within a quote-
+        stripped, operator-delimited fragment, not only at the start of a
+        command or right after &&/;/|. Quote-stripping this printf argument
+        exposes `git commit` as two separate words, so the fast-reject
+        fires even though the text is piped into `xargs` as stdin data
+        rather than chain-anchored, and the wrapper/commit co-occurrence
+        check denies on the co-occurring `xargs` token. Contrast with
+        test_perl_e_embedded_commit_text_allowed below, where the wrapper's
+        own call syntax glues the quote to `git` with no word boundary."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('printf "%s" "git commit -m y" | xargs -0 sh -c'),
+        ) == "deny"
+
+    def test_quote_embedded_decoy_fragment_denied(self):
+        """Confirmed bypass shape: quote-*stripping* (arm 1) turns the
+        quoted literal text `"foo && git commit"` into a fake, syntactically
+        real commit fragment that arm 1's ordered walk reaches first and
+        stops at -- never inspecting the real `git add secret` mutation and
+        the real trailing `git commit -m x`. Quote-*masking* correctly
+        erases the decoy's content instead, so the ordered walk over masked
+        fragments still reaches the real `git add secret` before the real
+        commit and denies."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('echo "foo && git commit" && git add secret && git commit -m x'),
+        ) == "deny"
 
     # ------------------------------------------------------------------ #
     # Commit forms that record working-tree content outside the index     #
@@ -313,6 +448,29 @@ class TestDenyInvisibleCommitContent:
         assert "stage the changes explicitly" in reason.lower()
         assert "no -a/--all and no pathspec" in reason
 
+    def test_dash_c_other_repo_commit_denied(self):
+        """GH-783: `-C <other-repo>` no longer hides this commit from
+        the hook. `_lib_extract_git_subcmd`'s global-flag skip list walks
+        past `-C`'s value the same way it does for every git-fragment check
+        in this file, so the worktree-target check above still reaches
+        `-am`."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git -C /tmp/other-repo commit -am x"),
+        ) == "deny"
+
+    def test_dash_c_other_repo_commit_with_no_worktree_target_allowed(self):
+        """Accepted, not an oversight: unlike test_dash_c_other_repo_commit_denied
+        above, a `-C`-qualified commit with no `-a`/`--all`/pathspec still
+        allows -- same as any commit with no worktree-target flag would. The
+        fast-reject now correctly recognizes a `-C`-qualified commit instead
+        of missing it outright, but recognizing it does not itself make a
+        clean commit dangerous."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git -C /tmp/other-repo commit -m x"),
+        ) == "allow"
+
     # ------------------------------------------------------------------ #
     # Allowed forms                                                       #
     # ------------------------------------------------------------------ #
@@ -367,6 +525,78 @@ class TestDenyInvisibleCommitContent:
         chained mutation is not a TOCTOU race on the empty-diff carve-out."""
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git commit --amend --no-edit")) == "allow"
 
+    def test_dollar_paren_side_effect_execution_allowed(self):
+        """Allowed (documented gap): a `$(...)` substitution inside a
+        commit's own arguments executes before the commit and is not
+        inspected -- here it genuinely runs `git add f` as a real side
+        effect, not just mentions it as inert heredoc text (contrast with
+        test_heredoc_message_mentioning_git_add_as_text_allowed above).
+        Closing this would deny the standard heredoc-built-message idiom
+        whenever the message text happens to mention a git command."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('git commit -m "$(git add f; echo x)"'),
+        ) == "allow"
+
+    def test_perl_e_embedded_commit_text_allowed(self):
+        """Allowed (documented gap): unlike test_piped_xargs_commit_text_denied
+        above, perl's own call syntax glues the opening quote directly
+        against `system(` with no separating whitespace -- quote-stripping
+        collapses `system('git` into the single word `system(git`, which
+        never matches the fast-reject's bare `git` word-walk. The fragment
+        is never recognized as invoking git at all, so the wrapper/commit
+        co-occurrence check downstream of the fast-reject never runs
+        either."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("perl -e \"system('git commit -m y')\""),
+        ) == "allow"
+
+    def test_python_c_embedded_commit_text_allowed(self):
+        """Same glued-quote miss as test_perl_e_embedded_commit_text_allowed
+        above, for `python -c`: quote-stripping collapses `os.system('git`
+        into the single word `os.system(git`, which never matches the
+        fast-reject's bare `git` word-walk."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("python -c \"import os; os.system('git commit -m y')\""),
+        ) == "allow"
+
+    def test_ruby_e_embedded_commit_text_allowed(self):
+        """Same glued-quote miss as test_perl_e_embedded_commit_text_allowed
+        above, for `ruby -e`: quote-stripping collapses `system('git` into
+        the single word `system(git`, which never matches the fast-reject's
+        bare `git` word-walk."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("ruby -e \"system('git commit -m y')\""),
+        ) == "allow"
+
+    def test_node_e_embedded_commit_text_allowed(self):
+        """Same glued-quote miss as test_perl_e_embedded_commit_text_allowed
+        above, for `node -e`: quote-stripping collapses `execSync('git`
+        into the single word `execSync(git`, which never matches the
+        fast-reject's bare `git` word-walk."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("node -e \"require('child_process').execSync('git commit -m y')\""),
+        ) == "allow"
+
+    def test_ifs_parameter_expansion_wrapper_bypass_allowed(self):
+        """Allowed (documented gap): an unquoted `${IFS}` parameter
+        expansion standing in for whitespace defeats both the wrapper-token
+        regex and `_lib_fragment_invokes_git`'s word-split, since neither
+        performs real shell tokenization. Quote-stripping this command
+        yields the single glued word `bash${IFS}-c${IFS}git`, which none of
+        the fast-reject, the wrapper/commit co-occurrence check, arm 1, or
+        arm 2 recognizes as invoking `bash`/`git` -- even though the
+        wrapped `git add secret && git commit -m y` actually runs at
+        execution time."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('bash${IFS}-c${IFS}"git add secret && git commit -m y"'),
+        ) == "allow"
+
     def test_readonly_subcommand_chained_before_commit_allowed(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git status && git commit -m x")) == "allow"
 
@@ -399,19 +629,29 @@ class TestDenyInvisibleCommitContent:
             bash_input('git commit -m "fix && git add"'),
         ) == "allow"
 
+    def test_quote_embedded_decoy_fragment_with_read_only_real_mutation_allowed(self):
+        """Allow counterpart to test_quote_embedded_decoy_fragment_denied:
+        same quote-embedded decoy shape, but the real chained subcommand is
+        read-only (`git status`), so neither arm 1's fake-fragment walk nor
+        arm 2's masked-fragment walk has anything to deny."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input('echo "foo && git commit" && git status && git commit -m x'),
+        ) == "allow"
+
     # ------------------------------------------------------------------ #
     # Missing-binary fork points — each must fail closed (deny), not      #
     # silently allow an unscanned git commit                              #
     # ------------------------------------------------------------------ #
 
-    def test_grep_absent_from_path_does_not_affect_the_gate(self, tmp_path):
-        """The fast-reject matches via _lib_command_invokes_git_subcmd
-        (sed/tr and a bash word-walk); it does not use grep. A plain,
-        otherwise-allowed `git commit -m x` (nothing that trips arm 1 or
-        arm 2) still allows with grep absent from PATH. This confirms the
-        gate's fail posture doesn't depend on grep being present on PATH.
-        sed/tr remain a real dependency, since the fast-reject's own
-        internal quote-strip needs them."""
+    def test_grep_absent_from_path_denied(self, tmp_path):
+        """GH-783 swapped the fast-reject's own grep-based match for
+        _lib_command_invokes_git_subcmd (sed/tr and a bash word-walk, no
+        grep), but the wrapper/commit co-occurrence pre-check downstream of
+        the fast-reject still runs its own `grep -qE` over the raw command
+        text -- grep remains a real dependency of this hook via that
+        pre-check, so a plain, otherwise-allowed `git commit -m x` still
+        fails closed (denies) with grep absent from PATH."""
         farm_dir = tmp_path / "path-without-grep"
         farm_dir.mkdir()
         restricted_path = build_path_without("grep", farm_dir)
@@ -419,7 +659,7 @@ class TestDenyInvisibleCommitContent:
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("git commit -m x"),
             extra_env={"PATH": restricted_path},
-        ) == "allow"
+        ) == "deny"
 
     def test_awk_absent_from_path_denied(self, tmp_path):
         """`_mask_shell_quotes`'s single-pass scan is the earliest awk fork
@@ -463,6 +703,21 @@ class TestDenyInvisibleCommitContent:
             extra_env={"PATH": restricted_path},
         ) == "deny"
 
+    def test_non_commit_command_denied_when_sed_absent_from_path(self, tmp_path):
+        """Pins the blast-radius widening documented in the header comment:
+        COMMAND_UNQUOTED's quote-strip forks ahead of the fast-reject, so a
+        missing sed denies every Bash call -- not just ones mentioning `git
+        commit` -- unlike the pre-hoist behavior where a non-commit-shaped
+        call like this one would never have reached a sed fork at all."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("echo hi"),
+            extra_env={"PATH": restricted_path},
+        ) == "deny"
+
     def test_xargs_absent_from_path_denied(self, tmp_path):
         """xargs backs only `_lib_commit_fragment_has_worktree_target`'s
         tokenizing. That helper treats a missing xargs as "target found"
@@ -484,6 +739,16 @@ class TestDenyInvisibleCommitContent:
 
     def test_non_commit_bash_passthrough(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input("git status")) == "allow"
+
+    def test_wrapper_token_with_no_commit_fragment_allowed(self):
+        """Pins the fast-reject's ordering guarantee: a wrapper token
+        (`bash -c`) is present in the raw command text, but no git-commit-
+        shaped fragment appears anywhere, so the fast-reject exits before
+        the wrapper/commit co-occurrence check ever runs. A future
+        reordering that moved the co-occurrence check ahead of the
+        fast-reject would start denying every wrapper-token-containing
+        command, including this one."""
+        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input('bash -c "echo hello"')) == "allow"
 
     def test_non_bash_tool_passthrough(self):
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, read_input("/tmp/f.txt")) == "allow"

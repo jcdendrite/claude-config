@@ -18,6 +18,7 @@
       "Bash(~/.claude/scripts/marker.sh deactivate handoff)",
       "Bash(~/.claude/scripts/marker.sh resolve-session-id)",
       "Bash(~/.claude/scripts/marker.sh status)",
+      "Bash(~/.claude/scripts/marker.sh check code-review)",
       "Bash(~/.claude/scripts/findings-path-suffix.sh)",
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
@@ -71,6 +72,9 @@
   },
   "disableArtifact": true,
   "disableWorkflows": true,
+  "attribution": {
+    "sessionUrl": false
+  },
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
@@ -152,6 +156,16 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/capture-session-id.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/record-session-end.sh"
           }
         ]
       }
@@ -454,6 +468,14 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/nudge-long-turn-subagent.sh"
           }
         ]
       }

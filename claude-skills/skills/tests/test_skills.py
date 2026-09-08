@@ -3500,13 +3500,13 @@ def test_cache_rule_anchors_present() -> None:
 
 _PINNED_CACHE_CLAUSES: dict[tuple[str, str], str] = {
     ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"): (
-        "Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: "
+        "Before computing anything, run `~/.claude/scripts/marker.sh status`: "
         "if its `cumulative-review` line reads `live`, this diff content already "
-        "passed a full unnarrowed cumulative review — skip the invocation below, "
-        "report the cache hit in the Completion summary, and continue to step 4. "
-        "Content type is never a skip reason on its own — on `historical` or "
-        "`absent`, markdown, skill, and config diffs get the same pass as "
-        "everything else."
+        "passed a full unnarrowed cumulative review — skip the diff computation "
+        "and the `/code-review` invocation below, report the cache hit in the "
+        "Completion summary, and continue to step 4. Content type is never a "
+        "skip reason on its own — on `historical` or `absent`, markdown, skill, "
+        "and config diffs get the same pass as everything else."
     ),
 }
 
@@ -3667,6 +3667,46 @@ def test_ready_for_review_step3_never_produces_a_staged_diff() -> None:
         "--cached) review basis — that's the commit-gate pass's job, not the "
         "cumulative sweep's"
     )
+
+
+_READY_FOR_REVIEW_STEP4_HEADING = "## 4. Skill-procedural-fidelity review (halt on findings)"
+
+
+def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
+    """The step-4 diff-file handoff contract: anchored instruction-phrase
+    presence, the mechanism `_MARKER_TRIPLE_SITES` already implements, not a
+    full-clause anchor pin. Four literals catch deletion, rename, command
+    drop, and halt-clause removal independently; step 3's section carries none
+    of them, pinning that the cache-hit branch materializes nothing.
+    """
+    skill_md_path = _skill_file("ready-for-review")
+    lines = skill_md_path.read_text().splitlines(keepends=True)
+    step3_start, step3_end = _section_between(lines, _READY_FOR_REVIEW_STEP3_HEADING, skill_md_path)
+    step3_text = "".join(lines[step3_start:step3_end])
+    step4_start, step4_end = _section_between(lines, _READY_FOR_REVIEW_STEP4_HEADING, skill_md_path)
+    step4_text = "".join(lines[step4_start:step4_end])
+
+    for literal in (
+        "~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null",
+        "DIFF_FILE:",
+        "as its own Bash call",
+        "skill/script version mismatch",
+    ):
+        assert literal in step4_text, (
+            f"{skill_md_path}: step 4 no longer carries the exact literal {literal!r}"
+        )
+
+    assert "--diff-file" not in step3_text, (
+        f"{skill_md_path}: step 3 must never reference --diff-file -- that "
+        "artifact write belongs to step 4 alone"
+    )
+
+    pr_diff_script_source = (SCRIPTS_DIR / "pr-diff-against-base.sh").read_text()
+    assert "DIFF_FILE:" in pr_diff_script_source
+
+    reviewer_body = _agent_body("skill-fidelity-reviewer")
+    assert "a path to a diff file" in reviewer_body
+    assert "continuing with `offset` until a read returns no further lines" in reviewer_body
 
 
 _HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
