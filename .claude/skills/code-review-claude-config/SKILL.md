@@ -12,7 +12,7 @@ material. See CLAUDE.md's "Also redact structural fingerprints and
 provenance" rule and `docs/private-project-redaction.md` § "Publishing a
 pooled tooling measurement" for the carve-out's conditions. A figure
 decomposed by project, account, or engagement is a P1 finding on sight.
-Give a rounded or generalized figure more scrutiny, not less — the six
+Give a rounded or generalized figure more scrutiny, not less. The six
 always-on structural detectors already catch raw pastes, so what reaches this
 item is disproportionately content already generalized enough to clear them.
 A figure with no stated, checkable source (command, file, citation) is itself

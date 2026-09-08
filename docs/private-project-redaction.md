@@ -90,9 +90,10 @@ exemption's matching mechanics.
 
 ## Publishing a pooled tooling measurement
 
-This is the tier-3 companion to the two mechanical tiers above:
-reviewer discipline, not a hook, since a pooled figure's safety depends
-on how it was computed, not what string it contains. The repo-root
+This is the tier-3 companion to the two mechanical tiers above. It is
+reviewer discipline, not a hook. A pooled figure's safety depends on how
+it was computed, not what string it contains, and a hook can't see that.
+The repo-root
 [`CLAUDE.md`](../CLAUDE.md) "Also redact structural fingerprints and
 provenance" rule states the carve-out these conditions gate.
 

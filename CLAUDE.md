@@ -164,7 +164,7 @@ calls, sessions, agent dispatches, and nothing else. That carve-out is
 conditional — `docs/private-project-redaction.md` § "Publishing a
 pooled tooling measurement" states the scope limits, the two
 pre-publication checks, and the citation requirement. Work that
-section before publishing under it; if in doubt, don't.
+section before publishing under it. If in doubt, don't.
 
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
@@ -174,9 +174,11 @@ sources, or from synthetic fixtures is not in this class.
 Not a redaction concern — a do-not-commit-ever concern. API keys,
 OAuth tokens, service-role keys, `.env` contents, database URLs with
 credentials, private-key material. If one ever lands, stop and tell the
-owner — do not rotate credentials or rewrite history yourself, even if
-told to. Both stay the owner's to run: a rewrite is not a retraction
-once this repo's history can be cloned, forked, or cached.
+owner directly in the current session — never through a GitHub issue, PR
+comment, commit message, or any other artifact that ships to the public
+repo. Do not rotate credentials or rewrite history yourself, even if told
+to. Both stay the owner's to run: a rewrite is not a retraction once this
+repo's history can be cloned, forked, or cached.
 
 ### Enforcement
 
