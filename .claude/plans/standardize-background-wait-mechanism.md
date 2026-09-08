@@ -1,24 +1,137 @@
-# Standardize the background-wait mechanism, then measure the sleep-poll share
+# Ground the passive-notification mechanism (Phase 1 of a 3-phase effort)
+
+## Status
+
+Phase 1 is implemented and committed on this branch (`369fa30`, following the
+plan commit `85eac0b`). This plan file — and the PR built from this branch —
+now cover **Phase 1 only**. Phases 2 (the machine-wide sleep-poll measurement)
+and 3 (the case study) move to a follow-on branch; see "Deferred: Phase 2 and
+3" below for why and what carries forward.
+
+**Correction after commit.** The engineer flagged that "What this plan
+deliberately does not ground" (row 17, retained above) was wrong on its own
+terms: citing the *absence* of a repo-documented norm is not a reason to
+skip grounding one, if a norm actually exists at the vendor level that this
+repo simply hadn't cited yet. `verify-sources` confirmed one does: Anthropic's
+Week 15 (2026-04-06–10) release digest and `CHANGELOG.md` v2.1.246 both
+document a no-polling norm for a session's own backgrounded Bash work,
+independent of and broader than the sub-agents-page mechanism this plan
+originally grounded. Row 29's claim that "the dispatching session's schema...
+contains no no-polling instruction" was also independently found wrong —
+this session's own live Bash schema, and a freshly dispatched
+`general-purpose` agent's schema, both carry an explicit no-poll sentence,
+word for word. `docs/design-decisions/passive-notification-over-polling.md`
+is revised accordingly (a follow-up commit on this branch, not a plan
+rewrite): it now states the norm plainly and cites both new sources, rather
+than only the notification mechanism. No new CLAUDE.md/SKILL.md rule text is
+added — the vendor-owned tool schema already enforces the own-Bash case
+uniformly every turn, so a repo-level rule restating it would duplicate an
+already-enforced mechanism rather than close a real gap.
 
 ## Context
 
-The repo's rule that a session waits on background work by passive notification rather than polling is stated on three surfaces with no external citation, and its one quantitative support is documented as non-generalizing. PR #923 (merged as `4693784`) shipped the `cache-rebuild` sleep-poll sub-split measurement instrument plus an 11-rebuild `--this-repo` sample (≈36% sleep-poll share) whose own docs say it does not generalize. This plan does three things, in order, landing as one PR: ground the passive-notification mechanism in primary sources; run the sleep-poll measurement at machine-wide scope on two machines with the shipped instrument; and, if the result supports one, write the case study behind it. The intended outcome is that the mechanism stops resting on self-reference, and that the sleep-poll cost finding either becomes defensible or is honestly recorded as unmeasurable.
+The repo's rule that a session waits on background work by passive
+notification rather than polling was stated on three surfaces with no
+external citation, and its one quantitative support (PR #923, merged as
+`4693784`) is documented as non-generalizing. This phase grounds the
+passive-notification **mechanism** in primary sources so the rule stops
+resting on self-reference.
 
 ## Approach
 
-Ground the passive-notification **mechanism** in one new design-decision entry that cites two first-party sources — the public sub-agents page for a dispatched subagent, and the Bash tool description's own `run_in_background` sentence for a session's own backgrounded command — and that states in as many words that the sub-agents page prohibits no polling. It asserts nothing about what the Bash tool description prohibits — row 29 establishes that description varies by agent type, so only its mechanism sentence is citable. Point at that entry from `subagent-delegation/SKILL.md` alone, leaving `claude/.claude/CLAUDE.md` and `handoff/SKILL.md` untouched. Then run `cache-rebuild` at its own default machine-wide scope on both machines, each at a HEAD this session verifies itself, and record a verdict whose figures are published or withheld per row 39.
+Ground the passive-notification mechanism in one new design-decision entry
+that cites two first-party sources — the public sub-agents page for a
+dispatched subagent, and the Bash tool description's own `run_in_background`
+sentence for a session's own backgrounded command — and that states in as
+many words that the sub-agents page prohibits no polling. It asserts nothing
+about what the Bash tool description prohibits — row 29 establishes that
+description varies by agent type, so only its mechanism sentence is citable.
+Point at that entry from `subagent-delegation/SKILL.md` alone, leaving
+`claude/.claude/CLAUDE.md` and `handoff/SKILL.md` untouched.
 
-**Order.** Phase 1 → Phase 2 is a content dependency, not just a queue: Phase 2's write-up cites the entry Phase 1 creates, because that entry is where "the harness re-invokes you" acquires a source. The order also fails safe in the other direction — Phase 1 must not assert a quantitative claim Phase 2 could overturn, a constraint that only holds if Phase 1 goes first knowing Phase 2 is coming.
+**Which source grounds which claim.** Two mechanism claims, two sources, one
+shared disclaimer. The public sub-agents page grounds completion notification
+for a *dispatched subagent*. The Bash tool description's `run_in_background`
+sentence — a backgrounded command "keeps running across turns and re-invokes
+you when it exits" — grounds the same thing for a session's *own* backgrounded
+command. The sub-agents page prohibits no polling, and the entry says so in
+drafted words (row 33) rather than leaving the framing to execution time. The
+entry makes no claim either way about what the Bash tool description
+prohibits: row 29 establishes that it varies by agent type, so its mechanism
+sentence is citable and its prohibitions are not. The `ScheduleWakeup`
+prohibition is cited via `[§41]`, and the Bash sentence via row 28's existing
+in-repo copy, because a version-bound tool description has no URL a reader can
+re-check — so the repo keeps exactly one copy of each and everything else
+points at it (row 31). A URL-backed page carries no such constraint, which is
+why the sub-agents quote appears verbatim in the entry and the tool-description
+quotes do not.
 
-**One PR, three commits, with a ratified two-commit exit.** Under Phase 2's outcome 3 there is no case study worth writing — a `docs/case-studies/` file requires an evidence table and outcome 3 supplies none — so the PR ships as two commits and that counts as success (row 7). The consequence the engineer accepted: the PR cannot open until every phase finishes.
+**What this plan deliberately does not ground.** A plan-review finding asked
+this plan to ground a repo *norm* against Bash sleep-polling. No such norm
+exists to ground: `claude/.claude/CLAUDE.md` contains neither the token
+`sleep` nor `poll` anywhere in its 185 lines, and `handoff/SKILL.md:43`'s "do
+not poll and do not call `TaskOutput`" is scoped to subagent dispatches and
+pinned there by `test_skills.py:1440-1442`. The finding's residue is taken:
+the Bash tool description was genuinely an unchecked candidate, and its
+mechanism half is adopted as row 28.
 
-**Which source grounds which claim.** Two mechanism claims, two sources, one shared disclaimer. The public sub-agents page grounds completion notification for a *dispatched subagent*. The Bash tool description's `run_in_background` sentence — a backgrounded command "keeps running across turns and re-invokes you when it exits" — grounds the same thing for a session's *own* backgrounded command, which is precisely the shape Phase 2 measures and the shape the sub-agents page does not reach. The sub-agents page prohibits no polling, and the entry says so in drafted words (row 33) rather than leaving the framing to execution time. The entry makes no claim either way about what the Bash tool description prohibits: row 29 establishes that it varies by agent type, so its mechanism sentence is citable and its prohibitions are not. The `ScheduleWakeup` prohibition is cited via `[§41]`, and the Bash sentence via row 28's existing in-repo copy, because a version-bound tool description has no URL a reader can re-check — so the repo keeps exactly one copy of each and everything else points at it (row 31). A URL-backed page carries no such constraint, which is why the sub-agents quote appears verbatim in the entry and the tool-description quotes do not.
+**On the duplication and the citation's audience.** Don't relitigate the
+duplication — `no-op-dispatch-guard.md:20` names the exception correctly.
+State the audience instead, because the Context section's goal reads
+reader-agnostically and it is not: **this citation's reader is a maintainer
+auditing why the rule exists, not a mid-dispatch session.** That follows from
+`no-op-dispatch-guard.md:5`'s own account of why the CLAUDE.md copy exists —
+to reach a session at a moment that does not look like a delegation decision,
+so it stops the behavior rather than justifying it. `subagent-delegation`
+already owns the delegation-cost-reasoning half of the documented split, and
+grounding *why* passive notification works is reasoning. One pointer, on that
+surface, below the identical run, touching neither copy.
 
-**What this plan deliberately does not ground.** A plan-review finding asked this plan to ground a repo *norm* against Bash sleep-polling. No such norm exists to ground: `claude/.claude/CLAUDE.md` contains neither the token `sleep` nor `poll` anywhere in its 185 lines, and `handoff/SKILL.md:43`'s "do not poll and do not call `TaskOutput`" is scoped to subagent dispatches and pinned there by `test_skills.py:1440-1442`. Phase 2 measures a cost pattern's share against §49's own Revisit condition — it does not measure compliance with a stated rule. The finding's residue is taken: the Bash tool description was genuinely an unchecked candidate, and its mechanism half is adopted as row 28.
+**Root problem.** The rule was uncited on all three surfaces that carry it,
+and its one quantitative support is documented as non-generalizing, so both
+rest on self-reference.
 
-**On the duplication and the citation's audience.** Don't relitigate the duplication — `no-op-dispatch-guard.md:20` names the exception correctly. State the audience instead, because the Context section's goal reads reader-agnostically and it is not: **this citation's reader is a maintainer auditing why the rule exists, not a mid-dispatch session.** That follows from `no-op-dispatch-guard.md:5`'s own account of why the CLAUDE.md copy exists — to reach a session at a moment that does not look like a delegation decision, so it stops the behavior rather than justifying it. `subagent-delegation` already owns the delegation-cost-reasoning half of the documented split, and grounding *why* passive notification works is reasoning. One pointer, on that surface, below the identical run, touching neither copy.
+## Deferred: Phase 2 and 3
 
-**Root problem.** The Context section above states it: the rule is uncited on all three surfaces that carry it, and its one quantitative support is documented as non-generalizing, so both rest on self-reference.
+Phase 2 (the machine-wide sleep-poll measurement) and Phase 3 (the case study
+it might justify) move to a follow-on branch, started only once
+`narrow-provenance-redaction-rule` merges to `origin/main` or is abandoned —
+confirmed still open and unmerged as of this session (`origin/main:CLAUDE.md`
+still contains "inherits the private half"; that branch is separately in
+progress under session `narrow-provenance-redaction-rule-f4`). Phase 2's
+publishable content depends entirely on which redaction rule ends up in
+force, and rows 19, 20, 38, 41, 42, and 43 that this plan previously carried
+show what happens when a plan tries to design a disclosure policy for both
+possible rule-states at once: row 19 discloses a threshold beside a withheld
+share; row 20 adds three precision constraints to stop that threshold from
+bracketing the share; row 38 extends the same constraints to the count axis;
+row 42 adds a cross-artifact differencing note; row 43 forbids a
+representativeness claim. Five successive layers, each closing a gap the
+previous one opened — the compounding-defensive-layers pattern this repo's
+own `CLAUDE.md` names as a wrong-foundation tell, and the foundation here was
+trying to pre-design a disclosure policy against a rule that had not yet
+resolved.
+
+The fix is not a sixth layer. Phase 2 is not written until the redaction
+rule's fate is known, then written once, against whichever rule is actually
+in force at that time. That removes the old rows 19–21, 38, 41–43 and the
+three-part runtime check they required (the old plan's Verification step 4)
+entirely — none of that apparatus is needed once the plan stops trying to
+hold two rule-states open simultaneously.
+
+Two things from the discarded apparatus carry forward rather than needing
+re-derivation when that follow-on plan is written:
+
+- **Whatever Phase 2's design turns out to be, a withhold-path artifact
+  records the outcome label and scope metadata only — no count, ratio, or
+  percentage derived from transcript content.** A threshold chosen by looking
+  at the data is such a number; so is a bare `n`; so is the share itself.
+- **A per-account, per-project, or per-engagement breakdown is never
+  published, under any rule.** Not in an amendment, a case study, a commit
+  message, a PR body, an issue, or a plan file, and not offered as an option.
+  This is an absolute, not a factor to weigh — a decomposition is invertible
+  toward a specific engagement in a way a pooled ratio is not, and no version
+  of the redaction rule under discussion touches it.
 
 ### Givens
 
@@ -26,19 +139,11 @@ Ground the passive-notification **mechanism** in one new design-decision entry t
 |---|---|---|---|
 | 1 | `code.claude.com/docs/en/sub-agents` describes the completion-notification mechanism and contains no instruction not to poll. | Vendor-owned page; this repo cannot make it say more. | `[verified: WebFetch against that URL, this session]` |
 | 2 | `ScheduleWakeup`'s prohibition lives only in a tool description pinned to Claude Code 2.1.258, with no citable URL. | Vendor-owned and version-bound. | `[verified: docs/design-decisions/schedulewakeup-misapplied-documented.md:7]` |
-| 3 | Under the rule **as written today**, a count, ratio, or percentage from a corpus mixing private-project and public transcripts is unpublishable in this repo. Row 39 records the pending change to that rule. | Repo policy in `CLAUDE.md:157`; dissolving it needs a policy decision outside this plan, and one is now in flight on a separate branch. | `[verified: CLAUDE.md:152-159; docs/cost-levers-considered.md:501]` |
-| 4 | The instrument's own `account-N` ordinal redaction does not make a multi-root figure publishable — provenance, not identifiability, is the constraint. | Same policy as row 3. | `[verified: claude/.claude/scripts/transcript_analysis/scope.py `_redaction_ordinals`; docs/cost-levers-considered.md:501]` |
-| 5 | The peer machine's earlier run is not comparable to the shipped instrument. It ran at `cdaaf23c`, 8 commits before `4693784`, so it carries no sleep-poll sub-split. Its separate hand-rolled audit used a different predicate (loop-evidence-or-multi-statement required) counted per Bash record rather than per idle-gap, so it measures a different unit than the shipped one. | Another session owned that run; the incomparability is a fact about what already happened. | `[verified: peer session's own `git rev-parse` / `git merge-base --is-ancestor` output and its own predicate description, relayed this session]` |
-| 6 | One PR, three commits. | The engineer's decision. | `[engineer-verified]` |
-| 7 | Under outcome 3 the PR ships as two commits, and that is success rather than a shortfall. | The engineer's decision. | `[engineer-verified]` |
-| 8 | Phase 3's subject is fixed only after Phase 2 reports. | The engineer's decision. | `[engineer-verified]` |
 | 9 | The overlapping paragraph in `claude/.claude/CLAUDE.md:78-83` and `subagent-delegation/SKILL.md:56-66` is deliberately identical so `git grep` exposes drift. Its enforcement is that manual grep, not a test — the entry itself records that no mechanical enforcer exists. | A shipped design decision with its own record; overturning it is a separate plan. | `[verified: docs/design-decisions/no-op-dispatch-guard.md:20,22]` |
 | 10 | `claude/.claude/CLAUDE.md` is 185 lines against `check-claude-md-length.sh`'s 200-line limit. | Vendor-grounded threshold encoded in a hook-enforced gate. | `[verified: line count and `limit_for()`, this session]` |
 | 11 | `docs/design-decisions/` holds exactly 63 files, each carrying an italic provenance line on line 3. Their `Formerly §N` values form a closed, contiguous {1..63}; the monolith is retired, so that set can never grow. 48 of the 63 lines carry a leading ISO-8601 date; 15 carry none — §1–§12, §15, §18, §19. | Historical fact of the completed split. | `[verified: line-3 provenance line grepped in all 63 files, §N values extracted and counted, dateless count confirmed at 15, this session]` |
-| 12 | Phase 2's magnitude threshold is being fixed *after* the measurement arrives, at the engineer's direction, so Phase 2 is not pre-registered and its write-up may not claim to be. | The engineer's decision. | `[engineer-verified]` |
 | 28 | The Bash tool's own description states that a command launched with `run_in_background` "keeps running across turns and re-invokes you when it exits." That sentence already has exactly one in-repo copy, recorded verbatim under its own `[verified]` tag. | Vendor-owned and version-bound, with no citable URL — the same class as row 2. | `[verified: .claude/plans/background-slow-bash-calls.md:95-97]` |
 | 29 | The Bash tool description is **not uniform across agent types**, so no claim about what it does or does not prohibit is safe to publish. The dispatching session's schema says foreground `sleep` is blocked and directs a condition-wait to `Monitor` with an until-loop, and contains no no-polling instruction; a dispatched reviewer reported its own schema carrying an explicit one. Only row 28's `run_in_background` re-invocation sentence — the part both observed schemas agree on — is citable. | Vendor-owned, version-bound, and now known to vary by agent type; only a session holding a live Bash schema can read its own, and no session can read another's. | `[verified: this session's own Bash tool schema, plus a dispatched `staff-product-engineer`'s contradicting report of its own, both this session]` |
-| 30 | The peer machine's checkout auto-pulled to `fddc493`, which contains `4693784`, so its instrument carries the sleep-poll sub-split. The engineer approved asking it to re-run the shipped subcommand; that request is sent and outstanding. | The peer's checkout state is another machine's, reportable only by it — but the ancestry of a reported SHA is not, since both commits live in this shared repo. | `[verified: peer session's own report]` for which SHA it is on; `[verified: this session's own `git merge-base --is-ancestor 4693784 fddc493`]` for the containment; `[engineer-verified]` for the approval |
 
 ### Mechanisms
 
@@ -48,130 +153,158 @@ Ground the passive-notification **mechanism** in one new design-decision entry t
 | 14 | **Over-powered-primitive check for row 13.** Four lighter primitives fail: (a) a `## Sources` bullet appended to `[§41]` or `[§49]` — rejected by `citation-genre-mismatch.md:5`, which holds that citing an entry containing no discussion of the reasoning is a misattribution, and both are dated records (one superseded) whose substance is read-only under CLAUDE.md Axis 3; (b) an entry in `subagent-delegation/REFERENCES.md` — skill-scoped and edit-time-only, leaving two of three rule surfaces uncited and inviting a second copy; (c) an inline URL on the CLAUDE.md bullet — it breaks row 9's grep, and all six citation-carrying bullets there cite `docs/<file>.md` rather than external URLs; (d) a pointer sentence appended *after* the CLAUDE.md span, the shape row 15 uses for SKILL.md — the two spans are not the same shape. `SKILL.md:56-66` is a standalone paragraph block closed by a blank line at `:67` before a new bolded paragraph at `:68`, so a following sentence is a sibling paragraph. `CLAUDE.md:78-83` is one bullet in the Agent Briefing rule list, followed immediately by another rule bullet at `:84`, so "after the span" is either a new list item — a rule-shaped line stating no rule, in a budget every session pays every turn — or an append inside `:83`, which is part of the identical text. | Rejecting (a) also dissolves the `test_hook_alignment.py:430,451,456` hazard by construction rather than defending against it. (d)'s rejection is structural and checked, not a headroom preference. | `anchors: row13` |
 | 15 | One pointer sentence in `subagent-delegation/SKILL.md`, placed after the identical run at :56-66, not inside it. | Without a pointer the entry is reachable only by `git grep` (the directory has no index by design), so the rule would still read as self-referential to its reader. One pointer on the reasoning surface is the minimum that meets the goal without touching row 9's grep or row 10's budget. | `anchors: row13` |
 | 16 | Fix `test_design_decision_files.py`'s provenance check before creating the entry, in two separable parts. **(a) Per-file shape:** line 3 is an italic provenance line — a regex matching `*…*` and not `**…**` — carrying an ISO-8601 date, a `Formerly` clause, or both; a file with no `Formerly` clause must carry a date; any date present must parse via `datetime.date.fromisoformat`. **(b) Corpus closure:** the recorded `Formerly §N` values equal exactly `frozenset(range(1, 64))`, exposed as a keyword parameter defaulting to that constant. Absence of a `Formerly` clause stops being a violation on its own — (b) is what catches a dropped or fabricated clause. Also update `.claude/rules/design-decisions.md` (closed-set clause only) and `docs/design-decisions.md:5`. | A live, unfixed conflict, not scope creep: the rule file says a post-split file carries no `Formerly §N` clause, while `_legacy_number_range_violations` flags any file lacking one. Required to make the ticket's change correct (CLAUDE.md Axis 1). Part (a) is corpus-true as written — all 63 line-3 lines are italic, and every dateless file carries a `Formerly` clause (row 11) — so it grandfathers the 15 dateless files by construction rather than by carve-out, and forces no fabricated historical dates. A blanket date-led requirement would have failed against those 15 on day one. Part (b) is strictly stronger than the derived-max form, which would silently accept losing §63. | `anchors: row13`, `anchors: row11` |
-| 17 | Phase 2 runs `cache-rebuild` with no `--this-repo` on both machines. Each machine reports only its HEAD SHA; **the parent session then verifies ancestry itself** with `git merge-base --is-ancestor 4693784 <reported-SHA>`, fetching first, rather than accepting a peer's self-reported check. | The default scope already unions the active config dir, every entry in `~/.claude/transcript-config-dirs`, and any `--config-dir` extras, deduped by realpath — machine-wide multi-account is the instrument's default, not a widening needing new code. Row 5 shows why the SHA must be checked at all. Splitting it into "peer reports a SHA, parent checks the ancestry" removes the trust step entirely: a reported SHA is a claim the parent can verify against the shared remote, whereas a reported *check result* is not. | `anchors: root`, `anchors: row5`, `anchors: row30` |
-| 18 | **Over-powered-primitive check for row 17.** The heavier alternative is building new cross-machine aggregation. Two lighter primitives beat it: each machine runs the shipped subcommand unchanged and reports its own output, compared by hand; and no scratch script is written on either side. | Row 5 shows precisely what a hand-rolled second predicate costs — the previous audit is unusable because its unit and predicate diverged from the shipped one. | `anchors: row5` |
-| 19 | A gate with three outcomes — **(1) generalizes**, **(2) does not generalize**, **(3) not measurable** (too few in-scope `waiting on own Bash call` rebuilds, or a HEAD not containing `4693784`) — whose numeric thresholds are fixed once both machines report, and whose write-up states plainly that the threshold was set after the measurement. | The verdict *label* is publishable under row 3 while the figures behind it are not, which is what makes the deliverable committable regardless of the redaction verdict. Row 12 bars the pre-registration framing `docs/cost-levers-considered.md:474` uses for its own entries. | `anchors: row3`, `anchors: row12` |
-| 20 | The outcome-3 floor may be fixed after seeing n. The magnitude threshold, fixed after seeing the share, is disclosed as post-hoc and constrained three further ways: its value is a round decimal or an already-published figure, chosen without reference to the observed digits; the write-up discloses exactly one threshold beside one label, never a bracketing pair; and no margin-descriptive phrasing ("narrowly cleared", "just short of") appears. | n is not the outcome, so fixing its floor after observing it costs no inferential validity. The share is the outcome, so fixing its threshold afterwards does — hence the disclosure. Beyond validity, the threshold's *value* is itself a disclosure channel: a value visibly tuned to the observed digits, a second threshold on the other side, or margin language each converts a one-sided bound into a narrow interval around the withheld share. `:474`'s own 0.50-over-0.3947 precedent is the model for picking a value the outcome did not choose. | `anchors: row19`, `anchors: row12`, `anchors: row3` |
-| 39 | The engineer has decided that pooled behavioral aggregates carrying no per-project decomposition should be publishable, and that `CLAUDE.md:157` is broader than its section's purpose. The branch `narrow-provenance-redaction-rule` carries that change. **Phase 2 publishes figures only if it has merged to `origin/main` at write-up time, established by the three-part check in Verification step 4 — not by recollection and not by a peer's report.** If any part fails, Phase 2 falls back to rows 19–21, 38 and 40 unchanged. | The engineer's decision, and the rule change is another branch's work. | `[engineer-verified]` |
-| 40 | **A per-account, per-project, or per-engagement breakdown is never published, under either rule.** It does not appear in the amendment, the case study, a commit message, the PR body, an issue, or this plan file, and it is not offered as an option. | The engineer's decision, stated as an absolute rather than a factor to weigh. It is also the one figure class that survives every argument for publishing the pooled share: a decomposition is invertible toward a specific engagement in a way a pooled ratio is not. Row 39's narrowing does not touch it. | `[engineer-verified]`, `anchors: row3` |
-| 41 | Under row 39's merged-rule path, Phase 2's artifact carries the sleep-poll share, the cause-breakdown percentages, the absolute rebuild counts, and the dollar excess figures — pooled across both machines only. **Row 20's three disclosure-precision constraints** (round-value threshold, one bound, no margin language) are dropped as moot. **Row 19's post-hoc disclosure survives** — the write-up still states plainly that the threshold was fixed after the measurement arrived. Row 38 likewise applies only on the not-merged path. | The precision constraints exist solely to stop a disclosed threshold from bracketing a withheld share; with the share published, a threshold discloses nothing further, and keeping them would guard a gap that no longer exists. The post-hoc disclosure is a different thing entirely — it is a reporting-honesty statement about how the gate was set, and publishing the figure does not make an after-the-fact threshold into a pre-registered one. Dropping it would be the overclaim row 12 exists to prevent. | `anchors: row39`, `anchors: row19`, `anchors: row20`, `anchors: row12` |
-| 42 | Phase 2 reports the **pooled two-machine total only** — no per-machine sub-result — and the artifact carries a durable note that any future re-measurement must not be reported in a way that permits differencing against this one. | A per-machine split carries the same risk shape row 40 bars for a per-account split: with two machines and a known concentration, a split is one subtraction away from isolating a single corpus's contribution. The same holds across time — two pooled figures reported at different dates, each with its own scope, can be differenced to recover a marginal contribution neither discloses alone. This is a documentation control, consistent with the repo's reviewer-discipline-only tier for this risk class; no mechanism enforces it. | `anchors: row40`, `anchors: row3` |
-| 43 | Phase 2's write-up makes **no representativeness, typicality, or distribution claim** about the pooled figure, in either direction. It states what was measured over what scope and window, and stops. | The pooled figure is known to be concentrated, so presenting it as typical would overclaim — but disclosing the concentration to qualify it would itself approach the per-account decomposition row 40 bars absolutely. Asserting nothing about representativeness is the only framing that is honest under both constraints, and it costs the finding nothing: the claim that matters is that sleep-poll is the majority of the cause on the measured corpus, which stands without any typicality claim. | `anchors: row40`, `anchors: row19` |
-| 38 | **On row 39's not-merged path only**, neither the outcome-3 floor's numeric value nor the observed `n` is written into the committable artifact. The write-up names the outcome label alone; if a floor value is ever stated, it takes row 20's discipline in full — a round value chosen without reference to the observed digits, one bound only, no margin language. | Row 20 closes the disclosure channel on the *share* axis and leaves the *count* axis open. `n` is a bare count drawn from the same mixed corpus, so row 3 bans it directly; a disclosed floor beside an outcome-3 label bounds `n` the same way a disclosed threshold beside a pass/fail label bounds the share. The two axes need the same rule, not one rule and an exemption. | `anchors: row20`, `anchors: row3`, `anchors: row19` |
-| 21 | Phase 2's committable artifact is a prose amendment to `docs/cost-levers-considered.md`'s 2026-09-07 follow-up section recording the outcome label, both instrument commit SHAs, the window, the root counts, the post-hoc-threshold disclosure, the row 36 version-bound caveat, and the disposition of `[§49]`'s first Revisit condition — and no measured count, ratio, or percentage. **Scope metadata is exempt by name**: the root count, the machine count, the window length, and a commit SHA describe what was scanned rather than what was found, and `docs/cost-levers-considered.md:478` already publishes root count and window for a prior entry. Verification step 2's bare-integer grep is scoped to measured findings and does not fire on these four. | Reuses the withholding language already established at `:501`, whose own argument is that withholding costs nothing because the instrument makes the split rerunnable in one command. | `anchors: row19`, `anchors: row3` |
-| 22 | Phase 2's run and write-up stay inline in the parent session; no `code-writer` dispatch. | The output is an artifact the parent reasons over line by line, which `subagent-delegation` keeps inline. Dispatching would also put withheld figures into a second context, when holding them in one is strictly safer. | `anchors: row3` |
-| 23 | Phase 2 reports each run's resolved-scope header verbatim, per `transcript-analysis/SKILL.md`'s test-pinned "Scope confirmation" sentence. | That sentence is pinned byte-exactly by `TestTranscriptAnalysisScopeConfirmationContract`; it is the repo's own mechanism against overstating corpus coverage, and it catches a single-root run masquerading as machine-wide. | `anchors: row17` |
-| 24 | Phase 3 is conditional: a case study under outcomes 1 or 2, none under outcome 3. | A `docs/case-studies/` file requires a Short answer and an evidence table; outcome 3 supplies neither, and forcing one would be the thin-record failure the genre exists to avoid. | `anchors: row19`, `anchors: row7` |
-| 25 | Under outcome 1 or 2, the case study states its finding qualitatively and cites the `cost-levers-considered.md` amendment for scope, carrying no multi-root figure. | Row 3 governs the case study identically; the evidence table holds method, scope, and comparability facts rather than withheld ratios. | `anchors: row3`, `anchors: row24` |
-| 26 | The multi-root figures never reach this plan file, a commit message, the PR body, or a GitHub issue. | A plan under `.claude/plans/` ships in the same PR as the implementation and is subject to the same redaction rules as any other public-repo content (repo `CLAUDE.md`, "Plans in this repo affect all stow users"). | `anchors: row3` |
-| 27 | The parent session — not `code-writer` — runs `/skill-review` for Phase 1's `subagent-delegation/SKILL.md` edit. | `require-skill-review.sh` blocks `git commit` on a SKILL.md change until the marker is written, and `code-writer` cannot run review skills or write markers; it would report the denial and stall. | `anchors: row15` |
+| 27 | The parent session — not `code-writer` — runs `/skill-review` for `subagent-delegation/SKILL.md`'s edit. | `require-skill-review.sh` blocks `git commit` on a SKILL.md change until the marker is written, and `code-writer` cannot run review skills or write markers; it would report the denial and stall. | `anchors: row15` |
 | 31 | The entry grounds the own-Bash mechanism by citing row 28's existing in-repo copy — `.claude/plans/background-slow-bash-calls.md:95-97` — not by re-quoting the sentence. | Row 2's reasoning bars creating a *second* copy of a version-bound string with no URL to re-check it against; the Bash sentence has exactly one copy today, so citing keeps the count at one. The genre check passes: that plan file discusses the mechanism in its own rows, so `citation-genre-mismatch.md:5` is not triggered. Citing a committed plan file as a source is established — `schedulewakeup-misapplied-documented.md:45` does exactly this. | `anchors: row13`, `anchors: row28`, `anchors: row2` |
 | 32 | The citation's audience is maintainer-only by design, stated as such in the entry's own opening and in the PR body. No pointer lands in `claude/.claude/CLAUDE.md`. | `no-op-dispatch-guard.md:5` says the CLAUDE.md copy exists to reach a session at a moment that does not look like a delegation decision — its job is to stop the behavior, not to justify it. A citation serves an auditor, who reads the entry. Row 14(d) shows the after-the-span pointer is not structurally available on that surface anyway. Stating the audience is what keeps the Context section's reader-agnostic goal from over-promising. | `anchors: row9`, `anchors: row10`, `anchors: row15` |
 | 33 | The entry's disclaimer is drafted here, verbatim, not deferred to execution. After the sub-agents quote: **"This page documents the notification mechanism only. It states no rule against polling. The no-polling rule below is this repo's own, grounded in its cost register rather than in this source."** After the own-Bash citation: **"The Bash tool description documents the same re-invocation mechanism for a session's own backgrounded command."** That sentence stops there: row 29 establishes the description varies by agent type, so the entry asserts nothing about what it prohibits. | The entry may state what a source says and not what it omits, unless the omission is checkable in a stable artifact. A URL-backed page is checkable; a per-agent-type tool description is not. Drafting the sentence here rather than at execution time is what puts it inside `/plan-review`'s reach. | `anchors: row13`, `anchors: row29` |
-| 34 | Phase 3's `code-writer` dispatch prompt carries the verdict label and the path `docs/cost-levers-considered.md`, and transcribes nothing from the parent's own conversational context. | Row 22 keeps the raw figures in exactly one context; a prompt paraphrased from that context would carry a figure into a second one, defeating the reason Phase 2 stayed inline. This is the discipline `CLAUDE.md` §Model & Effort Routing already states for consult dispatches — name the files, don't transcribe them. | `anchors: row3`, `anchors: row22`, `anchors: row25` |
-| 35 | Three disclosures ship with the change, not after it. Phase 1's commit message states that the provenance-check fix is a precondition for the new post-split file rather than a drive-by test change. The PR body states plainly that Phase 2's verdict cannot be independently re-derived from the diff, because its figures are withheld and part of its input is a peer machine's run the reviewer cannot access. The PR body also carries row 32's audience statement. | A reviewer seeing hook-test changes in a "ground a citation" commit has no signposting toward row 16 unless they read this plan file. A reviewer seeing a labelled verdict with reasoning could otherwise mistake it for an independently checkable one. Row 32 promises the audience statement reaches the PR body, and nothing else instructs `/pr-description` to carry it — an unenforced promise is not a disclosure. All three are reader-facing facts about the artifact, so they belong in the artifact's own prose, not only here. | `anchors: row16`, `anchors: row19`, `anchors: row32` |
-| 36 | Phase 2's write-up date-bounds its claim: the measured share describes the window's transcripts, and the harness's own foreground-`sleep` handling is version-bound and was not held constant across that window. | Row 29 establishes that the current harness blocks foreground `sleep`. When that began is not determinable from this plan, so a write-up presenting the historical share as describing current behavior would overstate. The measurement still proceeds — §49's Revisit condition asks for the historical share regardless of what the harness does today. | `anchors: row29`, `anchors: row19` |
+| 35 | Phase 1's commit message states that the provenance-check fix is a precondition for the new post-split file rather than a drive-by test change. The PR body carries row 32's audience statement. | A reviewer seeing hook-test changes in a "ground a citation" commit has no signposting toward row 16 unless they read this plan file. Row 32 promises the audience statement reaches the PR body, and nothing else instructs `/pr-description` to carry it — an unenforced promise is not a disclosure. | `anchors: row16`, `anchors: row32` |
 | 37 | `.claude/rules/design-decisions.md` gains one clause naming the closed legacy set and its upper bound (63), and a test pins that stated number to `max(_CLOSED_LEGACY_NUMBERS)`, mirroring `test_rule_file_filename_grammar_matches_enforced_regex`. No date grammar is stated in rule prose and none is pinned. | The frozen constant is the one thing a future editor would restate in prose and let drift, and the existing filename-grammar pin is the proven shape for that. The date grammar has no prose statement to drift from — the Format bullet gives an example, not a regex — so pinning it would mean adding prose solely to have something to pin. The test's own docstring carries the grammar instead. | `anchors: row16`, `anchors: row11` |
-
-**Unverified rows carried forward.** Row 19's numeric thresholds are `[unverified]` until both machines report; anything derived from them inherits the flag. Row 30's containment of `4693784` in `fddc493` is `[unverified]` until the peer machine's own output arrives — row 17 makes verifying it a precondition. Row 5 is fully `[verified]` on both halves and carries no flag forward.
 
 ## Critical files
 
-**Phase 1 — dispatch A (`code-writer`, `model: sonnet`), runs first.** Provenance-grammar fix; must land before the new entry can exist.
+**Dispatch A (`code-writer`, `model: sonnet`), ran first.** Provenance-grammar
+fix; had to land before the new entry could exist.
 
-- `claude/.claude/hooks/tests/test_design_decision_files.py` — modify. Split the provenance invariant per row 16 into two functions: a per-file shape check (line-3 italic provenance line; ISO-8601 date, `Formerly` clause, or both; a file with no `Formerly` clause must carry a date; any date validated with `datetime.date.fromisoformat`) and a corpus-closure check taking `expected_legacy_numbers: frozenset[int] = _CLOSED_LEGACY_NUMBERS` as a keyword parameter. Update module-docstring invariant 2. The italic-line regex must reject `**bold**` — `ui-notification-defaults-in-stow-source.md:31` and `attribution-in-skill-prose-and-hook.md:14,32,38` are live body lines that a loose `^\*.*\*$` matches.
-  Seven `TestFaultInjection` cases, each a one-fixture `tmp_path` corpus in the file's existing idiom: (1) a post-split file with a bare date line and no `Formerly` clause is accepted; (2) a file with a `Formerly` clause and no date is accepted — the shape 15 real files have; (3) a file with no provenance line at all is flagged; (4) a malformed date (`2026-13-45`) is flagged; (5) dropping the highest legacy number is flagged; (6) two files claiming the same `§N` is flagged — the fixture's recorded numbers must still *cover* `expected_legacy_numbers` in full while containing the duplicate, so the case forces a genuine cardinality check instead of coincidentally re-testing case 5's gap path; (7) a file stamped `§64` is flagged.
-  `test_legacy_numbers_detects_gap` changes with the signature: it passes `expected_legacy_numbers=frozenset({1, 2, 3})` against its existing `{1, 3}` corpus and asserts the message names the missing `2`. That is a more specific assertion than today's `"contiguous" in violations[0]`, and it keeps synthetic-corpus fault injection working at any size.
-- `.claude/rules/design-decisions.md` — modify. Add one clause to the **Format** bullet naming the legacy set as closed at §63. The post-split-format prose ("A decision recorded after the split carries no `Formerly §N` clause…") already exists verbatim and is not rewritten.
-- `docs/design-decisions.md` — modify line 5, which currently asserts every file records a migrated section number.
-- Add the rule-prose pin from row 37 alongside `test_rule_file_filename_grammar_matches_enforced_regex`.
+- `claude/.claude/hooks/tests/test_design_decision_files.py` — modified. Split
+  the provenance invariant per row 16 into two functions: a per-file shape
+  check (line-3 italic provenance line; ISO-8601 date, `Formerly` clause, or
+  both; a file with no `Formerly` clause must carry a date; any date validated
+  with `datetime.date.fromisoformat`) and a corpus-closure check taking
+  `expected_legacy_numbers: frozenset[int] = _CLOSED_LEGACY_NUMBERS` as a
+  keyword parameter. Updated module-docstring invariant 2. The italic-line
+  regex rejects `**bold**` — `ui-notification-defaults-in-stow-source.md:31`
+  and `attribution-in-skill-prose-and-hook.md:14,32,38` are live body lines
+  that a loose `^\*.*\*$` would match.
+  Seven `TestFaultInjection` cases, each a one-fixture `tmp_path` corpus in
+  the file's existing idiom: (1) a post-split file with a bare date line and
+  no `Formerly` clause is accepted; (2) a file with a `Formerly` clause and no
+  date is accepted — the shape 15 real files have; (3) a file with no
+  provenance line at all is flagged; (4) a malformed date (`2026-13-45`) is
+  flagged; (5) dropping the highest legacy number is flagged; (6) two files
+  claiming the same `§N` is flagged; (7) a file stamped `§64` is flagged.
+  `test_legacy_numbers_detects_gap` changed with the signature: it passes
+  `expected_legacy_numbers=frozenset({1, 2, 3})` against its existing `{1, 3}`
+  corpus and asserts the message names the missing `2`.
+- `.claude/rules/design-decisions.md` — modified. Added one clause to the
+  **Format** bullet naming the legacy set as closed at §63.
+- `docs/design-decisions.md` — modified line 5, which previously asserted
+  every file records a migrated section number.
+- Added the rule-prose pin from row 37 alongside
+  `test_rule_file_filename_grammar_matches_enforced_regex`.
 
-*Reuse:* the existing `TestFaultInjection` class rather than a new module; `_reassigned_citation_violations`'s `reassigned_numbers` keyword-parameter pattern (`:364-366`, overridden at `:477-479, :492-493, :509-510`) as the exact model for the frozen-set override; `test_rule_file_filename_grammar_matches_enforced_regex` (`:147-161`) as the model for row 37's pin; `datetime.date.fromisoformat` rather than a hand-rolled calendar check.
+*Commit message:* per row 35, states that the provenance-check fix is a
+precondition for the new post-split file.
 
-*Commit message:* per row 35, state that the provenance-check fix is a precondition for the new post-split file.
+**Dispatch B (`code-writer`, `model: sonnet`), ran sequential after A.**
 
-**Phase 1 — dispatch B (`code-writer`, `model: sonnet`), sequential after A.** Disjoint file set from A, specifiable from one sentence of A's outcome ("a post-split entry carries `*<ISO date>.*` and no `Formerly §N` clause").
+- `docs/design-decisions/passive-notification-over-polling.md` — created.
+  Provenance line `*2026-09-07.*`. Body carries: the audience statement from
+  row 32; the verbatim sub-agents-page sentences; the first disclaimer trio
+  from row 33 immediately after them; a
+  `[§41](schedulewakeup-misapplied-documented.md)` citation for the
+  `ScheduleWakeup` prohibition rather than a second copy of that quote; a
+  citation to `.claude/plans/background-slow-bash-calls.md:95-97` for the
+  own-Bash `run_in_background` sentence, with row 31's one-clause reason for
+  citing rather than re-quoting; the second disclaimer pair from row 33 after
+  it; and a **Revisit** condition firing if the sub-agents page stops stating
+  that a completion notification reaches Claude in a later turn.
+- `claude-skills/skills/subagent-delegation/SKILL.md` — modified. One pointer
+  sentence inserted at line 67, between the identical paragraph ending at :66
+  and `**No permission cost.**` at :68 — never inside the identical run.
 
-- `docs/design-decisions/passive-notification-over-polling.md` — create. Provenance line `*2026-09-07.*`. Body carries: the audience statement from row 32; the verbatim sub-agents-page sentences; the first disclaimer trio from row 33 immediately after them; a `[§41](schedulewakeup-misapplied-documented.md)` citation for the `ScheduleWakeup` prohibition rather than a second copy of that quote; a citation to `.claude/plans/background-slow-bash-calls.md:95-97` for the own-Bash `run_in_background` sentence, with row 31's one-clause reason for citing rather than re-quoting; the second disclaimer pair from row 33 after it; and a **Revisit** condition firing if the sub-agents page stops stating that a completion notification reaches Claude in a later turn.
-- `claude-skills/skills/subagent-delegation/SKILL.md` — modify. One pointer sentence inserted at line 67, between the identical paragraph ending at :66 and `**No permission cost.**` at :68 — never inside the identical run.
-
-*Reuse:* the `## Sources` bullet form already used for this URL in `specialist-reviewer-roster.md:18`, `effort-tier-routing-clamp.md:13`, `reviewer-findings-path-output.md:11`, and `plan-architect-consult-mode.md:19`; the `**Revisit** if any of:` convention; `schedulewakeup-misapplied-documented.md:45` as the precedent for citing a committed plan file from a `## Sources` block.
-
-*Parent-only step:* `/skill-review` on the `subagent-delegation/SKILL.md` diff (hook-enforced; `code-writer` cannot run it).
-
-**Phase 2 — no `code-writer` dispatch.** Measurement and write-up both inline in the parent, with the engineer present for the redaction review.
-
-- `docs/cost-levers-considered.md` — modify. Append to the 2026-09-07 follow-up section. Content depends on row 39: if the narrowed rule has merged, per row 41 (share, cause-breakdown percentages, counts, dollar excess); if it has not, per row 21 (label and scope metadata only, no figures). Under both, per row 40, no per-account breakdown.
-
-*Reuse:* the `cache-rebuild` subcommand and its shipped `Own-Bash wait shape` block — no instrument code changes; the withholding language at `:501`; `:474`'s threshold-selection precedent for row 20's "a value the outcome did not choose."
-
-**Phase 3 — dispatch C (`code-writer`, `model: sonnet`), conditional on outcome 1 or 2.**
-
-- `docs/case-studies/<slug>.md` — create. Slug and H1 question fixed by Phase 2's verdict. Line 3 exactly `*Part of the [claude-config case studies](../case-studies.md).*`.
-- `docs/case-studies.md` — modify. One index line for the new file only.
-
-*Dispatch prompt constraint (row 34):* the prompt carries the verdict label and the path `docs/cost-levers-considered.md`. It transcribes no figure, no ratio, and no paraphrase of Phase 2's output from the parent's own context.
-
-Under outcome 3: **None** for Phase 3. The deliverable is the Phase 2 amendment already committed, plus the recorded disposition of `[§49]`'s Revisit condition — and the PR ships as two commits (row 7).
-
-*Not constraining Phase 3:* `claude/.claude/hooks/tests/test_case_study_anchors.py` registers a hardcoded anchor list scoped to `docs/case-studies/worktree-enforcement.md` only, placing no requirement on a new file. `test_doc_counts.py` carries no count claim over either directory. Neither mechanically verifies the new index line — `code-writer` self-review and human review are its only backstops, consistent with the two pre-existing gaps in that index.
+*Parent-only step:* `/skill-review` on the `subagent-delegation/SKILL.md`
+diff (hook-enforced; `code-writer` cannot run it).
 
 ## Verification
 
 Per repo `CLAUDE.md`: run `select-tests.py`, not the full suite.
 
-**Every phase:**
-
 ```
 .venv/bin/python3 claude/.claude/scripts/select-tests.py
 ```
 
-This one command is the whole verification step. It derives its own changed-path set from `compute_changed_paths` (HEAD versus the `origin/main` divergence point, plus every dirty and untracked working-tree path), prints one `select-tests: running <targets>` line to stderr, and then invokes pytest on those targets itself. It takes no path arguments and needs none.
+This one command is the whole verification step. It derives its own
+changed-path set from `compute_changed_paths` (HEAD versus the `origin/main`
+divergence point, plus every dirty and untracked working-tree path), prints
+one `select-tests: running <targets>` line to stderr, and then invokes pytest
+on those targets itself. It takes no path arguments and needs none.
 
-**What it selects for Phase 1, verified.** Run against dispatch A's three changed paths, `select_pytest_targets()` returns `is_full_suite: False`, `reason: domain-selected`, and six resolved targets: `claude-skills/skills/tests`, `claude/.claude/hooks/tests`, `claude/.claude/scripts/tests/test_select_tests.py`, and the three `claude/.claude/scripts/tests/test_transcript_analysis*.py` files. The domain directory `claude/.claude/hooks/tests` is correctly selected — `resolve_target_paths`'s containment filter drops the *contained file* in favor of the directory, which is the safe direction. The GH-882 under-collection shape does not manifest for this diff.
+**What it selects, verified.** Run against dispatch A's three changed paths,
+`select_pytest_targets()` returns `is_full_suite: False`, `reason:
+domain-selected`, and six resolved targets: `claude-skills/skills/tests`,
+`claude/.claude/hooks/tests`, `claude/.claude/scripts/tests/test_select_tests.py`,
+and the three `claude/.claude/scripts/tests/test_transcript_analysis*.py`
+files. The domain directory `claude/.claude/hooks/tests` is correctly
+selected — `resolve_target_paths`'s containment filter drops the *contained
+file* in favor of the directory, which is the safe direction. The GH-882
+under-collection shape does not manifest for this diff.
 
-**Do not hand-reconstruct a fallback.** Most of those targets arrive through `CROSS_DOMAIN_EXCEPTIONS` rather than the domain rule: `_is_test_source_change` selects `test_select_tests.py`, and `_is_hooks_or_skills_change` selects the transcript-analysis tests — both firing precisely because the touched file is itself a test file under `claude/.claude/hooks/`. A hand-written `pytest claude/.claude/hooks/tests claude-skills/skills/tests` misses every one of them. Read the selection the tool prints; do not reconstruct it. If the printed selection ever omits a domain the diff genuinely touches, that is a bug in `select-tests.py`'s rule table to report, not a licence to widen the run by hand (repo `CLAUDE.md`, Commands).
+**Do not hand-reconstruct a fallback.** Most of those targets arrive through
+`CROSS_DOMAIN_EXCEPTIONS` rather than the domain rule: `_is_test_source_change`
+selects `test_select_tests.py`, and `_is_hooks_or_skills_change` selects the
+transcript-analysis tests — both firing precisely because the touched file is
+itself a test file under `claude/.claude/hooks/`. A hand-written `pytest
+claude/.claude/hooks/tests claude-skills/skills/tests` misses every one of
+them. Read the selection the tool prints; do not reconstruct it. If the
+printed selection ever omits a domain the diff genuinely touches, that is a
+bug in `select-tests.py`'s rule table to report, not a licence to widen the
+run by hand (repo `CLAUDE.md`, Commands).
 
-**Dispatch A's real-corpus precondition is met by that command, not by an extra step.** `test_legacy_numbers_form_contiguous_range` and the new shape check both read `DESIGN_DECISIONS_DIR` directly, and both live under `claude/.claude/hooks/tests`, which the selection includes. So the standard run exercises the new invariant against all 63 live files before dispatch B starts.
+**Dispatch A's real-corpus precondition is met by that command, not by an
+extra step.** `test_legacy_numbers_form_contiguous_range` and the new shape
+check both read `DESIGN_DECISIONS_DIR` directly, and both live under
+`claude/.claude/hooks/tests`, which the selection includes. So the standard
+run exercises the new invariant against all 63 live files before dispatch B
+starts.
 
-**Lint (Phase 1 only):**
+**Lint:**
 
 ```
 .venv/bin/ruff check claude/.claude/ claude-skills/
 ```
 
-No shell files are touched in any phase, so `scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck` is not required.
+No shell files are touched, so `scripts/list-shell-files.sh | xargs -0
+.venv/bin/shellcheck` is not required.
 
-**Phase 2 — three additional pre-stage checks, all manual and all named:**
-
-1. Re-read the amendment against `CLAUDE.md` §"Also redact structural fingerprints and provenance".
-2. Check the staged diff for a per-account, per-project, or per-engagement breakdown — a table, a list, or a sentence attributing any figure to one account — and have the engineer confirm the negative result. Row 40 makes this the one check that applies under either rule, so it does not become moot if row 39's change merges. If the narrowed rule has **not** merged, additionally grep for percentage-, ratio-, decimal-, and bare-integer-shaped tokens (`%`, `\d+/\d+`, a bare decimal, a bare integer scoped to the new hunk), since row 21 then bans all four. `deny-private-project-refs.sh` has no detector for any numeric or per-account shape, so nothing mechanical backs either check.
-3. Confirm each machine's resolved-scope header was reported verbatim per `transcript-analysis/SKILL.md` § "Scope confirmation". For each machine, take its reported HEAD SHA and run `git merge-base --is-ancestor 4693784 <SHA>` in this repo yourself before its output counts — do not accept a peer's report that it ran the check (row 17).
-4. **Establish which row 39 path applies, by positive confirmation — not by recollection and not by phrase-absence.** Three conditions must all hold before any figure is published; any one failing means rows 19–21, 38, 40 govern unchanged.
-   - `git fetch origin main`, then `git show origin/main:CLAUDE.md | grep -c "inherits the private half"` returns `0`.
-   - Read the provenance paragraph of `origin/main:CLAUDE.md` and confirm it now contains an affirmative clause permitting a pooled aggregate that carries no per-project decomposition. Phrase-absence alone is not sufficient — a reword, a reformat, or a section move would also produce `0` while leaving the policy unchanged, so the grep detects a candidate and the read confirms it.
-   - Name the merged PR or commit that made the change, found via `git log origin/main -- CLAUDE.md`.
-
-   Record all three results in the write-up's own reasoning before publishing any figure. The gate is positive confirmation of a policy that is actually in force, not the absence of one string.
-
-**Gates:** `/code-review` before each commit; `/skill-review` on Phase 1 dispatch B (hook-enforced); `ai-instruction-and-memory-files` on Phase 1 dispatch A's rule-file edit (dispatched by `/code-review`); `/ready-for-review` before push; `/pr-description` carries row 35's two disclosures. No plugin directory is touched, so `plugin-semver` is not implicated.
+**Gates:** `/code-review` before each commit; `/skill-review` on dispatch B
+(hook-enforced); `ai-instruction-and-memory-files` on dispatch A's rule-file
+edit (dispatched by `/code-review`); `/ready-for-review` before push;
+`/pr-description` carries row 35's audience-statement disclosure. No plugin
+directory is touched, so `plugin-semver` is not implicated.
 
 ## Out of scope
 
-- **Editing `schedulewakeup-misapplied-documented.md` or `schedulewakeup-denied-by-bare-tool-name.md`.** Both are dated records, one superseded, and `citation-genre-mismatch.md:5` rejects retrofitting reasoning into an entry that does not discuss it. Leaving them untouched also avoids silently orphaning the §49 prose quoted in `test_hook_alignment.py:430,451,456` assertion messages, which would fail no test.
-- **Re-quoting the Bash tool description in the new entry.** Row 31 cites its single existing in-repo copy instead. Two copies of a string with no URL to re-check them against is the drift pair row 2 exists to prevent.
-- **Adding a repo rule against Bash sleep-polling, on any surface.** No such rule exists today — `claude/.claude/CLAUDE.md` contains neither `sleep` nor `poll`, and `handoff/SKILL.md:43`'s prohibition is scoped to subagent dispatches. Writing one is a separate decision that Phase 2's own result should inform, not precede.
-- **Determining when the harness began blocking foreground `sleep`.** Row 36 handles the consequence with a date-bounding caveat in the write-up. Establishing the boundary would mean archaeology across tool-description versions this repo does not record.
-- **Relitigating the CLAUDE.md / `subagent-delegation` duplication, or adding any citation to `claude/.claude/CLAUDE.md`.** Could be changed; deliberately is not. Reasons in rows 9, 10, 14(d), and 32 — and row 32 states the audience narrowing explicitly rather than leaving it implied.
-- **Editing `handoff/SKILL.md:43`.** It already states both the mechanism and the norm correctly for subagent dispatches, pinned by `test_skills.py:1440-1442`. A third pointer would be the compounding-layers shape rather than added grounding.
-- **A `subagent-delegation/REFERENCES.md` entry for this citation.** The verbatim quote and the citations live in the decision entry's body; a second home is duplication.
-- **Refreshing the illustrative sample block at `docs/transcript-analysis.md:850-877`.** It renders `--this-repo` output; replacing it with multi-root numbers would publish exactly what row 3 withholds.
-- **The two `docs/case-studies.md` index entries missing today** — `cold-cache-attribution.md` and `pr-cost-context-bucket.md`. Verified by diffing all 15 files under `docs/case-studies/` against the index's 13 links. Pre-existing drift, unrelated to this diff; Phase 3 adds only its own line.
-- **A durable test asserting the new amendment section carries no percentage or ratio token.** The same document legitimately publishes several percentages for public-only content in adjacent sections, so a shape detector would false-positive constantly and get routed around. Verification step 2 covers this PR's one artifact as a one-time manual check instead.
-- **Any change to `_SLEEP_POLL_COMMAND_RE` or its documented two-sided error.** Phase 2 carries the stated limitation into its verdict rather than fixing the classifier.
-- **Reconciling the peer machine's earlier hand-rolled audit with the shipped predicate.** Row 5 establishes they measure different units against different predicates; the fix is a fresh run of the shipped subcommand, not a mapping between them.
-- **Adding an index to `docs/design-decisions/`.** Deliberately absent per `.claude/rules/design-decisions.md`.
-- **Recording any multi-root figure in this plan file, a commit message, the PR body, or a GitHub issue** — regardless of row 39's outcome. Row 41's sole publication path is the `docs/cost-levers-considered.md` amendment. The case study is not a second one: rows 25 and 34 keep it figure-free and have it cite the amendment for scope, so the figures live in exactly one committed artifact under either path.
-- **Narrowing `CLAUDE.md:157` in this PR.** Row 39's rule change is the separate `narrow-provenance-redaction-rule` branch, with its own review. Bundling a rule amendment with the measurement that motivated it would put the rule's review under pressure from the finding it unblocks.
-- **Any per-account, per-project, or per-engagement breakdown, in any artifact** (row 40). Not in the amendment, the case study, a commit message, the PR body, an issue, or this plan file — and not offered as an option.
-- **GH-925 (whether a `Monitor`-relayed interjection can serve as a cache-TTL heartbeat) and GH-926 (whether a sub-5-minute check-in cadence would cut the non-sleep-poll majority).** Both are tracked and neither is settled by this measurement.
+- **Editing `schedulewakeup-misapplied-documented.md` or
+  `schedulewakeup-denied-by-bare-tool-name.md`.** Both are dated records, one
+  superseded, and `citation-genre-mismatch.md:5` rejects retrofitting
+  reasoning into an entry that does not discuss it. Leaving them untouched
+  also avoids silently orphaning the §49 prose quoted in
+  `test_hook_alignment.py:430,451,456` assertion messages, which would fail
+  no test.
+- **Re-quoting the Bash tool description in the new entry.** Row 31 cites its
+  single existing in-repo copy instead. Two copies of a string with no URL to
+  re-check them against is the drift pair row 2 exists to prevent.
+- **Adding a repo rule against Bash sleep-polling, on any surface.** No such
+  rule exists today — `claude/.claude/CLAUDE.md` contains neither `sleep` nor
+  `poll`, and `handoff/SKILL.md:43`'s prohibition is scoped to subagent
+  dispatches. Writing one is a separate decision, not a precondition for
+  grounding the mechanism.
+- **Relitigating the CLAUDE.md / `subagent-delegation` duplication, or adding
+  any citation to `claude/.claude/CLAUDE.md`.** Could be changed; deliberately
+  is not. Reasons in rows 9, 10, 14(d), and 32 — and row 32 states the
+  audience narrowing explicitly rather than leaving it implied.
+- **Editing `handoff/SKILL.md:43`.** It already states both the mechanism and
+  the norm correctly for subagent dispatches, pinned by
+  `test_skills.py:1440-1442`. A third pointer would be the compounding-layers
+  shape rather than added grounding.
+- **A `subagent-delegation/REFERENCES.md` entry for this citation.** The
+  verbatim quote and the citations live in the decision entry's body; a
+  second home is duplication.
+- **Adding an index to `docs/design-decisions/`.** Deliberately absent per
+  `.claude/rules/design-decisions.md`.
+- **Narrowing `CLAUDE.md:157` in this branch.** That rule change is the
+  separate `narrow-provenance-redaction-rule` branch, with its own review.
+  This branch neither depends on nor blocks its outcome.
+- **Designing Phase 2's measurement or disclosure mechanics in this plan.**
+  See "Deferred: Phase 2 and 3" above — that design work starts on a
+  follow-on branch once the redaction rule's fate is known, not before.
