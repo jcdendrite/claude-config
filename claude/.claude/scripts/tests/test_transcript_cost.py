@@ -2315,15 +2315,14 @@ class TestCostSummary:
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(12.00)
 
-    def test_summary_scope_caption_and_note_disclose_single_account_scope(
+    def test_summary_scope_caption_discloses_single_account_scope(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The Scope: caption and trailing note must make single-account
-        scope and the fuller-report pointer legible to a reader unfamiliar
-        with this toolkit. The note must not presume the reader knows
-        --summary is a CLI flag they could drop, since the command a PR
-        reader sees is the wrapper script, which has no --summary to
-        drop."""
+        """The Scope: caption alone must make single-account scope legible
+        to a reader unfamiliar with this toolkit. No separate disclosure
+        sentence follows the scan-coverage table. See
+        docs/transcript-analysis.md's --summary flag entry for the full
+        narrowing contract."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
@@ -2341,11 +2340,11 @@ class TestCostSummary:
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
         assert "\nScope: this account only, all time.\n" in out
-        assert (
-            "Spend recorded under a different Claude account on the same machine is"
-            " not counted here — ask the author for the full report, which covers"
-            " every Claude account configured on that machine."
-        ) in out
+        assert "different Claude account" not in out
+        # Structural guard against any reintroduced prose (any wording) between the
+        # table and the next heading -- not just the one deleted phrase above.
+        before_heading = out[: out.index("### Cost by token class")]
+        assert before_heading.endswith("|\n\n")
 
     def test_summary_scan_coverage_table_distinguishes_sessions_from_turns(
         self, tmp_path, monkeypatch, capsys
@@ -2418,13 +2417,13 @@ class TestCostSummary:
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "1"
 
-    def test_summary_scope_caption_and_note_are_identical_regardless_of_declared_root_count(
+    def test_summary_scope_block_is_identical_regardless_of_declared_root_count(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The disclosure sentence's wording does not vary with declared-root
-        count: pins that with a byte-identical comparison of the
-        caption-through-note span between a single-root and a two-root
-        fixture, rather than leaving it unverified."""
+        """The Scope: caption and scan-coverage table's wording do not vary
+        with declared-root count: pins that with a byte-identical comparison
+        of the caption-through-table span between a single-root and a
+        two-root fixture, rather than leaving it unverified."""
         default_dir = tmp_path / "single"
         (default_dir / "projects" / "-repo-main").mkdir(parents=True)
         _write_jsonl(

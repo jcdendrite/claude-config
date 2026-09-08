@@ -36,16 +36,6 @@ _LIST_PRICE_CAVEAT = (
 # alerts render, and a GFM alert cannot nest inside another element.
 _LIST_PRICE_CAVEAT_ALERT = f"> [!IMPORTANT]\n> {_LIST_PRICE_CAVEAT}"
 
-# Printed after --summary's scan-coverage table. Published into every stow
-# consumer's PR bodies. It names no CLI flag: the command a PR reader sees
-# is the wrapper script, which has no --summary to drop.
-_SINGLE_ACCOUNT_SCOPE_NOTE = (
-    "Spend recorded under a different Claude account on the same machine is"
-    " not counted here — ask the author for the full report, which covers"
-    " every Claude account configured on that machine."
-)
-
-
 def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
     """Build one session's sorted (timestamp, gitBranch) index from its own
     main-thread (non-sidechain) records — the carry-forward source
@@ -838,13 +828,15 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         # - No leading blank line: pr-cost-section.sh's own heading already supplies it.
         # - Scope: print's blank line terminates the GFM alert (omitting it lets
         #   lazy continuation fold Scope: into the blockquote) and opens the table.
-        # - scope-note print's leading blank line closes the table.
+        # - The trailing print()'s blank line closes the table -- without it, a
+        #   no-op EXCLUDED SPEND banner and no stale/drift warning would leave the
+        #   table's last row directly adjacent to the next section's heading.
         print(_LIST_PRICE_CAVEAT_ALERT)
         print(f"\nScope: this account only, {title_since}.\n")
         _print_scan_coverage_table(
             total_transcripts_scanned, total_transcripts_skipped, priced_session_count, priced_turn_count,
         )
-        print(f"\n{_SINGLE_ACCOUNT_SCOPE_NOTE}")
+        print()
     else:
         print(f"\n## Cost report ({title_since})\n")
         print(_LIST_PRICE_CAVEAT)
