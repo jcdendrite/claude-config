@@ -1,6 +1,7 @@
 """Tests for require-skill-review.sh."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -49,6 +50,19 @@ def _stage_plugin_skill_change(git_repo):
     skill_file = git_repo / "plugins" / "skill-review" / "skills" / "skill-review" / "SKILL.md"
     skill_file.parent.mkdir(parents=True, exist_ok=True)
     skill_file.write_text("## test plugin skill\n")
+    subprocess.run(
+        ["git", "add", str(skill_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
+def _stage_repo_root_skill_change(git_repo):
+    """Stage a SKILL.md change at repo-root skills/<name>/SKILL.md (skills/**/SKILL.md),
+    the layout used by a repo whose plugin root is the repo root."""
+    skill_file = git_repo / "skills" / "skill-review" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True, exist_ok=True)
+    skill_file.write_text("## test repo-root skill\n")
     subprocess.run(
         ["git", "add", str(skill_file.relative_to(git_repo))],
         cwd=git_repo,
@@ -338,15 +352,17 @@ class TestRequireSkillReview:
         self, isolated_home, git_repo
     ):
         """The same recipe-vs-hook agreement as the test above, for the second
-        of the two pathspecs the write side scopes its hash to.
+        of the three SKILL.md-content pathspecs the write side scopes its
+        hash to (stowed, plugin, repo-root).
 
-        The write side hashes `claude-skills/skills/**/SKILL.md` *and*
-        `plugins/*/skills/**/SKILL.md`. A drift in the second is invisible to
-        every stowed-path case, because dropping a pathspec that matches
-        nothing in the fixture leaves the hash unchanged — both sides go on
-        computing it from the same empty diff and agree on a value that proves
-        nothing. Staging a plugin-located SKILL.md is what makes the second
-        pathspec load-bearing for the assertion."""
+        The write side hashes `claude-skills/skills/**/SKILL.md`,
+        `plugins/*/skills/**/SKILL.md`, and `skills/**/SKILL.md`. A drift in
+        the plugin pathspec is invisible to every stowed-path case, because
+        dropping a pathspec that matches nothing in the fixture leaves the
+        hash unchanged — both sides go on computing it from the same empty
+        diff and agree on a value that proves nothing. Staging a
+        plugin-located SKILL.md is what makes this pathspec load-bearing for
+        the assertion."""
         sid = "test-session-skill-cmd-plugin"
         _seed_session(isolated_home, sid)
 
@@ -373,13 +389,50 @@ class TestRequireSkillReview:
             "hook — write and read side disagree on the plugin pathspec"
         )
 
+    def test_skill_marker_write_command_covers_a_repo_root_skill_diff(
+        self, isolated_home, git_repo
+    ):
+        """The same recipe-vs-hook agreement as the test above, for the third
+        of the three SKILL.md-content pathspecs the write side scopes its
+        hash to (stowed, plugin, repo-root).
+
+        Staging a repo-root-located SKILL.md (skills/**/SKILL.md) is what
+        makes this pathspec load-bearing for the assertion — a drift here
+        would leave both sides computing the hash from the same empty diff
+        and agreeing on a value that proves nothing."""
+        sid = "test-session-skill-cmd-repo-root"
+        _seed_session(isolated_home, sid)
+
+        _stage_repo_root_skill_change(git_repo)
+        skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
+        run_skill_command(skill_command, cwd=git_repo, isolated_home=isolated_home)
+
+        # Sanity check, same as the sibling tests: separates "the recipe never
+        # wrote anything" from "it wrote a value the hook rejects", so a
+        # regression here names its own cause.
+        assert skill_review_marker_path(isolated_home, git_repo, session_id=sid).exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        ), (
+            "a marker written for a repo-root-located SKILL.md must satisfy "
+            "the hook — write and read side disagree on the repo-root pathspec"
+        )
+
     def test_skill_marker_write_command_covers_a_routing_md_diff(
         self, isolated_home, git_repo
     ):
-        """The same recipe-vs-hook agreement as the two tests above, for the
-        third of the three pathspecs the write side scopes its hash to.
+        """The same recipe-vs-hook agreement as the tests above, for the
+        fourth of the four pathspecs the write side scopes its hash to.
 
-        Staging a ROUTING.md-only diff is what makes the third pathspec
+        Staging a ROUTING.md-only diff is what makes this pathspec
         load-bearing for the assertion — a drift here would leave both sides
         computing the hash from the same empty diff and agreeing on a value
         that proves nothing."""
@@ -407,6 +460,64 @@ class TestRequireSkillReview:
         ), (
             "a marker written for a plan-review/ROUTING.md diff must satisfy "
             "the hook — write and read side disagree on the ROUTING.md pathspec"
+        )
+
+    def test_skill_marker_write_command_excludes_unrelated_staged_file(
+        self, isolated_home, git_repo
+    ):
+        """The write-side recipe's hash must stay scoped to the SKILL.md/ROUTING.md
+        pathspecs even with an unrelated file also staged (git_repo already stages
+        file.txt). An allow/deny assertion alone can't catch a bug that empties the
+        pathspec array on both the read and write side identically: `git diff
+        --cached --` with nothing following the `--` matches the entire staged
+        diff rather than nothing, so both sides would compute the same widened
+        hash and still agree with each other. This test instead recomputes the
+        expected scoped hash independently and compares it against what the real
+        marker.sh recipe wrote."""
+        sid = "test-session-skill-cmd-excludes-unrelated"
+        _seed_session(isolated_home, sid)
+
+        _stage_repo_root_skill_change(git_repo)
+        skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
+        run_skill_command(skill_command, cwd=git_repo, isolated_home=isolated_home)
+
+        marker_path = skill_review_marker_path(isolated_home, git_repo, session_id=sid)
+        assert marker_path.exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
+        )
+        actual_hash = marker_path.read_text().strip()
+
+        scoped_diff = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--cached",
+                "--",
+                "claude-skills/skills/**/SKILL.md",
+                "plugins/*/skills/**/SKILL.md",
+                "skills/**/SKILL.md",
+                "claude-skills/skills/plan-review/ROUTING.md",
+            ],
+            capture_output=True,
+            check=True,
+            cwd=git_repo,
+        ).stdout
+        expected_hash = hashlib.sha256(scoped_diff).hexdigest()
+        assert actual_hash == expected_hash, (
+            "marker.sh's write-side hash must match hashing only the scoped "
+            "SKILL.md/ROUTING.md diff"
+        )
+
+        unscoped_diff = subprocess.run(
+            ["git", "diff", "--cached"], capture_output=True, check=True, cwd=git_repo
+        ).stdout
+        unscoped_hash = hashlib.sha256(unscoped_diff).hexdigest()
+        assert actual_hash != unscoped_hash, (
+            "the marker hash must differ from hashing the full staged diff — if "
+            "these are equal, file.txt's unrelated staged change leaked into the "
+            "scoped hash, which is exactly the symptom an emptied pathspec array "
+            "would produce"
         )
 
     def test_mixed_skill_and_routing_stale_skill_only_marker_denies(
@@ -556,6 +667,31 @@ class TestRequireSkillReview:
             == "allow"
         )
 
+    def test_repo_root_skill_no_marker_denies_commit(self, isolated_home, git_repo):
+        """Repo-root SKILL.md (skills/**/SKILL.md) is gated like stowed skills."""
+        _stage_repo_root_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_repo_root_skill_correct_hash_marker_allows(self, isolated_home, git_repo):
+        """Repo-root SKILL.md allows when the marker covers the repo-root diff hash."""
+        _stage_repo_root_skill_change(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
     def test_mixed_stowed_and_plugin_skill_stale_stowed_only_marker_denies(
         self, isolated_home, git_repo
     ):
@@ -566,6 +702,25 @@ class TestRequireSkillReview:
         write_skill_review_marker(isolated_home, git_repo)
         # Stage an additional plugin SKILL.md; combined hash now differs from stored marker.
         _stage_plugin_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_mixed_repo_root_and_stowed_skill_stale_repo_root_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a repo-root-only diff is stale when a stowed SKILL.md is later
+        staged — the combined hash differs from the repo-root-only hash, so the gate must deny."""
+        _stage_repo_root_skill_change(git_repo)
+        # Write marker that covers only the repo-root SKILL.md diff.
+        write_skill_review_marker(isolated_home, git_repo)
+        # Stage an additional stowed SKILL.md; combined hash now differs from stored marker.
+        _stage_skill_change(git_repo)
         assert (
             run_hook(
                 SKILL_REVIEW_HOOK,

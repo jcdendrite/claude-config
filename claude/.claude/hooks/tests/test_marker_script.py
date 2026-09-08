@@ -1695,6 +1695,16 @@ class TestMarkerScriptStatusCompletionMarkers:
         subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
         return skill_md
 
+    def _make_repo_root_skill_md(self, repo):
+        """Repo-root plugin layout (skills/<name>/SKILL.md), used when a
+        marketplace declares "source": "./"."""
+        skill_dir = repo / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# test repo-root skill\n")
+        subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
+        return skill_md
+
     # ── code-review ────────────────────────────────────────────────────
 
     def test_code_review_live_when_hash_matches_staged_diff(self, isolated_home, git_repo):
@@ -1765,6 +1775,19 @@ class TestMarkerScriptStatusCompletionMarkers:
     def test_skill_review_live_when_hash_matches_staged_skill_md_diff(self, isolated_home, git_repo):
         _seed_session(isolated_home, self.SID)
         self._make_skill_md(git_repo)
+        write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "skill-review: live" in result.stdout
+
+    def test_skill_review_live_when_hash_matches_staged_repo_root_skill_md_diff(
+        self, isolated_home, git_repo
+    ):
+        """Repo-root-layout SKILL.md diffs (skills/<name>/SKILL.md) report the same
+        live state as the stowed layout — the status arm's pathspec array must cover
+        both."""
+        _seed_session(isolated_home, self.SID)
+        self._make_repo_root_skill_md(git_repo)
         write_skill_review_marker(isolated_home, git_repo, session_id=self.SID)
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
