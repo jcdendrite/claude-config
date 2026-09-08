@@ -600,11 +600,10 @@ def agent_input(
     `subagent_type` is omitted from tool_input when None, matching a
     dispatch with no reviewer-persona target. `prompt` defaults to the
     literal string "test" when None, preserving every pre-existing caller's
-    payload shape. `description` defaults to the prior hardcoded placeholder
-    "test" — existing call sites that don't care about it keep the same
-    payload; it is threaded through as a parameter so a
-    deny-no-op-dispatch.sh fixture can construct a payload carrying a
-    distinct description without a separate builder.
+    payload shape. `description` defaults to `"test"` when not provided,
+    preserving existing callers' payload shape. It is threaded through as a
+    parameter so a `deny-no-op-dispatch.sh` fixture can construct a payload
+    with a distinct description without a separate builder.
     """
     tool_input: dict = {"description": description, "prompt": prompt if prompt is not None else "test"}
     if subagent_type is not None:

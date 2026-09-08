@@ -19,10 +19,12 @@ Two advisory-only fixes for a subagent dispatched solely to wait, occupy the tur
 **Known gaps**, stated rather than left implicit:
 
 - This gate implements the observed corpus shapes, not the whole CLAUDE.md rule. A differently-worded future no-op prompt using none of the listed idioms is not caught, and a no-op instruction padded above the ceiling is not caught. The CLAUDE.md bullet remains the primary surface. This hook closes the recurring shapes beneath it.
+- `placeholder` matches only in the anchored whole-prompt arm, never as a free substring, so a short legitimate prompt like "Replace the placeholder on line 12" is not denied.
 - A no-op dispatch whose only tell lives in `description`, paired with a `prompt` that is neither a stub token nor an idiom match, is not caught: neither arm reads `description`.
 - Post-ship false-positive drift on this gate has no standing signal — no counter, no allow-path near-miss recorder, matching every other always-on `deny-*` gate in this repo. Unlike those siblings, this gate matches free-text prose idioms against live session-generated content, so its false-positive rate is more exposed to future drift. A future check of this gate's actual deny rate is a deliberate, manual transcript re-sweep, not an automatic one.
 - This gate is a cooperative guardrail, not an adversarial-resistant security boundary. A caller can clear it by padding a no-op prompt past the ceiling or avoiding the closed idiom list, so it must not be cited as evidence of an enforced cost or abuse control.
 - `do(ing|es)? nothing` and `no action` can describe another actor's inaction rather than the dispatched agent's own, e.g. "Check whether the retry handler does nothing on the third attempt." This is an accepted false-positive residual: narrowing either idiom further risks losing real no-op coverage.
+- `tr -s '[:space:]'` and the hook's own single-space trim operate on ASCII whitespace only, so a no-op idiom padded or separated with non-ASCII whitespace (e.g. U+00A0 NBSP) passes through uncollapsed and evades both regex arms, not only the anchored stub-token arm. This is empirically observed on glibc (`C`, `C.UTF-8`, `en_US.UTF-8`), not spec-derived from a cited `tr` standard, and is unverified on BSD/macOS `tr`.
 
 ## Sources
 

@@ -11,28 +11,17 @@
 #   - Deny on payload failure (malformed JSON, empty stdin, non-object
 #     tool_input, missing _lib.sh) -- TestGateHookBehavior requires this
 #     uniformly of every gate.
-#   - No state-failure branch: this hook reads nothing from disk -- no
-#     config dir, no git, no transcript, no marker -- so there is no
+#   - No state-failure branch: this hook reads no mutable state from disk
+#     -- no config dir, no git, no transcript, no marker -- so there is no
 #     unresolvable state to fail open on. An empty or missing prompt
 #     allows: the anchored stub arm requires at least one token, so an
 #     empty string matches nothing.
 #
-# Known gaps, stated rather than left implicit (repo hook-review
-# convention):
-#   - Implements the observed corpus shapes, not the whole CLAUDE.md rule.
-#     A differently-worded no-op prompt using none of the listed idioms is
-#     not caught. A no-op instruction padded above the ceiling is not
-#     caught.
-#   - `placeholder` matches only in the anchored whole-prompt arm, never as
-#     a free substring, so a short legitimate prompt like "Replace the
-#     placeholder on line 12" is not denied.
-#   - A no-op dispatch whose only tell lives in `description`, with a
-#     `prompt` that is neither a stub token nor an idiom match, is not
-#     caught: both arms match `prompt` alone.
-#   - This gate is a cooperative guardrail, not an adversarial-resistant
-#     security boundary. A caller can clear it by padding a no-op prompt
-#     past the ceiling or avoiding the closed idiom list, so it must not
-#     be cited as evidence of an enforced cost or abuse control.
+# Known gaps, stated rather than left implicit -- required by
+# `plugins/claude-hook-review/skills/claude-hook-review/SKILL.md` §
+# "9. Review checklist". See docs/design-decisions/no-op-dispatch-hook-gate.md's
+# Known gaps section for the corpus-shape, description-only-tell, and
+# false-positive-residual gaps.
 #   - If `grep` is missing from PATH, the `grep -qiE` calls below return
 #     127 (false) and execution falls through to allow. This is the one
 #     silent fail-open path in an otherwise fail-closed script.
@@ -40,11 +29,6 @@
 #     substitution that builds COLLAPSED_PROMPT fails and yields an empty
 #     string. An empty COLLAPSED_PROMPT no-matches both grep arms below,
 #     reaching the same fail-open outcome by a different mechanism.
-#   - `do(ing|es)? nothing` and `no action` can describe another actor's
-#     inaction rather than the dispatched agent's own, e.g. "Check
-#     whether the retry handler does nothing on the third attempt." This
-#     is an accepted false-positive residual: narrowing either idiom
-#     further risks losing real no-op coverage.
 
 set -uo pipefail
 
@@ -131,8 +115,11 @@ COLLAPSED_PROMPT="${COLLAPSED_PROMPT# }"
 COLLAPSED_PROMPT="${COLLAPSED_PROMPT% }"
 
 # `tr -s '[:space:]'` and the trim above operate on ASCII whitespace only.
-# A stub token padded with non-ASCII whitespace (e.g. U+00A0 NBSP) passes
-# through both untouched, an accepted scope limit rather than a bug to fix.
+# A stub token or phrase padded or separated with non-ASCII whitespace
+# (e.g. U+00A0 NBSP) passes through both untouched, an accepted scope
+# limit rather than a bug to fix -- see
+# docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps section
+# for the platform-dependence of this claim.
 
 if printf '%s' "$COLLAPSED_PROMPT" | grep -qiE "$NOOP_STUB_TOKEN_RE" || printf '%s' "$COLLAPSED_PROMPT" | grep -qiE "$NOOP_PHRASE_RE"; then
   emit_deny "this dispatch's prompt is short and instructs the agent to do no work. CLAUDE.md §Agent Briefing bars dispatching an agent — of any type — whose instructions are to report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing, and still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one. If this dispatch does have real work to do, state that work in the prompt and retry — a prompt long enough to specify a task does not trip this gate. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."

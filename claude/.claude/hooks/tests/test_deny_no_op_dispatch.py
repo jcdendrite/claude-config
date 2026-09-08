@@ -8,6 +8,8 @@ every gate-class hook over them.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 from helpers import HOOKS_DIR, agent_input, bash_input, build_path_without, run_hook, run_hook_reason
 
@@ -93,6 +95,14 @@ ADVERSARIAL_OVER_CEILING_PROMPT = (
 assert len(INCIDENT_PROMPT) == 302
 assert len(STRUCTURED_TASK_PROMPT) > 600
 assert len(ADVERSARIAL_OVER_CEILING_PROMPT) > 600
+
+NBSP_GLIBC_ONLY_SKIP_REASON = (
+    "NBSP-as-non-whitespace under `tr -s '[:space:]'` is verified only "
+    "under glibc locales, matching this repo's Ubuntu-only CI runner -- "
+    "see docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps "
+    "section. BSD/macOS `tr` is unverified and may not reproduce this "
+    "behavior."
+)
 
 
 def _padded_idiom_prompt(length: int) -> str:
@@ -216,9 +226,10 @@ class TestDenyNoOpDispatch:
         assert "disable" not in reason.lower()
 
     def test_referent_ambiguous_no_op_idiom_about_another_actor_denied(self, isolated_home):
-        """Accepted false-positive residual (see the hook header's
-        Known-gaps bullet): `does nothing` can describe another
-        component's inaction rather than the dispatched agent's own. This
+        """Accepted false-positive residual (see
+        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
+        section): `does nothing` can describe another component's
+        inaction rather than the dispatched agent's own. This
         prompt is a legitimate investigation task, not a no-op dispatch,
         but still denies -- pinning the residual as accepted rather than
         letting a future fix silently change this behavior unnoticed."""
@@ -375,6 +386,33 @@ class TestDenyNoOpDispatch:
         handle only one side while the single-ended tests above still
         pass."""
         assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=" noop "), home=isolated_home) == "deny"
+
+    @pytest.mark.skipif(sys.platform == "darwin", reason=NBSP_GLIBC_ONLY_SKIP_REASON)
+    def test_stub_token_padded_with_nbsp_allowed(self, isolated_home):
+        """Accepted false-positive residual, disclosed inline in the hook
+        just after COLLAPSED_PROMPT's trim: `tr -s '[:space:]'` and the
+        single-space trim operate on ASCII whitespace only, so a stub
+        token padded with NBSP (U+00A0) passes through uncollapsed and
+        doesn't match the anchored stub arm. Unlike the ASCII-padded
+        equivalent (`" noop "`) above, which correctly denies. See
+        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
+        section for this claim's platform-verification scope."""
+        assert (
+            run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt="\xa0noop\xa0"), home=isolated_home)
+            == "allow"
+        )
+
+    @pytest.mark.skipif(sys.platform == "darwin", reason=NBSP_GLIBC_ONLY_SKIP_REASON)
+    def test_phrase_idiom_separated_with_nbsp_allowed(self, isolated_home):
+        """Same ASCII-only-`tr` root cause as
+        test_stub_token_padded_with_nbsp_allowed, pinned here for the
+        unanchored phrase arm instead of the anchored stub-token arm: an
+        NBSP-separated `do nothing` doesn't collapse to a single ASCII
+        space, so NOOP_PHRASE_RE's literal space never matches."""
+        assert (
+            run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt="do\xa0nothing"), home=isolated_home)
+            == "allow"
+        )
 
     # ------------------------------------------------------------------ #
     # Missing-binary fail-open path -- this hook's one disclosed gap      #
