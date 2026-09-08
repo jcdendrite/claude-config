@@ -238,6 +238,7 @@ class TestAbortsOnRenderFailure:
             SCRIPTS_DIR / "_stow_migration_lib.sh"
         )
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        _write_stow_packages_stub(scripts_dir)
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render, after hardening has run.
         subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
