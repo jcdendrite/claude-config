@@ -26,6 +26,11 @@ static shape checks:
 - No hook regex in claude/.claude/hooks/*.sh, plugins/*/hooks/*.sh, or
   either directory's _lib.sh uses GNU grep's `\\s` extension, which a
   POSIX-strict grep reads as a literal `s`.
+- Every hook entry object inside `hooks.<Event>[].hooks[]` in
+  claude/.claude/settings.json carries non-empty `type` and `command`
+  fields — catches an entry left with only a `timeout` key and no `type`
+  or `command`, the shape a scripted edit produces when it writes to the
+  wrong object.
 
 The first two carry a small, named exemption dict for a structural holdout
 that resisted conversion. The `\\s` check has none: no live `\\s`
@@ -225,6 +230,27 @@ def _pretooluse_command_for(hook: Path) -> list[str]:
     """Every PreToolUse command string wired to `hook` — see
     _pretooluse_entries_for for the matching rules."""
     return [entry.get("command", "") for entry in _pretooluse_entries_for(hook)]
+
+
+def test_every_registered_hook_entry_has_type_and_command() -> None:
+    """Every hook entry under `hooks.<Event>[].hooks[]` must carry
+    non-empty `type` and `command` — see the module docstring's static
+    checks list for what this guards against."""
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    for event_name, groups in settings.get("hooks", {}).items():
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("hooks", []):
+                assert isinstance(entry, dict), (
+                    f"{event_name}: hook entry is not an object: {entry!r}"
+                )
+                assert entry.get("type"), (
+                    f"{event_name}: hook entry missing non-empty 'type': {entry!r}"
+                )
+                assert entry.get("command"), (
+                    f"{event_name}: hook entry missing non-empty 'command': {entry!r}"
+                )
 
 
 # Review skills whose descriptions advertise a gate, paired with the hook that
