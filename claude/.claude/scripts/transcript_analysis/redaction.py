@@ -32,12 +32,13 @@ _WORKTREE_SUFFIX_RE = re.compile(r"--claude-worktrees-.+$")
 def _project_family(raw_proj_label: str) -> str:
     """Collapse a project label or a raw project-dir slug to its base-repo "family" key.
 
-    Strips the --claude-worktrees-<branch> suffix _derive_proj_label appends,
-    by substring match -- reliable only on paths with at least two leading
-    hyphen-delimited segments before the repo name, and a project literally
-    named with that substring would falsely merge into another family. This
-    is an accepted risk at current scale. If cost --by-project, buckets'
-    Proj count, or user-input's Scope project count ever shows an unexpected
+    Strips the `--claude-worktrees-<branch>` suffix that a linked worktree's
+    project-dir slug already carries (see `_WORKTREE_SUFFIX_RE` above);
+    `_derive_proj_label`'s output preserves that suffix unchanged, so the
+    same match applies to either input shape. A project literally named
+    with that substring would falsely merge into another family -- an
+    accepted risk at current scale. If cost --by-project, buckets' Proj
+    count, or user-input's Scope project count ever shows an unexpected
     merge, re-evaluate.
     """
     return _WORKTREE_SUFFIX_RE.sub("", raw_proj_label)
