@@ -529,6 +529,7 @@ SENTINEL_INVENTORY=(
   ".commit-stall-block-disabled|machine|Commit-stall auto-advance suppression||disabled|docs/commit-stall-block.md"
   ".session-title-disabled|machine|Branch-based session-title suppression (machine-wide)||disabled|docs/hooks.md § Utility hooks"
   ".round-consult-gate-disabled|machine|Round-3 architect-consult gate suppression||disabled|docs/hooks.md § Gate hooks"
+  ".round-consult-round2-pilot|machine|Round-2 architect-consult pilot cap override (time-boxed)||disabled|docs/hooks.md § Gate hooks"
   ".claude/worktree-required|repo|Worktree enforcement (committed, this repo)||disabled|README.md § Worktree enforcement"
   ".claude/worktree-optout|repo|Worktree enforcement opt-out (this repo)||disabled|README.md § Worktree enforcement"
   ".claude/autonomous-shipping-optout|repo|Autonomous-shipping opt-out (this repo)||disabled|README.md § Autonomous shipping"
