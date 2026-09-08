@@ -109,6 +109,19 @@ Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 **Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
 
+A dirty working-tree `claude/.claude/settings.json` (from a prior `/theme`/`/config` write through the old symlink) blocks the pull with "local changes would be overwritten" — `git stash` (or commit) it first.
+
+A stray untracked `claude/.claude/settings.json` (recreated by a session opening a not-yet-migrated symlink) blocks pull/revert with "untracked working tree file would be overwritten" — remove or back it up first.
+
+A machine running several Claude Code profiles under separate `CLAUDE_CONFIG_DIR` values only gets its default `$HOME/.claude` profile rendered by `install.sh` — every other profile silently gets no `permissions.deny`/hooks; see [`docs/security-hardening.md`](docs/security-hardening.md#limitations)'s Limitations section for the full detail and workaround.
+
+**Migration notes (delete once obsolete):** As of the `settings.base.json` split:
+
+- `settings.json` is generated — produced by `render-settings.sh` from `settings.base.json`.
+- If your local `~/.claude/settings.json` is a stale symlink pointing at the tracked `claude/.claude/settings.json` path, a session-local write (theme, tui, model, and similar) that opens the dangling symlink with `O_CREAT` recreates a regular file back inside the tracked checkout at that path. This repo's `.gitignore` entry for that path keeps such a file out of ordinary `git add`/`commit` flows, but it can still confuse a local checkout.
+- Re-run `install.sh` to replace the stale symlink with a fresh render; delete a stray `claude/.claude/settings.json` if one turns up in your checkout in the meantime.
+- `install.sh` also wires `ensure-settings-render.sh` into `~/.bashrc`/`~/.zshrc`, so a still-dangling or missing `settings.json` is repaired — not merely flagged — by re-running the render on every new shell. It prints a stderr message pointing back at this checkout's `install.sh` only if that repair render itself fails.
+
 ## What this installs
 
 ```
@@ -248,7 +261,13 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
 - **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, settings.json conventions, and test-tree packaging.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
-- **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
+- **`settings.base.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)).
+  - Ships no repo-chosen default `model` — a fresh install relies on Claude Code's own built-in default until your first `/config`. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`).
+  - `settings.json` — the file Claude Code actually reads — is generated, not hand-edited.
+  - `claude/.claude/scripts/render-settings.sh` merges `settings.base.json` with an optional, untracked `settings.overlay.json` and writes the result; `install.sh` runs this automatically.
+  - A top-level key neither `settings.base.json` nor the overlay's closed key set claims — `model`, `effortLevel`, `theme`, `tui`, and any other key Claude Code writes directly into the live file — carries forward unchanged from the file's own current contents on every render, so an in-app write (`/config`, `/theme`, `claude auto-mode reset`) survives rather than being discarded.
+  - `autoMode` is not such a key: it's part of the overlay's own closed allowlist, so deleting it from `settings.overlay.json` actually clears it on the next render instead of persisting — see [`docs/auto-mode.md`](docs/auto-mode.md#what-to-put-in-settingsoverlayjson) for the full overlay contract.
+  - `ANTHROPIC_MODEL`/`CLAUDE_CODE_EFFORT_LEVEL`, exported from your shell profile, are honored by Claude Code directly and need no `settings.json` write at all — the machine-wide alternative to `/config`/`/effort` (see [Machine-specific overrides](#machine-specific-overrides)).
 
 ### Scripts
 
@@ -439,9 +458,9 @@ The repo-root [`CLAUDE.md`](./CLAUDE.md) "Redact private-project-identifying con
 [Auto mode](https://code.claude.com/docs/en/permission-modes) replaces per-action permission prompts with a background classifier that evaluates each tool call before it runs, blocking anything irreversible, destructive, or targeted outside your environment. This repo adds two things on top of the stock feature:
 
 - **`claude-auto` wrapper** — resolves a model mismatch, not a plan restriction, for whoever's session model resolves to `opusplan` (Opus in plan mode, Sonnet during execution) — this repo's own default, `sonnet`, is already a valid auto-mode session model. Auto mode anchors a session to one concrete model for its entire lifetime, so `opusplan` itself isn't a valid session model for it. The wrapper starts a session directly in auto mode, taking the same `--model` flag as `claude` and falling back to Sonnet when you don't name one ([full precedence](docs/auto-mode.md)).
-- **Hard-floor `permissions.deny` rules** — `settings.json` ships deny rules that run *before* the classifier and cannot be overridden by any `autoMode.allow` entry, hard-blocking `sudo`, well-known secret-file reads, and select tool-availability entries (full list in [`docs/auto-mode.md`](docs/auto-mode.md)). These apply in every permission mode, not just auto mode.
+- **Hard-floor `permissions.deny` rules** — `settings.base.json` ships deny rules, rendered into the `settings.json` the classifier reads by `render-settings.sh`, that run *before* the classifier and cannot be overridden by any `autoMode.allow` entry, hard-blocking `sudo`, well-known secret-file reads, and select tool-availability entries (full list in [`docs/auto-mode.md`](docs/auto-mode.md)). These apply in every permission mode, not just auto mode.
 
-For plan and model requirements, activation, the full hard-floor deny table, the `settings.local.json` `autoMode.environment` schema, and tuning commands, see [`docs/auto-mode.md`](docs/auto-mode.md).
+For plan and model requirements, activation, the full hard-floor deny table, the `settings.overlay.json` `autoMode.environment` schema, and tuning commands, see [`docs/auto-mode.md`](docs/auto-mode.md).
 
 ### Output preferences
 
@@ -464,7 +483,7 @@ Personal permission overrides belong in a repository's own `.claude/settings.loc
 
 ### Artifact and Workflow disabled by default
 
-The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt, so `settings.json` sets `disableArtifact`/`disableWorkflows` to `true` by default; see [`docs/design-decisions.md` §31](docs/design-decisions.md) for the measurement. Two commands re-enable one tool for a single session, taking CLI-scope precedence over the shared default:
+The built-in `Artifact` and `Workflow` tools are the two largest eagerly-loaded tool schemas in every session's system prompt, so `settings.base.json` sets `disableArtifact`/`disableWorkflows` to `true` by default; see [`docs/design-decisions.md` §31](docs/design-decisions.md) for the measurement. Two commands re-enable one tool for a single session, taking CLI-scope precedence over the shared default:
 
 - **`claude-workflow`** — starts a session with the `Workflow` tool enabled (Artifact stays off). Takes the same flags and positional prompt as `claude`.
 - **`claude-artifact`** — same, for the `Artifact` tool.

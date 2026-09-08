@@ -541,8 +541,17 @@ variables include:
 - `DISABLE_NON_ESSENTIAL_TRAFFIC` — block non-essential external calls.
 
 Verify exact names against the docs before relying on them — the set
-evolves. Set the chosen values in the `env` block of `settings.json` (or
-enforce them via managed settings, below).
+evolves. Set the chosen values under `env` in
+`<config-dir>/settings.overlay.json` (gitignored), not the tracked
+`settings.base.json`. `render-settings.sh` merges the overlay into the live
+`settings.json`. Only `env` names in a vendor-recognized configuration
+namespace are accepted — see
+[`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) for
+that namespace rule — or enforce the values via managed settings, below.
+Hand-editing `env` values directly in the tracked
+`claude/.claude/settings.json` produces an uncommitted change that blocks
+`git pull` — see the "Existing users" remedy under
+[Requirements](../README.md#requirements).
 
 **`permissions.allow` review.** Audit the allow rules in every
 `settings.json` / `settings.local.json` in scope. Each rule widens what
@@ -556,8 +565,10 @@ An adopter who does not want their hardening posture visible upstream can
 maintain a **private fork** of claude-config. All four config files
 (`pii-patterns.md`, `data-file-read-guard.md`, `credential-file-guard.md`,
 `credential-value-patterns.md`) stay user-local in either case and are
-never part of the repo. A fork lets the adopter also pin `settings.json`
-`env` values and `permissions` without contributing them back. Pull
+never part of the repo. A fork lets the adopter also pin `settings.base.json`
+`permissions` entries without contributing them back. `env` values already
+have a private, non-fork home in `<config-dir>/settings.overlay.json` (see
+[`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson)). Pull
 upstream changes into the fork on the adopter's own cadence.
 
 ## Enterprise rollout: managed settings
@@ -575,18 +586,35 @@ precedence over user and project settings and cannot be overridden by them:
 
 Deploy this file via the organization's existing device-management tooling.
 It is the right place to enforce telemetry env vars, `permissions.deny`
-rules, and MCP restrictions org-wide. The hooks themselves still arm
-per-machine via the user-local config files — managed settings govern the
-Claude Code surfaces, not these two hooks. Verify the current paths against
-the [settings docs](https://code.claude.com/docs/en/settings) before
-deploying; the legacy Windows path under `C:\ProgramData\` is no longer
-supported.
+rules, and MCP restrictions org-wide. An organization can also enforce this
+repo's `settings.base.json` hook *registrations* directly via
+`managed-settings.json`'s own `hooks` key. The hooks themselves still arm
+per-machine via the user-local config files (`pii-patterns.md`,
+`private-projects.md`, and similar) — managed settings can force a hook to
+run, but not supply the per-machine data that arms it. Because
+`managed-settings.json` lives outside `settings.base.json`/
+`settings.overlay.json` entirely, it also survives a failed or missing
+`render-settings.sh` run. See
+[`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for what a broken
+render costs the render-derived `permissions.deny`/hooks by comparison.
+Verify the current paths against the [settings
+docs](https://code.claude.com/docs/en/settings) before deploying; the legacy
+Windows path under `C:\ProgramData\` is no longer supported.
 
 ## Limitations
 
 These hooks reduce *accidental* exposure. They do not make a machine safe
 to hold PII/PHI or live credentials:
 
+- Every non-default `CLAUDE_CONFIG_DIR` profile gets zero
+  `permissions.deny`/hook enforcement after the `settings.base.json` split
+  unless rendered manually, with no diagnostic. Render it by hand until a
+  per-profile install path ships:
+  `CLAUDE_CONFIG_DIR=<profile-dir> <path-to-claude-config-checkout>/claude/.claude/scripts/render-settings.sh`.
+  This requires `claude/.claude/` to already be stowed or symlinked into
+  `<profile-dir>` by some other means, since `install.sh` never places
+  `settings.base.json` there itself. Without that precondition met, the
+  command exits early with a "settings.base.json not found" error.
 - The data-file read hook only intercepts the `Read` tool. `Bash`-based
   reads (`cat`, `head`, `grep`), subagent reads, and content pasted into a
   prompt do not cross that boundary. `deny-credential-bash-reads.sh`

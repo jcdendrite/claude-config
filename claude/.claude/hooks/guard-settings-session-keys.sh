@@ -1,25 +1,52 @@
 #!/bin/bash
 # hook-class: gate
-# PreToolUse hook: block git commit when claude/.claude/settings.json has
-# machine-local or session-scoped keys staged relative to the repo's default
-# branch — see GUARDED_KEYS_JSON below for the guarded set.
+# PreToolUse hook: block git commit when claude/.claude/settings.base.json
+# has machine-local or session-scoped keys staged relative to the repo's
+# default branch — see GUARDED_KEYS_JSON below for the guarded set.
 #
-# Purpose: every guarded key holds one machine's own state, and several are
-# written into the user settings file by Claude Code rather than by hand —
-# model and effortLevel from /config, skipAutoPermissionPrompt when it
-# records the permission-prompt preference. Committing any of them ships one
-# engineer's local state as the shipped config for every user. This hook
-# catches that class of accidental commit and surfaces it before git runs.
+# Purpose: blocks committing machine-local or session-scoped state as the
+# shipped config for every user — see GUARDED_KEYS_JSON below for why each
+# key is guarded.
 #
 # Defense-in-depth: the hook filters its own input by tool name AND checks
-# whether settings.json is actually staged — do not rely solely on the
-# settings.json `if` condition in settings.json.
+# whether settings.base.json is actually staged — do not rely solely on the
+# settings.base.json `if` condition in settings.base.json.
 #
 # Exit codes:
 #   0      — allow (no opinion)
-#   0+JSON — deny (a guarded key changed in staged settings.json)
+#   0+JSON — deny (a guarded key changed in staged settings.base.json)
 
 set -uo pipefail
+
+# The keys holding one machine's own state, which must never ship as the
+# config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
+# via path traversal, not a literal top-level match — see guarded_value below.
+# Defined here, ahead of the direct-invocation mode below, so that mode
+# never depends on code that runs later in the script.
+GUARDED_KEYS_JSON='[
+  "model",
+  "effortLevel",
+  "skipAutoPermissionPrompt",
+  "skipWorkflowUsageWarning",
+  "modelSettings",
+  "fastMode",
+  "disableBypassPermissionsMode",
+  "theme",
+  "tui",
+  "env.CLAUDE_CODE_EFFORT_LEVEL",
+  "env.ANTHROPIC_MODEL"
+]'
+
+# Direct-invocation mode for tests and render-settings.sh's own drift check
+# (its dotted-path carry-forward rule): prints GUARDED_KEYS_JSON as JSON and exits, bypassing the
+# hook's stdin tool-input protocol entirely. Must run before _lib.sh is
+# sourced and before any stdin is read — a CLI invocation here supplies no
+# piped tool-input JSON, and _lib_parse_tool_input_or_deny is fail-closed on
+# that, so placing this check any later would make the mode unreachable.
+if [ "${1:-}" = "--print-guarded-keys" ]; then
+  printf '%s\n' "$GUARDED_KEYS_JSON"
+  exit 0
+fi
 
 # Every git call below is capped via _lib_capped — see _lib.sh for the cap and its fallback behavior.
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs
@@ -64,24 +91,25 @@ _lib_command_invokes_git_subcmd "$COMMAND" commit || exit 0
 
 # Resolve the repo from the payload's cwd rather than this hook process's
 # ambient cwd, matching require-plan-review.sh/require-code-review.sh.
-CWD=$(printf '%s\n' "$INPUT" | _lib_jq -r '.cwd // empty' 2>/dev/null); [ -z "$CWD" ] && CWD="$PWD"
+# CWD is already populated by _lib_parse_tool_input_or_deny above.
+[ -z "$CWD" ] && CWD="$PWD"
 
 # Only proceed if inside a git repo.
 if [ "$(_lib_capped git -C "$CWD" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
   exit 0
 fi
 
-SETTINGS_REPO_PATH="claude/.claude/settings.json"
+SETTINGS_REPO_PATH="claude/.claude/settings.base.json"
 
-# Check whether settings.json is staged at all.
+# Check whether settings.base.json is staged at all.
 if ! _lib_capped git -C "$CWD" diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
   exit 0
 fi
 
 # Diffs the staged version against origin/<default branch>; an unresolvable
-# branch or missing file diffs against an empty baseline instead.
-# Fail-CLOSED exception to this file's fail-open posture: an unresolvable
-# default branch denies rather than allowing.
+# branch or missing file diffs against an empty baseline instead. Against
+# that empty baseline, a staged guarded key denies same as always; a staged
+# file with none of the guarded keys still allows.
 # Latency tradeoff: see docs/design-decisions.md's entry for
 # _lib_default_branch_or_guess (#54).
 if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$CWD"); then DEFAULT_BRANCH=""; fi
@@ -91,20 +119,6 @@ if [ -z "$DEFAULT_BRANCH" ] || ! _lib_capped git -C "$CWD" show "origin/$DEFAULT
 else
   MAIN_CONTENT=$(_lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" 2>/dev/null)
 fi
-
-# The keys holding one machine's own state, which must never ship as the
-# config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
-# via path traversal, not a literal top-level match — see guarded_value below.
-GUARDED_KEYS_JSON='[
-  "model",
-  "effortLevel",
-  "skipAutoPermissionPrompt",
-  "skipWorkflowUsageWarning",
-  "theme",
-  "tui",
-  "env.CLAUDE_CODE_EFFORT_LEVEL",
-  "env.ANTHROPIC_MODEL"
-]'
 
 # Name the guarded keys whose staged value differs from the default branch. Notes:
 # - One jq call, not one per key: hooks fire on every matching tool call, so a
@@ -150,4 +164,4 @@ if [ -z "$CHANGED_KEYS" ]; then
   exit 0
 fi
 
-emit_deny "settings.json has machine-local or session-scoped keys changed — commit these only if intentional. The staged settings.json differs from ${DEFAULT_BRANCH:-the default branch} on: ${CHANGED_KEYS}. These keys hold one machine's own state, and several are written by Claude Code rather than by hand (model and effortLevel from /config, skipAutoPermissionPrompt when it records the permission-prompt preference), so committing them ships your local state as the shipped config for every user. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."
+emit_deny "settings.base.json has machine-local or session-scoped keys changed — commit these only if intentional. The staged settings.base.json differs from ${DEFAULT_BRANCH:-the default branch} on: ${CHANGED_KEYS}. These keys hold one machine's own state, and several are written by Claude Code rather than by hand (model and effortLevel from /config, skipAutoPermissionPrompt when it records the permission-prompt preference), so committing them ships your local state as the shipped config for every user. Unstage the file (git restore --staged claude/.claude/settings.base.json) to allow the commit, or proceed only if this is a deliberate update."

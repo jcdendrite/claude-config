@@ -25,16 +25,6 @@
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
       "Bash(cleanup-idle-open-pr-worktrees --dry-run)"
     ],
-    "ask": [
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
-      "Bash(cleanup-merged-branches)",
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects)",
-      "Bash(cleanup-merged-branches --all-projects)",
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
-      "Bash(cleanup-merged-branches --all-projects --dry-run)",
-      "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
-      "Bash(cleanup-idle-open-pr-worktrees)"
-    ],
     "deny": [
       "Bash(sudo *)",
       "Bash(sudo)",
@@ -68,12 +58,18 @@
       "Bash(zypper install *)",
       "EnterPlanMode",
       "ScheduleWakeup"
+    ],
+    "ask": [
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
+      "Bash(cleanup-merged-branches)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects)",
+      "Bash(cleanup-merged-branches --all-projects)",
+      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
+      "Bash(cleanup-merged-branches --all-projects --dry-run)",
+      "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
+      "Bash(cleanup-idle-open-pr-worktrees)"
     ]
   },
-  "model": "sonnet",
-  "theme": "dark",
-  "tui": "fullscreen",
-  "agentPushNotifEnabled": true,
   "disableArtifact": true,
   "disableWorkflows": true,
   "attribution": {

@@ -972,6 +972,35 @@ class TestStowUntrackedPackageEntries:
             f"physically present and untracked; got {names}"
         )
 
+    def test_render_output_names_are_never_reported_even_when_untracked(
+        self, tmp_path: Path
+    ) -> None:
+        """settings.json and settings.overlay.json are render-settings.sh's
+        own generated output, not stow --adopt leftovers -- if this function
+        reported them, install.sh's un-adopt loop would rename them out of
+        the package via a bare `mv`, permanently resurrecting the
+        write-through bug the settings.base.json split exists to close."""
+        home = tmp_path / "home"
+        repo = tmp_path / "repo"
+        package_dir = repo / "claude" / ".claude"
+        (package_dir / "settings.json").parent.mkdir(parents=True)
+        (package_dir / "settings.json").write_text("{}")
+        (package_dir / "settings.overlay.json").write_text("{}")
+        other_untracked = package_dir / "projects"
+        other_untracked.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        # Deliberately nothing `git add`ed -- settings.json and
+        # settings.overlay.json are never tracked (see .gitignore).
+
+        result = _run_untracked_entries(repo, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        names = [n for n in result.stdout.split("\x00") if n]
+        assert names == ["projects"], (
+            f"settings.json/settings.overlay.json must be excluded even "
+            f"though they are physically present and untracked; got {names}"
+        )
+
     def test_tracked_name_requiring_git_c_quoting_still_extracts_correctly(
         self, tmp_path: Path
     ) -> None:

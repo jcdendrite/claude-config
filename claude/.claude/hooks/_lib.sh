@@ -2296,7 +2296,13 @@ _LIB_INTERNAL_HOSTNAME_REGEX='[A-Za-z0-9.-]+\.(internal|corp|lan|intranet|privat
 #   the outer run does, so a `{` there blocks reachability just like it
 #   does in the outer run. Same content-blindness root cause as the
 #   sibling gaps above.
-_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#[a-z0-9_-]*[a-z_-][a-z0-9_-]*'
+# - Requires at least two letter-class characters in the slug, not one:
+#   quote-stripping via _lib_strip_shell_quotes can collapse a tracker
+#   reference's trailing possessive onto its digits into a single run
+#   (e.g. "PR # followed by a number, an apostrophe, and s"), and a
+#   single mandatory letter would falsely match that run as a
+#   channel-shaped slug.
+_LIB_SLACK_CHANNEL_SHAPE_REGEX='((^|[)}[:space:]]|(^|[^]])\()|[]]\([^(){[:space:]]*#)[^(){[:space:]]*#[a-z0-9_-]*[a-z_-][a-z0-9_-]*[a-z_-][a-z0-9_-]*'
 
 # Single source of truth for read-only git subcommands. Sourced by
 # require-worktree-for-git-writes.sh. Closed enumeration — this is a

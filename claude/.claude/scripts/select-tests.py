@@ -123,7 +123,7 @@ GITHUB_ACTIONS_WORKFLOWS_RULE_MD = "claude/.claude/rules/github-actions-workflow
 # and its destructive-cleanup permissions check at line 1724.
 # test_claude_enable_tool.py (SCRIPTS_TESTS_DIR) reads it by path to assert
 # which settings payload backs a re-enabled session.
-CLAUDE_SETTINGS_JSON = "claude/.claude/settings.json"
+CLAUDE_SETTINGS_JSON = "claude/.claude/settings.base.json"
 
 # No test reads any file under this directory by path or subprocess.
 PLANS_DIR = ".claude/plans"

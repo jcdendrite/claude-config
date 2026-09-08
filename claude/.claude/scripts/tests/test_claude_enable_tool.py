@@ -23,7 +23,7 @@ import pytest
 
 _SCRIPT = Path(__file__).parent.parent / "claude-enable-tool.sh"
 _CLAUDE_DIR = Path(__file__).parent.parent.parent  # claude/.claude
-_SETTINGS_JSON = _CLAUDE_DIR / "settings.json"
+_SETTINGS_BASE_JSON = _CLAUDE_DIR / "settings.base.json"
 _LOCAL_BIN = _CLAUDE_DIR.parent / ".local" / "bin"  # claude/.local/bin
 
 _RECORDER_STUB = """#!/usr/bin/env bash
@@ -192,11 +192,11 @@ class TestUnknownOrMissingToolToken:
 
 
 class TestSettingsJsonRegression:
-    """Phase 1's whole point is that both keys are true in the shared,
-    tracked settings.json every stow consumer inherits."""
+    """Phase 1's whole point is that both keys are true in settings.base.json,
+    the tracked source every stow consumer's settings.json is rendered from."""
 
-    def test_both_disable_keys_are_true_in_the_shared_settings_json(self) -> None:
-        settings = json.loads(_SETTINGS_JSON.read_text())
+    def test_both_disable_keys_are_true_in_the_tracked_base_settings_json(self) -> None:
+        settings = json.loads(_SETTINGS_BASE_JSON.read_text())
         assert settings["disableArtifact"] is True
         assert settings["disableWorkflows"] is True
 

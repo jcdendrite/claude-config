@@ -30,7 +30,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
-STOW_SOURCE_SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.json"
+STOW_SOURCE_SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.base.json"
 STOW_SOURCE_RULES_DIR = REPO_ROOT / "claude" / ".claude" / "rules"
 PROJECT_SCOPE_RULES_DIR = REPO_ROOT / ".claude" / "rules"
 EXCLUDED_CLAUDE_MD_PATTERN = "**/claude/.claude/CLAUDE.md"
@@ -137,7 +137,7 @@ class TestClaudeMdExcludes:
         assert not fnmatch.fnmatch(str(rule_file), EXCLUDED_WORKTREE_RULES_PATTERN)
 
     def test_stow_source_settings_has_no_claude_md_excludes_entry(self):
-        """docs/design-decisions.md §39: an entry in the stow-source settings.json
+        """docs/design-decisions.md §39: an entry in the stow-source settings.base.json
         would apply to every project on every consumer's machine, not just this repo."""
         stow_settings = json.loads(STOW_SOURCE_SETTINGS_PATH.read_text())
         assert "claudeMdExcludes" not in stow_settings

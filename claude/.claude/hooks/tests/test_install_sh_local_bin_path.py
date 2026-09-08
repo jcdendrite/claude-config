@@ -16,26 +16,41 @@ _BASH = shutil.which("bash") or "/bin/bash"
 _FIXTURE_START = "# INSTALL_TEST_FIXTURE: local-bin-path — start\n"
 _FIXTURE_END = "# INSTALL_TEST_FIXTURE: local-bin-path — end"
 
+_RC_HELPERS_START = "# INSTALL_TEST_FIXTURE: rc-block-helpers — start\n"
+_RC_HELPERS_END = "# INSTALL_TEST_FIXTURE: rc-block-helpers — end"
 
-def _extract_local_bin_block() -> str:
-    """Return the ensure_local_bin_on_path function body from install.sh.
 
-    Same extraction strategy as test_install_sh_continuity_hardening.py:
-    delimited by marker comments rather than shell-syntax matching, so a
-    future reorder or nested conditional can't silently pick up the wrong
-    text while the test keeps passing.
-    """
+def _extract_block(start_marker: str, end_marker: str, required_substring: str) -> str:
+    """Same marker-delimited extraction strategy as the other
+    test_install_sh_*.py files -- syntax-matching would silently pick up an
+    edited invocation, or miss one, on reordering."""
     install_text = _INSTALL_SH.read_text()
-    start = install_text.find(_FIXTURE_START)
-    assert start != -1, f"{_FIXTURE_START!r} not found in {_INSTALL_SH}"
-    end = install_text.find(_FIXTURE_END, start)
-    assert end != -1, f"{_FIXTURE_END!r} not found after start marker in {_INSTALL_SH}"
-    block = install_text[start + len(_FIXTURE_START) : end]
-    assert "ensure_local_bin_on_path" in block, (
-        f"extracted block is missing the function; markers in {_INSTALL_SH} are "
-        f"probably misplaced. Got: {block!r}"
+    start = install_text.find(start_marker)
+    assert start != -1, f"{start_marker!r} not found in {_INSTALL_SH}"
+    end = install_text.find(end_marker, start)
+    assert end != -1, f"{end_marker!r} not found after start marker in {_INSTALL_SH}"
+    block = install_text[start + len(start_marker) : end]
+    assert required_substring in block, (
+        f"extracted block is missing {required_substring!r}; markers in "
+        f"{_INSTALL_SH} are probably misplaced. Got: {block!r}"
     )
     return block
+
+
+def _extract_local_bin_block() -> str:
+    """Return the rc-block-helpers block (_ensure_rc_block and its two
+    siblings) followed by ensure_local_bin_on_path's own definition.
+
+    Post-M2, ensure_local_bin_on_path's own INSTALL_TEST_FIXTURE block no
+    longer defines _ensure_rc_block -- that moved into a separate
+    rc-block-helpers block shared with ensure_settings_render, so extracting
+    local-bin-path alone would fail with "command not found" for
+    _ensure_rc_block. Pulling in rc-block-helpers first mirrors how
+    install.sh itself defines both before either function is ever called.
+    """
+    return _extract_block(
+        _RC_HELPERS_START, _RC_HELPERS_END, "_ensure_rc_block"
+    ) + _extract_block(_FIXTURE_START, _FIXTURE_END, "ensure_local_bin_on_path")
 
 
 def _run_local_bin_block(test_home: Path, path: str | None = None) -> subprocess.CompletedProcess:

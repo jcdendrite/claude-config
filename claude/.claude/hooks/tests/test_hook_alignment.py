@@ -178,8 +178,9 @@ def test_hook_documented_in_hooks_md(hook: Path) -> None:
 _SKILLS_DIR = _REPO_ROOT / "claude-skills" / "skills"
 # _SETTINGS_PATH means the stow-source file here, the opposite of what
 # `SETTINGS_PATH` means in test_claude_md_excludes.py (repo-root) — don't
-# assume the two modules share a convention.
-_SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.json"
+# assume the two modules share a convention. _REPO_LOCAL_SETTINGS_PATH below
+# is that same repo-root file, tracked separately for attribution checks.
+_SETTINGS_PATH = _REPO_ROOT / "claude" / ".claude" / "settings.base.json"
 _REPO_LOCAL_SETTINGS_PATH = _REPO_ROOT / ".claude" / "settings.json"
 _ATTRIBUTION_SETTINGS_PATHS = (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH)
 
