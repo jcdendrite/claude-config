@@ -90,12 +90,27 @@ def _write_marker(home: Path, repo: Path, head_ref_oid: str, body_hash: str, pr_
     write_review_pr_completion_marker(home, repo, pr_identity, head_ref_oid, body_hash, SID)
 
 
-def _gh_shim_source(call_log: Path) -> str:
-    """gh shim recording every invocation, always exiting 0. Records
-    GH_HOST/GH_ENTERPRISE_TOKEN as this shim process actually saw them (not
-    as the test's own subprocess env set them), so a test can prove the
-    script's `env -u` strip reached the real gh invocation rather than just
-    asserting on the args list."""
+def _gh_shim_source(
+    call_log: Path, pr_view_head_ref_oid: str | None = None, fail_pr_review: bool = False
+) -> str:
+    """gh shim recording every invocation. Records GH_HOST/GH_ENTERPRISE_TOKEN
+    as this shim process actually saw them (not as the test's own subprocess
+    env set them), so a test can prove the script's `env -u` strip reached
+    the real gh invocation rather than just asserting on the args list.
+
+    `pr_view_head_ref_oid`, when given, is printed as the `gh pr view
+    ... --json headRefOid --jq .headRefOid` call's stdout -- the script's
+    PR-identity cross-check reads this to compare against the completion
+    marker's recorded HEAD. Left unset, the shim prints nothing for that
+    call, matching a `gh` failure or a PR whose current headRefOid the
+    script cannot determine.
+
+    `fail_pr_review`, when true, exits 1 on a `gh pr review` invocation
+    specifically (every other invocation, including `pr view`, still exits
+    0) -- the production `gh` binary's own always-0 stand-in otherwise never
+    exercises the script's failure branch that leaves the completion marker
+    intact for a retry."""
+    pr_view_stdout = "" if pr_view_head_ref_oid is None else pr_view_head_ref_oid
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -103,6 +118,8 @@ def _gh_shim_source(call_log: Path) -> str:
         import sys
 
         CALL_LOG = {str(call_log)!r}
+        PR_VIEW_STDOUT = {pr_view_stdout!r}
+        FAIL_PR_REVIEW = {fail_pr_review!r}
         args = sys.argv[1:]
         record = {{
             "args": args,
@@ -111,6 +128,10 @@ def _gh_shim_source(call_log: Path) -> str:
         }}
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
+        if args[:2] == ["pr", "view"] and PR_VIEW_STDOUT:
+            print(PR_VIEW_STDOUT)
+        if FAIL_PR_REVIEW and args[:2] == ["pr", "review"]:
+            sys.exit(1)
         sys.exit(0)
     """)
 
@@ -128,10 +149,21 @@ def _read_records(call_log: Path) -> list[dict]:
 
 
 def _run(
-    cwd: Path, home: Path, args: list[str], tmp_path: Path, extra_env: dict | None = None
+    cwd: Path,
+    home: Path,
+    args: list[str],
+    tmp_path: Path,
+    extra_env: dict | None = None,
+    pr_view_head_ref_oid: str | None = None,
+    fail_pr_review: bool = False,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     call_log = tmp_path / "gh_calls.jsonl"
-    env = {**_shimmed_env(tmp_path, _gh_shim_source(call_log)), "HOME": str(home)}
+    env = {
+        **_shimmed_env(
+            tmp_path, _gh_shim_source(call_log, pr_view_head_ref_oid, fail_pr_review)
+        ),
+        "HOME": str(home),
+    }
     env.pop("CLAUDE_CONFIG_DIR", None)
     if extra_env:
         env.update(extra_env)
@@ -143,6 +175,13 @@ def _run(
         text=True,
     )
     return result, call_log
+
+
+def _read_pr_review_calls(call_log: Path) -> list[list[str]]:
+    """Calls whose args start with the `pr review` verb -- filters out the
+    PR-identity cross-check's own `gh pr view` call, which every test below
+    that reaches the posting calls now also triggers."""
+    return [args for args in _read_calls(call_log) if args[:2] == ["pr", "review"]]
 
 
 def _strip_comment_lines(text: str) -> str:
@@ -244,7 +283,20 @@ class TestBodyHashMismatch:
 
 
 class TestMalformedPrIdentity:
-    @pytest.mark.parametrize("pr_identity", ["no-hash-or-slash", "foo/bar#NOTANUMBER", "#42"])
+    @pytest.mark.parametrize(
+        "pr_identity",
+        [
+            "no-hash-or-slash",
+            "foo/bar#NOTANUMBER",
+            "#42",
+            # A segment made entirely of '.'/'-' characters is a valid,
+            # nonempty run under a naive [A-Za-z0-9._-]+ class, and turns a
+            # `repos/$OWNER_REPO/...` gh call into a path-traversal shape --
+            # must be rejected by the owner/repo regex before any gh call,
+            # the same as the other malformed-identity shapes above.
+            "../..#5",
+        ],
+    )
     def test_unparseable_identity_fails_closed(self, isolated_home, git_repo, tmp_path, pr_identity):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -254,6 +306,68 @@ class TestMalformedPrIdentity:
         assert _read_calls(call_log) == []
 
 
+class TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum:
+    def test_owner_repo_with_dot_and_hyphen_segments_passes_regex_check(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Bounds the tightened owner/repo regex from the other side of
+        TestMalformedPrIdentity's dot-only-segment deny case: a segment
+        mixing '.'/'-' with at least one alphanumeric character (an
+        ordinary GitHub owner/repo shape) must still pass. The shim below
+        answers no `gh pr view` headRefOid, so the run still fails closed
+        at the PR-identity cross-check further down -- the assertion below
+        targets that later, different failure (a `gh pr view` call actually
+        happened, and the error names headRefOid rather than an invalid
+        owner/repo) to isolate the regex check from that downstream
+        behavior."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        _write_marker(
+            isolated_home, git_repo, head_sha(git_repo), body_hash, pr_identity="my-org/my.repo#5"
+        )
+        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        assert result.returncode != 0
+        assert "does not name a valid owner/repo" not in result.stderr
+        assert "headRefOid" in result.stderr
+        assert _read_calls(call_log) != []
+
+
+class TestPrIdentityCrossCheck:
+    """PR_NUMBER/OWNER_REPO are validated by regex shape alone before this
+    check -- neither proves the marker's PR identity actually names the PR
+    the marker's HEAD/body-hash checks ran against. This class pins the
+    `gh pr view` re-fetch that closes that gap."""
+
+    def test_pr_view_head_mismatch_fails_closed(self, isolated_home, git_repo, tmp_path):
+        """The PR's own current headRefOid disagrees with the completion
+        marker's recorded HEAD -- PR_NUMBER/OWNER_REPO does not name the
+        reviewed PR. Must abort before ever calling `gh pr review`."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
+        result, call_log = _run(
+            git_repo,
+            isolated_home,
+            ["comment"],
+            tmp_path,
+            pr_view_head_ref_oid="f" * 40,
+        )
+        assert result.returncode != 0
+        assert "headRefOid" in result.stderr
+        assert _read_pr_review_calls(call_log) == []
+
+    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path):
+        """`gh pr view` itself fails or returns no output -- treated the
+        same as a mismatch, not as a pass-through."""
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
+        result, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        assert result.returncode != 0
+        assert "headRefOid" in result.stderr
+        assert _read_pr_review_calls(call_log) == []
+
+
 class TestHappyPath:
     @pytest.mark.parametrize("verdict,flag", [("comment", "--comment"), ("request-changes", "--request-changes")])
     def test_matching_marker_posts_exactly_once_with_the_named_verdict(
@@ -261,11 +375,14 @@ class TestHappyPath:
     ):
         _seed_session(isolated_home, SID)
         body_file, body_hash = _write_findings_body(isolated_home)
-        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, [verdict], tmp_path)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        result, call_log = _run(
+            git_repo, isolated_home, [verdict], tmp_path, pr_view_head_ref_oid=marker_head
+        )
         assert result.returncode == 0, result.stderr
 
-        calls = _read_calls(call_log)
+        calls = _read_pr_review_calls(call_log)
         assert len(calls) == 1
         args = calls[0]
         assert args[:2] == ["pr", "review"]
@@ -289,7 +406,8 @@ class TestGhHostStripped:
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
-        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
         result, call_log = _run(
             git_repo,
             isolated_home,
@@ -299,17 +417,22 @@ class TestGhHostStripped:
                 "GH_HOST": "attacker-chosen-host.example",
                 "GH_ENTERPRISE_TOKEN": "leaked-token",
             },
+            pr_view_head_ref_oid=marker_head,
         )
         assert result.returncode == 0, result.stderr
 
+        # The gh pr view identity cross-check is a `gh` invocation too, so
+        # GH_HOST/GH_ENTERPRISE_TOKEN must not leak into it either -- every
+        # record in the log is asserted, not just the pr review one.
         records = _read_records(call_log)
-        assert len(records) == 1
-        assert records[0]["GH_HOST"] is None, (
-            "GH_HOST leaked into the real gh invocation's effective environment"
-        )
-        assert records[0]["GH_ENTERPRISE_TOKEN"] is None, (
-            "GH_ENTERPRISE_TOKEN leaked into the real gh invocation's effective environment"
-        )
+        assert len(records) >= 1
+        for record in records:
+            assert record["GH_HOST"] is None, (
+                "GH_HOST leaked into a gh invocation's effective environment"
+            )
+            assert record["GH_ENTERPRISE_TOKEN"] is None, (
+                "GH_ENTERPRISE_TOKEN leaked into a gh invocation's effective environment"
+            )
 
 
 class TestCompletionMarkerSelfConsuming:
@@ -322,20 +445,59 @@ class TestCompletionMarkerSelfConsuming:
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
-        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
         marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
 
-        first, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        first, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+        )
         assert first.returncode == 0, first.stderr
-        assert len(_read_calls(call_log)) == 1
+        assert len(_read_pr_review_calls(call_log)) == 1
         assert not marker.exists(), (
             "a successful post must delete the completion marker it consumed"
         )
 
-        second, call_log = _run(git_repo, isolated_home, ["comment"], tmp_path)
+        second, call_log = _run(
+            git_repo, isolated_home, ["comment"], tmp_path, pr_view_head_ref_oid=marker_head
+        )
         assert second.returncode != 0
         assert "completion marker" in second.stderr
-        assert len(_read_calls(call_log)) == 1, (
-            "a retry after a successful post must not call gh again -- the "
-            "one recorded call must still be the first invocation's"
+        assert len(_read_pr_review_calls(call_log)) == 1, (
+            "a retry after a successful post must not call gh pr review again "
+            "-- the one recorded call must still be the first invocation's"
+        )
+
+
+class TestGhPrReviewFailureBranch:
+    """The `gh` test shim otherwise always exits 0, so without this class
+    the script's `if ! ... gh pr review ...; then ... exit 2` failure
+    branches are never exercised -- a regression making completion-marker
+    deletion unconditional (deleting it even when the post failed, breaking
+    retry-safety) would pass every other test in this file."""
+
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
+    def test_gh_pr_review_failure_exits_nonzero_and_keeps_the_marker(
+        self, isolated_home, git_repo, tmp_path, verdict
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
+
+        result, call_log = _run(
+            git_repo,
+            isolated_home,
+            [verdict],
+            tmp_path,
+            pr_view_head_ref_oid=marker_head,
+            fail_pr_review=True,
+        )
+        assert result.returncode != 0
+        assert len(_read_pr_review_calls(call_log)) == 1, (
+            "the failing gh pr review call must still have been attempted"
+        )
+        assert marker.exists(), (
+            "a failed post must leave the completion marker intact for a retry"
         )

@@ -6,8 +6,8 @@ description: >
   formatting, and the repeated-reference auto-linker drop. TRIGGER when:
   posting or editing a Linear issue comment or document, or referencing a
   Linear issue ID in a Linear repo. DO NOT TRIGGER when: the tracker isn't
-  Linear (e.g. Jira), or the write only touches a status/assignee field
-  with no comment/document body.
+  Linear (e.g. Jira, GitHub Issues), or the write only touches a
+  status/assignee field with no comment/document body.
 user-invocable: false
 ---
 

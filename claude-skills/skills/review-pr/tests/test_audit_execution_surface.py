@@ -99,6 +99,32 @@ class TestAuditExecutionSurfacePureFunction:
         result = audit_execution_surface([".claude/agents/rogue-reviewer.md"])
         assert result["stop"] is True
 
+    def test_claude_local_md_matches(self):
+        """CLAUDE.local.md concatenates into the same standing-instructions
+        load as CLAUDE.md (claude/.claude/rules/claude-md-conventions.md's
+        precedence list) -- confirmed harness auto-load, not a guess."""
+        result = audit_execution_surface(["CLAUDE.local.md"])
+        assert result["stop"] is True
+
+    def test_claude_local_md_matches_at_any_depth(self):
+        result = audit_execution_surface(["packages/api/CLAUDE.local.md"])
+        assert result["stop"] is True
+
+    def test_project_skill_md_matches(self):
+        result = audit_execution_surface([".claude/skills/rogue-skill/SKILL.md"])
+        assert result["stop"] is True
+
+    def test_project_skill_md_matches_at_any_depth(self):
+        result = audit_execution_surface(["project/.claude/skills/rogue-skill/SKILL.md"])
+        assert result["stop"] is True
+
+    def test_skill_md_outside_a_claude_skills_directory_does_not_match(self):
+        """Bounds the new arm from the other side: a file literally named
+        SKILL.md that doesn't sit under a .claude/skills/ directory is not
+        loaded by the harness's skill discovery, so it must not stop."""
+        result = audit_execution_surface(["docs/SKILL.md"])
+        assert result == {"stop": False, "matches": []}
+
     def test_claude_settings_json_matches(self):
         result = audit_execution_surface([".claude/settings.json"])
         assert result["stop"] is True

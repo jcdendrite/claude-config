@@ -56,6 +56,14 @@ def _classify(path: str) -> str | None:
     if segments[-1] == "claude.md":
         return "CLAUDE.md is loaded as standing instructions by the reviewing harness"
 
+    if segments[-1] == "claude.local.md":
+        return "CLAUDE.local.md is concatenated into the same standing-instructions load as CLAUDE.md (claude/.claude/rules/claude-md-conventions.md's precedence list)"
+
+    if segments[-1] == "skill.md" and (
+        lower.startswith(".claude/skills/") or "/.claude/skills/" in lower
+    ):
+        return ".claude/skills/**/SKILL.md is loaded as skill instructions by the harness's project-level skill discovery"
+
     if lower == ".claude/settings.json" or lower.endswith("/.claude/settings.json"):
         return ".claude/settings.json configures hooks and permissions the harness applies"
 

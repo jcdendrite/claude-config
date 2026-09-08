@@ -27,6 +27,7 @@ from helpers import (
     staged_diff_hash,
     write_marker,
     write_plan_review_marker,
+    write_review_pr_completion_marker,
     write_skill_review_marker,
 )
 
@@ -1707,9 +1708,9 @@ class TestWalkSessionDelegatesToLib:
 
 class TestMarkerScriptStatusCompletionMarkers:
     """`marker.sh status` reports each completion marker (code-review,
-    skill-review, plan-review, ready-for-review) as live, historical, or
-    absent, recomputing the current expected value with the same recipe
-    `write` uses."""
+    skill-review, plan-review, ready-for-review, review-pr) as live,
+    historical, or absent, recomputing the current expected value with the
+    same recipe `write` uses."""
 
     SID = "test-session-status"
 
@@ -1937,6 +1938,36 @@ class TestMarkerScriptStatusCompletionMarkers:
         result = _run(["status"], cwd=repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert "ready-for-review: absent" in result.stdout
+
+    # ── review-pr ──────────────────────────────────────────────────────
+    # Same HEAD-keyed recipe as ready-for-review above: the completion
+    # marker's second line (headRefOid) is compared as a whole line against
+    # `git rev-parse HEAD`, so status needs no PR identity or body hash to
+    # classify it.
+
+    def test_review_pr_live_when_hash_matches_head(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", head_sha(git_repo), "a" * 64, self.SID
+        )
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: live" in result.stdout
+
+    def test_review_pr_historical_when_marker_head_is_stale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        write_review_pr_completion_marker(
+            isolated_home, git_repo, "foo/bar#42", "0" * 40, "a" * 64, self.SID
+        )
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: historical" in result.stdout
+
+    def test_review_pr_absent_when_no_marker_exists(self, isolated_home, git_repo):
+        _seed_session(isolated_home, self.SID)
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "review-pr: absent" in result.stdout
 
     # ── unreadable marker ──────────────────────────────────────────────
 
@@ -2686,8 +2717,8 @@ class TestMarkerScriptCumulativeReview:
 
 class TestMarkerScriptStatusActiveBypass:
     """`marker.sh status` reports each active-bypass marker (plan-review,
-    ready-for-review, respond-pr, memory-skill, handoff) for this session as
-    live, stale, or absent."""
+    ready-for-review, respond-pr, memory-skill, handoff, review-pr) for this
+    session as live, stale, or absent."""
 
     SID = "test-session-status-bypass"
 
@@ -2697,6 +2728,7 @@ class TestMarkerScriptStatusActiveBypass:
         ("respond-pr", ".respond-pr-active.d"),
         ("memory-skill", ".memory-skill-active.d"),
         ("handoff", ".handoff-active.d"),
+        ("review-pr", ".review-pr-active.d"),
     ]
 
     @pytest.mark.parametrize("label,dir_name", ACTIVE_BYPASS_KINDS)
@@ -2755,6 +2787,55 @@ class TestMarkerScriptStatusActiveBypass:
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert f"{label}: absent" in result.stdout
+
+
+class TestMarkerScriptStatusUsageBannerCompleteness:
+    """GH-critical: the usage() heredoc's `status` description names which
+    completion and active-bypass markers are reported, but nothing kept that
+    prose in sync with the `status)` case body -- review-pr was named
+    nowhere in either list while its markers went unchecked. Scans the
+    script's own source so a future skill added to one side and forgotten
+    on the other fails here instead of silently drifting again."""
+
+    @staticmethod
+    def _strip_comment_lines(text: str) -> str:
+        """Drop full-line `#` comments before scanning for a call -- a
+        comment that merely mentions a helper's name in prose (e.g. "...
+        which _status_report_completion_marker already treats as ...")
+        would otherwise false-positive as a real call site."""
+        return "\n".join(
+            line for line in text.splitlines() if not line.strip().startswith("#")
+        )
+
+    def test_every_completion_marker_named_in_usage_is_checked_in_status_body(self):
+        text = MARKER_SCRIPT.read_text()
+        banner_match = re.search(r"completion marker \(([^)]+)\)", text)
+        assert banner_match, "usage() banner's completion-marker list not found"
+        named = {name.strip() for name in banner_match.group(1).split(",")}
+
+        status_body_match = re.search(r"\n  status\)\n(.*?)\n  check\)", text, re.DOTALL)
+        assert status_body_match, "status) case body not found"
+        status_body = self._strip_comment_lines(status_body_match.group(1))
+        checked = set(re.findall(r"_status_report_completion_marker (\S+)", status_body))
+        assert named == checked, (
+            f"usage() names {named} but status) body checks {checked} -- "
+            "wire the difference into both, or drop it from the banner"
+        )
+
+    def test_every_active_bypass_marker_named_in_usage_is_checked_in_status_body(self):
+        text = MARKER_SCRIPT.read_text()
+        banner_match = re.search(r"active-bypass marker \(([^)]+)\)", text)
+        assert banner_match, "usage() banner's active-bypass-marker list not found"
+        named = {name.strip() for name in banner_match.group(1).split(",")}
+
+        status_body_match = re.search(r"\n  status\)\n(.*?)\n  check\)", text, re.DOTALL)
+        assert status_body_match, "status) case body not found"
+        status_body = self._strip_comment_lines(status_body_match.group(1))
+        checked = set(re.findall(r"_status_report_active_bypass (\S+)", status_body))
+        assert named == checked, (
+            f"usage() names {named} but status) body checks {checked} -- "
+            "wire the difference into both, or drop it from the banner"
+        )
 
 
 class TestMarkerScriptStatusReconciliationFlag:
@@ -3408,6 +3489,46 @@ class TestMarkerScriptReviewPr:
         ).stdout.split()[0]
         assert lines[2] == expected_hash
 
+    def test_write_passes_clean_findings_body_through_the_secret_scan(
+        self, isolated_home, git_repo
+    ):
+        """Mechanical backstop for SKILL.md Step 7's prose scrubbing
+        instruction: review-pr-scan-findings-body.sh runs before the marker
+        is written. A body containing no credential-shaped string must not
+        be refused -- the sibling passing case to the refusal case below."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("# findings body, no secrets here\n")
+        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        assert list(marker_dir.iterdir()) != []
+
+    def test_write_refuses_a_findings_body_containing_a_credential_shaped_string(
+        self, isolated_home, git_repo
+    ):
+        """The mechanical scan, not just SKILL.md's prose instruction, must
+        refuse the write -- a `PreToolUse` hook never sees the findings body,
+        since it's composed by the model's own reasoning rather than passed
+        as a tool-call argument."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("# findings\n\nleaked: ghp_" + "a" * 36 + "\n")
+        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "credential shape" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a credential-shaped findings body must not write a marker: {stray}"
+
     def test_write_without_sibling_file_aborts_without_writing_marker(
         self, isolated_home, git_repo
     ):
@@ -3630,22 +3751,25 @@ class TestMarkerScriptReviewPr:
         assert result.returncode == 0, result.stderr
 
     @pytest.mark.parametrize(
-        "adjacent_pid",
+        "adjacent_pid,expect_evicted",
         [
-            pytest.param(None, id="no_adjacent_pid_file"),
-            pytest.param("live", id="live_pid_adjacent"),
-            pytest.param("dead", id="dead_pid_adjacent"),
+            pytest.param(None, True, id="no_adjacent_pid_file"),
+            pytest.param("live", False, id="live_pid_adjacent"),
+            pytest.param("dead", True, id="dead_pid_adjacent"),
         ],
     )
-    def test_clear_stale_does_not_evict_a_live_findings_sibling(
-        self, isolated_home, git_repo, tmp_path, adjacent_pid
+    def test_clear_stale_findings_sibling_reaped_only_once_owner_pid_is_dead(
+        self, isolated_home, git_repo, tmp_path, adjacent_pid, expect_evicted
     ):
         """The sibling holds PR identity, headRefOid, and a findings-body
         path -- never a PID -- so clear-stale's ^[0-9]+$ liveness test would
-        always misread it as a dead marker without the name-based exemption,
-        deleting a live review's findings sibling out from under it even
-        while the session's own PID marker (adjacent_pid="live") is still
-        alive."""
+        always misread it as a dead marker on the sibling's own content.
+        Gated instead on the owning session's separate PID marker: kept
+        while it's alive (adjacent_pid="live"), reaped once it's confirmed
+        dead or was never written at all (adjacent_pid=None), the same
+        orphan this file's own header names as an accepted gap before this
+        fix -- 'a hard crash between write and this call leaves the sibling
+        and body file on disk indefinitely'."""
         sid = self.SID
         sibling = self._declare_sibling(
             isolated_home, "foo/bar#42", "abc123", tmp_path / "findings.md", sid
@@ -3659,24 +3783,35 @@ class TestMarkerScriptReviewPr:
 
         result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        assert sibling.exists(), "clear-stale must not evict a live .findings sibling"
+        if expect_evicted:
+            assert not sibling.exists(), (
+                "clear-stale must reap a .findings sibling once its owning "
+                "PID marker is confirmed dead or was never written"
+            )
+        else:
+            assert sibling.exists(), (
+                "clear-stale must not evict a .findings sibling while its "
+                "owning PID marker is still alive"
+            )
 
     @pytest.mark.parametrize(
-        "adjacent_pid",
+        "adjacent_pid,expect_evicted",
         [
-            pytest.param(None, id="no_adjacent_pid_file"),
-            pytest.param("live", id="live_pid_adjacent"),
-            pytest.param("dead", id="dead_pid_adjacent"),
+            pytest.param(None, True, id="no_adjacent_pid_file"),
+            pytest.param("live", False, id="live_pid_adjacent"),
+            pytest.param("dead", True, id="dead_pid_adjacent"),
         ],
     )
-    def test_clear_stale_does_not_evict_a_live_findings_body_file(
-        self, isolated_home, git_repo, adjacent_pid
+    def test_clear_stale_findings_body_reaped_only_once_owner_pid_is_dead(
+        self, isolated_home, git_repo, adjacent_pid, expect_evicted
     ):
         """The findings-body file at the fixed .body location holds prose
-        content, never a PID, so it needs the same name-based exemption as
-        the .findings sibling -- otherwise clear-stale deletes the body out
-        from under an in-flight /review-pr session between SKILL.md Step 8's
-        write and Step 9's post."""
+        content, never a PID, so it needs the same owner-PID-liveness gate
+        as the .findings sibling above rather than its own name-based
+        exemption -- otherwise it would either evict unconditionally
+        (deleting the body out from under an in-flight /review-pr session
+        between SKILL.md Step 8's write and Step 9's post) or never evict at
+        all (the pre-fix behavior this test used to pin)."""
         sid = self.SID
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
@@ -3684,12 +3819,41 @@ class TestMarkerScriptReviewPr:
 
         if adjacent_pid is not None:
             active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+            active_dir.mkdir(parents=True, exist_ok=True)
             stored_pid = str(os.getpid()) if adjacent_pid == "live" else "99999999"
             (active_dir / sid).write_text(stored_pid)
 
         result = _run(["clear-stale"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
-        assert findings_body.exists(), "clear-stale must not evict a live .body findings file"
+        if expect_evicted:
+            assert not findings_body.exists(), (
+                "clear-stale must reap a .body findings file once its owning "
+                "PID marker is confirmed dead or was never written"
+            )
+        else:
+            assert findings_body.exists(), (
+                "clear-stale must not evict a .body findings file while its "
+                "owning PID marker is still alive"
+            )
+
+    def test_clear_stale_dry_run_does_not_evict_findings_sibling_or_body(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """--dry-run must report the same dead-owner eviction decision as a
+        real run without actually removing either file."""
+        sid = self.SID
+        sibling = self._declare_sibling(
+            isolated_home, "foo/bar#42", "abc123", tmp_path / "findings.md", sid
+        )
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("# findings body\n")
+
+        result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert sibling.exists(), "--dry-run must not remove the .findings sibling"
+        assert findings_body.exists(), "--dry-run must not remove the .body file"
+        assert "evict (dry-run)" in result.stdout
 
 
 class TestMarkerWriteSymlinkHardeningAcrossArms:
@@ -3720,4 +3884,44 @@ class TestMarkerWriteSymlinkHardeningAcrossArms:
         assert completion_marker.is_symlink(), "the symlink itself must survive, unmodified"
         assert real_target.read_text() == "pre-existing content\n", (
             "the write must not follow the symlink and truncate its target"
+        )
+
+
+class TestMarkerActivateSymlinkHardeningAcrossArms:
+    """Every `activate <skill>` arm now routes through the same
+    `_write_marker_no_follow` O_NOFOLLOW helper the `write <skill>` arms
+    already used (TestMarkerWriteSymlinkHardeningAcrossArms above) -- a
+    plain `>` redirect at a predictable session-id-keyed active-bypass
+    marker path would otherwise follow a pre-planted symlink there, the
+    same TOCTOU class already closed on the write side."""
+
+    SID = "test-session-activate-symlink"
+
+    ACTIVATE_ARMS = [
+        ("plan-review", ".plan-review-active.d"),
+        ("ready-for-review", ".ready-for-review-active.d"),
+        ("respond-pr", ".respond-pr-active.d"),
+        ("memory-skill", ".memory-skill-active.d"),
+        ("handoff", ".handoff-active.d"),
+        ("review-pr", ".review-pr-active.d"),
+    ]
+
+    @pytest.mark.parametrize("skill,dir_name", ACTIVATE_ARMS)
+    def test_activate_refuses_a_symlink_at_the_active_marker_destination(
+        self, isolated_home, git_repo, tmp_path, skill, dir_name
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        active_dir = isolated_home / ".claude" / dir_name
+        active_dir.mkdir(parents=True, exist_ok=True)
+        active_marker = active_dir / sid
+        real_target = tmp_path / f"attacker-chosen-{skill}-target.txt"
+        real_target.write_text("pre-existing content\n")
+        active_marker.symlink_to(real_target)
+
+        result = _run(["activate", skill], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert active_marker.is_symlink(), "the symlink itself must survive, unmodified"
+        assert real_target.read_text() == "pre-existing content\n", (
+            "activate must not follow the symlink and truncate its target"
         )

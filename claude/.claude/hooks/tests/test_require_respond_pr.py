@@ -107,6 +107,81 @@ class TestRequireRespondPr:
     def test_non_matching_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
+    # -- Bare pulls/{number} or issues/{number} PATCH/POST/PUT/DELETE -------
+    # GH-critical: a REST write directly against the PR/issue resource
+    # itself carries no /comments or /reviews suffix, so PATTERN_REST_NUMBERED
+    # and PATTERN_REST_COMMENT_ID both miss it -- this is the gap
+    # PATTERN_REST_NUMBERED_ROOT closes.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api repos/foo/bar/pulls/5 -X PATCH -f body=oops",
+            "gh api repos/foo/bar/issues/5 -X PATCH -f body=oops",
+            "gh api repos/foo/bar/pulls/5 -F body=oops",
+            "gh api repos/foo/bar/pulls/5 --input body.json",
+        ],
+    )
+    def test_bare_pr_issue_root_write_denied(
+        self, isolated_home, current_repo_foo_bar, command
+    ):
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
+
+    def test_bare_pr_issue_root_read_still_allowed(self, isolated_home, current_repo_foo_bar):
+        """No body-setting flag present -- an ordinary read of the bare
+        resource must stay allowed, the same case test_non_matching_commands_allowed
+        already pins; kept here as a paired sanity check next to the write
+        arm it bounds."""
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input("gh api repos/foo/bar/pulls/5"),
+                cwd=current_repo_foo_bar,
+            )
+            == "allow"
+        )
+
+    # -- Bare GraphQL updatePullRequest/updateIssue mutations ----------------
+    # GH-critical: PATTERN_GRAPHQL_MUTATION only matches a mutation name
+    # ending in Comment/Review -- a mutation against the PR/issue resource
+    # itself carries neither suffix and fell through to allow.
+
+    @pytest.mark.parametrize(
+        "mutation_body",
+        [
+            'updatePullRequest(input: {pullRequestId: "PR_kwABC", body: "rewritten"})',
+            'updateIssue(input: {id: "I_kwABC", body: "rewritten"})',
+        ],
+    )
+    def test_graphql_bare_update_pr_or_issue_mutation_denied(
+        self, isolated_home, current_repo_foo_bar, mutation_body
+    ):
+        command = f"gh api graphql -f query='mutation {{ {mutation_body} {{ clientMutationId }} }}'"
+        assert (
+            run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar)
+            == "deny"
+        )
+
+    def test_graphql_read_query_naming_pull_request_field_near_update_token_allowed(
+        self, isolated_home, current_repo_foo_bar
+    ):
+        """Bounds PATTERN_GRAPHQL_PR_ISSUE_MUTATION from the other side,
+        paired with the deny case above the same way test_graphql_non_comment_mutations_allowed
+        bounds PATTERN_GRAPHQL_MUTATION. A read query naming `pullRequest` as
+        a field (not calling the `updatePullRequest` mutation) alongside an
+        unrelated `updatedAt` field must stay allowed: the pattern requires
+        `update` immediately followed by `PullRequest`/`Issue` and only
+        whitespace before the opening paren, so a lowercase field read and a
+        same-prefix field elsewhere in the query text must not trip it."""
+        command = (
+            "gh api graphql -f query='query { repository(owner: \"foo\", name: \"bar\") "
+            "{ pullRequest(number: 5) { updatedAt title } } }'"
+        )
+        assert (
+            run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar)
+            == "allow"
+        )
+
     def test_awk_absent_from_path_denies(self, isolated_home, current_repo_foo_bar, tmp_path):
         """GH-801: status-2 propagation. COMMAND_FLAT's awk fork failing
         must not silently fall through to "no arm matched, allow" -- this

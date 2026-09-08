@@ -12,9 +12,10 @@ Posts the /review-pr findings body recorded by this session's `marker.sh
 write review-pr` completion marker, as the named gh pr review verdict.
 Before posting, verifies: a completion marker exists for this repo and
 session; the worktree's current HEAD still equals the marker's recorded
-headRefOid; and the findings-body file's sha256 still equals the marker's
-recorded hash. Fails closed (no gh call) on any missing or mismatched
-piece.
+headRefOid; the findings-body file's sha256 still equals the marker's
+recorded hash; and the marker's PR number/owner/repo names a real PR whose
+current headRefOid still matches the marker's recorded HEAD. Fails closed
+(no gh call) on any missing or mismatched piece.
 EOF
 }
 
@@ -55,7 +56,7 @@ fi
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
 
 MARKER_FIELDS=$(_lib_review_pr_completion_marker_fields "$CONFIG_DIR" "$REPO_HASH" "$SESSION_ID") || {
-  echo "review-pr-post.sh: no /review-pr completion marker for this repo and session -- run the skill through Step 8 before posting. Abort without posting." >&2
+  echo "review-pr-post.sh: no /review-pr completion marker for this repo and session -- run the skill through Step 7 before posting. Abort without posting." >&2
   exit 2
 }
 MARKER_PR_IDENTITY=$(printf '%s\n' "$MARKER_FIELDS" | sed -n '1p')
@@ -69,7 +70,7 @@ if [[ -z "$CURRENT_HEAD" || "$CURRENT_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
 fi
 
 # Same fixed-path derivation as marker.sh's own
-# _review_pr_findings_body_fixed_path -- SKILL.md Step 8 writes the findings
+# _review_pr_findings_body_fixed_path -- SKILL.md Step 7 writes the findings
 # body here and nowhere else.
 FINDINGS_BODY_PATH="$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.body"
 
@@ -102,8 +103,33 @@ if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "review-pr-post.sh: marker PR identity '$MARKER_PR_IDENTITY' has no numeric PR number. Abort without posting." >&2
   exit 2
 fi
-if [[ ! "$OWNER_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+# Each segment must hold at least one alphanumeric character -- same
+# tightened shape review-pr-checkout.sh's own owner/repo check uses, so a
+# bare `..`/`.` segment (a valid, nonempty run under a naive
+# [A-Za-z0-9._-]+ class) can't turn a `repos/$OWNER_REPO/...` gh call below
+# into a path-traversal shape.
+if [[ ! "$OWNER_REPO" =~ ^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   echo "review-pr-post.sh: marker PR identity '$MARKER_PR_IDENTITY' does not name a valid owner/repo. Abort without posting." >&2
+  exit 2
+fi
+
+# PR_NUMBER/OWNER_REPO are validated above by shape only -- neither check
+# proves this number actually names the PR the marker's HEAD/body-hash
+# checks above were run against. Re-fetch the PR's own current headRefOid
+# and compare it to the marker's recorded value: a mismatch means
+# PR_NUMBER/OWNER_REPO does not name the reviewed PR, so abort before
+# constructing a review against the wrong one.
+#
+# 10s: a network GET carrying no payload, more slack than _lib_capped's 5s
+# local-read default but less than the write-path headroom
+# GH_PR_REVIEW_TIMEOUT_SECONDS gives the POST calls below.
+# GH_HOST/GH_ENTERPRISE_TOKEN stripped for the same reason as those calls:
+# an ambient GH_HOST would otherwise let adversarial PR content redirect
+# even this identity check to a different host.
+GH_PR_VIEW_TIMEOUT_SECONDS=10
+CURRENT_PR_HEAD=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || CURRENT_PR_HEAD=""
+if [[ -z "$CURRENT_PR_HEAD" || "$CURRENT_PR_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
+  echo "review-pr-post.sh: PR $OWNER_REPO#$PR_NUMBER's current headRefOid does not match the completion marker's recorded HEAD -- PR_NUMBER/OWNER_REPO may not name the reviewed PR. Abort without posting." >&2
   exit 2
 fi
 

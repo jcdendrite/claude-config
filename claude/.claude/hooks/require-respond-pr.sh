@@ -53,17 +53,18 @@
 # those wholesale rather than inspecting them.
 #
 # Second bypass path: /review-pr's active marker at
-# ~/.claude/.review-pr-active.d/<session_id> releases a matched READ the
-# same way respond-pr's does. A matched WRITE is never released here at
-# all: every `gh pr review`/`reviews` write during an active /review-pr
-# session is denied unconditionally, redirecting to
-# ~/.claude/scripts/review-pr-post.sh, which independently re-verifies the
-# HEAD, PR identity, and findings-body hash recorded by /review-pr's own
-# completion marker (see that script's header, and
-# _lib_review_pr_completion_marker_fields in _lib.sh for the read it
-# shares with marker.sh's `write review-pr` arm) before it ever calls gh.
-# `--approve` is not a reachable code path in that script, so this gate
-# needs no approve-spelling denylist of its own.
+# ~/.claude/.review-pr-active.d/<session_id>. Four guarantees:
+#   - A matched READ releases the same way respond-pr's own marker does.
+#   - A matched WRITE is never released here at all: every `gh pr
+#     review`/`reviews` write during an active /review-pr session is denied
+#     unconditionally, redirecting to ~/.claude/scripts/review-pr-post.sh.
+#   - That script independently re-verifies the HEAD, PR identity, and
+#     findings-body hash recorded by /review-pr's own completion marker
+#     (see that script's header, and _lib_review_pr_completion_marker_fields
+#     in _lib.sh for the read it shares with marker.sh's `write review-pr`
+#     arm) before it ever calls gh.
+#   - `--approve` is not a reachable code path in that script, so this gate
+#     needs no approve-spelling denylist of its own.
 # Named accepted gap: this gate decides per whole command, like every other
 # arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
 # with an unrelated command executes atomically -- an attacker able to
@@ -237,9 +238,23 @@ fi
 PATTERN_REPO_FLAG_RUN='((-R|--repo)([[:space:]]+|=)?[^[:space:]]+[[:space:]]+)*'
 PATTERN_REST_NUMBERED='gh[[:space:]]+api[[:space:]]+[^|&;]*(pulls|issues)/[0-9]+/(comments|reviews)'
 PATTERN_REST_COMMENT_ID='gh[[:space:]]+api[[:space:]]+[^|&;]*repos/[^/[:space:]]+/[^/[:space:]]+/(pulls|issues)/comments/[0-9]+'
+# The bare PR/issue resource itself, no comments|reviews suffix -- a PATCH
+# here overwrites the PR/issue body directly (`gh pr edit`'s REST twin), a
+# route PATTERN_REST_NUMBERED never reaches since it requires that suffix.
+# Combined with a body-setting signal, never alone: a bare
+# `gh api repos/o/r/pulls/5` is an ordinary read (already allowed by every
+# other arm), so requiring FIELD_FLAG/ANY_FILE_BODY/MUTATING_METHOD here
+# keeps that read allowed while still catching the write shape.
+PATTERN_REST_NUMBERED_ROOT='gh[[:space:]]+api[[:space:]]+[^|&;]*(pulls|issues)/[0-9]+([[:space:]]|$)'
 PATTERN_PR_WRITE_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'(comment|review)([[:space:]]|$)'
 PATTERN_ISSUE_WRITE_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'issue[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'comment([[:space:]]|$)'
 PATTERN_GRAPHQL_MUTATION='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(add|update|delete|submit)[A-Za-z]*(Comment|Review)'
+# updatePullRequest/updateIssue carry no Comment/Review suffix -- the REST
+# twin of PATTERN_REST_NUMBERED_ROOT above, a direct write to the PR/issue
+# resource itself rather than to a comment or review sub-resource.
+# Anchored on the opening paren so the mutation-name match doesn't also
+# swallow an unrelated field named similarly.
+PATTERN_GRAPHQL_PR_ISSUE_MUTATION='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*update(PullRequest|Issue)[[:space:]]*\('
 PATTERN_GRAPHQL_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_ANY_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_FIELD_FLAG='(-f|-F|--field|--raw-field)[[:space:]=]'
@@ -257,11 +272,15 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_REST_COMMENT_ID ]]; then
   :
+elif [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED_ROOT ]] && { [[ "$COMMAND_FLAT" =~ $PATTERN_FIELD_FLAG ]] || [[ "$COMMAND_FLAT" =~ $PATTERN_ANY_FILE_BODY ]] || [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; }; then
+  :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_PR_WRITE_CMD ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_ISSUE_WRITE_CMD ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_MUTATION ]]; then
+  :
+elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_PR_ISSUE_MUTATION ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_FILE_BODY ]]; then
   :
@@ -287,6 +306,7 @@ gated_write_patterns=(
   "$PATTERN_PR_WRITE_CMD"
   "$PATTERN_ISSUE_WRITE_CMD"
   "$PATTERN_GRAPHQL_MUTATION"
+  "$PATTERN_GRAPHQL_PR_ISSUE_MUTATION"
   "$PATTERN_FIELD_FLAG"
   "$PATTERN_ANY_FILE_BODY"
 )
@@ -330,11 +350,8 @@ fi
 # Every gated write is denied unconditionally past this point: respond-pr's
 # blanket bypass above already released any write issued from inside that
 # skill, and review-pr's active marker (checked above) releases reads only,
-# never a write. Posting a `gh pr review` must go through
-# ~/.claude/scripts/review-pr-post.sh, which independently re-verifies the
-# HEAD, PR identity, and findings-body hash recorded by /review-pr's own
-# completion marker before it ever calls gh, and cannot construct an
-# `--approve` invocation.
+# never a write -- see "Second bypass path" above for what posting a
+# `gh pr review` through review-pr-post.sh instead guarantees.
 if [ "$GATED_WRITE" -eq 1 ]; then
   emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh comment|request-changes instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0

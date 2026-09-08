@@ -169,15 +169,13 @@ decided per session by improvisation rather than by a repeatable pipeline.
   steps 2–8 from one that activated and jumped to step 9. A completion marker
   is content-addressed to the reviewed state, so it can.
 
-  **What a marker can and cannot prove.** Stated up front, because the first
-  draft of this mechanism overclaimed. The agent that does the review is also
-  the agent that writes the marker, so no marker shape makes skipping
+  **What a marker can and cannot prove.** The agent that does the review is
+  also the agent that writes the marker, so no marker shape makes skipping
   *impossible* — self-attestation is inherent to the primitive. What a
   well-shaped marker does is make a skip **hard and visible** rather than free
   and silent, and make the authorized act specific rather than general. The
   invariant "a human saw these findings" is carried by step 9's
-  present-then-post-on-approval, not by the marker. Designing as though the
-  marker could carry it is what produced the first draft's error.
+  present-then-post-on-approval instead of by the marker.
 
   **What it holds:** a hash over the **synthesized findings body** produced at
   step 8, together with the PR identity (`owner/repo#<N>`) and the reviewed
@@ -187,9 +185,8 @@ decided per session by improvisation rather than by a repeatable pipeline.
   the authorization names one PR rather than any PR reachable from this tree.
 
   **How the value reaches `marker.sh` — a sibling file, not CLI arguments.**
-  The first draft of this mechanism had step 8 pass the findings hash, PR
-  identity, and `headRefOid` as `marker.sh write review-pr` arguments. That
-  breaks three things at once: `marker.sh`'s top-level guard caps every
+  `marker.sh write review-pr` cannot take the findings hash, PR identity, or
+  `headRefOid` as CLI arguments: `marker.sh`'s top-level guard caps every
   subcommand at one skill-name argument; `enforce-marker-script-shape.sh`'s
   `MARKER_SHAPE` regex has no positional-argument slot and denies anything
   outside its fixed two-token shape; and `permissions.allow` needs a static
@@ -547,8 +544,8 @@ change; this plan extends the existing shape rather than bundling that refactor.
     not PR-scoped.
   - A completion marker for the right PR and HEAD but a **body-hash mismatch**
     (the file about to be posted isn't the file that was reviewed) must deny —
-    the single most load-bearing claim in M6 and the one with no test coverage
-    before this round.
+    the single most load-bearing claim in M6, and the one this test list adds
+    coverage for.
   - A completion marker written by **session A** must not be honored by
     **session B** for the same PR and HEAD — cross-session replay, the one
     property distinguishing this marker from `ready-for-review`'s shape.

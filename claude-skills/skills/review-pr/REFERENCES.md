@@ -44,9 +44,11 @@ loading a project directory:
 | `.gitattributes` (any depth) | git executes clean/smudge filter drivers named in it at checkout |
 | `.githooks/**`, `.husky/**` | conventional `core.hooksPath` target directory names; a repo commonly points `core.hooksPath` at one of these via setup instructions or a tool (Husky), and git then executes any file placed under it at checkout. `core.hooksPath` itself is local git config, not something a PR's file list carries directly — this is a heuristic over common target-directory names, not an exhaustive read of the actual configured value. |
 | `CLAUDE.md` (any path segment) | loaded as standing instructions by the reviewing harness when it works inside the checked-out tree |
+| `CLAUDE.local.md` (any path segment) | concatenated into the same standing-instructions load as CLAUDE.md (`claude/.claude/rules/claude-md-conventions.md`'s precedence list) |
 | `.claude/settings.json`, `.claude/settings.local.json` | configures hooks and permissions the harness applies |
 | `.claude/hooks/**` | runs on every matching tool call the harness makes |
 | `.claude/agents/**` | defines subagent behavior the harness may dispatch |
+| `.claude/skills/**/SKILL.md` | loaded as skill instructions by the harness's project-level skill discovery |
 | `.mcp.json` | registers an MCP server the harness may launch |
 | `.gitmodules` | can point a submodule fetch/checkout at attacker-controlled content |
 
@@ -64,7 +66,7 @@ Every match folds case (`.MCP.json` matches the same as `.mcp.json`)
 because a case-insensitive filesystem (macOS default, Windows) resolves
 both to the same loaded file.
 
-## Why the findings-body declaration uses the Write tool, not Bash (Step 8)
+## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
 
 A spawned review-only subagent carries no Write tool for this path, so requiring the Write tool makes the step un-completable from a subagent by construction, rather than by convention.
 

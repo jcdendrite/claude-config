@@ -68,8 +68,9 @@
 # scanned. `-F -` / `/dev/stdin` / `/dev/fd/*` pseudo-files are rejected
 # fail-closed — the hook cannot statically verify what git will read.
 #
-# Self-exclusion: claude/.claude/hooks/tests/** is always excluded from
-# the diff scan (this hook's own synthetic-PII test fixtures live there).
+# Self-exclusion: claude/.claude/hooks/tests/** and
+# claude/.claude/scripts/tests/** are always excluded from the diff scan
+# (synthetic credential-shaped test fixtures live in both).
 #
 # Deny message names the matched pattern by label only — never the matched
 # value (it is PII; echoing it re-exposes it into the Claude transcript,
@@ -300,7 +301,12 @@ is_pseudo_file_path() {
 # --- Build the scan target -----------------------------------------------
 # Always exclude this hook's own synthetic-PII test fixtures, plus every
 # user-configured `exclude:` glob. `:(top,exclude)` is repo-root-relative.
-PATHSPEC_EXCLUDES=(':(top,exclude)claude/.claude/hooks/tests/**')
+PATHSPEC_EXCLUDES=(
+  ':(top,exclude)claude/.claude/hooks/tests/**'
+  # Carries synthetic credential-shaped fixtures for testing
+  # review-pr-scan-findings-body.sh.
+  ':(top,exclude)claude/.claude/scripts/tests/**'
+)
 for exclude_glob in "${EXCLUDE_GLOBS[@]:-}"; do
   [ -z "$exclude_glob" ] && continue
   PATHSPEC_EXCLUDES+=(":(top,exclude)${exclude_glob}")
