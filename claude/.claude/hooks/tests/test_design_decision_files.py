@@ -10,7 +10,9 @@ depends on:
   1. Per-file shape: filename matches the slug grammar, exactly one H1.
   2. The recorded legacy `§N` provenance values, read across the whole
      directory, form exactly {1..N} with no gaps, duplicates, or
-     fabrications.
+     fabrications. A file recorded after the split carries no `Formerly §N`
+     clause at all (permitted); one that carries the clause but fails to
+     parse it is a malformed-provenance defect (not permitted).
   3. No `## N.` heading survives anywhere -- the retired monolith numbering
      cannot be revived by copying an old section as a template.
   4. Every converted `[§N](slug.md)` intra-file cross-reference resolves to
@@ -56,6 +58,11 @@ DESIGN_DECISIONS_DIR = REPO_ROOT / "docs" / "design-decisions"
 _FILENAME_RE = re.compile(r"^[a-z][a-z0-9-]*\.md$")
 _H1_RE = re.compile(r"^# .+$", re.MULTILINE)
 _PROVENANCE_RE = re.compile(r"Formerly `docs/design-decisions\.md` §(\d+)\.")
+# Looser than _PROVENANCE_RE: matches the clause's fixed prefix regardless
+# of whether the §N suffix is well-formed, so _legacy_number_range_violations
+# can tell "no Formerly clause at all" (a post-split decision, permitted)
+# apart from "a Formerly clause that failed to parse" (malformed, a defect).
+_FORMERLY_PREFIX_RE = re.compile(r"Formerly `docs/design-decisions\.md`")
 _LEGACY_HEADING_RE = re.compile(r"^## \d+\.", re.MULTILINE)
 # Phase A's own conversion format for an intra-file cross-reference, e.g.
 # "[§49](schedulewakeup-denied-by-bare-tool-name.md)" -- distinguishes a
@@ -194,18 +201,25 @@ class TestPerFileShape:
 
 def _legacy_number_range_violations(paths: list[Path]) -> list[str]:
     numbers: list[int] = []
-    missing_provenance: list[str] = []
+    malformed_provenance: list[str] = []
     for path in paths:
-        number = _provenance_number(path.read_text(encoding="utf-8"))
-        if number is None:
-            missing_provenance.append(path.name)
-        else:
+        text = path.read_text(encoding="utf-8")
+        number = _provenance_number(text)
+        if number is not None:
             numbers.append(number)
+        elif _FORMERLY_PREFIX_RE.search(text):
+            # A "Formerly `docs/design-decisions.md` §..." clause is present
+            # but doesn't match the exact required shape -- a genuine
+            # malformed-provenance defect, unlike a file recorded after the
+            # split that carries no such clause at all (permitted per
+            # .claude/rules/design-decisions.md's "A decision recorded after
+            # the split carries no `Formerly §N` clause" convention).
+            malformed_provenance.append(path.name)
     violations: list[str] = []
-    if missing_provenance:
+    if malformed_provenance:
         violations.append(
-            "Files with no 'Formerly `docs/design-decisions.md` §N.' provenance "
-            f"line: {missing_provenance}"
+            "Files with a malformed 'Formerly `docs/design-decisions.md` "
+            f"§N.' provenance line: {malformed_provenance}"
         )
     if numbers:
         highest = max(numbers)
@@ -222,7 +236,9 @@ def test_legacy_numbers_form_contiguous_range() -> None:
     exactly {1..N} -- no gaps, duplicates, or fabricated numbers -- where N
     is the highest legacy number any file records. N is read from the files
     themselves rather than hardcoded, since docs/design-decisions.md is now
-    a stub carrying no section numbers of its own."""
+    a stub carrying no section numbers of its own. A file with no `Formerly
+    §N` clause at all is a legitimate post-split decision, not a violation
+    -- only a present-but-malformed clause counts as missing provenance."""
     paths = _decision_files()
     _assert_corpus_non_empty(paths)
     violations = _legacy_number_range_violations(paths)
@@ -426,6 +442,33 @@ class TestFaultInjection:
         violations = _legacy_number_range_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "contiguous" in violations[0]
+
+    def test_legacy_numbers_allows_new_decision_with_no_provenance_line(self, tmp_path: Path) -> None:
+        """A post-split decision carries no `Formerly §N` clause at all --
+        .claude/rules/design-decisions.md's documented convention for a
+        decision recorded after the split. Not a violation."""
+        (tmp_path / "first-decision.md").write_text(
+            "# First Decision\n\nFormerly `docs/design-decisions.md` §1.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "new-decision.md").write_text(
+            "# New Decision\n\n*2026-09-08.*\n\nSome rationale.\n",
+            encoding="utf-8",
+        )
+        violations = _legacy_number_range_violations(_decision_files(tmp_path))
+        assert violations == []
+
+    def test_legacy_numbers_detects_malformed_formerly_clause(self, tmp_path: Path) -> None:
+        """A `Formerly` clause present but not matching the exact required
+        shape (e.g. a missing trailing period) is a genuine defect, unlike
+        a file carrying no clause at all -- must still be flagged."""
+        (tmp_path / "malformed-decision.md").write_text(
+            "# Malformed Decision\n\nFormerly `docs/design-decisions.md` §1\n",
+            encoding="utf-8",
+        )
+        violations = _legacy_number_range_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "malformed-decision.md" in violations[0]
 
     def test_numbered_heading_detects_revived_heading(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(

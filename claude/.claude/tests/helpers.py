@@ -854,6 +854,7 @@ def write_skill_review_marker(
             "--",
             "claude-skills/skills/**/SKILL.md",
             "plugins/*/skills/**/SKILL.md",
+            "skills/**/SKILL.md",
             "claude-skills/skills/plan-review/ROUTING.md",
         ],
         capture_output=True,
