@@ -381,7 +381,15 @@ class TestOverlayAllowlist:
 
     @pytest.mark.parametrize(
         "bad_key",
-        ["hooks", "statusLine", "enabledPlugins", "extraKnownMarketplaces", "model", "notAllowed"],
+        [
+            "hooks",
+            "statusLine",
+            "enabledPlugins",
+            "extraKnownMarketplaces",
+            "skillOverrides",
+            "model",
+            "notAllowed",
+        ],
     )
     def test_overlay_top_level_key_outside_allowlist_is_rejected(self, tmp_path: Path, bad_key: str) -> None:
         config_dir = tmp_path / "cfg"

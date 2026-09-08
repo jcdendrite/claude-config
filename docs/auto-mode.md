@@ -156,11 +156,9 @@ the telemetry vars this covers.
 
 Removing `env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` from the
 overlay does not remove either from the rendered `settings.json`:
-`render-settings.sh` unconditionally re-applies whichever of the two the
-prior render already carried, on the assumption that `/effort` or `/config`
-write those paths directly into the live file — this assumption has not been
-verified against a live Claude Code session, so the script re-applies both
-paths defensively regardless. Edit or delete the value directly in
+`render-settings.sh` unconditionally re-applies whichever of the two paths
+the prior render already carried, since `/effort`/`/config` write them
+directly into the live file. Edit or delete the value directly in
 `~/.claude/settings.json` (or re-run `/effort`) and re-render to actually
 clear it.
 

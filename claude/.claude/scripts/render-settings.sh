@@ -5,10 +5,10 @@ set -euo pipefail
 # rule-2 overlay env object would otherwise silently drop. Kept in sync with
 # guard-settings-session-keys.sh's GUARDED_KEYS_JSON dotted entries via
 # --print-guarded-keys -- see test_render_settings.py.
-# Rule-4 premise check: fail-safe-default-applied.
-# The live-app verification (trigger /effort, inspect the resulting
-# settings.json) could not run in this sandboxed environment -- re-run and
-# update this label as a follow-up.
+# Rule 4 assumes /effort and /config write env.CLAUDE_CODE_EFFORT_LEVEL and
+# env.ANTHROPIC_MODEL directly into the live settings.json; this assumption
+# is unverified against a live Claude Code session, so the script re-applies
+# both paths defensively regardless, pending that verification.
 # Defined here, ahead of the direct-invocation mode below, so that mode
 # never depends on code that runs later in the script.
 RULE4_DOTTED_PATHS_JSON='["env.CLAUDE_CODE_EFFORT_LEVEL", "env.ANTHROPIC_MODEL"]'
@@ -73,9 +73,9 @@ OVERLAY_TOP_LEVEL_ALLOWED_JSON='["autoMode", "env", "permissions", "skillListing
 # ANTHROPIC_BASE_URL) from redirecting a request, since whoever can write the
 # overlay file already has the write access needed to set it directly.
 ENV_NAME_REGEX='^(CLAUDE_CODE|ANTHROPIC|DISABLE)_[A-Z0-9_]+$'
-# defaultMode enum, decided at implementation time: default and plan are accepted.
-# bypassPermissions and acceptEdits are refused outright (checked and failed).
-# auto and dontAsk: fail-safe-default-applied -- live-docs re-verification could not run in this sandboxed session, so both stay refused pending it.
+# defaultMode enum: default and plan are accepted.
+# bypassPermissions and acceptEdits are refused outright.
+# auto and dontAsk stay refused pending verification against a live session.
 ACCEPTED_DEFAULT_MODES_JSON='["default", "plan"]'
 
 if [[ ! -f "$base_file" ]]; then
@@ -166,18 +166,19 @@ if [[ -f "$target" ]]; then
   prev_json="$(jq -c '.' -- "$target" 2>/dev/null || echo '{}')"
 fi
 
-# Rules 1-4: base-owned keys always win (rule 1); overlay-allowed keys
-# never carry forward at the top level, so deleting one from the overlay
-# takes effect (rule 2); every other top-level key absent from the merged
-# result carries forward from the prior render (rule 3); and the two
-# dotted env paths Claude Code may write directly are re-applied afterward
-# wherever base/overlay didn't already set them (rule 4). A prior-file
-# value of literal null is treated as absent for rule 3's carry-forward,
-# matching this mechanism's original theme/tui-only precedent. All merging
-# is shallow (jq `+`, never `*`) -- a deep merge would resurrect a nested
-# path base deliberately removed. permissions.defaultMode is a single
-# named nested exception layered on top of rule 1's wholesale permissions
-# merge, not a general reopening of `permissions`.
+# Rule 1: base-owned keys always win.
+# Rule 2: overlay-allowed keys never carry forward at the top level, so
+#   deleting one from the overlay takes effect.
+# Rule 3: every other top-level key absent from the merged result carries
+#   forward from the prior render.
+# Rule 4: the two dotted env paths Claude Code may write directly are
+#   re-applied afterward wherever base/overlay didn't already set them.
+# A prior-file value of literal null is treated as absent for rule 3's
+# carry-forward. All merging is shallow (jq `+`, never `*`) -- a deep merge
+# would resurrect a nested path base deliberately removed.
+# permissions.defaultMode is a single named nested exception layered on top
+# of rule 1's wholesale permissions merge, not a general reopening of
+# `permissions`.
 #
 # Carry-forward preserves whatever top-level key it finds, so it is a
 # functionality mechanism rather than an integrity control.

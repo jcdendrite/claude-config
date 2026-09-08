@@ -113,7 +113,7 @@ A dirty working-tree `claude/.claude/settings.json` (from a prior `/theme`/`/con
 
 A stray untracked `claude/.claude/settings.json` (recreated by a session opening a not-yet-migrated symlink) blocks pull/revert with "untracked working tree file would be overwritten" — remove or back it up first.
 
-A machine running several Claude Code profiles under separate `CLAUDE_CONFIG_DIR` values only gets its default `$HOME/.claude` profile rendered by `install.sh`. Every other profile's `settings.json` symlink dangles after this split with nothing in the repo rendering it, and Claude Code treats that as silent absence: no deny rules apply, no hooks fire, and no diagnostic is shown. Render it by hand until a per-profile install path ships: `CLAUDE_CONFIG_DIR=<profile-dir> <path-to-claude-config-checkout>/claude/.claude/scripts/render-settings.sh`. This requires `claude/.claude/` to already be stowed or symlinked into `<profile-dir>` by some other means, since `install.sh` never places `settings.base.json` there itself. Without that precondition met, the command exits early with a "settings.base.json not found" error.
+A machine running several Claude Code profiles under separate `CLAUDE_CONFIG_DIR` values only gets its default `$HOME/.claude` profile rendered by `install.sh` — every other profile silently gets no `permissions.deny`/hooks; see [`docs/security-hardening.md`](docs/security-hardening.md#limitations)'s Limitations section for the full detail and workaround.
 
 **Migration notes (delete once obsolete):** As of the `settings.base.json` split:
 

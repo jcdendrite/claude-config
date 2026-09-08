@@ -608,8 +608,13 @@ to hold PII/PHI or live credentials:
 
 - Every non-default `CLAUDE_CONFIG_DIR` profile gets zero
   `permissions.deny`/hook enforcement after the `settings.base.json` split
-  unless rendered manually, with no diagnostic — see the multi-profile
-  paragraph under [Requirements](../README.md#requirements) in the README.
+  unless rendered manually, with no diagnostic. Render it by hand until a
+  per-profile install path ships:
+  `CLAUDE_CONFIG_DIR=<profile-dir> <path-to-claude-config-checkout>/claude/.claude/scripts/render-settings.sh`.
+  This requires `claude/.claude/` to already be stowed or symlinked into
+  `<profile-dir>` by some other means, since `install.sh` never places
+  `settings.base.json` there itself. Without that precondition met, the
+  command exits early with a "settings.base.json not found" error.
 - The data-file read hook only intercepts the `Read` tool. `Bash`-based
   reads (`cat`, `head`, `grep`), subagent reads, and content pasted into a
   prompt do not cross that boundary. `deny-credential-bash-reads.sh`
