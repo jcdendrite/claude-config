@@ -28,7 +28,7 @@ import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from _config import SchemaRow, schema  # noqa: E402
+from _config import SchemaRow, config_value, schema  # noqa: E402
 
 MIGRATE_SCRIPT = SCRIPTS_DIR / "migrate-legacy-config.sh"
 CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
@@ -147,7 +147,13 @@ class TestMigrationMatrixStateFileAbsent:
 
         state = _read_state(config_dir)
         if not legacy_present:
-            assert state.get(key) == row.default
+            # Every key here carries a legacy-polarity value, so scaffold
+            # leaves it absent from the state file rather than backfilling
+            # its default -- that default is still what it resolves to.
+            assert key not in state
+            # Documents the net resolved value; the line above already
+            # pins scaffold's own exclusion logic.
+            assert config_value(key, config_dir_override=config_dir) == row.default
         elif key in _ENFORCEMENT_CRITICAL_KEYS:
             assert key not in state, (
                 "a non-TTY run must defer an enforcement-critical key's import (row 45), "
@@ -179,7 +185,13 @@ class TestMigrationMatrixStateFilePresentKeyRowAbsent:
         state = _read_state(config_dir)
         assert state.get(other_key) == _SCHEMA[other_key].default, "an unrelated pre-existing row must survive"
         if not legacy_present:
-            assert state.get(key) == row.default
+            # Same reasoning as TestMigrationMatrixStateFileAbsent: this
+            # key's own legacy-polarity value keeps it absent from the
+            # state file, even though a sibling row is now present.
+            assert key not in state
+            # Documents the net resolved value; the line above already
+            # pins scaffold's own exclusion logic.
+            assert config_value(key, config_dir_override=config_dir) == row.default
         elif key in _ENFORCEMENT_CRITICAL_KEYS:
             assert key not in state
         else:
@@ -213,6 +225,62 @@ class TestMigrationMatrixStateFilePresentKeyRowPresent:
             f"a pre-existing row for {key!r} must survive untouched regardless of a legacy file: {new_lines!r}"
         )
 
+    def test_existing_row_survives_when_schema_unreadable(self, tmp_path: Path) -> None:
+        """_migrate_process_key's own has_existing_row check
+        (_config_read_key_from_file) must not mistake an unreadable
+        config-keys.psv (a stow-relink race or interrupted `git pull`) for
+        "no existing row" -- that misread would let this key's legacy file
+        re-import and silently overwrite an already-authoritative row.
+        Direct invocation, with _config_schema_known_keys overridden to
+        fail the way it does against a genuinely unreadable schema file --
+        every other schema read in the same call (type validation, the
+        eventual _config_set) is unaffected, since only the membership
+        check this fix guards is exercised here.
+
+        Deliberately a function-override stub, not a genuinely broken
+        config-keys.psv (the technique test_config_lib.py's own
+        TestReadKeyFromFileSchemaUnreadable uses): this script's own
+        main() reads $_CONFIG_SCHEMA_FILE eagerly and aborts before any
+        key is processed if it's genuinely missing, which would not model
+        the transient single-call race this fix targets, and the real
+        schema file is shared across parallel test workers, so a
+        real-file break here would need a second layer of directory
+        isolation for no added coverage over the hooks-level unit test."""
+        key = "handoff_nudge"
+        row = _SCHEMA[key]
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        existing_value = _distinguishing_existing_value(row)
+        authored_line = f"{key} = {existing_value}"
+        _state_file(config_dir).write_text(authored_line + "\n")
+        _write_legacy_file(config_dir, row, True)
+        records_file = tmp_path / "records.psv"
+
+        script = (
+            '_MIGRATE_TTY=1\n'
+            f'_MIGRATE_CONFIG_DIR="{config_dir}"\n'
+            f'_MIGRATE_HOME_DIR="{config_dir}"\n'
+            '_MIGRATE_STATE_FILE="$_MIGRATE_CONFIG_DIR/claude-config.toml"\n'
+            '_MIGRATE_SCAFFOLD_EXCLUDE=""\n'
+            '_MIGRATE_RECORDS=()\n'
+            '_config_schema_known_keys() {\n'
+            '  printf "_config.sh: warning: schema file not found or unreadable: %s\\n" "$_CONFIG_SCHEMA_FILE" >&2\n'
+            '  return 1\n'
+            '}\n'
+            f'_migrate_process_key {key} {row.type} {row.legacy_import_locations} '
+            f'{row.legacy_filename} {row.legacy_polarity} "{row.human_name}"\n'
+            f'printf \'%s\\n\' "${{_MIGRATE_RECORDS[@]}}" > "{records_file}"\n'
+        )
+        result = _run_sourced(script, "", _env(home, config_dir=config_dir))
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+        new_lines = _state_file(config_dir).read_text().splitlines()
+        assert authored_line in new_lines, (
+            f"an unreadable schema must not let the legacy path overwrite an existing row: {new_lines!r}"
+        )
+        assert "skipped-existing-row" in records_file.read_text()
+
 
 # ---------------------------------------------------------------------------
 # Hand-edit survives a re-run (row 22)
@@ -227,15 +295,18 @@ class TestHandEditSurvivesRerun:
 
         first = _run(_env(home))
         assert first.returncode == 0, f"stderr={first.stderr!r}"
-        assert _read_state(config_dir)["commit_stall_block"] == "true"
-
-        text = _state_file(config_dir).read_text()
-        text = text.replace("commit_stall_block = true", "commit_stall_block = false")
-        _state_file(config_dir).write_text(text)
+        # No legacy file for handoff_nudge yet, so its legacy-polarity value
+        # keeps scaffold from backfilling a row -- author one directly, as
+        # a user hand-edit between two runs would, rather than relying on
+        # scaffold to have created a row to then flip.
+        assert "handoff_nudge" not in _read_state(config_dir)
+        with _state_file(config_dir).open("a") as handle:
+            handle.write("handoff_nudge = true\n")
+        (config_dir / ".handoff-nudge-disabled").touch()  # would derive "false" too if (wrongly) re-read
 
         second = _run(_env(home))
         assert second.returncode == 0, f"stderr={second.stderr!r}"
-        assert _read_state(config_dir)["commit_stall_block"] == "false", (
+        assert _read_state(config_dir)["handoff_nudge"] == "true", (
             "a hand-edit made between two runs must survive the second run"
         )
 
@@ -243,7 +314,7 @@ class TestHandEditSurvivesRerun:
         """Row 22's guarantee is per-key-encounter, not per-run-number: a
         row authored before this script has ever run once must still
         survive that first run, and every other key must still import or
-        scaffold normally alongside it."""
+        resolve to its default alongside it."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
@@ -255,7 +326,12 @@ class TestHandEditSurvivesRerun:
 
         state = _read_state(config_dir)
         assert state["round_consult_gate"] == "false"
-        assert state["commit_stall_block"] == "true", "other keys must still scaffold normally"
+        assert "commit_stall_block" not in state, "no legacy file present, so its own legacy-polarity keeps it absent"
+        # Documents the net resolved value; the line above already pins
+        # scaffold's own exclusion logic.
+        assert config_value("commit_stall_block", config_dir_override=config_dir) == "true", (
+            "other keys must still resolve to their default alongside it"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -573,9 +649,15 @@ class TestPerKeyFailureIsolation:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         state = _read_state(config_dir)
         assert "pr_cost_disclosure" not in state
-        # The other 13 keys still import or scaffold correctly.
-        assert state["commit_stall_block"] == "true"
-        assert state["worktree_required"] == "false"
+        # The other 13 keys still resolve correctly -- neither has a legacy
+        # file here, so their own legacy-polarity keeps their rows absent
+        # too, resolving via their schema default.
+        assert "commit_stall_block" not in state
+        assert "worktree_required" not in state
+        # The two lines below document the net resolved value; the two
+        # lines above already pin scaffold's own exclusion logic.
+        assert config_value("commit_stall_block", config_dir_override=config_dir) == "true"
+        assert config_value("worktree_required", config_dir_override=config_dir) == "false"
 
     @pytest.mark.skipif(
         hasattr(os, "geteuid") and os.geteuid() == 0,
@@ -600,7 +682,10 @@ class TestPerKeyFailureIsolation:
         assert "round_consult_gate" not in state, (
             "an unreadable legacy file must exclude the key after the full run including scaffold, not just import"
         )
-        assert state["commit_stall_block"] == "true"
+        assert "commit_stall_block" not in state, "no legacy file present, so its own legacy-polarity keeps it absent"
+        # Documents the net resolved value; the line above already pins
+        # scaffold's own exclusion logic.
+        assert config_value("commit_stall_block", config_dir_override=config_dir) == "true"
 
 
 # ---------------------------------------------------------------------------

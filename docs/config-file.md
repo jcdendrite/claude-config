@@ -87,15 +87,19 @@ PR-visible diff).
 
 For a `resolution: config-dir` key, reading it walks one location — the
 resolved config dir — through three tiers, stopping at the first that
-applies: a conforming row for that key in `claude-config.toml` is
-authoritative; only when the key is entirely absent from that file is its
-legacy sentinel file consulted (interpreted per the key's
-`legacy-polarity`: `presence-enables`, `presence-disables`, or
-`content-matches`); only when that legacy file is also absent does the
-schema `default` apply. A legacy file re-created or hand-edited after the
-key already has a state-file row never wins — once a key has any row,
-whether from a hand-edit, a migration import, or a scaffold default, that
-row is authoritative until it is itself changed.
+applies:
+
+1. A conforming row for that key in `claude-config.toml` is authoritative.
+2. Only when the key is entirely absent from that file is its legacy
+   sentinel file consulted, interpreted per the key's `legacy-polarity`
+   (`presence-enables`, `presence-disables`, or `content-matches`).
+3. Only when that legacy file is also absent does the schema `default`
+   apply.
+
+A legacy file re-created or hand-edited after the key already has a
+state-file row never wins — once a key has any row, whether from a
+hand-edit, a migration import, or a scaffold default, that row is
+authoritative until it is itself changed.
 
 `worktree_required` and `autonomous_shipping` (`resolution:
 config-dir-or-home`) add a union on top of that: the effective value is
@@ -104,15 +108,17 @@ the OR of the resolved config dir's own three-tier value and
 location can never defeat a `true` produced by the other — the same
 invariant a sentinel armed before `CLAUDE_CONFIG_DIR` adoption already
 relied on. If `CLAUDE_CONFIG_DIR` is set but relative — so the config dir
-itself cannot be resolved — while `$HOME` is still available,
-`worktree_required` still probes the literal `$HOME/.claude/worktree-required`
-file directly (`legacy-probe-on-resolution-failure: true` — matching this
-key's pre-migration fail-closed behavior); every other key, including
-`autonomous_shipping`, reports "unresolvable" instead of granting on a
-resolution failure — the wrong direction for a mechanism that removes a
-human checkpoint. When `$HOME` is also unset or empty, no location is left
-to probe and every key, `worktree_required` included, reports
-"unresolvable."
+itself cannot be resolved — resolution falls to one of these outcomes:
+
+- `$HOME` available, key is `worktree_required`: still probes the literal
+  `$HOME/.claude/worktree-required` file directly
+  (`legacy-probe-on-resolution-failure: true` — matching this key's
+  pre-migration fail-closed behavior).
+- `$HOME` available, any other key (including `autonomous_shipping`):
+  reports "unresolvable" instead of granting on a resolution failure — the
+  wrong direction for a mechanism that removes a human checkpoint.
+- `$HOME` also unset or empty: no location is left to probe, so every key,
+  `worktree_required` included, reports "unresolvable."
 
 ## Migration
 
@@ -152,12 +158,13 @@ It runs two phases, always in this order:
    (unreadable file, or content that fails `pr_cost_disclosure`'s
    `content-matches` grammar) does not abort the run; the remaining keys
    still import normally. After every key has been processed, a
-   schema-default scaffold fills in any key still entirely absent from the
-   file — except a key whose import was deferred this run (a declined or
-   non-TTY enforcement-critical confirmation, or a legacy-file read
-   failure for any key), which stays absent rather than being locked into
-   a default over a value that was never confirmed or never successfully
-   read.
+   schema-default scaffold fills in a default row only for a key with no
+   legacy fallback mechanism at all — none exist among today's 14 keys, so
+   scaffold currently writes nothing. A key with a legacy-polarity
+   (`presence-enables`/`presence-disables`/`content-matches`) stays absent
+   from the state file unless this run's import path already gave it an
+   explicit row, so its legacy file remains a live override rather than
+   being permanently shadowed by a locked-in default.
 2. **Interactive per-file delete offer**, gated once on `[ -t 0 ]` for the
    whole phase — hang-prevention only, not a security control, since
    nothing here stops an agent from running `rm` on a legacy file
@@ -224,19 +231,14 @@ kill switch together, defeating the per-account isolation each of those
 features is designed around. Create each account's `claude-config.toml`
 as its own regular file — never a symlink to another account's copy.
 
-## A fragility this migration introduces, not one it preserves
+## A hand-edit-loss fragility for enforcement-critical keys
 
-Before this migration, a sentinel file's state and the hook code that read
-it were fully decoupled: reverting the hook code to an older version left
-every sentinel file exactly where it was, since nothing about the file's
-existence depended on the code understanding it. That is no longer true
-for a value that lives *only* in `claude-config.toml` with no legacy-file
-mirror. If a hand-edited row for one of the five enforcement-critical
-keys were the sole record of that key's value, and this migration's hook
-code (not merely a deploy-level rollback, but an actual `git revert` of
-these commits) were later reverted, the reverted code would go back to
-reading only the old per-key legacy file — which was never written for
-that key — and would silently resolve to that key's old default, in
-whichever direction that default happens to be, discarding the hand-edit
-with no warning. This is a new fragility the consolidation introduces,
-not a limitation carried forward from the pre-migration design.
+A hand-edited row for one of the five enforcement-critical keys is the
+sole record of that key's value: nothing mirrors it into a legacy file.
+If the hook code that reads `claude-config.toml` is reverted (a `git
+revert` of these commits, not merely a deploy-level rollback), the
+reverted code reads only that key's old per-key legacy file. That file
+was never written for a value that only ever lived in the state file.
+The reverted code therefore silently resolves to the key's old default
+— in whichever direction that default happens to be — discarding the
+hand-edit with no warning.

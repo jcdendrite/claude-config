@@ -22,9 +22,11 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
 from helpers import HOOKS_DIR
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"
+_CONFIG_SH = HOOKS_DIR / "_config.sh"
 
 
 def _run(script: str) -> subprocess.CompletedProcess:
@@ -42,6 +44,20 @@ def _write_state_file(home, content: str, config_dir=None) -> None:
     target = (config_dir or (home / ".claude")) / "claude-config.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content)
+
+
+def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProcess:
+    """Source an isolated _config.sh symlink from `hooks_dir` (which carries
+    its own config-keys.psv), bypassing _lib.sh entirely -- _config_scaffold
+    needs only _config.sh's own functions, matching
+    test_config_parser_parity.py's TestMissingSchemaFile isolation
+    technique. Used for schema shapes (e.g. a key with no legacy-polarity
+    value) that none of today's real 14 keys carry."""
+    return subprocess.run(
+        ["bash", "-c", f'set -uo pipefail; . "{hooks_dir / "_config.sh"}"; {script}'],
+        capture_output=True,
+        text=True,
+    )
 
 
 def _write_write_attempt_shims(bin_dir: Path, marker: Path) -> None:
@@ -233,6 +249,64 @@ class TestLegacyPolarity:
         (isolated_home / ".claude" / "pr-cost-disclosure").write_bytes(b"dollars\r\n")
         assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
 
+    @pytest.mark.parametrize("content", ["DOLLARS", "Dollars", "DoLLaRs\n"])
+    def test_content_matches_case_folded(self, isolated_home, content):
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
+
+    def test_content_matches_whitespace_only_resolves_default(self, isolated_home):
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(" \n")
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    def test_content_matches_second_line_of_junk_resolves_default(self, isolated_home):
+        """Fail-open shape: reading only the first line would treat
+        "dollars\\nallowance" as a match -- the whole (trimmed) content must
+        equal the expected literal, not just its first line."""
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text("dollars\nallowance\n")
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    @pytest.mark.parametrize("content", ["dollars123", "xdollars"])
+    def test_content_matches_glued_extra_characters_resolves_default(self, isolated_home, content):
+        """Fail-open shape: an unanchored substring compare would match
+        extra characters glued onto either end of the expected literal --
+        the compare must be an anchored equality test."""
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert _run("_config_value pr_cost_disclosure").stdout == "false"
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses discretionary file-permission bits (CAP_DAC_OVERRIDE on Linux), "
+        "so chmod(0o000) does not make the file unreadable and this would resolve enabled instead of default",
+    )
+    def test_content_matches_unreadable_legacy_file_resolves_default(self, isolated_home):
+        """Proves the guarded read (`|| raw=""`) degrades to the schema
+        default rather than aborting or resolving as enabled."""
+        sentinel_path = isolated_home / ".claude" / "pr-cost-disclosure"
+        sentinel_path.write_text("dollars\n")
+        sentinel_path.chmod(0o000)
+        try:
+            result = _run("_config_value pr_cost_disclosure")
+        finally:
+            sentinel_path.chmod(0o644)
+        assert result.stdout == "false"
+
+
+class TestPrCostDisclosureDoesNotUnion:
+    """pr_cost_disclosure's `resolution` column is `config-dir`, not
+    `config-dir-or-home` -- unlike worktree_required/autonomous_shipping, a
+    legacy file present only at $HOME/.claude must never activate it once
+    CLAUDE_CONFIG_DIR diverges from $HOME/.claude, since there is no union
+    for this key to fall back on."""
+
+    def test_home_only_legacy_file_does_not_activate_a_diverged_config_dir(self, isolated_home, monkeypatch):
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        (isolated_home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
+
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+
 
 # ---------------------------------------------------------------------------
 # Row 7: a subset-violating line is skipped (with a warning), not treated as
@@ -276,6 +350,89 @@ class TestPartialFileFixture:
         assert result.stdout == "false"
         assert "malformed line" in result.stderr
         assert "bad key = true" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# A line whose key is grammatically valid but has no row at all in
+# config-keys.psv (a case- or spelling-typo'd key) is a distinct case from a
+# malformed line -- it parses cleanly and would otherwise sit silently
+# ignored forever.
+# ---------------------------------------------------------------------------
+
+
+class TestUnrecognizedKeyWarning:
+    def test_unrecognized_key_line_is_skipped_with_its_own_warning(self, isolated_home):
+        _write_state_file(
+            isolated_home,
+            "handoff_nudge = false\nWorktree_Required = true\n",
+        )
+        result = _run("_config_value handoff_nudge")
+        assert result.stdout == "false"
+        assert "unrecognized key" in result.stderr
+        assert "Worktree_Required = true" in result.stderr
+        assert "malformed line" not in result.stderr
+
+    def test_unrecognized_key_does_not_shadow_a_similarly_named_real_key(self, isolated_home):
+        """A typo'd key (missing the trailing 'e') never matches the real
+        key it was meant to be, so the real key still falls through to its
+        own legacy-file-then-default chain undisturbed."""
+        _write_state_file(isolated_home, "pr_cost_disclosur = dollars\n")
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+        assert "unrecognized key" in result.stderr
+        assert "pr_cost_disclosur = dollars" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# config-keys.psv itself unreadable must not make _config_read_key_from_file
+# treat every row as unrecognized -- a stow-relink race or interrupted
+# `git pull` is transient, and the key's own row is still the real,
+# authoritative value.
+# ---------------------------------------------------------------------------
+
+
+class TestReadKeyFromFileSchemaUnreadable:
+    def test_existing_row_still_resolves_when_schema_is_unreadable(self, tmp_path):
+        """Calls _config_read_key_from_file directly, not _config_value --
+        _config_value's own earlier _config_schema_field("resolution") call
+        already short-circuits before reaching this function, so it can't
+        exercise this code path."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        # config-keys.psv deliberately never created here, matching
+        # TestMissingSchemaFile's isolation technique.
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("commit_stall_block = true\n")
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'_config_read_key_from_file commit_stall_block "{state_file}"',
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "true"
+        assert "unrecognized key" not in result.stderr
+
+    def test_existing_row_still_resolves_when_schema_is_readable_but_empty(self, tmp_path):
+        """A schema file that exists, passes [ -r ], and parses zero rows (a
+        mid-write truncation race, not a fully-missing/unreadable file) must
+        degrade the same way as an unreadable schema -- not reject every row
+        as unrecognized, which would reproduce this class's original bug
+        through a narrower trigger."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "config-keys.psv").write_text("")
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("commit_stall_block = true\n")
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'_config_read_key_from_file commit_stall_block "{state_file}"',
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "true"
+        assert "unrecognized key" not in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -379,35 +536,80 @@ class TestConfigSet:
 
 
 # ---------------------------------------------------------------------------
-# Row 32: _config_scaffold is additive-only, and honors an exclude-list.
+# Row 32, as narrowed by the routine-path-regression fix: _config_scaffold
+# is additive-only, honors an exclude-list, and -- for a key whose
+# legacy-polarity is presence-enables/presence-disables/content-matches --
+# never backfills a default row over an absent one, so that key's own
+# legacy file stays reachable via _config_location_value's read-time
+# fallback for as long as the key has no state-file row of its own.
 # ---------------------------------------------------------------------------
 
 
 class TestConfigScaffold:
-    def test_existing_hand_edited_row_survives_unchanged_while_missing_keys_fill_in(self, isolated_home):
+    def test_existing_hand_edited_row_survives_unchanged(self, isolated_home):
         _write_state_file(isolated_home, "handoff_nudge = false\n")
         result = _run("_config_scaffold")
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        lines = state_file.read_text().splitlines()
-        assert "handoff_nudge = false" in lines
-        # Every other schema key must now have a row too (additive-only).
-        assert "worktree_required = false" in lines
-        assert "commit_stall_block = true" in lines
-        assert len(lines) == 14
+        assert state_file.read_text().splitlines() == ["handoff_nudge = false"]
 
-    def test_exclude_list_key_stays_absent_while_every_other_key_gets_its_default(self, isolated_home):
+    def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
+        """Every one of today's 14 keys carries a legacy-polarity value, so
+        scaffold over an empty state file must leave the file with no rows
+        at all -- backfilling any of them would permanently shadow that
+        key's own legacy file with zero warning."""
+        result = _run("_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_legacy_file_created_after_scaffold_still_takes_effect(self, isolated_home):
+        """A legacy kill switch touched after `install.sh`/
+        migrate-legacy-config.sh has already scaffolded the state file must
+        still flip its key's resolved value."""
+        assert _run("_config_scaffold").returncode == 0
+        assert _run("_config_value round_consult_gate").stdout == "true"
+        (isolated_home / ".claude" / ".round-consult-gate-disabled").touch()
+        assert _run("_config_value round_consult_gate").stdout == "false"
+
+    def test_exclude_list_key_and_every_other_key_both_stay_absent(self, isolated_home):
         result = _run("_config_scaffold 'worktree_required autonomous_shipping'")
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        lines = state_file.read_text().splitlines()
-        assert not any(line.startswith("worktree_required") for line in lines)
-        assert not any(line.startswith("autonomous_shipping") for line in lines)
-        assert "commit_stall_block = true" in lines
-        assert "handoff_nudge = true" in lines
-        assert len(lines) == 12
+        assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_plain_key_with_no_legacy_polarity_still_gets_its_default_row(self, isolated_home, tmp_path):
+        """A key with an empty legacy-polarity column has no legacy file to
+        protect, so scaffold's original additive-only default-fill contract
+        still applies to it -- a schema shape none of today's real 14 keys
+        carry, exercised via an isolated config-keys.psv fixture."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_capability|bool|true|config-dir|false||||Brand new capability|docs/x.md\n"
+        )
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "brand_new_capability = true\n"
+
+    def test_plain_key_with_no_legacy_polarity_can_still_be_excluded(self, isolated_home, tmp_path):
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_capability|bool|true|config-dir|false||||Brand new capability|docs/x.md\n"
+        )
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold brand_new_capability")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists() or state_file.read_text() == ""
 
 
 # ---------------------------------------------------------------------------

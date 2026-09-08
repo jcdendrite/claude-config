@@ -38,6 +38,8 @@ def _make_home(tmp_path: Path, monkeypatch) -> Path:
 
 class TestSchema:
     def test_returns_all_fourteen_keys(self):
+        # 14 is config-keys.psv's own current row count -- update this
+        # literal deliberately whenever a key is added or removed there.
         assert len(schema()) == 14
 
     def test_worktree_required_row_matches_known_columns(self):
@@ -113,6 +115,64 @@ class TestConfigValue:
         (home / ".claude" / "pr-cost-disclosure").write_bytes(b"dollars\r\n")
         assert config_value("pr_cost_disclosure") == "dollars"
 
+    @pytest.mark.parametrize("content", ["DOLLARS", "Dollars", "DoLLaRs\n"])
+    def test_content_matches_case_folded(self, tmp_path, monkeypatch, content):
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert config_value("pr_cost_disclosure") == "dollars"
+
+    def test_content_matches_whitespace_only_resolves_default(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "pr-cost-disclosure").write_text(" \n")
+        assert config_value("pr_cost_disclosure") == "false"
+
+    def test_content_matches_second_line_of_junk_resolves_default(self, tmp_path, monkeypatch):
+        """Fail-open shape: reading only the first line would treat
+        "dollars\\nallowance" as a match -- the whole (trimmed) content must
+        equal the expected literal, not just its first line."""
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars\nallowance\n")
+        assert config_value("pr_cost_disclosure") == "false"
+
+    @pytest.mark.parametrize("content", ["dollars123", "xdollars"])
+    def test_content_matches_glued_extra_characters_resolves_default(self, tmp_path, monkeypatch, content):
+        """Fail-open shape: an unanchored substring compare would match
+        extra characters glued onto either end of the expected literal --
+        the compare must be an anchored equality test."""
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "pr-cost-disclosure").write_text(content)
+        assert config_value("pr_cost_disclosure") == "false"
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses discretionary file-permission bits (CAP_DAC_OVERRIDE on Linux), "
+        "so chmod(0o000) does not make the file unreadable and this would resolve enabled instead of default",
+    )
+    def test_content_matches_unreadable_legacy_file_resolves_default(self, tmp_path, monkeypatch):
+        """Proves the guarded read (OSError -> "") degrades to the schema
+        default rather than raising or resolving as enabled."""
+        home = _make_home(tmp_path, monkeypatch)
+        sentinel_path = home / ".claude" / "pr-cost-disclosure"
+        sentinel_path.write_text("dollars\n")
+        sentinel_path.chmod(0o000)
+        try:
+            value = config_value("pr_cost_disclosure")
+        finally:
+            sentinel_path.chmod(0o644)
+        assert value == "false"
+
+    def test_home_only_legacy_file_does_not_activate_a_diverged_config_dir(self, tmp_path, monkeypatch):
+        """pr_cost_disclosure's `resolution` column is `config-dir`, not
+        `config-dir-or-home` -- unlike worktree_required/autonomous_shipping,
+        a legacy file present only at $HOME/.claude must never activate it
+        once CLAUDE_CONFIG_DIR diverges from $HOME/.claude."""
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "pr-cost-disclosure").write_text("dollars\n")
+        config_dir = tmp_path / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        assert config_value("pr_cost_disclosure") == "false"
+
     def test_malformed_key_shape_is_skipped_like_a_malformed_value(self, tmp_path, monkeypatch, capsys):
         """A line with a valid `=` but a key that fails the
         `[A-Za-z0-9_-]+` grammar (a space, here) is malformed -- distinct
@@ -125,6 +185,33 @@ class TestConfigValue:
         err = capsys.readouterr().err
         assert "malformed line" in err
         assert "bad key = true" in err
+
+
+# ---------------------------------------------------------------------------
+# A line whose key is grammatically valid but has no row at all in
+# config-keys.psv (a case- or spelling-typo'd key) is a distinct case from a
+# malformed line -- it parses cleanly and would otherwise sit silently
+# ignored forever. Mirrors _config.sh's own TestUnrecognizedKeyWarning.
+# ---------------------------------------------------------------------------
+
+
+class TestUnrecognizedKeyWarning:
+    def test_unrecognized_key_line_is_skipped_with_its_own_warning(self, tmp_path, monkeypatch, capsys):
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text("handoff_nudge = false\nWorktree_Required = true\n")
+        assert config_value("handoff_nudge") == "false"
+        err = capsys.readouterr().err
+        assert "unrecognized key" in err
+        assert "Worktree_Required = true" in err
+        assert "malformed line" not in err
+
+    def test_unrecognized_key_does_not_shadow_a_similarly_named_real_key(self, tmp_path, monkeypatch, capsys):
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text("pr_cost_disclosur = dollars\n")
+        assert config_value("pr_cost_disclosure") == "false"
+        err = capsys.readouterr().err
+        assert "unrecognized key" in err
+        assert "pr_cost_disclosur = dollars" in err
 
 
 # ---------------------------------------------------------------------------

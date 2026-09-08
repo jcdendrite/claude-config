@@ -40,9 +40,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=../hooks/_config.sh
 . "$SCRIPT_DIR/../hooks/_config.sh"
 
-# The five keys row 30/45/46 name explicitly -- a fixed identity list, not a
-# schema column, matching config-keys.psv's own header comment naming the
-# same five keys for the same reason (claude-hook-review scrutiny).
+# The same five keys config-keys.psv's own header comment names as
+# enforcement-critical -- a fixed identity list here, not a schema column,
+# since each one requires a claude-hook-review pass on any future change to
+# its resolution, legacy-probe-on-resolution-failure, or
+# legacy-import-locations column.
 _MIGRATE_ENFORCEMENT_CRITICAL_KEYS=" worktree_required autonomous_shipping round_consult_gate commit_stall_block authorization_boundary_restore "
 
 # _migrate_probe_legacy_location TYPE LEGACY_POLARITY PATH
@@ -93,11 +95,12 @@ _migrate_probe_legacy_location() {
 # Appends one |-delimited record (path, key, this location's own derived
 # value, outcome, load-bearing flag) to _MIGRATE_RECORDS, driving the
 # delete-confirmation phase below. load_bearing is true only for
-# worktree_required's literal $HOME/.claude copy: row 18's
-# legacy-probe-on-resolution-failure keeps that one file load-bearing as a
-# resolution-failure fallback after migration, so it is never offered for
-# deletion regardless of outcome -- never the resolved-config-dir copy of
-# the same key, and never any other key's legacy file.
+# worktree_required's literal $HOME/.claude copy: its schema row's
+# legacy-probe-on-resolution-failure column keeps that one file load-bearing
+# as a fallback probed directly when config-dir resolution itself fails, so
+# it is never offered for deletion regardless of outcome -- never the
+# resolved-config-dir copy of the same key, and never any other key's
+# legacy file.
 _migrate_add_record() {
   local path="$1" key="$2" value="$3" outcome="$4" home_path="$5"
   local load_bearing="false"
@@ -110,11 +113,11 @@ _migrate_add_record() {
 # Caller must check $_MIGRATE_TTY before invoking this -- hangs forever on
 # `read` against a closed/non-interactive stdin otherwise, the same
 # contract install.sh's own _prompt_sentinel_opt_in documents. Unlike the
-# delete-confirmation prompt below, this one is security load-bearing (row
-# 45): declining leaves the key resolving via its legacy fallback exactly
-# as it did before this script ran, so nothing is granted by running this
-# script rather than not running it, and everything is granted by a
-# confirmed "y".
+# delete-confirmation prompt below, this one is security load-bearing:
+# declining leaves the key resolving via its legacy fallback exactly as it
+# did before this script ran, so nothing is granted by running this script
+# rather than not running it, and everything is granted by a confirmed
+# "y".
 _migrate_prompt_import_enforcement_critical() {
   local human_name="$1" value="$2" answer
   printf '%s: a legacy file says this should be %s.\n' "$human_name" "$value"
@@ -141,26 +144,30 @@ _migrate_prompt_delete_legacy_file() {
 
 # _migrate_process_key KEY TYPE LEGACY_IMPORT LEGACY_FILENAME LEGACY_POLARITY HUMAN_NAME
 # Appends zero or more records to _MIGRATE_RECORDS, writes KEY's value via
-# _config_set when this run's import decision says to (row 22: only when
-# KEY has no existing state-file row), and appends KEY to
-# _MIGRATE_SCAFFOLD_EXCLUDE when its import was deferred (row 45) or a
-# legacy-file read failed (row 46) -- so the _config_scaffold call that
-# runs once after every key has gone through this function never backfills
-# a schema default over a value that either failed to read this run or was
-# never confirmed. Relies on the caller having already set
-# $_MIGRATE_CONFIG_DIR, $_MIGRATE_HOME_DIR, $_MIGRATE_STATE_FILE, and
-# $_MIGRATE_TTY.
+# _config_set when this run's import decision says to (only when KEY has no
+# existing state-file row, so a hand-edit or an earlier import is never
+# overwritten by a later run), and appends KEY to _MIGRATE_SCAFFOLD_EXCLUDE
+# when its enforcement-critical import was deferred (a non-TTY invocation or
+# a declined [y/N] confirmation) or its legacy-file read failed this run
+# (any key) -- so the _config_scaffold call that runs once after every key
+# has gone through this function never backfills a schema default over a
+# value that either failed to read this run or was never confirmed. Relies
+# on the caller having already set $_MIGRATE_CONFIG_DIR, $_MIGRATE_HOME_DIR,
+# $_MIGRATE_STATE_FILE, and $_MIGRATE_TTY.
 #
 # At most two locations exist per key (the resolved config dir, and --
 # only for a config-dir-and-home key -- $HOME/.claude), so they are handled
 # as two explicit variables rather than a generic array: the config-dir
-# copy is always primary (row 31/41 -- it wins on disagreement, and it's
-# also the only copy any config-dir-only key's regular reads ever
-# consult), so a read failure THERE defers the whole key regardless of
-# home's own status, while a read failure at home ALONE (config-dir found
-# cleanly) still lets config-dir's value import -- home was never
-# authoritative over config-dir to begin with, so its own unreadable copy
-# is recorded but does not block the key.
+# copy is always primary (it wins on disagreement between the two legacy
+# locations -- for a diverged user it's the one that actually governed
+# pre-migration behavior, since the old `_report_account_sentinel` resolver
+# read $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude, never
+# both -- and it's also the only copy any config-dir-only key's regular
+# reads ever consult), so a read failure THERE defers the whole key
+# regardless of home's own status, while a read failure at home ALONE
+# (config-dir found cleanly) still lets config-dir's value import -- home
+# was never authoritative over config-dir to begin with, so its own
+# unreadable copy is recorded but does not block the key.
 _migrate_process_key() {
   local key="$1" type="$2" legacy_import="$3" legacy_filename="$4" legacy_polarity="$5" human_name="$6"
 
@@ -178,14 +185,16 @@ _migrate_process_key() {
   esac
 
   local config_dir_path="$_MIGRATE_CONFIG_DIR/$legacy_filename"
-  # literal_home_path is the load-bearing check's own input (row 42
-  # condition (b)): computed whenever $HOME is known, regardless of
-  # whether it's also walked as a distinct second location below.
-  # worktree_required's raw $HOME/.claude copy stays load-bearing as a
-  # resolution-failure fallback (row 18) even on a machine where
-  # CLAUDE_CONFIG_DIR is unset today, since a later CLAUDE_CONFIG_DIR
-  # misconfiguration would make _config_value fall back to probing exactly
-  # that literal path regardless of what governed it at import time.
+  # literal_home_path is the load-bearing check's own input (the
+  # delete-confirmation phase below never offers $HOME/.claude/worktree-required
+  # for deletion at all, regardless of outcome): computed whenever $HOME is
+  # known, regardless of whether it's also walked as a distinct second
+  # location below. worktree_required's raw $HOME/.claude copy stays
+  # load-bearing as a fallback probed directly when config-dir resolution
+  # itself fails, even on a machine where CLAUDE_CONFIG_DIR is unset today,
+  # since a later CLAUDE_CONFIG_DIR misconfiguration would make
+  # _config_value fall back to probing exactly that literal path regardless
+  # of what governed it at import time.
   local literal_home_path=""
   [ -n "$_MIGRATE_HOME_DIR" ] && literal_home_path="$_MIGRATE_HOME_DIR/$legacy_filename"
   local home_path=""
@@ -223,9 +232,9 @@ _migrate_process_key() {
   fi
 
   if [ "$has_existing_row" -eq 0 ]; then
-    # Row 22: a key with an existing row is never touched via the legacy
-    # path again, whether that row came from a hand-edit, a prior import,
-    # or predates this script ever running at all.
+    # A key with an existing row is never touched via the legacy path
+    # again, whether that row came from a hand-edit, a prior import, or
+    # predates this script ever running at all.
     [ "$config_dir_status" -ne 1 ] && _migrate_add_record "$config_dir_path" "$key" "$config_dir_value" \
       "skipped-existing-row($existing_value)" "$literal_home_path"
     [ "$home_status" -ne 1 ] && _migrate_add_record "$home_path" "$key" "$home_value" \
@@ -235,9 +244,9 @@ _migrate_process_key() {
 
   if [ "$config_dir_status" -eq 2 ]; then
     # The primary (resolved-config-dir) location itself is unreadable --
-    # defer the whole key regardless of home's status (row 46): don't
-    # silently fall back to a secondary location this key's own read-time
-    # resolver may never even consult.
+    # defer the whole key regardless of home's status: don't silently fall
+    # back to a secondary location this key's own read-time resolver may
+    # never even consult.
     _MIGRATE_SCAFFOLD_EXCLUDE="$_MIGRATE_SCAFFOLD_EXCLUDE $key"
     _migrate_add_record "$config_dir_path" "$key" "" "deferred-pending-confirmation" "$literal_home_path"
     [ "$home_status" -ne 1 ] && _migrate_add_record "$home_path" "$key" "$home_value" \

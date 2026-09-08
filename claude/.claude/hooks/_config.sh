@@ -171,10 +171,34 @@ _config_file_lines() {
 # = notabool`) would resolve as "enabled" under _config_enabled's own
 # any-value-but-false rule, the wrong direction for a key whose off-state
 # contract is security-relevant.
+#
+# A line whose key is grammatically valid but has no row at all in
+# config-keys.psv (a case- or spelling-typo'd key, e.g. `Worktree_Required`)
+# is a distinct case from a malformed line -- it parses cleanly and would
+# otherwise sit silently ignored forever, since no lookup ever queries that
+# exact misspelled string. Warned once, to stderr, truncated to 80 chars,
+# the same shape as the malformed-line warning above but its own distinct
+# message.
+#
+# When config-keys.psv itself is unreadable (or readable but has no
+# recognized rows), membership is unknowable, so the unrecognized-key skip
+# above is not applied at all: every grammatically-valid row is treated as
+# recognized. key_type is left empty in this case rather than sourced from
+# a second, independently-guarded _config_schema_field call -- both
+# functions would otherwise print the same schema-unreadable warning once
+# each, double-counting one underlying failure. An empty key_type matches
+# neither the `bool` nor `enum:*` case in the type-check block below, so
+# KEY's own row still resolves to its real value instead of being
+# misreported as absent.
 _config_read_key_from_file() {
   local key="$1" state_file="$2"
-  local key_type
-  key_type=$(_config_schema_field "$key" type)
+  # Computed once here, not via a per-line _config_schema_field call below
+  # (which would re-read config-keys.psv once per state-file line).
+  local known_keys known_keys_status
+  known_keys=$(_config_schema_known_keys)
+  known_keys_status=$?
+  local key_type=""
+  [ "$known_keys_status" -eq 0 ] && key_type=$(_config_schema_field "$key" type)
   local line key_out value_out status found=1 result=""
   while IFS= read -r line; do
     _config_line_key_value "$line" key_out value_out
@@ -184,6 +208,15 @@ _config_read_key_from_file() {
       continue
     fi
     [ "$status" -eq 0 ] || continue
+    if [ "$known_keys_status" -eq 0 ]; then
+      case "$known_keys" in
+        *" $key_out "*) ;;
+        *)
+          printf '_config.sh: warning: skipping line for unrecognized key in %s: %s\n' "$state_file" "${line:0:80}" >&2
+          continue
+          ;;
+      esac
+    fi
     if [ "$key_out" = "$key" ]; then
       case "$key_type" in
         bool)
@@ -255,6 +288,40 @@ _config_schema_field() {
     return 0
   done < "$_CONFIG_SCHEMA_FILE"
   return 1
+}
+
+# _config_schema_known_keys
+# Prints every config-keys.psv key as a space-padded " key1 key2 ... " list,
+# for a cheap `case " $list " in *" $key "*)` membership test against many
+# candidate keys -- reads the schema file once per call, not once per
+# candidate, matching _config_scaffold's own single-pass-over-config-keys.psv
+# discipline (see that function's own comment on the same N-re-reads cost).
+# Returns 1 (nothing printed), with the same distinct stderr warning
+# _config_schema_field gives, when config-keys.psv itself is missing or
+# unreadable -- callers must treat that as "membership unknown", not "no
+# keys are known", since the latter would reject every row as unrecognized.
+_config_schema_known_keys() {
+  if [ ! -r "$_CONFIG_SCHEMA_FILE" ]; then
+    printf '_config.sh: warning: schema file not found or unreadable: %s\n' "$_CONFIG_SCHEMA_FILE" >&2
+    return 1
+  fi
+  local row_key rest list=" "
+  while IFS='|' read -r row_key rest; do
+    case "$row_key" in
+      ''|'#'*) continue ;;
+    esac
+    list="$list$row_key "
+  done < "$_CONFIG_SCHEMA_FILE"
+  # A readable-but-empty (or all-comment, or mid-write-truncated) schema
+  # file parses zero rows -- degrade to the same "membership unknown" signal
+  # as unreadable, not "zero keys known": the latter would reject every row
+  # as unrecognized during the exact truncation race this guard exists to
+  # cover, just with the file still passing the bare [ -r ] check.
+  if [ "$list" = " " ]; then
+    printf '_config.sh: warning: schema file has no recognized key rows: %s\n' "$_CONFIG_SCHEMA_FILE" >&2
+    return 1
+  fi
+  printf '%s' "$list"
 }
 
 # _config_location_value KEY DIR
@@ -501,16 +568,24 @@ _config_set() {
 }
 
 # _config_scaffold [EXCLUDE_LIST] [CONFIG_DIR_OVERRIDE]
-# Additive-only: fills in a schema default for every key with no existing
-# row in the target state file, regardless of how any existing row got
-# there (hand-edit, prior import, prior scaffold) — never overwrites.
-# Function-level contract, not left to caller-side "first run" gating alone.
+# Additive-only: fills in a schema default for a key with no existing row
+# in the target state file AND no config-keys.psv legacy-polarity value —
+# never overwrites. A key whose legacy-polarity is `presence-enables`,
+# `presence-disables`, or `content-matches` is left absent instead when it
+# has no existing row, so _config_location_value's own legacy-file branch
+# (only consulted when the key is entirely absent from the state file)
+# stays reachable rather than being permanently shadowed by an explicit
+# default row that duplicates the same value. Function-level contract, not
+# left to caller-side "first run" gating alone.
 #
 # EXCLUDE_LIST is an optional space-separated (bash-3.2-safe) list of keys
 # to leave absent even though they have no row — migrate-legacy-config.sh
 # is the only caller that passes one, populated from a legacy-file read
 # failure (any key) or a deferred enforcement-critical import gated on a
-# TTY confirmation.
+# TTY confirmation. A key on this list already has no row for a reason
+# distinct from its legacy-polarity (an in-progress import decision, not a
+# schema property), so it is checked first and short-circuits the
+# legacy-polarity check below.
 #
 # Same mkdir-p and atomic same-directory mktemp-then-mv guarantee as
 # _config_set.
@@ -575,6 +650,14 @@ _config_scaffold() {
         *" $schema_key "*) excluded=0 ;;
       esac
       [ "$excluded" -eq 0 ] && continue
+      # A key with a legacy-polarity value has a legacy file that must stay
+      # reachable for as long as the key itself has no row -- writing its
+      # default here would make that file permanently inert with no
+      # warning, since _config_location_value only ever consults it when
+      # the key is entirely absent from the state file.
+      case "$legacy_polarity" in
+        presence-enables | presence-disables | content-matches) continue ;;
+      esac
       printf '%s = %s\n' "$schema_key" "$default"
     done < "$_CONFIG_SCHEMA_FILE"
   } > "$tmp_file"
