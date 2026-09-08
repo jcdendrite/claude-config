@@ -1177,9 +1177,11 @@ _lib_command_invokes_tool_subcmd() {
 # The rev-parse and diff calls' cap-engagement characterization tests live
 # only in test_check_skill_length.py, valid for both callers because these
 # capped calls are caller-invariant. The two show calls (one per revision,
-# feeding the line-count check) and the two cat-file -s calls (one per
-# revision, feeding the byte-count check) have no dedicated cap-engagement
-# test anywhere, a pre-existing gap this extraction doesn't close.
+# feeding the line-count check) still have no dedicated cap-engagement test
+# anywhere, a pre-existing gap this extraction doesn't close. The two
+# cat-file -s calls (one per revision, feeding the byte-count check) are
+# covered by test_byte_cap_cat_file_git_timeout_engages_cap in
+# test_check_claude_md_length.py.
 _lib_staged_length_gate() {
   local pattern="$1" over_limit_message="$2" byte_limit="${3:-}"
   _lib_command_invokes_git_subcmd "$COMMAND" commit

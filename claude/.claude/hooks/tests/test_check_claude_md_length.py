@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,11 +17,17 @@ from helpers import (
     run_hook_reason,
 )
 
+from .conftest import assert_cap_engaged
+
 CHECK_CLAUDE_MD_LENGTH_HOOK = HOOKS_DIR / "check-claude-md-length.sh"
 CLAUDE_MD_PATH = "claude/.claude/CLAUDE.md"
 
 # Mirrors GLOBAL_CLAUDE_MD_BYTE_LIMIT in check-claude-md-length.sh.
+# test_byte_limit_constant_matches_hook_source below cross-checks the two
+# stay in sync.
 BYTE_LIMIT = 25600
+
+_GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE = re.compile(r"^GLOBAL_CLAUDE_MD_BYTE_LIMIT=(\d+)", re.MULTILINE)
 
 SETTINGS_PATH = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
 
@@ -952,6 +959,54 @@ class TestCheckClaudeMdLength:
             )
             == "allow"
         )
+
+    # --- Newly-capped `git cat-file -s` calls (byte dimension of
+    # _lib_staged_length_gate) ---
+
+    @pytest.mark.timing
+    def test_byte_cap_cat_file_git_timeout_engages_cap(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """Both `git cat-file -s ":$f"` and `git cat-file -s "HEAD:$f"` (the
+        byte-count dimension's _lib_capped wrap) must actually engage their
+        5s cap rather than hang, mirroring check-skill-length.py's coverage
+        of the shared git show/diff/rev-parse call sites. One shim predicate
+        (matching on the `cat-file` subcommand) covers both the new- and
+        old-revision calls, since they share it. A capped, empty byte count
+        defaults new_bytes/old_bytes to 0 (see _lib_staged_length_gate), so
+        the gate degrades to allow rather than hanging."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        env = git_timeout_shim('[ "$1" = "cat-file" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    # --- Byte-limit constant cross-check ---
+
+    def test_byte_limit_constant_matches_hook_source(self):
+        """This file's BYTE_LIMIT must track GLOBAL_CLAUDE_MD_BYTE_LIMIT in
+        check-claude-md-length.sh — that constant's own header comment
+        documents a dated log of prior values appended on every future
+        change, so drift between the two is an anticipated future event.
+        The boundary-value tests above already fail on any such drift
+        indirectly, via a deny-vs-allow mismatch a maintainer has to trace
+        back to the constant. This test adds a direct, single-assertion
+        diagnostic for the same drift instead. Mirrors
+        test_transcript_analysis.py's
+        test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label,
+        which extracts a bash constant out of hook source the same way."""
+        match = _GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE.search(CHECK_CLAUDE_MD_LENGTH_HOOK.read_text())
+        assert match is not None, (
+            "GLOBAL_CLAUDE_MD_BYTE_LIMIT not found in check-claude-md-length.sh"
+        )
+        assert int(match.group(1)) == BYTE_LIMIT
 
     # --- Settings.json wiring ---
 
