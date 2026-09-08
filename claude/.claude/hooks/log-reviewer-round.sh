@@ -12,10 +12,10 @@
 # "<repo-hash>.<branch-hash>" state key (_lib_reviewer_round_state_key):
 #   - A reviewer-persona dispatch appends "<head-sha> <staged-diff-sha256>"
 #     to <config-dir>/.reviewer-round-state.d/<key>, capped at the resolved
-#     round-state cap (_lib.sh's _lib_reviewer_round_state_cap: 2 by
-#     default, 1 under the round-2 pilot sentinel), and skipped once a
-#     latch already exists for this branch -- further tracking has zero
-#     marginal value once the gate has gone permanently silent.
+#     round-state cap (_lib.sh's _lib_reviewer_round_state_cap), and
+#     skipped once a latch already exists for this branch -- further
+#     tracking has zero marginal value once the gate has gone permanently
+#     silent. The cap is 2 by default, 1 under the round-2 pilot sentinel.
 #   - A `plan-architect` dispatch whose prompt's first line is not
 #     `MODE=plan-sections` writes a content-free, presence-only latch to
 #     <config-dir>/.architect-consult-latch.d/<key>: the fail-safe direction

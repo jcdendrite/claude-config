@@ -203,10 +203,9 @@ class TestLibReviewerRoundStateKeyValueIndependence:
 
 
 class TestLibReviewerRoundStateCap:
-    """Contract for _lib_reviewer_round_state_cap, the resolver both
-    require-architect-consult.sh (read side) and log-reviewer-round.sh
-    (write side) consume via `$(...)` into an integer comparison -- it must
-    always print a valid integer to stdout, never fail silently."""
+    """Contract for _lib_reviewer_round_state_cap, consumed by both hooks
+    via `$(...)` into an integer comparison. Must always print a valid
+    integer to stdout and never fail silently."""
 
     def test_default_cap_without_pilot_sentinel(self, tmp_path):
         config_dir = tmp_path / "config-dir"

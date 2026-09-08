@@ -337,6 +337,7 @@ class TestRequireArchitectConsult:
         assert "plan-architect MODE=consult" in reason
         assert "report this block to the engineer" in reason
         assert ".round-consult-gate-disabled" not in reason
+        assert "2 distinct reviewed states " in reason
         assert "subagent" in reason
 
 
@@ -428,6 +429,22 @@ class TestRound2PilotCap:
             agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA),
             cwd=repo,
         ) == "allow"
+
+    def test_deny_message_singular_noun_under_pilot(self, isolated_home, tmp_path):
+        """Under the pilot (cap=1), the deny message's STATE_NOUN variable
+        must read "state" (singular) rather than the cap=2 default's
+        "states" (plural), and must name the literal cap value 1."""
+        repo, _round1 = _repo_at_one_state(isolated_home, tmp_path, "pilot-deny-message")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        reason = run_hook_reason(
+            REQUIRE_ARCHITECT_CONSULT_HOOK,
+            agent_input(session_id="s-pilot-deny-message", subagent_type=REVIEWER_PERSONA),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "1 distinct reviewed state " in reason
+        assert "states" not in reason
 
     def test_disable_sentinel_wins_even_with_pilot_sentinel_present(self, isolated_home, tmp_path):
         """Precedence: the machine-wide kill switch is checked before any

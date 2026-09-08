@@ -1,12 +1,13 @@
 #!/bin/bash
 # hook-class: gate
 # PreToolUse: deny a reviewer-persona Agent/Task spawn when this branch is
-# entering a new reviewed state beyond the round-state cap (see _lib.sh's
-# _lib_reviewer_round_state_cap: 2 by default, 1 under the round-2 pilot
-# sentinel) without a recent `plan-architect MODE=consult`. "Entry to round
-# 3" -- the default cap's trigger point -- is the measured, discontinuous
-# jump in the case study this gate exists to interrupt
-# (docs/case-studies/opus-frontload-review-rounds.md lines 158-269). See
+# entering a new reviewed state beyond the round-state cap without a
+# recent `plan-architect MODE=consult`. The cap is resolved by _lib.sh's
+# _lib_reviewer_round_state_cap (2 by default, 1 under the round-2 pilot
+# sentinel). "Entry to round 3" -- the default cap's trigger point -- is
+# the measured, discontinuous jump in the case study this gate exists to
+# interrupt (docs/case-studies/opus-frontload-review-rounds.md lines
+# 158-269). See
 # docs/design-decisions/round3-plan-architect-consult-gate.md for the full
 # design rationale.
 #

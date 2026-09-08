@@ -2489,10 +2489,10 @@ _LIB_REVIEWER_ROUND_STATE_CAP=2
 # docs/design-decisions/round2-consult-trigger-pilot.md.
 
 # _lib_reviewer_round_state_cap
-# Prints the round-state cap require-architect-consult.sh (read side) and
-# log-reviewer-round.sh (write side) share: 1 when
-# <config-dir>/.round-consult-round2-pilot exists (the round-2 pilot
-# sentinel), else $_LIB_REVIEWER_ROUND_STATE_CAP.
+# Prints the round-state cap shared by require-architect-consult.sh
+# (read side) and log-reviewer-round.sh (write side).
+# Returns 1 if <config-dir>/.round-consult-round2-pilot exists, else
+# $_LIB_REVIEWER_ROUND_STATE_CAP.
 # Contract: always echoes a valid integer to stdout, including on an
 # unresolvable config dir -- both call sites consume this via `$(...)` into
 # an integer comparison that would error ("integer expression expected") on
