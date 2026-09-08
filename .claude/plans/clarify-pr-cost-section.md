@@ -34,8 +34,7 @@ toolkit can read and understand unaided, without losing the scope facts
 the block exists to disclose.
 
 **Context on the third problem:** a maintainer running several isolated
-Claude Code accounts on one machine (see `CLAUDE.local.md`'s "Multi-account
-Claude Code setup" for the general mechanism) could encounter this scenario
+Claude Code accounts on one machine could encounter this scenario
 on `claude-config` specifically, since it is the one repo stowed
 identically into every account's config dir — structurally the most
 plausible site, of any repo on such a machine, for switching Claude

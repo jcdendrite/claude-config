@@ -312,7 +312,7 @@ def _print_scan_coverage_table(
     """--summary's scan-coverage table, printed under the Scope: caption.
 
     No markdown parameter: the full report already discloses these facts
-    per-root via `cost: account-N: scanned …` (cost.py:556-557), so a
+    per-root via `_cost_report`'s `cost: account-N: scanned …` line, so a
     plain-text branch here would be dead code.
     """
     unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
