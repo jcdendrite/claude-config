@@ -19,23 +19,32 @@
 #
 # Known gaps, stated rather than left implicit (repo hook-review
 # convention):
-#   - Implements the observed corpus shapes, not the whole CLAUDE.md rule --
-#     a differently-worded no-op prompt using none of the listed idioms, or
-#     one padded above the ceiling, is not caught.
+#   - Implements the observed corpus shapes, not the whole CLAUDE.md rule.
+#     A differently-worded no-op prompt using none of the listed idioms is
+#     not caught. A no-op instruction padded above the ceiling is not
+#     caught.
 #   - `placeholder` matches only in the anchored whole-prompt arm, never as
 #     a free substring, so a short legitimate prompt like "Replace the
 #     placeholder on line 12" is not denied.
 #   - A no-op dispatch whose only tell lives in `description`, with a
 #     `prompt` that is neither a stub token nor an idiom match, is not
 #     caught: both arms match `prompt` alone.
-#   - This gate is a cooperative guardrail against a self-inflicted cost
-#     anti-pattern, not an adversarial-resistant security boundary -- a
-#     caller deliberately padding a no-op prompt past the ceiling or
-#     avoiding the closed idiom list clears it, so it must not be cited as
-#     evidence of an enforced cost or abuse control.
-#   - If `grep` or `tr` is missing from PATH, the `grep -qiE` calls below
-#     return 127 (false) and execution falls through to allow -- the one
+#   - This gate is a cooperative guardrail, not an adversarial-resistant
+#     security boundary. A caller can clear it by padding a no-op prompt
+#     past the ceiling or avoiding the closed idiom list, so it must not
+#     be cited as evidence of an enforced cost or abuse control.
+#   - If `grep` is missing from PATH, the `grep -qiE` calls below return
+#     127 (false) and execution falls through to allow. This is the one
 #     silent fail-open path in an otherwise fail-closed script.
+#   - If `tr` is missing from PATH instead, the earlier `tr -s` command
+#     substitution that builds COLLAPSED_PROMPT fails and yields an empty
+#     string. An empty COLLAPSED_PROMPT no-matches both grep arms below,
+#     reaching the same fail-open outcome by a different mechanism.
+#   - `do(ing|es)? nothing` and `no action` can describe another actor's
+#     inaction rather than the dispatched agent's own, e.g. "Check
+#     whether the retry handler does nothing on the third attempt." This
+#     is an accepted false-positive residual: narrowing either idiom
+#     further risks losing real no-op coverage.
 
 set -uo pipefail
 
@@ -44,8 +53,8 @@ DENY_GATE_LABEL="no-op-dispatch"
 # A prompt at or above this length is allowed regardless of content -- see
 # docs/design-decisions/no-op-dispatch-hook-gate.md for the corpus figures
 # this ceiling is grounded in.
-# ${#PROMPT} counts bytes in the C locale and characters in a UTF-8 one; a
-# multibyte prompt therefore measures at or above its true character
+# ${#PROMPT} counts bytes in the C locale and characters in a UTF-8 one.
+# A multibyte prompt therefore measures at or above its true character
 # count, which can only move a dispatch out of this gate's reach, never
 # into it.
 NOOP_MAX_PROMPT_LEN=600
@@ -58,16 +67,20 @@ NOOP_MAX_PROMPT_LEN=600
 #
 # Anchored against the whole (whitespace-collapsed) prompt: the entire
 # prompt is one no-op token, optionally with trailing punctuation. Two
-# confirmed corpus prompts are exactly `noop` and `placeholder`; the
+# confirmed corpus prompts are exactly `noop` and `placeholder`. The
 # remaining tokens name the same "do nothing" shape.
 NOOP_STUB_TOKEN_RE='^(noop|no-op|placeholder|wait|nothing|standby|stand by|ack)[[:punct:]]*$'
 
 # Unanchored against the prompt alone. `do(ing|es)? nothing`, `just
-# wait`, `report back immediately`, `do not (read|run|investigate) any`,
-# `exists only (so|to)`, and `no action` each appear verbatim in a
-# confirmed no-op corpus fixture. `occupy the turn` and `hold while` are
-# named verbatim in the CLAUDE.md bullet described above.
-NOOP_PHRASE_RE='do(ing|es)? nothing|just wait|report back immediately|do not (read|run|investigate) any|exists only (so|to)|no action|occupy the turn|hold while'
+# wait`, `report back immediately`, `exists only (so|to)`, and `no
+# action` each appear verbatim in a confirmed no-op corpus fixture.
+# `occupy the turn` and `hold while` are named verbatim in the CLAUDE.md
+# bullet described above. A read-scoping instruction ("do not read any
+# files") is deliberately excluded: it restricts tool access rather than
+# instructing the agent to do no work, a materially different shape from
+# every idiom actually in this list -- see
+# docs/design-decisions/no-op-dispatch-hook-gate.md.
+NOOP_PHRASE_RE='do(ing|es)? nothing|just wait|report back immediately|exists only (so|to)|no action|occupy the turn|hold while'
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
@@ -91,7 +104,7 @@ _lib_parse_tool_input_or_deny "could not parse tool-input JSON."
 
 # Self-filter on tool name, registered on the union Agent|Task -- the same
 # matcher shape as require-architect-consult.sh's own registration. The
-# harness's confirmed dispatch tool name is "Agent"; Task covers a future
+# harness's confirmed dispatch tool name is "Agent". Task covers a future
 # Task-dispatched spawn.
 # Every dispatch is evaluated regardless of subagent_type -- see the
 # design-decision file for why this gate carries no subagent_type filter.
@@ -111,8 +124,18 @@ PROMPT=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.prompt // empty' 2>/de
 # across a newline ("do\nnothing") still matches a single-line grep.
 COLLAPSED_PROMPT=$(printf '%s' "$PROMPT" | tr -s '[:space:]' ' ')
 
+# `tr -s` squeezes whitespace runs but leaves a single leading or
+# trailing space uncollapsed, which the anchored stub regex below cannot
+# match. Strip at most one from each end to compensate.
+COLLAPSED_PROMPT="${COLLAPSED_PROMPT# }"
+COLLAPSED_PROMPT="${COLLAPSED_PROMPT% }"
+
+# `tr -s '[:space:]'` and the trim above operate on ASCII whitespace only.
+# A stub token padded with non-ASCII whitespace (e.g. U+00A0 NBSP) passes
+# through both untouched, an accepted scope limit rather than a bug to fix.
+
 if printf '%s' "$COLLAPSED_PROMPT" | grep -qiE "$NOOP_STUB_TOKEN_RE" || printf '%s' "$COLLAPSED_PROMPT" | grep -qiE "$NOOP_PHRASE_RE"; then
-  emit_deny "this dispatch's prompt is short and instructs the agent to do no work. CLAUDE.md §Agent Briefing bars dispatching an agent — of any type — whose instructions are to report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing, and still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one. If this dispatch does have real work to do, state that work in the prompt and retry — a prompt that specifies a task does not trip this gate. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
+  emit_deny "this dispatch's prompt is short and instructs the agent to do no work. CLAUDE.md §Agent Briefing bars dispatching an agent — of any type — whose instructions are to report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing, and still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one. If this dispatch does have real work to do, state that work in the prompt and retry — a prompt long enough to specify a task does not trip this gate. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
   exit 0
 fi
 

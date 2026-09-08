@@ -9,14 +9,18 @@ every gate-class hook over them.
 from __future__ import annotations
 
 import pytest
-from helpers import HOOKS_DIR, agent_input, bash_input, run_hook, run_hook_reason
+from helpers import HOOKS_DIR, agent_input, bash_input, build_path_without, run_hook, run_hook_reason
 
 DENY_NO_OP_DISPATCH_HOOK = HOOKS_DIR / "deny-no-op-dispatch.sh"
 
 # Every NOOP_STUB_TOKEN_RE and NOOP_PHRASE_RE alternative not already
 # exercised by a dedicated test below, as a standalone or minimally-wrapped
 # short prompt, plus one mixed-case fixture pinning grep -qiE's
-# case-insensitivity.
+# case-insensitivity, plus exhaustive branch coverage for the regex's two
+# nested groups: every `do(ing|es)? nothing` verb form and both `exists
+# only (so|to)` prepositions, plus one fixture pinning
+# NOOP_STUB_TOKEN_RE's `[[:punct:]]*` trailing-punctuation quantifier
+# (`noop.`).
 NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
     ("wait", "stub_wait"),
     ("nothing", "stub_nothing"),
@@ -24,12 +28,12 @@ NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
     ("stand by", "stub_stand_by"),
     ("ack", "stub_ack"),
     ("no-op", "stub_bare_no_op"),
+    ("noop.", "stub_trailing_punctuation"),
     ("just wait", "phrase_just_wait"),
     ("report back immediately", "phrase_report_back_immediately"),
     ("no action", "phrase_no_action"),
-    ("do not read any", "phrase_do_not_read_any"),
-    ("do not run any", "phrase_do_not_run_any"),
-    ("do not investigate any", "phrase_do_not_investigate_any"),
+    ("doing nothing", "phrase_doing_nothing"),
+    ("does nothing", "phrase_does_nothing"),
     ("exists only so", "phrase_exists_only_so"),
     ("exists only to", "phrase_exists_only_to"),
     ("Report Back Immediately", "phrase_mixed_case"),
@@ -207,8 +211,25 @@ class TestDenyNoOpDispatch:
         assert "Agent Briefing" in reason
         assert "end the turn without a tool call" in reason
         assert "state that work in the prompt and retry" in reason
+        assert "a prompt long enough to specify a task does not trip this gate" in reason
         assert "report this denial to your dispatcher" in reason
         assert "disable" not in reason.lower()
+
+    def test_referent_ambiguous_no_op_idiom_about_another_actor_denied(self, isolated_home):
+        """Accepted false-positive residual (see the hook header's
+        Known-gaps bullet): `does nothing` can describe another
+        component's inaction rather than the dispatched agent's own. This
+        prompt is a legitimate investigation task, not a no-op dispatch,
+        but still denies -- pinning the residual as accepted rather than
+        letting a future fix silently change this behavior unnoticed."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Check whether the retry handler does nothing on the third attempt."),
+                home=isolated_home,
+            )
+            == "deny"
+        )
 
     # ------------------------------------------------------------------ #
     # Allow                                                               #
@@ -242,6 +263,20 @@ class TestDenyNoOpDispatch:
             run_hook(
                 DENY_NO_OP_DISPATCH_HOOK,
                 agent_input(prompt="Find where _lib_config_dir is defined."),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_read_scoping_instruction_allowed(self, isolated_home):
+        """A read-only-scoping instruction restricts tool access rather
+        than instructing the agent to do no work -- a materially
+        different shape from every idiom actually in NOOP_PHRASE_RE, so
+        it must not deny."""
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="Review the diff. Do not run any commands."),
                 home=isolated_home,
             )
             == "allow"
@@ -316,3 +351,66 @@ class TestDenyNoOpDispatch:
         prompt = _padded_idiom_prompt(600)
         assert len(prompt) == 600
         assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "allow"
+
+    def test_stub_token_with_leading_space_denied(self, isolated_home):
+        """`tr -s` collapses whitespace runs but leaves a single leading
+        space uncollapsed; the anchored stub arm must still match after
+        the hook's own single-space trim."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=" noop"), home=isolated_home) == "deny"
+
+    def test_stub_token_with_trailing_space_denied(self, isolated_home):
+        """Same as above for a single trailing space, which `tr -s` also
+        leaves uncollapsed."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt="noop "), home=isolated_home) == "deny"
+
+    def test_stub_token_with_trailing_tab_denied(self, isolated_home):
+        """A literal trailing tab collapses to the same single trailing
+        space as test_stub_token_with_trailing_space_denied, via the same
+        `tr -s` mapping of any whitespace character to a space."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt="noop\t"), home=isolated_home) == "deny"
+
+    def test_stub_token_with_leading_and_trailing_space_denied(self, isolated_home):
+        """Both ends padded on the same prompt. This closes the gap where a
+        future single-expression refactor of the two-line trim could
+        handle only one side while the single-ended tests above still
+        pass."""
+        assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=" noop "), home=isolated_home) == "deny"
+
+    # ------------------------------------------------------------------ #
+    # Missing-binary fail-open path -- this hook's one disclosed gap      #
+    # ------------------------------------------------------------------ #
+
+    def test_grep_absent_from_path_allowed(self, tmp_path, isolated_home):
+        """The hook header's disclosed fail-open path: with grep absent,
+        `grep -qiE` returns 127 (false) for both arms, so a normally-
+        denied stub prompt is silently allowed instead."""
+        farm_dir = tmp_path / "path-without-grep"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("grep", farm_dir)
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="noop"),
+                home=isolated_home,
+                extra_env={"PATH": restricted_path},
+            )
+            == "allow"
+        )
+
+    def test_tr_absent_from_path_allowed(self, tmp_path, isolated_home):
+        """Same disclosed fail-open path, reached by a different
+        mechanism: with tr absent, the COLLAPSED_PROMPT command
+        substitution fails and yields an empty string, which then
+        no-matches both grep arms."""
+        farm_dir = tmp_path / "path-without-tr"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("tr", farm_dir)
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt="noop"),
+                home=isolated_home,
+                extra_env={"PATH": restricted_path},
+            )
+            == "allow"
+        )
