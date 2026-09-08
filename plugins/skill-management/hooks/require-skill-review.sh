@@ -11,8 +11,8 @@
 # How it works:
 # - The /skill-review skill writes
 #   ~/.claude/skill-review-markers/<repo-hash>.<session_id> with the sha256 hash
-#   of `git diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md'
-#   'claude-skills/skills/plan-review/ROUTING.md'` when the review is clean. The
+#   of the staged diff scoped to the same pathspec set this hook defines below
+#   (MARKER_PATHSPECS) when the review is clean. The
 #   marker lives under $HOME (not inside the repo) so it never pollutes
 #   `git status` or risks being accidentally committed.
 # - This hook recomputes the same path-scoped diff hash at commit time and
@@ -99,14 +99,21 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
+# Scoped pathspec sets, shared by every site below that enumerates SKILL.md
+# layouts. No bare `*SKILL.md` glob, which would sweep in vendored or fixture
+# files.
+SKILL_CONTENT_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md')
+ROUTING_PATHSPEC='claude-skills/skills/plan-review/ROUTING.md'
+MARKER_PATHSPECS=("${SKILL_CONTENT_PATHSPECS[@]}" "$ROUTING_PATHSPEC")
+
 # Early exit: if no SKILL.md files and no plan-review/ROUTING.md are staged,
 # this hook is a no-op. Commits that don't touch any gated skill file are not
 # gated by skill-review. ROUTING_DIFF is checked separately from SKILL_DIFF
 # because SKILL_DIFF also feeds STAGED_SKILL_PATHS below, which the
 # frontmatter/YAML structural validator consumes — ROUTING.md has no
 # frontmatter and must not reach that validator.
-SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md')
-ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- 'claude-skills/skills/plan-review/ROUTING.md')
+SKILL_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- "${SKILL_CONTENT_PATHSPECS[@]}")
+ROUTING_DIFF=$(git -C "$REPO_ROOT" diff --cached --name-only -- "$ROUTING_PATHSPEC")
 if [ -z "$SKILL_DIFF" ] && [ -z "$ROUTING_DIFF" ]; then
   exit 0
 fi
@@ -178,12 +185,11 @@ fi
 # Corpus budget warning: check aggregate description+when_to_use chars across
 # all model-invokable skills in this repo against the Claude Code listing budget.
 # Non-blocking — exits 0 regardless; hard enforcement is in pytest/CI.
-# Uses the same scoped pathspecs as SKILL_DIFF above (no bare *SKILL.md glob,
-# which would sweep in vendored or fixture files).
+# Uses the same scoped pathspecs as SKILL_DIFF above (SKILL_CONTENT_PATHSPECS).
 CORPUS_PATHS=()
 while IFS= read -r CORPUS_PATH; do
   [ -n "$CORPUS_PATH" ] && CORPUS_PATHS+=("$CORPUS_PATH")
-done < <(git -C "$REPO_ROOT" ls-files 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 2>/dev/null)
+done < <(git -C "$REPO_ROOT" ls-files -- "${SKILL_CONTENT_PATHSPECS[@]}" 2>/dev/null)
 
 # Overlay staged blobs: replace corpus path with staged blob path for any
 # staged SKILL.md (so the warning reflects the post-commit state of staged files).
@@ -218,7 +224,7 @@ if _lib_chains_marker_write_before_commit "$COMMAND" skill-review; then
 fi
 
 REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md' | sha256sum | awk '{print $1}')
+CURRENT_HASH=$(git -C "$REPO_ROOT" diff --cached -- "${MARKER_PATHSPECS[@]}" | sha256sum | awk '{print $1}')
 
 # Fail closed: an unresolvable config dir must deny the gate, not silently
 # skip the marker check and let the commit through.

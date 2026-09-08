@@ -683,6 +683,102 @@ class TestBuckets:
         assert cols["Proj"] == "2"
         assert cols["Sess"] == "2"
 
+    def test_proj_column_collapses_a_worktree_dir_into_its_main_repo(self, tmp_path, monkeypatch, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        Proj must collapse the worktree-suffixed slug back to the main slug before counting."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_three_worktree_dirs_into_one_main_repo(self, tmp_path, monkeypatch, capsys):
+        """Cardinality beyond a single worktree pair: a main checkout plus two
+        differently-suffixed worktree dirs off the same repo all collapse to
+        Proj == 1."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree_x = projects / "-home-u-repo-a--claude-worktrees-feat-x"
+        proj_worktree_y = projects / "-home-u-repo-a--claude-worktrees-feat-y"
+        proj_main.mkdir(parents=True)
+        proj_worktree_x.mkdir(parents=True)
+        proj_worktree_y.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_x / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_y / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "3"
+
+    def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount Proj."""
+        projects = tmp_path / "projects"
+        proj_alice = projects / "-home-alice-repo"
+        proj_bob = projects / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_bob / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_sibling = projects / "-home-v-repo-a"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_sibling / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "3"
+
+
+class TestProjectFamily:
+    def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
+        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+
+    def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
+        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
+
 
 # ---------------------------------------------------------------------------
 # fail-seq end-to-end (core parsing logic, via shared helper)
@@ -13202,6 +13298,67 @@ class TestCmdUserInput:
         out = capsys.readouterr().out
         assert "### claude-config ·" in out
         assert "### private-project-1 ·" in out
+
+    def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        the Scope line's project count must collapse the worktree-suffixed slug back
+        to the main slug before counting. Same as cmd_buckets's Proj column."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, fake_projects, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount the Scope line's project
+        count. Same invariant as TestBuckets's Proj-column sibling guard for
+        cmd_buckets — see that test for the mirrored intent, not identical setup
+        mechanics."""
+        proj_alice = fake_projects.parent / "-home-alice-repo"
+        proj_bob = fake_projects.parent / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [
+            _ui_user("prompt from alice's repo", branch="feat"),
+        ])
+        _write_jsonl(proj_bob / "sess.jsonl", [
+            _ui_user("prompt from bob's repo", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, fake_projects, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family. Same invariant as TestBuckets's combined sibling test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        proj_sibling = fake_projects.parent / "-home-otheruser-testrepo"
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_sibling / "sess.jsonl", [
+            _ui_user("prompt from a same-named repo under a different home dir", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 3 sessions, 3 fresh prompts" in out
 
     def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
         """A write failure to --out's target (parent directory missing) exits 1
