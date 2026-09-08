@@ -153,8 +153,27 @@ Provenance leaks the same way. If the only reason you know a fact is
 exposure to private engagement material, publishing it carries that
 engagement's fingerprint — whatever the datatype, and whether you
 quoted it, computed it, or recalled it. The test is where the
-knowledge came from, not what shape it takes; a figure drawn from a
-corpus mixing private and public sources inherits the private half.
+knowledge came from, not what shape it takes.
+
+One carve-out, for measurements of this repo's own tooling in use —
+Claude Code tool calls, sessions, and agent dispatches, not cost,
+spend, duration, or cadence, which double as engagement-sensitivity
+signals: a figure pooled across a corpus that mixes private and
+public sources is publishable when it carries no per-project,
+per-account, or per-engagement dimension. Cite the command or script
+that produced it. When it's unclear whether the pool is diverse
+enough to keep a reader who knows the user's engagement history from
+attributing the figure back to one project, account, or engagement —
+including via a correlated proxy variable or by subtracting it from
+another published figure — don't publish it; that call defaults
+closed, the same as the blocklist tier's "if in doubt, strip it."
+Decomposing that same figure by project, account, or engagement is
+prohibited outright — in any artifact and any form, a commit message,
+PR body, decision entry, or illustrative example included. Not a
+factor to weigh, not a borderline case to raise. A wrongly-scoped
+figure discovered already published gets the same remediation as a
+leaked secret: ask the owner, then rewrite history.
+
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
 
