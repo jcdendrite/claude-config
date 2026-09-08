@@ -6,9 +6,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from _config import schema
+
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _CONFIG_SH = Path(__file__).resolve().parents[1] / "_config.sh"
-_CONFIG_KEYS_PSV = Path(__file__).resolve().parents[1] / "config-keys.psv"
 _BASH = shutil.which("bash") or "/bin/bash"
 
 _FIXTURE_START = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — start\n"
@@ -16,25 +17,20 @@ _FIXTURE_END = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — end"
 
 
 def _real_prompt_description(key: str) -> str:
-    """config-keys.psv's prompt-description column for KEY. Lets a
-    TestRealSentinelPaths test pass the row's actual description through
-    `_prompt_sentinel_opt_in`, instead of a synthetic placeholder -- the
-    only way any test exercises the real prompt-description text through
-    the real prompting function, since configure_machine_level_opt_ins's
-    own TTY gate can't be driven from a subprocess pipe. This doesn't cover
-    configure_machine_level_opt_ins's own field-routing loop (untested
-    end-to-end, same TTY-gate limitation);
+    """config-keys.psv's prompt-description column for KEY, via _config.py's
+    own schema() parser -- the single source of truth for config-keys.psv's
+    column layout. Lets a TestRealSentinelPaths test pass the row's actual
+    description through `_prompt_sentinel_opt_in`, instead of a synthetic
+    placeholder -- the only way any test exercises the real
+    prompt-description text through the real prompting function, since
+    configure_machine_level_opt_ins's own TTY gate can't be driven from a
+    subprocess pipe. This doesn't cover configure_machine_level_opt_ins's
+    own field-routing loop (untested end-to-end, same TTY-gate limitation);
     test_install_sh_sentinel_inventory.py's
     TestSentinelInventoryArray.test_nonzero_entry_count covers a different,
     narrower seam -- command substitution at array-sourcing time, not the
     loop's runtime field order."""
-    schema_text = _CONFIG_KEYS_PSV.read_text()
-    rows = [line for line in schema_text.splitlines() if line and not line.startswith("#")]
-    matches = [r for r in rows if r.split("|")[0] == key]
-    assert len(matches) == 1, (
-        f"expected exactly one config-keys.psv row for {key!r}, found {len(matches)}"
-    )
-    return matches[0].split("|")[10]
+    return schema()[key].prompt_description
 
 
 def _config_sh_prelude() -> str:
@@ -73,6 +69,7 @@ def _run_prompt_sentinel_opt_in(
     stdin_text: str,
     human_name: str = "Test sentinel",
     description: str = "A test sentinel description.",
+    config_dir: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Source _config.sh, define _prompt_sentinel_opt_in, and call it
     directly with the three positional args, feeding `stdin_text` to its
@@ -87,10 +84,18 @@ def _run_prompt_sentinel_opt_in(
     path-shaped string no longer exercises this function meaningfully now
     that the prompt reads/writes through the schema instead of a
     caller-supplied path.
+
+    `config_dir`: when set, exported as CLAUDE_CONFIG_DIR instead of the
+    default unset (resolves to `home/.claude`) -- lets a
+    TestDisableStillEnabledReport test diverge the resolved config dir from
+    `home` to exercise a config-dir-or-home key's union.
     """
     env = dict(os.environ)
     env["HOME"] = str(home)
-    env.pop("CLAUDE_CONFIG_DIR", None)
+    if config_dir is not None:
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    else:
+        env.pop("CLAUDE_CONFIG_DIR", None)
     script = (
         "set -e\n"
         + _config_sh_prelude()
@@ -351,3 +356,83 @@ class TestRealSentinelPaths:
         assert (
             home / ".claude" / "claude-config.toml"
         ).read_text() == "cost_ledger_recording = true\n"
+
+
+class TestDisableStillEnabledReport:
+    """A config-dir-or-home key's opt-out only writes `false` to the
+    resolved CLAUDE_CONFIG_DIR -- if $HOME/.claude's own legacy file is
+    still present, the union (see docs/config-file.md) keeps resolving the
+    key ENABLED even after that write. _prompt_sentinel_opt_in must report
+    the actual post-write resolved state, not the bare fact that the write
+    succeeded."""
+
+    def test_disabling_at_config_dir_with_surviving_home_legacy_file_reports_still_enabled(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-config"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "worktree-required").write_text("# machine-level sentinel\n")
+
+        result = _run_prompt_sentinel_opt_in(
+            home, "worktree_required", "n\n", "Worktree enforcement", config_dir=config_dir
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (config_dir / "claude-config.toml").read_text() == "worktree_required = false\n", (
+            "the opt-out must still write false at the resolved config dir"
+        )
+        assert "→ disabled" not in result.stdout, (
+            "must not falsely report success while the union still resolves true"
+        )
+        assert "still resolves ENABLED" in result.stdout
+        assert str(home / ".claude" / "worktree-required") in result.stdout, (
+            "must name the surviving legacy file path"
+        )
+
+    def test_disabling_at_config_dir_with_no_home_legacy_file_reports_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """Same diverged-CLAUDE_CONFIG_DIR shape as the test above, but with
+        no surviving legacy file at $HOME/.claude -- the opt-out must report
+        plain success, not a false "still enabled" alarm."""
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-config"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("worktree_required = true\n")
+
+        result = _run_prompt_sentinel_opt_in(
+            home, "worktree_required", "n\n", "Worktree enforcement", config_dir=config_dir
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (config_dir / "claude-config.toml").read_text() == "worktree_required = false\n"
+        assert "→ disabled" in result.stdout
+        assert "still resolves ENABLED" not in result.stdout
+
+    def test_disabling_at_config_dir_with_home_state_file_row_reports_generic_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """Same diverged-CLAUDE_CONFIG_DIR shape as the tests above, but the
+        surviving disagreement lives in $HOME/.claude/claude-config.toml
+        itself (no legacy marker file present) -- exercises the `else`
+        branch's generic fallback message, which names claude-config.toml
+        directly rather than a specific legacy file path."""
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-config"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "claude-config.toml").write_text("worktree_required = true\n")
+
+        result = _run_prompt_sentinel_opt_in(
+            home, "worktree_required", "n\n", "Worktree enforcement", config_dir=config_dir
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (config_dir / "claude-config.toml").read_text() == "worktree_required = false\n", (
+            "the opt-out must still write false at the resolved config dir"
+        )
+        assert "→ disabled" not in result.stdout, (
+            "must not falsely report success while the union still resolves true"
+        )
+        assert "still resolves ENABLED" in result.stdout
+        assert f"check {home / '.claude'}/claude-config.toml for a disagreeing row" in result.stdout

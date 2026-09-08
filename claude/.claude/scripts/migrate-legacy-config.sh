@@ -90,8 +90,9 @@ _migrate_probe_legacy_location() {
     presence-disables) _MIGRATE_DERIVED_VALUE="false"; return 0 ;;
     content-matches)
       local mode expected
-      mode=$(_config_trim "$content")
-      mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
+      _config_trim "$content"
+      mode="$_CONFIG_TRIM_RESULT"
+      mode=$(tr '[:upper:]' '[:lower:]' <<< "$mode")
       expected="${type#enum:}"
       if [ -z "$mode" ]; then
         _MIGRATE_DERIVED_VALUE="false"

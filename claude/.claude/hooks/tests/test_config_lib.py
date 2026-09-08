@@ -109,8 +109,7 @@ class TestExitCodeContract:
 
 
 # ---------------------------------------------------------------------------
-# CONFIG_DIR_OVERRIDE positional argument to _config_value/_config_enabled --
-# no bash-side coverage previously existed for this parameter at all.
+# CONFIG_DIR_OVERRIDE positional argument to _config_value/_config_enabled.
 # ---------------------------------------------------------------------------
 
 
@@ -130,10 +129,9 @@ class TestConfigDirOverrideArgument:
 
     def test_empty_string_override_falls_through_to_normal_resolution(self, isolated_home):
         """CONFIG_DIR_OVERRIDE="" must be treated the same as no override at
-        all -- bash's `[ -n "$config_dir_override" ]` test already does
-        this, unlike Python's previous `override is not None` gate (see
-        test_config_parser_parity.py's differential coverage of this same
-        parameter)."""
+        all, matching bash's `[ -n "$config_dir_override" ]` test. See
+        test_config_parser_parity.py for the Python-side differential
+        coverage of this same parameter."""
         _write_state_file(isolated_home, "handoff_nudge = false\n")
         result = _run('_config_value handoff_nudge ""')
         assert result.stdout == "false"
@@ -201,7 +199,8 @@ class TestUnionSemantics:
 # ---------------------------------------------------------------------------
 # State-file-row precedence over a disagreeing legacy file, for a
 # content-matches key (pr_cost_disclosure) -- not just a boolean presence
-# check, since this migration's own motivating bug lives in that key.
+# check, since content-matches resolution compares trimmed file content
+# against an expected literal rather than mere file existence.
 # ---------------------------------------------------------------------------
 
 
@@ -243,9 +242,9 @@ class TestLegacyPolarity:
         assert _run("_config_value pr_cost_disclosure").stdout == "false"
 
     def test_content_matches_crlf_authored_file_still_resolves(self, isolated_home):
-        """The exact bug this migration exists to close: a CRLF-authored
-        one-line sentinel must resolve identically to an LF one -- [:space:]
-        trimming (not [:blank:]) strips the trailing CR."""
+        """A CRLF-authored one-line sentinel must resolve identically to an
+        LF one -- [:space:] trimming (not [:blank:]) strips the trailing
+        CR."""
         (isolated_home / ".claude" / "pr-cost-disclosure").write_bytes(b"dollars\r\n")
         assert _run("_config_value pr_cost_disclosure").stdout == "dollars"
 
@@ -433,6 +432,112 @@ class TestReadKeyFromFileSchemaUnreadable:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert result.stdout == "true"
         assert "unrecognized key" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# _config_read_key_from_file/_config_location_value dispatch on argument
+# COUNT between a base 2-arg form and a full precomputed-args form. An
+# intermediate count is a caller-side bug, not "no optional args passed",
+# and must be rejected rather than silently self-deriving.
+# ---------------------------------------------------------------------------
+
+
+class TestPrecomputedArgsArityGuard:
+    def test_read_key_from_file_rejects_three_args(self, tmp_path):
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("commit_stall_block = true\n")
+        result = _run(
+            f'_config_read_key_from_file commit_stall_block "{state_file}" some_known_keys'
+        )
+        assert result.returncode == 1
+        assert "expected 2 or 4 args, got 3" in result.stderr
+
+    def test_location_value_rejects_three_args(self, isolated_home):
+        result = _run(
+            f'_config_location_value commit_stall_block "{isolated_home}" some_known_keys'
+        )
+        assert result.returncode == 1
+        assert "expected 2 or 6 args, got 3" in result.stderr
+
+    def test_location_value_rejects_five_args(self, isolated_home):
+        result = _run(
+            f'_config_location_value commit_stall_block "{isolated_home}" '
+            "known_keys bool worktree-required"
+        )
+        assert result.returncode == 1
+        assert "expected 2 or 6 args, got 5" in result.stderr
+
+    def test_read_key_from_file_with_full_arity_and_empty_known_keys_skips_membership_check(
+        self, tmp_path
+    ):
+        """An empty KNOWN_KEYS via the 4-arg form must be treated as
+        "schema unreadable" and skip the membership check. The 2-arg
+        self-deriving form would instead re-derive KNOWN_KEYS and reject
+        this key as unrecognized. This test pins that count-based dispatch
+        contract, distinct from the wrong-count rejection tested above."""
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("totally_not_a_real_key = true\n")
+
+        result = _run(f'_config_read_key_from_file totally_not_a_real_key "{state_file}" "" ""')
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "true"
+        assert "unrecognized key" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# _config_value's union branch must check _config_location_value's own exit
+# status before treating its captured stdout as authoritative -- an
+# arity-guard trip on either call (unreachable today, since both union-branch
+# calls always pass exactly 6 args) must not let the resulting empty stdout
+# fall through to _config_enabled's any-value-but-false "enabled" reading.
+# ---------------------------------------------------------------------------
+
+
+class TestUnionBranchLocationValueFailure:
+    def test_location_value_failure_resolves_autonomous_shipping_to_not_enabled(
+        self, isolated_home, monkeypatch
+    ):
+        """Simulates an arity-guard trip (nonzero status, empty stdout) to
+        confirm the union branch fails closed to "false" instead of reading
+        the empty output as enabled."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        override = "_config_location_value() { return 1; }; "
+
+        value_result = _run(f"{override}_config_value autonomous_shipping")
+        assert value_result.stdout == "false"
+        assert value_result.returncode == 0
+
+        enabled_result = _run(f"{override}_config_enabled autonomous_shipping")
+        assert enabled_result.returncode == 1
+
+    def test_location_value_failure_resolves_worktree_required_to_enabled(
+        self, isolated_home, monkeypatch
+    ):
+        """Mirrors the autonomous_shipping test above, but for
+        worktree_required, whose failure-safe default is the opposite
+        direction: "true", not "false". Resolving "false" here would
+        silently disarm write-safety enforcement instead of merely
+        withholding a permission grant.
+
+        The _config_value assertion below is what actually discriminates
+        this fix: pre-fix, the union branch's empty-stdout fallthrough also
+        happens to print a value that resolves as "enabled" for this key, so
+        the trailing _config_enabled assertion documents the contract but
+        does not by itself catch a regression here."""
+        config_dir = isolated_home / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        override = "_config_location_value() { return 1; }; "
+
+        value_result = _run(f"{override}_config_value worktree_required")
+        assert value_result.stdout == "true"
+        assert value_result.returncode == 0
+
+        enabled_result = _run(f"{override}_config_enabled worktree_required")
+        assert enabled_result.returncode == 0
 
 
 # ---------------------------------------------------------------------------

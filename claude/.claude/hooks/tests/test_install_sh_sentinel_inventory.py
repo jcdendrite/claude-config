@@ -7,9 +7,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from _config import schema
+
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _CONFIG_SH = Path(__file__).resolve().parents[1] / "_config.sh"
-_CONFIG_KEYS_PSV = Path(__file__).resolve().parents[1] / "config-keys.psv"
 _BASH = shutil.which("bash") or "/bin/bash"
 
 _OPT_INS_START = "# INSTALL_TEST_FIXTURE: machine-level-opt-ins — start\n"
@@ -606,14 +607,8 @@ class TestPrCostDisclosureExpectedContentField:
     presence-only."""
 
     def test_pr_cost_disclosure_row_declares_enum_dollars_type(self) -> None:
-        schema_text = _CONFIG_KEYS_PSV.read_text()
-        rows = [
-            line for line in schema_text.splitlines() if line and not line.startswith("#")
-        ]
-        cost_row = next(r for r in rows if r.startswith("pr_cost_disclosure|"))
-        fields = cost_row.split("|")
-        assert fields[1] == "enum:dollars", (
-            f"expected pr_cost_disclosure's type column to be 'enum:dollars', row={cost_row!r}"
+        assert schema()["pr_cost_disclosure"].type == "enum:dollars", (
+            "expected pr_cost_disclosure's type column to be 'enum:dollars'"
         )
 
 

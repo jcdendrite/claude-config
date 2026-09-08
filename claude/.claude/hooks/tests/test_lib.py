@@ -5341,10 +5341,9 @@ def test_lib_shape_match_unresolvable_root_denies_via_status_2(tmp_path: Path) -
 
 
 def test_lib_shape_match_memoizes_config_dir_resolution_per_process(tmp_path: Path) -> None:
-    """_lib_config_dir used to be re-resolved on every _lib_shape_match
-    call. Stubs it with a call-counting shim and drives two separate
-    _lib_shape_match calls (mirroring two candidates in one hook
-    invocation) to confirm it now resolves at most once per process."""
+    """Stubs _lib_config_dir with a call-counting shim and drives two
+    separate _lib_shape_match calls (mirroring two candidates in one hook
+    invocation) to confirm it resolves at most once per process."""
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     counter_file = tmp_path / "config-dir-calls"
@@ -5364,9 +5363,9 @@ def test_lib_shape_match_memoizes_config_dir_resolution_per_process(tmp_path: Pa
 
 def test_lib_shape_match_helper_functions_run_without_forking_a_subshell() -> None:
     """_lib_pattern_component_count and _lib_strip_trailing_path_components
-    used to be invoked via $(...) command substitution, which bash always
-    forks a subshell for. Confirms the current direct-call-plus-global-
-    result-variable form runs in the caller's own process ($BASHPID
+    are invoked directly, writing results into global variables rather
+    than via $(...) command substitution (which bash always forks a
+    subshell for). Confirms both run in the caller's own process ($BASHPID
     unchanged)."""
     call = (
         'caller_pid=$BASHPID; '
