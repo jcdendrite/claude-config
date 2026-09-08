@@ -131,18 +131,21 @@ extends by analogy:
 - **Cross-artifact reconstruction.** Does combining this figure with
   another already-published one reconstruct a per-project,
   per-account, or per-engagement number?
-- **Arithmetic reconstruction of a barred total.** Does combining this
-  figure with another permitted figure — a count total, share, or
-  median, in the same publication or a prior one — reconstruct a
-  total the "how it may be reported" list bars? A published count
-  total multiplied by a published cost or duration rate reconstructs
-  that total. A count share folded into the same multiplication
-  reconstructs a barred total for the subgroup the share names, not
-  only for the whole pool.
-- **Repeated-publication trend.** Checked against every prior
-  publication of the same statistic: does a trend across publications
-  — quarter-over-quarter cost, duration, or count, say — reveal an
-  engagement's schedule as directly as cadence would?
+- **Arithmetic reconstruction of a barred total.** Does any chain of
+  permitted count and rate figures — not just an adjacent pair, drawn
+  from any number of publications rather than only the current one
+  and a single prior one — multiply out to a total the "how it may be
+  reported" list bars? For example, a per-session tool-call median
+  times a session total yields a tool-call total, which times a
+  per-tool-call cost rate reconstructs a barred cost total, even
+  though no single step in the chain published a total and a rate on
+  the same unit. A share can occupy any position in that chain the
+  same way the median does here.
+- **Repeated-publication trend.** Does a trend across repeated
+  publications of the same statistic — cost, duration, or count —
+  reveal an engagement's schedule as directly as cadence would? Check
+  every prior publication of that statistic, not only the most recent
+  one.
 
 A share or a median reconstructs more readily than a raw total does
 under both the cross-artifact and arithmetic-reconstruction checks —
