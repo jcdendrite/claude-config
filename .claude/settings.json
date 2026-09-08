@@ -13,6 +13,9 @@
       "Bash(pytest claude/.claude/scripts/tests/test_cleanup_merged_branches.py)"
     ]
   },
+  "attribution": {
+    "sessionUrl": false
+  },
   "claudeMdExcludes": [
     "**/claude/.claude/CLAUDE.md",
     "**/.claude/worktrees/**/claude/.claude/rules/**"

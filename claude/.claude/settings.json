@@ -76,6 +76,9 @@
   "agentPushNotifEnabled": true,
   "disableArtifact": true,
   "disableWorkflows": true,
+  "attribution": {
+    "sessionUrl": false
+  },
   "skillOverrides": {
     "brief": "name-only",
     "handoff": "name-only",
@@ -157,6 +160,16 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/capture-session-id.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/record-session-end.sh"
           }
         ]
       }

@@ -154,7 +154,7 @@ subsequent turn.
 |---|---|---|
 | Delegating the diff read in `/code-review` to a cheaper subagent | Rejected | Diff-family output is 1.25% of cumulative main-context tokens amplification-weighted, against `Read` output at 7.95x that volume. The diff `/code-review` reads is the artifact under review, which `subagent-delegation`'s own frontmatter already excludes from delegation by name — delegating it delegates the review. |
 | Replacing in-context diff reads with deterministic scripts | No change needed | Already the case wherever it applies. Every marker and hook hash computes `git diff --cached \| sha256sum` inside a subprocess with output redirected to a file, so no diff bytes reach the model; only a deny message can surface. The seven `staff-*` agents and `ciso-reviewer` all carry `Bash` and re-fetch the diff inside their own contexts, so the parent never relays to them. |
-| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md:102`); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
+| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md` § "4. Skill-procedural-fidelity review (halt on findings)"); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
 
 **Unreconciled, noted rather than resolved:** `subagent-delegation/SKILL.md`
 names "verbose `git diff` / state-survey bursts" as delegation candidates,
@@ -168,6 +168,14 @@ names the discriminator directly — the locate-and-report vs.
 read-and-reason split Step 2 already defines — so `ready-for-review`
 Step 3 and `/code-review`'s inline diff reads are governed by that
 stated rule.
+
+**2026-09-05 follow-up:** above the Bash tool's 30,000-byte truncation
+threshold, the parent session never holds the full diff text in context, so
+a paste-based handoff of diff text to `skill-fidelity-reviewer` is
+unsatisfiable, not merely expensive. `pr-diff-against-base.sh --diff-file`
+hands step 4's `skill-fidelity-reviewer` dispatch a file path instead,
+which is the same handle `/code-review`'s own Step 0, Step 0.6, and item 9d
+truncation-degradation logic needs to recover from a truncated diff.
 
 ## From `opus-plan-boundary-handoff.md` — "Opus-anchored plan boundary: continue, switch, or hand off"
 
@@ -481,3 +489,24 @@ The pooled subagent ratio (5.2%) sits far under both the 0.3947 break-even and t
 **Verdict: decline.** Both criteria fail, exactly the outcome the plan named as expected before the run. No `experimental.cacheTtl` edit ships from this plan. The instrument change ships regardless — the origin split and switch-delta pricing are now a permanent, rerunnable part of `cache-rebuild --this-repo`, not a one-off scan, so a future re-measurement (a corpus shift, a change in subagent dispatch volume or duration) costs one command, not a new plan.
 
 Two follow-ups named, neither pursued here: (1) if long in-dispatch `Bash` stalls dominate the 300–3600s gaps, cutting the stall — this repo already mandates `select-tests.py` over the full suite in agents — shrinks both `W5m` and `X`, and is the first thing to re-examine before ever revisiting `cacheTtl`; (2) per-agent-type attribution, which the oracle bound's own dispersion result gives no reason to build, since even the ex-post-best-case subpopulation misses the floor by an order of magnitude, so a selective lever restricted to real agent-type policy would fare no better.
+
+**2026-09-07 follow-up, the "cutting the stall" lever above is priced-out-or-untried, not proven absent.** Hand-rolled sleep-poll loops (`until ... kill -0 $PID ...; do sleep N; done`, or `sleep N; <check>`) are a sub-pattern within the `waiting on own Bash call` cause the row above pools, not the full-suite-pytest stall follow-up (1) had in mind when it named "cutting the stall" as the first thing to re-examine. In this repo's own `--this-repo`-scoped corpus, `cache-rebuild`'s `Own-Bash wait shape` block finds sleep-poll wait a *minority* of that cause (4 of the 11 `waiting on own Bash call` rebuilds, ≈36%), not the dominant sub-pattern. This is a small-n, non-generalizing in-repo data point, distinct from the withheld machine-wide hand-sample finding below.
+
+Backgrounding a slow Bash call still does not reach this cause, per the `background-slow-bash-calls.md` section's second row above. `ScheduleWakeup` does not reach it either. Its documented scope is exclusively `/loop` dynamic-mode iteration pacing, not a generic background-work heartbeat ("Reschedules the next iteration of a self-paced `/loop`... you don't call it directly," `code.claude.com/docs/en/tools-reference`). This repo's `permissions.deny` entry (`docs/design-decisions.md` §49) is not what excludes a `Monitor`-wait heartbeat use — reversing it would not make the call legitimate. Whether another mechanism, such as a `Monitor`-watched script self-emitting a periodic status line, could serve as one is untried and unswept, not ruled out — tracked in GH-925.
+
+The sleep-poll measurement's real consumer is narrower than a `cacheTtl` cost lever, too: `docs/design-decisions.md` §49 names "a `Bash sleep`" as the first of its own Revisit conditions for the `ScheduleWakeup` deny (`.claude/plans/subagent-idle-gap-cause-attribution.md:26`), so a measured poll-loop share is production evidence toward or against reopening that condition, not (only) input to whether a `cacheTtl` switch pencils out.
+
+Follow-up (1)'s "cutting the stall" is therefore narrowed by this correction, not eliminated: the sub-5-minute-check-in-cadence candidate this entry's own measurement separately surfaced remains open, tracked in GH-926.
+
+As with §49's own precedent, the sub-pattern's exact share from the earlier, much larger hand-sampled corpus is withheld here. That corpus mixes private-project and public transcripts, so any count, ratio, or percentage from it would inherit the private half's composition. The `--this-repo`-scoped ratio above is not subject to that withholding — it is content derived only from this repo's own history. That withholding costs nothing going forward, as `:489` already establishes for this section's prior deliverable: `cache-rebuild --this-repo`'s `Own-Bash wait shape` block (`docs/transcript-analysis.md`) now reports the sleep-poll-versus-other split as a permanent, rerunnable measurement, so a reader who wants the sub-split for their own corpus is one command away from it, not a new plan. Follow-up (2) above, per-agent-type attribution, is untouched by this entry.
+
+## From `handoff-threshold-cost-audit.md` — "Did raising the handoff hard-block floor to 470,000 tokens (PR #769, inherited unchanged by PR #782) cut cost?" (2026-09-06)
+
+Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-studies/handoff-hard-block-position.md).
+
+| Question | Verdict | Headline figure (scope) |
+|---|---|---|
+| Does the mechanism-engagement gate confirm the floor raise fired at the right boundary, and nowhere else? | Yes, and the falsifiable no-shift-at-#782 prediction holds | Block rate 29.8%→4.2% same-machine (macOS), 3.5% pooled across both machines' after-era data; no detectable shift at the 2026-08-31 sub-boundary (#782) across 21 after-era block fires spanning seven days |
+| Does cost per shipped PR improve? | Yes — a clean win | Mean $/PR fell 47.5% ($49.55→$26.01, pooled n=19 before / n=49 after); both machines' own after-era medians sit at or below the before-era median |
+| Does handoff/continuation overhead fall, and does deep-tail spend absorb some of the savings? | Both, in the predicted direction | Startup-burn share 3.6%→2.1–2.3% (both machines); share of session dollars past the advisory threshold 57.6%→77.3% (pooled) |
+| Does review quality decline under the raised floor? | No | Reviewer dispatch/finding volume roughly doubled between checkpoints against a ~1.45x rise in active branches on the one machine where both eras are directly comparable — engagement outpaced corpus growth |

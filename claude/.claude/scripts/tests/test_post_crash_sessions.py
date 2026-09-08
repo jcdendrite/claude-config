@@ -99,6 +99,19 @@ def _write_lookup_file(
     return path
 
 
+def _write_session_end_record(
+    config_dir_path: Path, pid: int, *, session_id: str, reason: str | None = "prompt_input_exit",
+) -> Path:
+    """Mirrors record-session-end.sh's own <config-dir>/session-end-records/<pid>
+    shape: a single JSON object, no timestamp field -- the file's own mtime
+    is the record time."""
+    records_dir = config_dir_path / "session-end-records"
+    records_dir.mkdir(parents=True, exist_ok=True)
+    path = records_dir / str(pid)
+    path.write_text(json.dumps({"sessionId": session_id, "reason": reason}))
+    return path
+
+
 def _write_proc_stat(proc_root: Path, pid: int, *, comm: str = "cmd", starttime_ticks: int) -> Path:
     """Writes a minimal /proc/<pid>/stat line: field 2 (comm) parenthesized
     exactly like the kernel's own rendering, so a comm containing spaces or
@@ -150,12 +163,12 @@ def _registry_entry(
     *, session_id: str = "s1", pid: int = 100, proc_start: str | None = "Mon Jan  1 00:00:00 2024",
     cwd: str | None = "/tmp/proj", mtime: float = 1000.0, version: str | None = "2.1.221",
     pid_mismatch: bool = False, updated_at: float | None = None, status: str | None = "idle",
-    started_at: float | None = None, path: Path | None = None,
+    started_at: float | None = None, path: Path | None = None, config_dir: Path | None = None,
 ) -> _mod.RegistryEntry:
     return _mod.RegistryEntry(
         session_id=session_id, pid=pid, proc_start=proc_start, cwd=cwd, status=status,
         started_at=started_at, updated_at=updated_at, version=version, mtime=mtime,
-        path=path or Path(f"/fake/sessions/{pid}.json"), pid_mismatch=pid_mismatch,
+        path=path or Path(f"/fake/sessions/{pid}.json"), pid_mismatch=pid_mismatch, config_dir=config_dir,
     )
 
 
@@ -171,11 +184,21 @@ def _lock_entry(
 
 def _lookup_entry(
     *, session_id: str = "s3", pid: int = 300, proc_start: str | None = "Mon Jan  1 00:00:00 2024",
-    mtime: float | None = 1000.0, path: Path | None = None,
+    mtime: float | None = 1000.0, path: Path | None = None, config_dir: Path | None = None,
 ) -> _mod.LookupEntry:
     return _mod.LookupEntry(
         session_id=session_id, pid=pid, proc_start=proc_start, mtime=mtime,
-        path=path or Path("/fake/sessions/300"),
+        path=path or Path("/fake/sessions/300"), config_dir=config_dir,
+    )
+
+
+def _session_end_record(
+    *, session_id: str = "s1", pid: int = 100, reason: str | None = "prompt_input_exit",
+    mtime: float | None = 1000.0, path: Path | None = None, config_dir: Path | None = None,
+) -> _mod.SessionEndRecord:
+    return _mod.SessionEndRecord(
+        session_id=session_id, pid=pid, reason=reason, mtime=mtime,
+        path=path or Path(f"/fake/session-end-records/{pid}"), config_dir=config_dir or Path("/fake"),
     )
 
 
@@ -203,7 +226,7 @@ def _blank_report(**overrides) -> _mod.Report:
         rows=[], boot_time=1000.0, ps_usable=True, unparsed_registry=0, unparsed_lock=0,
         legacy_bare_pid_dead=[], find_timed_out=False, find_elapsed_seconds=0.1,
         version_drift=[], pid_mismatches=[], config_dirs=[Path("/fake/config")],
-        any_sessions_dir_found=True,
+        any_sessions_dir_found=True, any_session_end_dir_found=True,
     )
     defaults.update(overrides)
     return _mod.Report(**defaults)
@@ -612,7 +635,7 @@ def test_entry_liveness_darwin_format_never_calls_proc_starttime_ticks():
 def test_build_report_linux_numeric_procstart_live_pid_is_clean_exit_not_unknown(tmp_path):
     """Bug 3 headline: a registry entry with a Linux-shaped numeric procStart
     for a live pid, with a matching injected ticks function, must classify
-    CLASS_CLEAN_EXIT -- before row4 this never parsed and fell through to
+    CLASS_LIVE_PROCESS -- before row4 this never parsed and fell through to
     CLASS_UNKNOWN regardless of the pid's real liveness."""
     sessions_dir = tmp_path / "config" / "sessions"
     live_pid = os.getpid()
@@ -624,7 +647,7 @@ def test_build_report_linux_numeric_procstart_live_pid_is_clean_exit_not_unknown
         proc_starttime_ticks_fn=_fake_proc_starttime_ticks({live_pid: 13017318}),
     )
     row = next(r for r in report.rows if r.session_id == "s1")
-    assert row.classification == _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_LIVE_PROCESS
 
 
 def test_build_report_pid_reuse_guard_stale_procstart_is_unknown_not_clean_exit(tmp_path):
@@ -646,7 +669,7 @@ def test_build_report_pid_reuse_guard_stale_procstart_is_unknown_not_clean_exit(
         proc_starttime_ticks_fn=_fake_proc_starttime_ticks({live_pid: 13017318}),
     )
     row = next(r for r in report.rows if r.session_id == "s1")
-    assert row.classification != _mod.CLASS_CLEAN_EXIT
+    assert row.classification != _mod.CLASS_LIVE_PROCESS
     assert row.classification == _mod.CLASS_UNKNOWN
 
 
@@ -1189,7 +1212,7 @@ def test_build_report_lookup_dead_pid_outside_window_not_classified_but_in_clean
 
 def test_build_report_lookup_live_pid_is_clean_exit(tmp_path):
     """A live pid via an injected ps_lstart stub returning a matching lstart
-    classifies CLASS_CLEAN_EXIT."""
+    classifies CLASS_LIVE_PROCESS."""
     config_dir_path = tmp_path / "config"
     sessions_dir = config_dir_path / "sessions"
     session_id = "sess-lookup-live"
@@ -1204,7 +1227,7 @@ def test_build_report_lookup_live_pid_is_clean_exit(tmp_path):
         boot_time_fn=lambda: 1000.0,
     )
     row = next(r for r in report.rows if r.session_id == session_id)
-    assert row.classification == _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_LIVE_PROCESS
     assert lookup_path not in report.legacy_bare_pid_dead
 
 
@@ -1313,6 +1336,255 @@ def test_build_report_stale_lookup_file_falls_through_to_transcript_only_evidenc
 
 
 # ---------------------------------------------------------------------------
+# Source E — record-session-end.sh SessionEnd records
+# ---------------------------------------------------------------------------
+
+def test_read_session_end_records_happy_path(tmp_path):
+    _write_session_end_record(tmp_path, 100, session_id="s1", reason="clear")
+    records, found = _mod._read_session_end_records([tmp_path])
+    assert found is True
+    record = records[(tmp_path.resolve(), 100)]
+    assert record.session_id == "s1"
+    assert record.reason == "clear"
+
+
+def test_read_session_end_records_missing_dir_reports_not_found(tmp_path):
+    records, found = _mod._read_session_end_records([tmp_path])
+    assert found is False
+    assert records == {}
+
+
+def test_read_session_end_records_null_reason_parses_as_none(tmp_path):
+    _write_session_end_record(tmp_path, 100, session_id="s1", reason=None)
+    records, _ = _mod._read_session_end_records([tmp_path])
+    assert records[(tmp_path.resolve(), 100)].reason is None
+
+
+def test_read_session_end_records_non_digit_filename_silently_skipped(tmp_path):
+    records_dir = tmp_path / "session-end-records"
+    records_dir.mkdir()
+    (records_dir / "not-a-pid").write_text(json.dumps({"sessionId": "s1", "reason": None}))
+    records, found = _mod._read_session_end_records([tmp_path])
+    assert found is True
+    assert records == {}
+
+
+def test_read_session_end_records_non_json_file_degrades_to_no_record(tmp_path):
+    records_dir = tmp_path / "session-end-records"
+    records_dir.mkdir()
+    (records_dir / "100").write_text("not json{{{")
+    records, _ = _mod._read_session_end_records([tmp_path])
+    assert records == {}
+
+
+def test_read_session_end_records_top_level_json_array_degrades_to_no_record(tmp_path):
+    """A same-named-but-foreign JSON file whose top level is an array must
+    not crash on data.get(...)."""
+    records_dir = tmp_path / "session-end-records"
+    records_dir.mkdir()
+    (records_dir / "100").write_text(json.dumps([1, 2, 3]))
+    records, _ = _mod._read_session_end_records([tmp_path])
+    assert records == {}
+
+
+def test_read_session_end_records_empty_session_id_degrades_to_no_record(tmp_path):
+    records_dir = tmp_path / "session-end-records"
+    records_dir.mkdir()
+    (records_dir / "100").write_text(json.dumps({"sessionId": "", "reason": None}))
+    records, _ = _mod._read_session_end_records([tmp_path])
+    assert records == {}
+
+
+def test_read_session_end_records_duplicate_key_newest_mtime_governs(tmp_path, monkeypatch):
+    """Two config_dirs entries resolving to the same (config_dir, pid) key
+    (e.g. a literal duplicate after imperfect CLI-level dedup) must keep the
+    record with the newer mtime, not whichever is read first."""
+    _write_session_end_record(tmp_path, 100, session_id="s1")
+    mtimes = iter([1000.0, 2000.0])
+    monkeypatch.setattr(_mod, "_safe_mtime", lambda path: next(mtimes))
+    records, _ = _mod._read_session_end_records([tmp_path, tmp_path])
+    assert len(records) == 1
+    assert records[(tmp_path.resolve(), 100)].mtime == 2000.0
+
+
+def test_read_session_end_records_duplicate_key_older_second_read_is_skipped(tmp_path, monkeypatch):
+    """Descending-mtime sibling of the ascending case above: when the
+    second-encountered file's mtime is older than the first's, the
+    `existing.mtime >= mtime: continue` guard's true branch must keep the
+    first-seen, newer record rather than overwriting it."""
+    _write_session_end_record(tmp_path, 100, session_id="s1")
+    mtimes = iter([2000.0, 1000.0])
+    monkeypatch.setattr(_mod, "_safe_mtime", lambda path: next(mtimes))
+    records, _ = _mod._read_session_end_records([tmp_path, tmp_path])
+    assert len(records) == 1
+    assert records[(tmp_path.resolve(), 100)].mtime == 2000.0
+
+
+def test_read_session_end_records_file_disappearing_mid_scan_degrades_gracefully(tmp_path):
+    """A directory at the record's own path stands in for a file that
+    vanishes (or otherwise becomes unreadable) between the directory scan
+    and the read -- the same defensive-OSError technique
+    test_render_report_notes_unreadable_roots_file uses -- and must degrade
+    to no-record rather than raising."""
+    records_dir = tmp_path / "session-end-records"
+    records_dir.mkdir()
+    (records_dir / "100").mkdir()
+    records, found = _mod._read_session_end_records([tmp_path])
+    assert found is True
+    assert records == {}
+
+
+# ---------------------------------------------------------------------------
+# _graceful_end_record — the match rule
+# ---------------------------------------------------------------------------
+
+def test_graceful_end_record_matches_equal_config_dir_pid_and_mtime(tmp_path):
+    record = _session_end_record(pid=100, mtime=1500.0, config_dir=tmp_path)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is record
+
+
+def test_graceful_end_record_mtime_predating_entry_is_no_match(tmp_path):
+    """The pid-reuse guard: a record older than the entry it would explain
+    cannot be trusted -- the entry could belong to a process that reused the
+    pid after the record was written."""
+    record = _session_end_record(pid=100, mtime=500.0, config_dir=tmp_path)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is None
+
+
+def test_graceful_end_record_mtime_exact_tie_is_a_match(tmp_path):
+    """Condition 3 is >=, not > -- an exact mtime tie counts as a match."""
+    record = _session_end_record(pid=100, mtime=1000.0, config_dir=tmp_path)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is record
+
+
+def test_graceful_end_record_different_config_dir_no_match(tmp_path):
+    """The cross-account guard: a record filed under a genuinely different
+    config dir must never explain an entry from another account, even at
+    the same pid and a qualifying mtime."""
+    account_a = tmp_path / "account-a"
+    account_b = tmp_path / "account-b"
+    record = _session_end_record(pid=100, mtime=2000.0, config_dir=account_b)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=account_a)
+    records = {(account_b.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is None
+
+
+def test_graceful_end_record_differently_written_but_resolve_equal_config_dir_matches(tmp_path):
+    """Condition 1 must call .resolve() on both sides at comparison time --
+    a config dir reaching the entry and the record through differently
+    -normalized paths for the same real directory must still match."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    aliased_dir = tmp_path / "alias"
+    aliased_dir.symlink_to(real_dir, target_is_directory=True)
+    record = _session_end_record(pid=100, mtime=1500.0, config_dir=real_dir)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=aliased_dir)
+    records = {(real_dir.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is record
+
+
+def test_graceful_end_record_entry_without_config_dir_never_matches():
+    """An entry constructed without a config_dir (e.g. directly in a test)
+    can never match a record -- fail-safe, since config_dir=None can't
+    resolve."""
+    record = _session_end_record(pid=100, mtime=2000.0, config_dir=Path("/fake"))
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=None)
+    records = {(Path("/fake").resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is None
+
+
+def test_graceful_end_record_entry_without_mtime_never_matches(tmp_path):
+    """Pins the `entry.mtime is None` disjunct at the function's own
+    boundary: an entry whose mtime could not be read (e.g. a stat()
+    failure) can never be explained by a record, even one that would
+    otherwise match on pid and config dir."""
+    record = _session_end_record(pid=100, mtime=2000.0, config_dir=tmp_path)
+    entry = _registry_entry(pid=100, mtime=None, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is None
+
+
+# ---------------------------------------------------------------------------
+# _graceful_end_coverage, _all_entries_explained, _has_indeterminate_liveness
+# -- direct unit tests
+# ---------------------------------------------------------------------------
+
+def test_graceful_end_coverage_empty_entries_is_zero_of_zero():
+    covered, total, matched = _mod._graceful_end_coverage([], {})
+    assert (covered, total, matched) == (0, 0, [])
+
+
+def test_graceful_end_coverage_no_matching_record_is_zero_of_n(tmp_path):
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    covered, total, matched = _mod._graceful_end_coverage([entry], {})
+    assert (covered, total, matched) == (0, 1, [])
+
+
+def test_graceful_end_coverage_partial_match(tmp_path):
+    covered_entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    uncovered_entry = _registry_entry(pid=101, mtime=1000.0, config_dir=tmp_path)
+    record = _session_end_record(pid=100, mtime=1500.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    covered, total, matched = _mod._graceful_end_coverage([covered_entry, uncovered_entry], records)
+    assert covered == 1
+    assert total == 2
+    assert matched == [record]
+
+
+def test_graceful_end_coverage_full_match(tmp_path):
+    entry_a = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    entry_b = _registry_entry(pid=101, mtime=1000.0, config_dir=tmp_path)
+    record_a = _session_end_record(pid=100, mtime=1500.0, config_dir=tmp_path)
+    record_b = _session_end_record(pid=101, mtime=1500.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record_a, (tmp_path.resolve(), 101): record_b}
+    covered, total, matched = _mod._graceful_end_coverage([entry_a, entry_b], records)
+    assert covered == 2
+    assert total == 2
+    assert sorted(matched, key=lambda r: r.pid) == [record_a, record_b]
+
+
+def test_all_entries_explained_false_when_total_not_equal_len_entries():
+    """covered == total alone is not enough -- total must also equal every
+    entry from the source, or an indeterminate-liveness or undated sibling
+    outside the dead subset would be silently ignored. Currently unreachable
+    via _classify_session's only call site, so this needs a direct call."""
+    entries = [_registry_entry(pid=100), _registry_entry(pid=101)]
+    assert _mod._all_entries_explained(entries, covered=1, total=1) is False
+
+
+def test_all_entries_explained_true_when_total_equals_len_entries_and_fully_covered():
+    entries = [_registry_entry(pid=100), _registry_entry(pid=101)]
+    assert _mod._all_entries_explained(entries, covered=2, total=2) is True
+
+
+def test_all_entries_explained_false_when_partially_covered():
+    entries = [_registry_entry(pid=100)]
+    assert _mod._all_entries_explained(entries, covered=0, total=1) is False
+
+
+def test_has_indeterminate_liveness_true_when_an_entry_is_indeterminate():
+    entry = _registry_entry(pid=100)
+    liveness = {("registry", 100): "indeterminate"}
+    assert _mod._has_indeterminate_liveness([entry], liveness, "registry") is True
+
+
+def test_has_indeterminate_liveness_false_when_every_entry_resolved():
+    entry = _registry_entry(pid=100)
+    liveness = {("registry", 100): "dead"}
+    assert _mod._has_indeterminate_liveness([entry], liveness, "registry") is False
+
+
+def test_has_indeterminate_liveness_false_for_empty_entries():
+    assert _mod._has_indeterminate_liveness([], {}, "registry") is False
+
+
+# ---------------------------------------------------------------------------
 # Classification precedence
 # ---------------------------------------------------------------------------
 
@@ -1320,7 +1592,7 @@ def test_classify_live_pid_yields_clean_exit_not_crash_evidence():
     entry = _registry_entry(pid=100, proc_start="Mon Jan  1 00:00:00 2024", mtime=500.0)
     fake = _fake_ps_lstart({100: "Mon Jan  1 00:00:00 2024"})
     row = _mod._classify_session("s1", [entry], [], None, boot_time=1000.0, ps_lstart=fake, ps_usable=True)
-    assert row.classification == _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_LIVE_PROCESS
 
 
 def test_classify_registry_dead_before_boot_with_transcript_is_resumable():
@@ -1482,6 +1754,25 @@ def test_classify_now_anchored_transcript_only_session_is_possible_crash():
     assert "no reboot in between" in row.detail
 
 
+def test_classify_transcript_only_fallback_ignores_session_end_records(tmp_path):
+    """The transcript-only-fallback branch (no registry, lock, or lookup
+    entry at all) never threads session_end_records into its own
+    classification -- mirrors test_classify_registry_dead_before_boot_fully_covered_stays_resumable
+    and test_classify_lock_dead_fully_covered_stays_resumable for this
+    branch. A populated session_end_records dict must not change this
+    branch's pre-Source-E classification or detail."""
+    transcript = _transcript_info(session_id="s1", last_activity=950.0, has_main=True)
+    unrelated_record = _session_end_record(pid=999, mtime=2000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 999): unrelated_record}
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "within 4h before the last boot" in row.detail
+    assert "no other corroboration" in row.detail
+
+
 def test_classify_subagent_only_transcript_does_not_count_as_resumable():
     """A subagent transcript with no main-thread transcript cannot be
     --resume'd; classification stays crashed-no-transcript, with a note."""
@@ -1501,7 +1792,7 @@ def test_classify_collapses_multiple_registry_entries_alive_wins():
     row = _mod._classify_session(
         "s1", [dead_entry, alive_entry], [], None, boot_time=1000.0, ps_lstart=fake, ps_usable=True,
     )
-    assert row.classification == _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_LIVE_PROCESS
     assert row.entry_count == 2
 
 
@@ -1610,7 +1901,544 @@ def test_classify_unaffected_by_hostile_timezone(monkeypatch):
     row = _mod._classify_session(
         "s1", [entry], [], None, boot_time=0.0, ps_lstart=_mod._ps_lstart, ps_usable=True,
     )
-    assert row.classification == _mod.CLASS_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_LIVE_PROCESS
+
+
+# ---------------------------------------------------------------------------
+# Source E interception -- graceful-exit coverage reclassifies dead entries
+# ---------------------------------------------------------------------------
+
+def test_classify_registry_dead_after_boot_fully_covered_is_confirmed_clean_exit(tmp_path):
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, reason="prompt_input_exit", config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "prompt_input_exit" in row.detail
+    assert "transcript exists" in row.detail
+
+
+def test_classify_registry_dead_after_boot_no_transcript_fully_covered_is_confirmed_clean_exit(tmp_path):
+    """Full coverage promotes to Confirmed clean exit even with no main
+    transcript -- a clean exit that never wrote a transcript is still not a
+    crash, and the transcript fact stays in the detail text."""
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    row = _mod._classify_session(
+        "s1", [entry], [], None, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "No main transcript" in row.detail
+
+
+def test_classify_registry_dead_after_boot_fully_covered_cites_newest_record(tmp_path):
+    """Two dead, fully-covered entries whose matching SessionEndRecords have
+    distinct mtimes and reasons -- the detail must cite the later-mtime
+    record's reason, not the first-encountered one's. Guards against
+    `matched_records[0]` silently replacing the `max(..., key=mtime)`
+    selection."""
+    earlier_entry = _registry_entry(pid=100, mtime=1400.0, config_dir=tmp_path)
+    later_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    earlier_record = _session_end_record(pid=100, mtime=1600.0, reason="reason_early", config_dir=tmp_path)
+    later_record = _session_end_record(pid=101, mtime=1700.0, reason="reason_late", config_dir=tmp_path)
+    records = {
+        (tmp_path.resolve(), 100): earlier_record,
+        (tmp_path.resolve(), 101): later_record,
+    }
+    row = _mod._classify_session(
+        "s1", [earlier_entry, later_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "reason_late" in row.detail
+    assert "reason_early" not in row.detail
+
+
+def test_classify_registry_dead_after_boot_fully_covered_no_reason_says_no_reason_recorded(tmp_path):
+    """A SessionEnd payload with no `reason` field writes reason=None to the
+    record. The detail's ternary must render "no reason recorded", not the
+    Python str() of None -- guards against a mutation that collapses the
+    ternary to unconditional f-string interpolation of newest_record.reason."""
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, reason=None, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "no reason recorded" in row.detail
+    assert "reason None" not in row.detail
+
+
+def test_classify_registry_full_coverage_ignores_uncovered_lookup_entry_for_same_session(tmp_path):
+    """The registry branch's full-coverage promotion must rest on the
+    registry's own dead_after_boot list alone. `lookup_entries` here is
+    passed directly into `_classify_session` as a pre-built tuple, not read
+    via `_read_lookup_entries`, so its crash-evidence window plays no role in
+    this test -- coverage itself is checked against `registry_entries` and
+    `dead_after_boot` only; `lookup_entries` is consulted solely for
+    indeterminate liveness (see the sibling test below), never for whether a
+    dead lookup entry has its own matching record. A dead, uncovered lookup
+    entry for the same session must not block registry-branch promotion."""
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, reason="prompt_input_exit", config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    uncovered_lookup = _lookup_entry(pid=999, session_id="s1", mtime=1.0, config_dir=tmp_path)
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(uncovered_lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "prompt_input_exit" in row.detail
+
+
+def test_classify_registry_full_coverage_blocked_by_indeterminate_lookup_sibling(tmp_path):
+    """The real cross-source bug this guards against: pid 100's registry
+    entry is dead-after-boot and fully covered by a SessionEnd record, but a
+    lookup entry for the same session at a different pid (888) has
+    unresolved liveness -- its stored proc_start doesn't parse, so sameness
+    against its live pid can't be confirmed. Full coverage of the registry's
+    own dead_after_boot list alone must not promote past a same-session
+    lookup sibling that's still unresolved -- pid 888 could still be running
+    or could have genuinely crashed."""
+    entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    indeterminate_lookup = _lookup_entry(
+        pid=888, session_id="s1", proc_start=None, mtime=1500.0, config_dir=tmp_path,
+    )
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({888: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        lookup_entries=(indeterminate_lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert (
+        "a capture-session-id.sh lookup file for this session could not be confirmed dead"
+    ) in row.detail
+
+
+def test_classify_registry_dead_after_boot_partially_covered_stays_possible_crash_with_sentence(tmp_path):
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    uncovered_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, uncovered_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
+    assert "at least one did not" in row.detail
+
+
+def test_classify_registry_dead_after_boot_no_matching_record_omits_coverage_sentence(tmp_path):
+    """session_end_records is non-empty, but every record in it is for an
+    unrelated pid -- zero matches against this session's own dead pid.
+    covered=0 must not satisfy the `0 < covered < total` partial-coverage
+    guard, so the detail stays the pre-Source-E wording with no "0 of N ...
+    recorded a graceful SessionEnd" sentence appended. Guards against a
+    mutation that drops the `0 <` lower bound."""
+    entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    unrelated_record = _session_end_record(pid=999, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 999): unrelated_record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "recorded a graceful SessionEnd" not in row.detail
+    assert "0 of 1" not in row.detail
+
+
+def test_classify_registry_dead_after_boot_indeterminate_sibling_not_promoted(tmp_path):
+    """Two registry entries for one session: pid 100 is dead-after-boot with
+    a fully-matching SessionEnd record, pid 101 is a live pid whose stored
+    proc_start is missing so its sameness can't be confirmed (indeterminate).
+    Full coverage of dead_after_boot alone must not promote to Confirmed
+    clean exit while a sibling entry's liveness is unresolved -- pid 101
+    could still be running or could have genuinely crashed."""
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    indeterminate_entry = _registry_entry(pid=101, mtime=1500.0, proc_start=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, indeterminate_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({101: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert (
+        "Every tracked post-boot process instance recorded a graceful SessionEnd, but another "
+        "registry entry for this session could not be confirmed dead or dated"
+    ) in row.detail
+
+
+def test_classify_registry_dead_after_boot_indeterminate_sibling_no_transcript_not_promoted(tmp_path):
+    """Same indeterminate-sibling shape as the test above, but with no main
+    transcript for this session -- the sibling-blocked-promotion sentence
+    must also appear in the no-transcript CLASS_UNKNOWN rendering, not just
+    the has-transcript CLASS_POSSIBLE_CRASH one."""
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    indeterminate_entry = _registry_entry(pid=101, mtime=1500.0, proc_start=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=False)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, indeterminate_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({101: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_UNKNOWN
+    assert (
+        "Every tracked post-boot process instance recorded a graceful SessionEnd, but another "
+        "registry entry for this session could not be confirmed dead or dated"
+    ) in row.detail
+
+
+def test_classify_registry_dead_after_boot_mtime_unknown_sibling_not_promoted(tmp_path):
+    """Two registry entries for one session: pid 100 is dead-after-boot with
+    a fully-matching SessionEnd record, pid 101 is dead but its mtime could
+    not be read. An unreadable mtime means this entry's own age relative to
+    boot can't be established, so full coverage of dead_after_boot alone
+    must not promote to Confirmed clean exit."""
+    covered_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    mtime_unknown_entry = _registry_entry(pid=101, mtime=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=100, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    row = _mod._classify_session(
+        "s1", [covered_entry, mtime_unknown_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert (
+        "Every tracked post-boot process instance recorded a graceful SessionEnd, but another "
+        "registry entry for this session could not be confirmed dead or dated"
+    ) in row.detail
+
+
+def test_classify_lookup_dead_pid_fully_covered_is_confirmed_clean_exit(tmp_path):
+    lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=400, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 400): record}
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+
+
+def test_classify_lookup_dead_pid_no_transcript_fully_covered_is_confirmed_clean_exit(tmp_path):
+    """Same full-coverage promotion as the transcript case above, but with
+    no main transcript for the lookup branch -- the fourth of the four
+    registry/lookup x transcript/no-transcript combinations at this unit
+    granularity."""
+    lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    record = _session_end_record(pid=400, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 400): record}
+    row = _mod._classify_session(
+        "s1", [], [], None, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+
+
+def test_classify_lookup_dead_pid_partially_covered_stays_possible_crash_with_sentence(tmp_path):
+    covered_lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    uncovered_lookup = _lookup_entry(pid=401, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=400, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 400): record}
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(covered_lookup, uncovered_lookup), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
+
+
+def test_classify_registry_dead_before_boot_fully_covered_stays_resumable(tmp_path):
+    """The dead_before_boot arm never threads session_end_records into
+    _graceful_end_coverage at all, so this structural sibling of the
+    intercepted dead_after_boot branch must stay CLASS_RESUMABLE even when a
+    SessionEnd record would otherwise fully cover the entry. Pins the decision
+    against a future refactor that widens the coverage check to this branch
+    too."""
+    entry = _registry_entry(mtime=500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_RESUMABLE
+
+
+def test_classify_registry_dead_before_boot_sibling_confirmed_dead_after_boot_is_clean_exit(tmp_path):
+    """The tool's own motivating workflow: a pre-boot registry entry (crash,
+    then reboot) plus a post-boot registry entry fully covered by a
+    SessionEnd record (resumed, and this time exited cleanly). The
+    dead_before_boot sibling must not block promotion off the post-boot
+    instance's exculpatory evidence."""
+    pre_boot_entry = _registry_entry(pid=100, mtime=500.0, config_dir=tmp_path)
+    post_boot_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=101, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 101): record}
+    row = _mod._classify_session(
+        "s1", [pre_boot_entry, post_boot_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "explained by the reboot itself" in row.detail
+    assert "every tracked process instance for this session" not in row.detail
+
+
+def test_classify_registry_dead_before_boot_sibling_confirmed_dead_after_boot_no_transcript_is_clean_exit(tmp_path):
+    """Same pre-boot-sibling promotion as the transcript case above, but with
+    no main transcript -- the no-transcript branch of
+    _confirmed_clean_exit_detail_with_pre_boot_sibling must still promote to
+    Confirmed clean exit, with the no-transcript wording and the
+    pre-boot-sibling detail text both present."""
+    pre_boot_entry = _registry_entry(pid=100, mtime=500.0, config_dir=tmp_path)
+    post_boot_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=False)
+    record = _session_end_record(pid=101, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 101): record}
+    row = _mod._classify_session(
+        "s1", [pre_boot_entry, post_boot_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "No main transcript was found for this session" in row.detail
+    assert "explained by the reboot itself" in row.detail
+
+
+def test_classify_registry_dead_before_boot_and_dead_after_boot_with_indeterminate_sibling_not_promoted(tmp_path):
+    """Three registry entries for one session: a dead_before_boot entry
+    (explained by the reboot), a dead_after_boot entry fully covered by a
+    SessionEnd record, and an indeterminate-liveness sibling whose stored
+    proc_start is missing. dead_after_boot_fully_confirmed must stay False
+    since the indeterminate sibling isn't accounted for by dead_before_boot,
+    dead_after_boot, or coverage, so the session takes the dead_before_boot
+    early-return path and stays CLASS_RESUMABLE rather than being promoted."""
+    pre_boot_entry = _registry_entry(pid=100, mtime=500.0, config_dir=tmp_path)
+    post_boot_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    indeterminate_entry = _registry_entry(pid=102, mtime=1500.0, proc_start=None, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=101, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 101): record}
+    row = _mod._classify_session(
+        "s1", [pre_boot_entry, post_boot_entry, indeterminate_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({102: "Mon Jan  1 00:00:00 2024"}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_RESUMABLE
+
+
+def test_classify_lock_dead_fully_covered_stays_resumable(tmp_path):
+    """The lock branch never threads session_end_records into
+    _graceful_end_coverage at all -- by design, since it only ever resolves
+    to CLASS_RESUMABLE or CLASS_CRASHED_NO_TRANSCRIPT, never
+    CLASS_POSSIBLE_CRASH. A dead lock entry plus a fully-covering
+    SessionEndRecord must stay CLASS_RESUMABLE, not be promoted to
+    CLASS_CONFIRMED_CLEAN_EXIT."""
+    lock = _lock_entry(pid=200, mtime=1500.0)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=200, mtime=1600.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 200): record}
+    row = _mod._classify_session(
+        "s1", [], [lock], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_RESUMABLE
+
+
+def test_build_report_registry_dead_after_boot_fully_covered_is_confirmed_clean_exit(tmp_path):
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-clean-exit"
+    entry_path = _write_registry_entry(sessions_dir, dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id=session_id, reason="prompt_input_exit")
+    os.utime(record_path, (2500.0, 2500.0))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "prompt_input_exit" in row.detail
+    output = _mod.render_report(report, redact=False)
+    section = output.split("## Confirmed clean exit")[1].split("## ")[0]
+    assert f"session {session_id}" in section
+
+
+def test_build_report_lookup_dead_pid_fully_covered_is_confirmed_clean_exit(tmp_path):
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-lookup-clean-exit"
+    lookup_path = _write_lookup_file(sessions_dir, dead, session_id=session_id)
+    now = time.time()
+    lookup_mtime = now - 100.0
+    os.utime(lookup_path, (lookup_mtime, lookup_mtime))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id=session_id)
+    os.utime(record_path, (now, now))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+
+
+def test_build_report_lookup_pid_rewritten_by_subagent_still_matches_session_end_record(tmp_path):
+    """Regression net for ledger row 12: a lookup file at one pid gets
+    rewritten under a second session id (the SubagentStart-overwrite shape),
+    and a SessionEnd record for that same pid, postdating the rewrite,
+    still explains the current (second) session -- the match rule keys on
+    pid alone, never session id, so this holds regardless of whether a
+    SubagentStart payload's session_id differs from its parent's."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    _write_lookup_file(sessions_dir, dead, session_id="parent-session")
+    lookup_path = _write_lookup_file(sessions_dir, dead, session_id="subagent-session")
+    now = time.time()
+    lookup_mtime = now - 100.0
+    os.utime(lookup_path, (lookup_mtime, lookup_mtime))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id="subagent-session")
+    os.utime(record_path, (now, now))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", now=now, boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == "subagent-session")
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+
+
+def test_build_report_session_end_record_mtime_predating_entry_is_no_match(tmp_path):
+    """The pid-reuse guard, exercised end-to-end: a SessionEnd record older
+    than the dead entry it would explain must not match -- the entry could
+    belong to a process that reused the pid after the record was written."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-stale-record"
+    entry_path = _write_registry_entry(sessions_dir, dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/proj", session_id=session_id),
+    ])
+    os.utime(transcript_path, (2000.0, 2000.0))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id=session_id)
+    os.utime(record_path, (1500.0, 1500.0))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
+def test_build_report_session_end_record_mtime_exact_tie_is_a_match(tmp_path):
+    """Condition 3 is >=, not > -- an exact mtime tie between the record and
+    the entry still counts as a match, exercised end-to-end with real files
+    and os.utime()-controlled mtimes."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-tie-record"
+    entry_path = _write_registry_entry(sessions_dir, dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id=session_id)
+    os.utime(record_path, (2000.0, 2000.0))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+
+
+def test_build_report_session_end_record_under_different_config_dir_does_not_match(tmp_path):
+    """The cross-account guard, exercised end-to-end: a SessionEnd record
+    filed under one account's config dir must never explain a dead entry
+    from a different account's config dir, even at the same pid and a
+    qualifying mtime."""
+    account_a = tmp_path / "account-a"
+    account_b = tmp_path / "account-b"
+    dead = _dead_pid()
+    session_id = "sess-cross-account"
+    entry_path = _write_registry_entry(account_a / "sessions", dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    transcript_path = account_a / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/proj", session_id=session_id),
+    ])
+    os.utime(transcript_path, (2000.0, 2000.0))
+    record_path = _write_session_end_record(account_b, dead, session_id=session_id)
+    os.utime(record_path, (2500.0, 2500.0))
+    report = _mod.build_report(
+        config_dirs=[account_a, account_b], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
+def test_build_report_malformed_session_end_record_degrades_to_no_record_classification(tmp_path):
+    """Mirrors test_build_report_foreign_json_in_sessions_dir_produces_clean_report
+    for Source A: a malformed SessionEnd record file must never crash the
+    build, and a dead entry it can't explain keeps classifying as today."""
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-malformed-record"
+    entry_path = _write_registry_entry(sessions_dir, dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    transcript_path = config_dir_path / "projects" / "any-project-dir-name" / f"{session_id}.jsonl"
+    _write_transcript(transcript_path, [
+        _meta_record(session_id), _cwd_record("/tmp/proj", session_id=session_id),
+    ])
+    os.utime(transcript_path, (2000.0, 2000.0))
+    records_dir = config_dir_path / "session-end-records"
+    records_dir.mkdir(parents=True)
+    (records_dir / str(dead)).write_text("not json{{{")
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
+def test_build_report_any_session_end_dir_found_true_when_present(tmp_path):
+    config_dir_path = tmp_path / "config"
+    _write_session_end_record(config_dir_path, 100, session_id="s1")
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=tmp_path / "home")
+    assert report.any_session_end_dir_found is True
+
+
+def test_build_report_any_session_end_dir_found_false_when_absent(tmp_path):
+    config_dir_path = tmp_path / "config"
+    config_dir_path.mkdir()
+    report = _mod.build_report(config_dirs=[config_dir_path], find_root=tmp_path / "home")
+    assert report.any_session_end_dir_found is False
 
 
 # ---------------------------------------------------------------------------
@@ -1767,6 +2595,34 @@ def test_build_report_sanitizes_control_bytes_across_cwd_branch_and_session_id_i
     report = _mod.build_report(
         config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 2000.0,
     )
+    for redact in (False, True):
+        output = _mod.render_report(report, redact=redact)
+        assert "\x1b" not in output
+        assert "\x07" not in output
+
+
+def test_build_report_sanitizes_hostile_control_bytes_in_session_end_reason(tmp_path):
+    """reason is read through _sanitize_for_terminal in _read_session_end_records
+    and then embedded into the confirmed-clean-exit detail sentence -- this
+    exercises that path end-to-end, the same way the sibling tests above do
+    for version, transcript-filename session id, and cwd/gitBranch/sessionId."""
+    hostile_reason = "prompt_input_exit\x1b]0;pwned\x07"
+    config_dir_path = tmp_path / "config"
+    sessions_dir = config_dir_path / "sessions"
+    dead = _dead_pid()
+    session_id = "sess-hostile-reason"
+    entry_path = _write_registry_entry(sessions_dir, dead, sessionId=session_id)
+    os.utime(entry_path, (2000.0, 2000.0))
+    record_path = _write_session_end_record(config_dir_path, dead, session_id=session_id, reason=hostile_reason)
+    os.utime(record_path, (2500.0, 2500.0))
+    report = _mod.build_report(
+        config_dirs=[config_dir_path], find_root=tmp_path / "home", boot_time_fn=lambda: 1000.0,
+    )
+    row = next(r for r in report.rows if r.session_id == session_id)
+    assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert "prompt_input_exit]0;pwned" in row.detail
+    assert "\x1b" not in row.detail
+    assert "\x07" not in row.detail
     for redact in (False, True):
         output = _mod.render_report(report, redact=redact)
         assert "\x1b" not in output
@@ -2206,6 +3062,41 @@ def test_build_report_near_boot_window_seconds_widens_what_surfaces(tmp_path):
     )
     row = next(r for r in widened_report.rows if r.session_id == session_id)
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
+# ---------------------------------------------------------------------------
+# render_report — other_groups ordering and the Confirmed-clean-exit bucket
+# ---------------------------------------------------------------------------
+
+def test_render_report_other_groups_order_and_titles():
+    output = _mod.render_report(_blank_report(rows=[]), redact=False)
+    crashed_idx = output.index("## Crashed, no transcript")
+    clean_idx = output.index("## Confirmed clean exit (SessionEnd recorded)")
+    live_idx = output.index("## Still running (a live process matches a tracked pid)")
+    unknown_idx = output.index("## Unknown")
+    assert crashed_idx < clean_idx < live_idx < unknown_idx
+
+
+def test_render_report_confirmed_clean_exit_row_appears_in_its_own_section_only():
+    row = _mod.SessionRow(
+        session_id="clean-exit-sess", classification=_mod.CLASS_CONFIRMED_CLEAN_EXIT,
+        cwd="/tmp/proj", git_branch="main", last_activity=100.0,
+        detail="a graceful SessionEnd was recorded", entry_count=1, cwd_missing=False,
+    )
+    output = _mod.render_report(_blank_report(rows=[row]), redact=False)
+    assert output.count("clean-exit-sess") == 1
+    section = output.split("## Confirmed clean exit (SessionEnd recorded)")[1].split("## ")[0]
+    assert "clean-exit-sess" in section
+
+
+def test_render_report_notes_missing_session_end_records_dir():
+    output = _mod.render_report(_blank_report(any_session_end_dir_found=False), redact=False)
+    assert "NOTE: no session-end-records/ directory found in any scanned config dir" in output
+
+
+def test_render_report_omits_session_end_note_when_dir_found():
+    output = _mod.render_report(_blank_report(any_session_end_dir_found=True), redact=False)
+    assert "session-end-records/ directory found" not in output
 
 
 # ---------------------------------------------------------------------------

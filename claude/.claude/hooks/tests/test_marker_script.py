@@ -61,6 +61,17 @@ def _cumulative_review_subject_path(home, repo, session_id: str):
     return home / ".claude" / "cumulative-review-subject-markers" / f"{repo_hash}.{session_id}"
 
 
+def _cumulative_review_diff_artifact_path(home, repo, session_id: str):
+    """The step-4 diff-file artifact path pr-diff-against-base.sh --diff-file
+    writes. Same <repo-hash>.<session-id> keying as
+    _cumulative_review_subject_path above, in its own directory since the
+    two artifacts have independent lifecycles (marker.sh's `write
+    cumulative-review` consumes the subject; nothing consumes this one --
+    only `deactivate ready-for-review` removes it)."""
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    return home / ".claude" / "cumulative-review-diff-markers" / f"{repo_hash}.{session_id}"
+
+
 def _record_subject(
     repo, home, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -75,6 +86,26 @@ def _record_subject(
         cwd=repo,
         env=env,
         capture_output=True,
+        text=True,
+    )
+
+
+def _write_diff_artifact(
+    repo, home, extra_env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Runs `pr-diff-against-base.sh --diff-file` -- step 4's own diff
+    command -- with stdout discarded, mirroring step 4's `> /dev/null`
+    invocation. Distinct from _record_subject above: neither helper produces
+    or locates the other's artifact."""
+    env = {**os.environ, "HOME": str(home)}
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(PR_DIFF_SCRIPT), "--diff-file"],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
     )
 
@@ -2534,6 +2565,72 @@ class TestMarkerScriptCumulativeReview:
         result = _run(["deactivate", "ready-for-review"], cwd=tmp_path, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert not active_marker.exists()
+
+    def test_deactivate_ready_for_review_removes_the_diff_artifact(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """The step-4 diff-file artifact's own mirror of
+        test_deactivate_ready_for_review_removes_the_subject above -- a
+        distinct code path, so a mirror that never seeds this artifact
+        would pass vacuously against an unimplemented cleanup line."""
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _write_diff_artifact(cumulative_diff_repo, isolated_home, env).returncode == 0
+        artifact_path = _cumulative_review_diff_artifact_path(
+            isolated_home, cumulative_diff_repo, self.SID
+        )
+        assert artifact_path.exists()
+
+        result = _run(
+            ["deactivate", "ready-for-review"],
+            cwd=cumulative_diff_repo,
+            home=isolated_home,
+            extra_env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not artifact_path.exists()
+
+    def test_deactivate_does_not_remove_another_sessions_diff_artifact(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """The cleanup is session-scoped: session B's own `deactivate
+        ready-for-review` must not delete session A's still-present diff
+        artifact -- the diff-artifact mirror of
+        test_deactivate_does_not_remove_another_sessions_subject."""
+        sid_a, sid_b = "test-session-deactivate-diff-a", "test-session-deactivate-diff-b"
+        env = _env_with_gh_shim(tmp_path, None)
+
+        _seed_session(isolated_home, sid_a)
+        assert _write_diff_artifact(cumulative_diff_repo, isolated_home, env).returncode == 0
+        artifact_a = _cumulative_review_diff_artifact_path(isolated_home, cumulative_diff_repo, sid_a)
+        assert artifact_a.exists()
+
+        _seed_session(isolated_home, sid_b)
+        result = _run(
+            ["deactivate", "ready-for-review"], cwd=cumulative_diff_repo, home=isolated_home
+        )
+        assert result.returncode == 0, result.stderr
+        assert artifact_a.exists(), (
+            "session B's deactivate must not remove session A's still-present diff artifact"
+        )
+
+    def test_deactivate_ready_for_review_names_both_artifacts_when_repo_root_unresolvable(
+        self, isolated_home, tmp_path
+    ):
+        """The diff-artifact mirror of
+        test_deactivate_ready_for_review_does_not_abort_when_repo_root_unresolvable,
+        additionally pinning that the skip message names both artifacts
+        now that the arm removes two, not one."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        active_marker = isolated_home / ".claude" / ".ready-for-review-active.d" / sid
+        active_marker.parent.mkdir(parents=True, exist_ok=True)
+        active_marker.write_text("12345\n")
+
+        result = _run(["deactivate", "ready-for-review"], cwd=tmp_path, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert not active_marker.exists()
+        assert "skipping cumulative-review subject and diff-file cleanup" in result.stderr
 
     def test_clear_stale_dry_run_ignores_the_subject_directory(
         self, isolated_home, cumulative_diff_repo, tmp_path
