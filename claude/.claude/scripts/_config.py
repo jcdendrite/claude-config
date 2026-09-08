@@ -164,7 +164,7 @@ def _value_matches_schema_type(value: str, type_: str) -> bool:
     return True
 
 
-def _read_key_from_file(key: str, type_: str, state_file: Path) -> str | None:
+def _read_key_from_file(key: str, type_: str, state_file: Path, known_keys: frozenset[str]) -> str | None:
     """KEY's value from STATE_FILE, or None if the file is absent or has no
     conforming row for KEY. A duplicate KEY row is not rejected -- the LAST
     occurrence wins, matching _config_set's own last-write-wins rewrite
@@ -180,6 +180,13 @@ def _read_key_from_file(key: str, type_: str, state_file: Path) -> str | None:
     would resolve as "enabled" under config_enabled's own
     any-value-but-false rule, the wrong direction for a key whose off-state
     contract is security-relevant.
+
+    A line whose key is grammatically valid but not in KNOWN_KEYS (a case-
+    or spelling-typo'd key) is a distinct case from a malformed line -- it
+    parses cleanly and would otherwise sit silently ignored forever, since
+    no lookup ever queries that exact misspelled string. Warned once, to
+    stderr, truncated to 80 chars, mirroring
+    _config_read_key_from_file's own distinct unrecognized-key warning.
     """
     try:
         text = state_file.read_text(errors="replace")
@@ -198,6 +205,13 @@ def _read_key_from_file(key: str, type_: str, state_file: Path) -> str | None:
         if parsed is None:
             continue
         parsed_key, value = parsed
+        if parsed_key not in known_keys:
+            truncated = raw_line[:80]
+            print(
+                f"_config.py: warning: skipping line for unrecognized key in {state_file}: {truncated}",
+                file=sys.stderr,
+            )
+            continue
         if parsed_key == key:
             if not _value_matches_schema_type(value, type_):
                 truncated = raw_line[:80]
@@ -207,7 +221,7 @@ def _read_key_from_file(key: str, type_: str, state_file: Path) -> str | None:
     return result
 
 
-def _location_value(key: str, row: SchemaRow, directory: Path) -> str:
+def _location_value(key: str, row: SchemaRow, directory: Path, known_keys: frozenset[str]) -> str:
     """KEY's effective value as seen from DIRECTORY alone -- mirrors
     _config.sh's _config_location_value exactly. DIRECTORY/claude-config.toml
     is checked first (any conforming row there for KEY is authoritative);
@@ -216,7 +230,7 @@ def _location_value(key: str, row: SchemaRow, directory: Path) -> str:
     legacy file is also absent does the schema default apply.
     """
     state_file = directory / _STATE_FILENAME
-    value = _read_key_from_file(key, row.type, state_file)
+    value = _read_key_from_file(key, row.type, state_file, known_keys)
     if value is not None:
         return value
 
@@ -265,7 +279,9 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     `false` row in the config dir's state file must not defeat a `true`
     produced by $HOME/.claude's legacy file.
     """
-    row = schema()[key]
+    all_rows = schema()
+    row = all_rows[key]
+    known_keys = frozenset(all_rows)
     override = str(config_dir_override) if config_dir_override else None
 
     primary_dir: Path | None
@@ -278,12 +294,12 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
             primary_dir = None
 
     if primary_dir is not None:
-        primary_value = _location_value(key, row, primary_dir)
+        primary_value = _location_value(key, row, primary_dir, known_keys)
         home_env = os.environ.get("HOME")
         if override is None and row.resolution == "config-dir-or-home" and home_env:
             home_dir_str = home_env.rstrip("/") + "/.claude"
             if home_dir_str != str(primary_dir).rstrip("/"):
-                home_value = _location_value(key, row, Path(home_dir_str))
+                home_value = _location_value(key, row, Path(home_dir_str), known_keys)
                 if primary_value == "true" or home_value == "true":
                     return "true"
                 return primary_value
@@ -298,7 +314,7 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
         and row.legacy_probe_on_resolution_failure
         and home_env
     ):
-        return _location_value(key, row, Path(home_env.rstrip("/") + "/.claude"))
+        return _location_value(key, row, Path(home_env.rstrip("/") + "/.claude"), known_keys)
     return None
 
 

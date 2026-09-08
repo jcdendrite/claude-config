@@ -38,7 +38,9 @@
 #     evades command-text scanning entirely, since a PreToolUse hook sees
 #     only the top-level Bash `command` string — the same accepted
 #     limitation enforce-marker-script-shape.sh's header discloses for
-#     `python3 -c "open(...).write(...)"` and here-doc bodies.
+#     `python3 -c "open(...).write(...)"` and here-doc bodies. Closing this
+#     would also deny migrate-legacy-config.sh's own sanctioned _config_set
+#     calls, which reach the file through the same indirection.
 #   - migrate-legacy-config.sh's own name is not scanned for: mentioning a
 #     script's name in command text is not itself a write, and any write it
 #     makes internally is invisible to this hook regardless — the same

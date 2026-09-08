@@ -125,6 +125,30 @@ class TestBashNameScanArm:
         assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("git status"), home=home) == "allow"
 
 
+class TestSanctionedCallerAllowPaths:
+    """The two sanctioned writers (docs/config-file.md's "Writing a value")
+    invoke `_config_set` from inside a sourced/executed script, never as a
+    literal top-level Bash command token -- neither name-scan nor
+    redirect-scan arm has anything to match in their own invocation text."""
+
+    def test_install_sh_invocation_allowed(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("./install.sh"), home=home) == "allow"
+
+    def test_migrate_legacy_config_sh_invocation_allowed(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input("bash claude/.claude/scripts/migrate-legacy-config.sh"),
+                home=home,
+            )
+            == "allow"
+        )
+
+
 class TestBashRedirectScanArm:
     def test_raw_append_to_state_file_denied(self, tmp_path):
         """Closes round 1's gap: a plain redirect reaching the state file
