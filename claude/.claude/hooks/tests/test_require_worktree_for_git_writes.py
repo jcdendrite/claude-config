@@ -949,13 +949,12 @@ class TestMachineMarkerUnderConfigDir:
     def test_legacy_home_claude_marker_still_enforces_once_config_dir_set(
         self, non_opted_repo, user_marker_home, tmp_path
     ):
-        """A $HOME/.claude/worktree-required marker (user_marker_home) still
-        enforces even when CLAUDE_CONFIG_DIR points at a directory holding no
-        copy of it — union, not swap, at this call site: a machine-wide
-        sentinel armed before CLAUDE_CONFIG_DIR adoption must not silently go
-        dark under a differentiated profile, matching the guard-config hooks'
-        legacy-fallback fix for the same enforcement-invariant-regression
-        shape."""
+        """A $HOME/.claude worktree-required marker still enforces even when
+        CLAUDE_CONFIG_DIR points elsewhere. This call site unions the two
+        locations rather than letting CLAUDE_CONFIG_DIR replace the legacy
+        check, pinning the same invariant test_require_worktree_for_file_writes.py's
+        TestMachineLevelMarker.test_home_legacy_marker_overrides_disagreeing_config_dir_row
+        pins for this hook's sibling consumer."""
         empty_config_dir = tmp_path / "empty-profile"
         empty_config_dir.mkdir()
         assert (
@@ -1010,6 +1009,32 @@ class TestMachineMarkerUnderConfigDir:
                 extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
             )
             == "allow"
+        )
+
+    def test_home_legacy_marker_overrides_disagreeing_config_dir_row(
+        self, non_opted_repo, user_marker_home, tmp_path
+    ):
+        """worktree_required's config-dir-or-home union, exercised through
+        this hook rather than _config_value directly: an explicit
+        `worktree_required = false` row in the resolved CLAUDE_CONFIG_DIR's
+        own claude-config.toml must not defeat $HOME/.claude's legacy
+        marker -- mirrors test_config_lib.py's own
+        TestUnionSemantics.test_explicit_false_in_config_dir_does_not_defeat_true_under_home_legacy,
+        which pins the same invariant generically against _config_value, and
+        test_require_worktree_for_file_writes.py's own
+        TestMachineLevelMarker.test_home_legacy_marker_overrides_disagreeing_config_dir_row,
+        which pins the same invariant against this hook's sibling consumer."""
+        config_dir = tmp_path / "profile"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("worktree_required = false\n")
+        assert (
+            run_hook(
+                WORKTREE_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=non_opted_repo,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
         )
 
 

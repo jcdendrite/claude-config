@@ -68,14 +68,15 @@ _lib_config_dir() {
 }
 
 # _config_trim STRING
-# Strips leading/trailing ASCII whitespace only (space, tab, CR, LF, VT,
-# FF) -- deliberately NOT a Unicode-aware trim. A value with a trailing
-# NBSP (U+00A0) or ideographic space (U+3000) is left untouched by this
-# trim and correctly fails the value-subset check in _config_line_key_value
-# below, matching _config.py's explicit _ASCII_WHITESPACE-based trim (never
-# Python's bare .strip(), which would additionally eat those two characters
-# and silently accept a value a stricter trim would reject) -- the same
-# divergence-avoidance _config_dir.py already documents one level over.
+# Sets _CONFIG_TRIM_RESULT (global) to STRING with leading/trailing ASCII
+# whitespace stripped only (space, tab, CR, LF, VT, FF) -- deliberately NOT
+# a Unicode-aware trim. A value with a trailing NBSP (U+00A0) or ideographic
+# space (U+3000) is left untouched by this trim and correctly fails the
+# value-subset check in _config_line_key_value below, matching _config.py's
+# explicit _ASCII_WHITESPACE-based trim (never Python's bare .strip(),
+# which would additionally eat those two characters and silently accept a
+# value a stricter trim would reject) -- the same divergence-avoidance
+# _config_dir.py already documents one level over.
 #
 # `local LC_ALL=C` is load-bearing, not decorative: outside the C locale,
 # glibc's iswspace() admits NBSP (U+00A0) and ideographic space (U+3000)
@@ -84,12 +85,17 @@ _lib_config_dir() {
 # return, per bash's normal `local` dynamic-scoping rules) rather than
 # exported globally -- same reasoning set-session-title-from-branch.sh's
 # own LC_ALL=C scoping gives for its bracket-range matching.
+#
+# Sets a global rather than printing for $(...) capture -- this is called
+# per state-file line (up to 3 times each) by _config_line_key_value below,
+# and a command-substitution fork per call is pure overhead; same
+# fork-avoidance rationale as _lib.sh's _lib_pattern_component_count.
 _config_trim() {
   local LC_ALL=C
   local s="$1"
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
+  _CONFIG_TRIM_RESULT="$s"
 }
 
 # _config_line_key_value LINE KEY_VAR VALUE_VAR
@@ -126,7 +132,8 @@ _config_line_key_value() {
   local line="$1" key_var="$2" value_var="$3"
   line="${line%$'\r'}"
   local trimmed
-  trimmed=$(_config_trim "$line")
+  _config_trim "$line"
+  trimmed="$_CONFIG_TRIM_RESULT"
   [ -z "$trimmed" ] && return 1
   case "$trimmed" in
     '#'*) return 1 ;;
@@ -136,10 +143,12 @@ _config_line_key_value() {
     *) return 2 ;;
   esac
   local key="${trimmed%%=*}" value="${trimmed#*=}"
-  key=$(_config_trim "$key")
-  value=$(_config_trim "$value")
+  _config_trim "$key"
+  key="$_CONFIG_TRIM_RESULT"
+  _config_trim "$value"
+  value="$_CONFIG_TRIM_RESULT"
   [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || return 2
-  value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+  value=$(tr '[:upper:]' '[:lower:]' <<< "$value")
   [[ "$value" =~ ^[a-z0-9_-]+$ ]] || return 2
   printf -v "$key_var" '%s' "$key"
   printf -v "$value_var" '%s' "$value"
@@ -155,7 +164,14 @@ _config_file_lines() {
   local file="$1"
   [ -f "$file" ] || return 0
   local content
-  content=$(cat -- "$file" 2>/dev/null) || return 0
+  # Bash's own `$(<file)` read, not `cat -- "$file"` -- reads FILE directly
+  # in the command-substitution subshell rather than forking a separate
+  # `cat` process. Braced with its own `2>/dev/null` (not appended to the
+  # assignment line): bash reports a `$(<file)` read failure before normal
+  # per-command stderr redirection would apply to it, so an inline
+  # `2>/dev/null` on the assignment leaks the diagnostic instead of
+  # suppressing it.
+  { content=$(<"$file"); } 2>/dev/null || return 0
   content="${content#$'\xEF\xBB\xBF'}"
   local line
   while IFS= read -r line || [ -n "$line" ]; do
@@ -163,7 +179,7 @@ _config_file_lines() {
   done <<< "$content"
 }
 
-# _config_read_key_from_file KEY STATE_FILE
+# _config_read_key_from_file KEY STATE_FILE [KNOWN_KEYS KEY_TYPE]
 # Prints KEY's value from STATE_FILE to stdout and returns 0 if any
 # conforming row for KEY exists; returns 1 (nothing printed) if the file is
 # absent or has no conforming row for KEY. A duplicate KEY row is not
@@ -201,15 +217,40 @@ _config_file_lines() {
 # neither the `bool` nor `enum:*` case in the type-check block below, so
 # KEY's own row still resolves to its real value instead of being
 # misreported as absent.
+#
+# KNOWN_KEYS and KEY_TYPE are optional, and must be passed both or neither.
+# They let a caller that has already computed both values pass them
+# straight through instead of re-forking
+# _config_schema_known_keys/_config_schema_field a second time for the
+# identical key.
+# Today the only such caller is _config_value's config-dir-or-home union,
+# which calls this function once per location for the same KEY.
+# Detected by argument COUNT (`$# -eq 4`), not by whether KNOWN_KEYS is
+# non-empty.
+# An empty KNOWN_KEYS is itself a legitimate precomputed value (schema
+# unreadable), indistinguishable from "not passed" by content alone.
+# Every existing 2-arg caller (install.sh, migrate-legacy-config.sh, and
+# this file's own tests) is unaffected: it still self-derives exactly as
+# before.
 _config_read_key_from_file() {
+  [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || {
+    echo "_config_read_key_from_file: expected 2 or 4 args, got $#" >&2
+    return 1
+  }
   local key="$1" state_file="$2"
-  # Computed once here, not via a per-line _config_schema_field call below
-  # (which would re-read config-keys.psv once per state-file line).
-  local known_keys known_keys_status
-  known_keys=$(_config_schema_known_keys)
-  known_keys_status=$?
-  local key_type=""
-  [ "$known_keys_status" -eq 0 ] && key_type=$(_config_schema_field "$key" type)
+  local known_keys known_keys_status key_type
+  if [ "$#" -eq 4 ]; then
+    known_keys="$3"
+    key_type="$4"
+    if [ -n "$known_keys" ]; then known_keys_status=0; else known_keys_status=1; fi
+  else
+    # Computed once here, not via a per-line _config_schema_field call below
+    # (which would re-read config-keys.psv once per state-file line).
+    known_keys=$(_config_schema_known_keys)
+    known_keys_status=$?
+    key_type=""
+    [ "$known_keys_status" -eq 0 ] && key_type=$(_config_schema_field "$key" type)
+  fi
   local line key_out value_out status found=1 result=""
   while IFS= read -r line; do
     _config_line_key_value "$line" key_out value_out
@@ -346,17 +387,45 @@ _config_schema_known_keys() {
 # itself is never treated as unresolvable here (a real I/O failure on a
 # state/legacy file degrades the same way an absent file does, via `[ -f ]`
 # returning false on EACCES/ESTALE).
+#
+# KNOWN_KEYS, KEY_TYPE, LEGACY_FILENAME, LEGACY_POLARITY are optional, and
+# must be passed all four or none. They let a caller that has already
+# computed KEY's own schema row pass it straight through to (and further
+# down into _config_read_key_from_file) instead of re-forking
+# _config_schema_known_keys/_config_schema_field for the same key.
+# Same precomputed-args pattern as _config_read_key_from_file above,
+# threaded one level further into it. Detected via `$# -eq 6`.
 _config_location_value() {
+  [ "$#" -eq 2 ] || [ "$#" -eq 6 ] || {
+    echo "_config_location_value: expected 2 or 6 args, got $#" >&2
+    return 1
+  }
   local key="$1" dir="$2"
+  local known_keys="" key_type="" legacy_filename="" legacy_polarity=""
+  local precomputed=""
+  if [ "$#" -eq 6 ]; then
+    precomputed=1
+    known_keys="$3"
+    key_type="$4"
+    legacy_filename="$5"
+    legacy_polarity="$6"
+  fi
   local state_file="$dir/$_CONFIG_STATE_FILENAME"
-  local value
-  if value=$(_config_read_key_from_file "$key" "$state_file"); then
+  local value status
+  if [ -n "$precomputed" ]; then
+    value=$(_config_read_key_from_file "$key" "$state_file" "$known_keys" "$key_type")
+  else
+    value=$(_config_read_key_from_file "$key" "$state_file")
+  fi
+  status=$?
+  if [ "$status" -eq 0 ]; then
     printf '%s' "$value"
     return 0
   fi
-  local legacy_filename legacy_polarity
-  legacy_filename=$(_config_schema_field "$key" legacy-filename)
-  legacy_polarity=$(_config_schema_field "$key" legacy-polarity)
+  if [ -z "$precomputed" ]; then
+    legacy_filename=$(_config_schema_field "$key" legacy-filename)
+    legacy_polarity=$(_config_schema_field "$key" legacy-polarity)
+  fi
   local legacy_path="$dir/$legacy_filename"
   case "$legacy_polarity" in
     presence-enables)
@@ -370,14 +439,19 @@ _config_location_value() {
     content-matches)
       if [ -f "$legacy_path" ]; then
         local raw mode type expected
-        raw=$(cat -- "$legacy_path" 2>/dev/null) || raw=""
+        # Bash's own `$(<file)` read -- see _config_file_lines's own comment
+        # on why the `2>/dev/null` must brace-wrap the assignment rather
+        # than trail it.
+        { raw=$(<"$legacy_path"); } 2>/dev/null || raw=""
         # [:space:], not [:blank:] — install.sh:531-547 and
         # pr-cost-section.sh:20-26 diverge on this trim class: [:space:]
         # strips a trailing CR, so a CRLF-authored one-line sentinel is read
         # identically here regardless of which legacy location produced it.
-        mode=$(_config_trim "$raw")
-        mode=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
-        type=$(_config_schema_field "$key" type)
+        _config_trim "$raw"
+        mode="$_CONFIG_TRIM_RESULT"
+        mode=$(tr '[:upper:]' '[:lower:]' <<< "$mode")
+        type="$key_type"
+        [ -n "$precomputed" ] || type=$(_config_schema_field "$key" type)
         expected="${type#enum:}"
         if [ "$mode" = "$expected" ]; then
           printf '%s' "$expected"
@@ -431,22 +505,71 @@ _config_value() {
     primary_dir=$(_lib_config_dir 2>/dev/null) || primary_dir=""
   fi
 
+  # A config-dir-or-home key with no override and a diverged $HOME is about
+  # to call _config_location_value twice (primary_dir, then $HOME/.claude)
+  # for the identical key. Precompute KEY's own schema row once here and
+  # thread it through both calls as plain scalars, never a possibly-empty
+  # array -- this file's own header already documents expanding one under
+  # `set -u` as an error on bash before 4.4. union_active stays empty for
+  # every other shape (single-location keys, or a caller-supplied
+  # CONFIG_DIR_OVERRIDE), so _config_location_value falls back to its
+  # plain 2-arg self-deriving form.
+  local home_dir="" union_active=""
+  local known_keys="" key_type="" legacy_filename="" legacy_polarity=""
+  if [ -n "$primary_dir" ] && [ -z "$config_dir_override" ] \
+     && [ "$resolution" = "config-dir-or-home" ] && [ -n "${HOME:-}" ]; then
+    home_dir="${HOME%/}/.claude"
+    if [ "$home_dir" != "${primary_dir%/}" ]; then
+      union_active=1
+      known_keys=$(_config_schema_known_keys) || known_keys=""
+      key_type=$(_config_schema_field "$key" type)
+      legacy_filename=$(_config_schema_field "$key" legacy-filename)
+      legacy_polarity=$(_config_schema_field "$key" legacy-polarity)
+    fi
+  fi
+
   if [ -n "$primary_dir" ]; then
     local primary_value
-    primary_value=$(_config_location_value "$key" "$primary_dir")
-    if [ -z "$config_dir_override" ] && [ "$resolution" = "config-dir-or-home" ] && [ -n "${HOME:-}" ]; then
-      local home_dir="${HOME%/}/.claude"
-      if [ "$home_dir" != "${primary_dir%/}" ]; then
-        local home_value
-        home_value=$(_config_location_value "$key" "$home_dir")
-        if [ "$primary_value" = "true" ] || [ "$home_value" = "true" ]; then
+    if [ -n "$union_active" ]; then
+      local primary_status home_value home_status
+      primary_value=$(_config_location_value "$key" "$primary_dir" \
+        "$known_keys" "$key_type" "$legacy_filename" "$legacy_polarity")
+      primary_status=$?
+      home_value=$(_config_location_value "$key" "$home_dir" \
+        "$known_keys" "$key_type" "$legacy_filename" "$legacy_polarity")
+      home_status=$?
+      # Unreachable today, since both calls above always pass exactly 6
+      # args -- but a future edit to this block that miscounts one must not
+      # let the resulting empty stdout fall through to the "true" checks
+      # below, where _config_enabled's any-value-but-false rule would read
+      # it as enabled regardless of which key this is.
+      # $legacy_probe is "true" only for worktree_required.
+      # worktree_required's failure-safe default is "enabled", so
+      # enforcement stays armed.
+      # Every other config-dir-or-home key's failure-safe default is
+      # "false", so a resolution failure never grants.
+      if [ "$primary_status" -ne 0 ] || [ "$home_status" -ne 0 ]; then
+        if [ "$legacy_probe" = "true" ]; then
           printf 'true'
         else
-          printf '%s' "$primary_value"
+          printf 'false'
         fi
         return 0
       fi
+      # Assumes every config-dir-or-home key is bool, comparing against the
+      # literal "true".
+      # A future enum-typed config-dir-or-home key would silently defeat
+      # this union.
+      # Verify no config-keys.psv row combines config-dir-or-home with a
+      # non-bool type before adding one.
+      if [ "$primary_value" = "true" ] || [ "$home_value" = "true" ]; then
+        printf 'true'
+      else
+        printf '%s' "$primary_value"
+      fi
+      return 0
     fi
+    primary_value=$(_config_location_value "$key" "$primary_dir")
     printf '%s' "$primary_value"
     return 0
   fi

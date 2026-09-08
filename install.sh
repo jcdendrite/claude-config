@@ -443,7 +443,31 @@ _prompt_sentinel_opt_in() {
     case "$answer" in
       [Nn]*)
         if _config_set "$key" false; then
-          echo "  → disabled"
+          # config-dir-or-home resolution can still resolve ENABLED via
+          # $HOME/.claude's own legacy file even after this write sets an
+          # explicit false row at the resolved config dir -- report the
+          # actual resolved state.
+          # Checks the legacy file directly with `[ -f ]` rather than calling
+          # `_config_key_source`, which lives in a different
+          # `INSTALL_TEST_FIXTURE` span than this function's own and would be
+          # unresolved when that span is extracted alone.
+          local resolved
+          resolved=$(_config_value "$key") || resolved="false"
+          if [ "$resolved" = "false" ]; then
+            echo "  → disabled"
+          else
+            local home_dir legacy_filename legacy_path
+            home_dir="${HOME%/}/.claude"
+            legacy_filename=$(_config_schema_field "$key" legacy-filename)
+            legacy_path="$home_dir/$legacy_filename"
+            if [ -f "$legacy_path" ]; then
+              printf '  ! wrote %s = false, but %s still resolves ENABLED (%s) -- %s still exists and forces it on via the config-dir-or-home union; remove that file to actually disable %s.\n' \
+                "$key" "$human_name" "$resolved" "$legacy_path" "$human_name"
+            else
+              printf '  ! wrote %s = false, but %s still resolves ENABLED (%s) -- check %s/claude-config.toml for a disagreeing row.\n' \
+                "$key" "$human_name" "$resolved" "$home_dir"
+            fi
+          fi
         else
           echo "  ! could not write $key -- see claude-config.toml" >&2
         fi

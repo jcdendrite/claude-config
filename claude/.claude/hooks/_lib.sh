@@ -1872,6 +1872,13 @@ _lib_chains_marker_write_before_commit() {
     "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
 }
 
+# Shared parenthetical explaining worktree_required's config-dir-or-home
+# union, quoted verbatim into every worktree-enforcement deny message in
+# require-worktree-for-file-writes.sh and require-worktree-for-git-writes.sh.
+# A single string, not a copy per call site, so the two legacy/config-dir
+# names it cites can't drift out of sync with each other.
+_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION="(repo-level .claude/worktree-required committed, or your machine-level worktree_required setting (claude-config.toml — see config-get.sh worktree_required; the legacy ~/.claude/worktree-required file still works too))"
+
 # _lib_worktree_enforcement_active REPO_ROOT
 # Returns 0 (true) when worktree discipline is active for the given repo root.
 # Three-marker logic:
