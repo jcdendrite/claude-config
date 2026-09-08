@@ -683,6 +683,53 @@ class TestBuckets:
         assert cols["Proj"] == "2"
         assert cols["Sess"] == "2"
 
+    def test_proj_column_collapses_a_worktree_dir_into_its_main_repo(self, tmp_path, monkeypatch, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        Proj must collapse the worktree-suffixed slug back to the main slug before counting."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
+        """Guards against routing the raw slug through _derive_proj_label first: that
+        transform discards the home/user prefix, which would falsely merge these two
+        distinct repos into one family and undercount Proj."""
+        projects = tmp_path / "projects"
+        proj_alice = projects / "-home-alice-repo"
+        proj_bob = projects / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_bob / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "2"
+
+
+class TestProjectFamily:
+    def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
+        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+
+    def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
+        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
+
 
 # ---------------------------------------------------------------------------
 # fail-seq end-to-end (core parsing logic, via shared helper)
@@ -13202,6 +13249,22 @@ class TestCmdUserInput:
         out = capsys.readouterr().out
         assert "### claude-config ·" in out
         assert "### private-project-1 ·" in out
+
+    def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        the Scope line's project count must collapse the worktree-suffixed slug back
+        to the main slug before counting, same as cmd_buckets's Proj column."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
 
     def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
         """A write failure to --out's target (parent directory missing) exits 1
