@@ -2341,8 +2341,8 @@ class TestCostSummary:
         out = capsys.readouterr().out
         assert "\nScope: this account only, all time.\n" in out
         assert "different Claude account" not in out
-        # Structural guard against any reintroduced prose (any wording) between the
-        # table and the next heading -- not just the one deleted phrase above.
+        # Structural guard: catches any prose reintroduced between the table and the
+        # next heading, regardless of its wording -- not just the phrase above.
         before_heading = out[: out.index("### Cost by token class")]
         assert before_heading.endswith("|\n\n")
 
@@ -2377,25 +2377,22 @@ class TestCostSummary:
         assert coverage_cols["Sessions with priced turns"] == "1"
         assert coverage_cols["Priced turns"] == "2"
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_summary_scan_coverage_table_includes_unreadable_column_when_nonzero(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Present arm: one unreadable transcript alongside one readable,
-        priced one increments the table's Of those, unreadable cell while
-        the root-level scan still succeeds. chmod targets the second
-        transcript file itself, not its parent directory — chmoding the
-        scan root instead would trip _scan_root_transcripts' whole-root
-        os.access check and raise PermissionError, which cost.py's caller
-        catches by forcing scanned=skipped=0, the opposite of this fixture's
-        nonzero-unreadable, nonzero-scanned shape."""
+        """Present arm: a nonzero skipped-file count from the scan-root
+        helper reaches the table's Of those, unreadable cell. Monkeypatches
+        scope._scan_root_transcripts directly rather than chmod'ing a real
+        file -- that helper's own permission-probe behavior is already
+        unit-tested (test_transcript_analysis.py's
+        test_skipped_counts_unreadable_file_separately_from_scanned), so
+        this test only needs to prove cost.py's accumulator threads the
+        scanned/skipped counts through to the table."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
         _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
-        unreadable = mine / "sess-unreadable.jsonl"
-        _write_jsonl(unreadable, [_priced("claude-sonnet-5", input=1_000_000)])
-        os.chmod(unreadable, 0o000)
+        monkeypatch.setattr(_mod.scope, "_scan_root_transcripts", lambda *a, **k: (2, 1))
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -2406,16 +2403,14 @@ class TestCostSummary:
             return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        try:
-            _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
-        finally:
-            os.chmod(unreadable, 0o644)  # restore before tmp_path teardown
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
 
         out = capsys.readouterr().out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
         assert coverage_cols["Transcript files scanned"] == "2"
         assert coverage_cols["Of those, unreadable"] == "1"
         assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
 
     def test_summary_scope_block_is_identical_regardless_of_declared_root_count(
         self, tmp_path, monkeypatch, capsys

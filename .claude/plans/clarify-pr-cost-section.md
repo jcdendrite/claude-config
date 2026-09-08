@@ -33,18 +33,16 @@ The intended outcome is a Scope block that a stranger unfamiliar with this
 toolkit can read and understand unaided, without losing the scope facts
 the block exists to disclose.
 
-**Engineer-supplied context on the third problem, from this session's
-clarifying-question exchange (verbatim, condensed):** the repo owner runs
-several isolated Claude Code accounts on one machine (see
-`CLAUDE.local.md`'s "Multi-account Claude Code setup"); `claude-config`
-itself is the one repo stowed identically into every account's config dir,
-so of all repos on this machine it is the one where switching Claude
-accounts mid-branch is most plausible. The owner does do this "a fair
-amount" on `claude-config` specifically, but called it "VERY specific to
-my setup and only a rare type of thing" that "should not be factored into
-PR cost" design generally, and asked to route the question of whether
-`claude-config` warrants its own carve-out to `plan-architect` rather than
-settling it here.
+**Context on the third problem:** a maintainer running several isolated
+Claude Code accounts on one machine (see `CLAUDE.local.md`'s "Multi-account
+Claude Code setup" for the general mechanism) could encounter this scenario
+on `claude-config` specifically, since it is the one repo stowed
+identically into every account's config dir — structurally the most
+plausible site, of any repo on such a machine, for switching Claude
+accounts mid-branch. This is a narrow, low-frequency scenario that should
+not drive PR-cost design generally; the question of whether `claude-config`
+warrants its own carve-out was routed to `plan-architect` rather than
+settled here.
 
 ## Clarifying answers (Step 4)
 
@@ -108,7 +106,7 @@ With a nonzero unreadable count the table gains a second column, `Of those, unre
 
 - **G1.** Everything under `claude/` installs to every stow consumer, so this text's audience is every consumer's PR readers, not this repo's owner — the repo's stow contract fixes that, and no wording choice here narrows it. `[verified: CLAUDE.md § "Working in this repo"; § "Plans in this repo affect all stow users"]`
 - **G2.** GitHub renders the embedded block as GFM and terminates a table at a blank line; GitHub owns that renderer, so the block's blank-line adjacency is imposed from outside and can only be respected, not designed around. `[verified: pr-cost-section.sh:49-50 and cost.py:810-813, both of which record this constraint as already-established in this repo]`
-- **G3.** The owner runs several isolated Claude accounts on one machine and switches accounts mid-branch on `claude-config` specifically, but has ruled that this must not drive PR-cost design generally. `[engineer-verified]`
+- **G3.** A maintainer may run several isolated Claude accounts on one machine and switch accounts mid-branch, but this must not drive PR-cost design generally. `[engineer-verified]`
 
 **Mechanisms.**
 

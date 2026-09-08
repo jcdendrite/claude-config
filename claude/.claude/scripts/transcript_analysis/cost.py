@@ -311,10 +311,9 @@ def _print_scan_coverage_table(
 ) -> None:
     """--summary's scan-coverage table, printed under the Scope: caption.
 
-    No markdown parameter, unlike its siblings below: those need a
-    plain-text arm for the full report, but the full report discloses the
-    same facts per root through the `cost: account-N: scanned …` line
-    instead, so a plain-text branch here would be dead on arrival.
+    No markdown parameter: the full report already discloses these facts
+    per-root via `cost: account-N: scanned …` (cost.py:556-557), so a
+    plain-text branch here would be dead code.
     """
     unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
     unreadable_delimiter = "---|" if transcripts_unreadable else ""
@@ -826,8 +825,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     if summary_mode:
         # GFM requires a blank line on both sides of a table to render it as one.
         # - No leading blank line: pr-cost-section.sh's own heading already supplies it.
-        # - Scope: print's blank line terminates the GFM alert (omitting it lets
-        #   lazy continuation fold Scope: into the blockquote) and opens the table.
+        # - Scope: print's blank line terminates the GFM alert and opens the table.
+        #   Omitting it lets lazy continuation fold Scope: into the blockquote.
         # - The trailing print()'s blank line closes the table -- without it, a
         #   no-op EXCLUDED SPEND banner and no stale/drift warning would leave the
         #   table's last row directly adjacent to the next section's heading.
