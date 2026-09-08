@@ -1730,6 +1730,20 @@ class TestCostMarkdownTablePrinters:
         assert coverage_cols["Sessions with priced turns"] == "2"
         assert coverage_cols["Priced turns"] == "5"
 
+    def test_print_scan_coverage_table_formats_large_counts_with_commas(self, capsys):
+        _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
+        assert coverage_cols["Transcript files scanned"] == "1,500,000"
+
+    def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
+        _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
+        assert coverage_cols["Transcript files scanned"] == "0"
+        assert coverage_cols["Sessions with priced turns"] == "0"
+        assert coverage_cols["Priced turns"] == "0"
+
     def test_print_token_class_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
         class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
         class_token_totals = {cls: 0 for cls in _mod._TOKEN_CLASSES}
