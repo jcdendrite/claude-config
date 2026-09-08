@@ -98,6 +98,16 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 - `--projects` defaults to `*` — every project across every declared root; scope it with `--this-repo` or an explicit glob (see `docs/transcript-analysis.md`'s "Scoping to this repo" section for the derivation and its gaps). `buckets`' Date range column describes whatever the glob matched rather than a bounded window — `buckets` takes no `--since`/`--until`; use `review-trace --since/--until` for a bounded window.
 - `review-trace` output is not publish-safe under the default multi-root scope — each event line's branch string can carry a ticket ID or project name. No flag currently guarantees single-account scope on `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, or `pr-link` short of an explicit single `--config-dir` — `--this-repo` does not imply single-account scope, since it unions across every declared root by default. Name `--config-dir` as the one narrowing control before quoting any of these seven anywhere public.
 
+## Writing up a finding for a durable or public document
+
+- **Resolving real identity to read a session's own trace content is a legitimate internal step — never let the resolved identity itself reach the write-up.** `--branches`/`--this-repo` filtering matches the real underlying value, so correlating a redacted, opaque `account-N/branch-M` figure back to its actual transcript may require temporarily resolving the real branch or repo. A long round-tail's genuine-work-vs-thrash judgment is one case where this comes up. That resolution stays scoped to your own reasoning. The write-up states the generalized fact only — never any of:
+  - the branch
+  - the repo
+  - the PR number
+  - the account name
+- **A generalized statistical fact about a single outlier is safe to publish only when stripped of anything that could correlate it back to its source.** "One branch reached over 40 review rounds" is fine on its own — nothing to redact. Attaching a date, a dollar figure specific to that one item, or narrative detail about what the branch was doing turns the same fact into a structural fingerprint (see the repo CLAUDE.md's "Also redact structural fingerprints and provenance" section) even with the name stripped out.
+- **Don't enumerate account or project *types* in a write-up, even generically.** A phrase like "across every account (type-A, type-B, type-C)" discloses the operator's own business structure — how many kinds of relationships exist — independent of any name. Prefer an aggregate phrasing ("across the corpus," "pooled across N accounts") that states the scope was multi-account without characterizing what the accounts are.
+
 ## Example usage
 
 ```bash
