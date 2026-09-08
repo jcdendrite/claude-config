@@ -36,8 +36,9 @@ def _project_family(raw_proj_label: str) -> str:
     by substring match -- reliable only on paths with at least two leading
     hyphen-delimited segments before the repo name, and a project literally
     named with that substring would falsely merge into another family. This
-    is an accepted risk at current scale. If cost --by-project or buckets'
-    Proj count ever shows an unexpected merge, re-evaluate.
+    is an accepted risk at current scale. If cost --by-project, buckets'
+    Proj count, or user-input's Scope project count ever shows an unexpected
+    merge, re-evaluate.
     """
     return _WORKTREE_SUFFIX_RE.sub("", raw_proj_label)
 

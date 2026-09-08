@@ -64,6 +64,12 @@ Single `code-writer` dispatch. The four files are one coherent edit — the sour
 
 - **`docs/transcript-analysis.md`** — line 73 only. Replace the `Proj` definition sentence so it defines the column as distinct **repositories**, states that a repo's linked-worktree directories collapse into its main checkout's slug first (so a branch worked in both still shows `Proj == 1`), and keeps the existing pooled-row guidance about `--this-repo` / a narrower `--projects` glob. Leave the sample-output block at lines 62-71 untouched (ledger row 7). This file sits outside the source/test triad, but the sentence is a description of current behavior that this change falsifies, so leaving it is a defect, not scope discipline.
 
+**Omission found after implementation.** Row 3's exhaustive-grep claim missed `cmd_user_input`
+(`transcript-analysis.py:572`), which counted distinct projects via the same rejected
+`_derive_proj_label`-first pipeline row 2 argues against. `cmd_user_input` now carries the
+identical `_project_family(jsonl.parent.name)` fix, pinned by
+`test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects`.
+
 ## Verification
 
 `.venv/bin/python3 claude/.claude/scripts/select-tests.py` — the repo's documented scoped test command (`CLAUDE.md` § Commands). It maps the source and test paths above to the scripts domain and picks up `docs/transcript-analysis.md` through its `DOCS_DIR` blanket rule, so no hand-widening to the full suite is warranted.

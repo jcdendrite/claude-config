@@ -13266,6 +13266,27 @@ class TestCmdUserInput:
         out = capsys.readouterr().out
         assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
 
+    def test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, fake_projects, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount the Scope line's project
+        count. Same invariant as TestBuckets's Proj-column sibling guard for
+        cmd_buckets — see that test for the mirrored intent, not identical setup
+        mechanics."""
+        proj_alice = fake_projects.parent / "-home-alice-repo"
+        proj_bob = fake_projects.parent / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [
+            _ui_user("prompt from alice's repo", branch="feat"),
+        ])
+        _write_jsonl(proj_bob / "sess.jsonl", [
+            _ui_user("prompt from bob's repo", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 2 sessions, 2 fresh prompts" in out
+
     def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
         """A write failure to --out's target (parent directory missing) exits 1
         with the user-input-specific stderr message; nothing is printed to stdout."""

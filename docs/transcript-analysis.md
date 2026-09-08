@@ -70,7 +70,17 @@ add-actionlint-pr-gate                      2     5     444      0     444      
 HEAD                                        6   401    3664   1261    2278    120      5  2026-04-23..2026-05-28
 ```
 
-`Proj` is the count of distinct repositories contributing to that row. A repo's linked-worktree directories collapse into its main checkout's slug first, so a branch worked in both still shows `Proj == 1`. A pooled row (several repos sharing a branch name, `main` being the usual case) shows `Proj > 1`; scoping with `--this-repo` or a narrower `--projects` glob collapses it back to `1`.
+`Proj` is the count of distinct project directories contributing to that row.
+
+- A repo's linked-worktree directories collapse into its main checkout's slug first, so a
+  branch worked in both still shows `Proj == 1`.
+- A session started in a repo subdirectory gets its own project-dir slug that does not
+  collapse into the main repo's slug, so it counts as a second project even though it's the
+  same repo.
+- A pooled row (several repos sharing a branch name, `main` being the usual case) shows
+  `Proj > 1`; scoping with `--this-repo` or a narrower `--projects` glob collapses it back to
+  `1`. For a pooled row, the Total/Opus/Sonnet/Haiku/Other numbers sum across unrelated repos
+  with no way to decompose them from the table, so only the `Proj` count is meaningful.
 
 **When to reach for it.** Survey all branches and spot which ones used which models. Usually the first command to run on any transcript analysis session.
 

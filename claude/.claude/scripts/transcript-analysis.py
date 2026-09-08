@@ -569,7 +569,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 
     for jsonl, records in iter_sessions(scope.PROJECTS_DIR, projects_glob):
         proj_label = _derive_proj_label(jsonl)
-        total_projects_seen.add(_project_family(proj_label))
+        total_projects_seen.add(_project_family(jsonl.parent.name))
 
         # Count unrecognized shapes regardless of other filters.
         for rec in records:
