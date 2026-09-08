@@ -61,16 +61,28 @@ def _extract_span(start_marker: str, end_marker: str) -> str:
     return install_text[start : end + len(end_marker)]
 
 
+def _write_stow_packages_stub(scripts_dir: Path) -> None:
+    """A stub stow-packages.sh emitting only the mandatory "claude" package
+    row install.sh's stow-adopt-ignore block requires (GH-849) -- not a
+    symlink to the real script, which also demands a claude-skills package
+    directory this fixture doesn't create."""
+    stub = scripts_dir / "stow-packages.sh"
+    stub.write_text("#!/usr/bin/env bash\nprintf 'claude\\t.\\n'\n")
+    stub.chmod(0o755)
+
+
 def _make_package(pkg_root: Path, base_content: dict) -> None:
     """A throwaway stow package mirroring this repo's real shape closely
     enough to exercise the stow + render sequence: a tracked
     settings.base.json plus the real _stow_migration_lib.sh and
     render-settings.sh (symlinked, not reimplemented, so the test exercises
-    the actual scripts under review, not a copy of them)."""
+    the actual scripts under review, not a copy of them), plus a stub
+    stow-packages.sh (see _write_stow_packages_stub)."""
     scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "_stow_migration_lib.sh").symlink_to(SCRIPTS_DIR / "_stow_migration_lib.sh")
     (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+    _write_stow_packages_stub(scripts_dir)
     (pkg_root / "claude" / ".claude" / "settings.base.json").write_text(json.dumps(base_content))
 
     subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)
@@ -196,6 +208,7 @@ class TestAbortsOnRenderFailure:
             SCRIPTS_DIR / "_stow_migration_lib.sh"
         )
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        _write_stow_packages_stub(scripts_dir)
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render.
         subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True)

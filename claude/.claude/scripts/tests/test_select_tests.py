@@ -1219,7 +1219,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
 })
 
 # Hand-derived audit record of every SKILL.md path read from a HOOKS_TESTS_DIR
-# test, plus the settings.json read from test_claude_enable_tool.py
+# test, plus the settings.base.json read from test_claude_enable_tool.py
 # (SCRIPTS_TESTS_DIR). Each pair was hand-checked against its citing test's
 # own read call. This list is not derived from SKILL_FILES_READ_BY_HOOK_TESTS
 # or the CLAUDE_SETTINGS_JSON row, so it is DAMP test data (CLAUDE.md's named
@@ -1246,7 +1246,7 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
     ("claude/.claude/hooks/tests/test_require_skill_review.py",
      "plugins/skill-management/skills/skill-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_claude_enable_tool.py",
-     "claude/.claude/settings.json"),
+     "claude/.claude/settings.base.json"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
      "claude-skills/skills/code-review/SKILL.md"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",
