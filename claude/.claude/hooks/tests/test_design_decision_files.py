@@ -61,6 +61,11 @@ DESIGN_DECISIONS_DIR = REPO_ROOT / "docs" / "design-decisions"
 _FILENAME_RE = re.compile(r"^[a-z][a-z0-9-]*\.md$")
 _H1_RE = re.compile(r"^# .+$", re.MULTILINE)
 _PROVENANCE_RE = re.compile(r"Formerly `docs/design-decisions\.md` §(\d+)\.")
+# Whole-text guard: the bare prefix, unanchored to line 3, so a garbled
+# fragment that landed elsewhere in a file's body (copy-paste mistake,
+# botched edit) is still found even though it can't satisfy the full,
+# well-formed _PROVENANCE_RE shape.
+_FORMERLY_PREFIX_RE = re.compile(r"Formerly `docs/design-decisions\.md`")
 # Matches a single-asterisk italic line (`*...*`) and rejects a double-asterisk
 # bold one (`**...**`) via the lookahead/lookbehind pinning the outer
 # delimiters to exactly one asterisk each. Needed because at least two real
@@ -281,6 +286,38 @@ def test_provenance_line_is_well_formed() -> None:
     paths = _decision_files()
     _assert_corpus_non_empty(paths)
     violations = _provenance_line_violations(paths)
+    assert not violations, "\n".join(violations)
+
+
+def _malformed_formerly_fragment_violations(paths: list[Path]) -> list[str]:
+    violations: list[str] = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        line3 = lines[2] if len(lines) >= 3 else ""
+        line3_is_well_formed = _PROVENANCE_RE.search(line3) is not None
+        for match in _FORMERLY_PREFIX_RE.finditer(text):
+            on_line3 = text.count("\n", 0, match.start()) == 2
+            if on_line3 and line3_is_well_formed:
+                continue
+            violations.append(
+                f"{path.name}: found a 'Formerly `docs/design-decisions.md`' "
+                "fragment that isn't part of a well-formed line-3 provenance "
+                "match -- a corpus-corruption artifact outside the one line "
+                "provenance is recorded on"
+            )
+    return violations
+
+
+def test_no_malformed_formerly_fragment_outside_provenance_line() -> None:
+    """Assertion 2 (whole-text guard): a 'Formerly `docs/design-decisions.md`'
+    -shaped fragment anywhere in a file's body, not just line 3, must resolve
+    to a well-formed provenance match on line 3 itself. Distinct from
+    test_provenance_line_is_well_formed, which inspects only line 3 and so
+    can't see a garbled fragment landed elsewhere in the file."""
+    paths = _decision_files()
+    _assert_corpus_non_empty(paths)
+    violations = _malformed_formerly_fragment_violations(paths)
     assert not violations, "\n".join(violations)
 
 
@@ -511,6 +548,15 @@ class TestFaultInjection:
         violations = _h1_count_violations(_decision_files(tmp_path))
         assert violations == ["two-headings.md"]
 
+    def test_h1_count_detects_zero_headings(self, tmp_path: Path) -> None:
+        (tmp_path / "no-heading.md").write_text(
+            "No H1 at all, just body prose.\n\n"
+            "Formerly `docs/design-decisions.md` §1.\n",
+            encoding="utf-8",
+        )
+        violations = _h1_count_violations(_decision_files(tmp_path))
+        assert violations == ["no-heading.md"]
+
     def test_legacy_numbers_detects_gap(self, tmp_path: Path) -> None:
         (tmp_path / "first-decision.md").write_text(
             "# First Decision\n\nFormerly `docs/design-decisions.md` §1.\n",
@@ -524,8 +570,7 @@ class TestFaultInjection:
             _decision_files(tmp_path), expected_legacy_numbers=frozenset({1, 2, 3})
         )
         assert len(violations) == 1
-        assert "missing" in violations[0]
-        assert "2" in violations[0]
+        assert "missing [2] from the expected closed set" in violations[0]
 
     def test_provenance_line_accepts_bare_date_no_formerly(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(
@@ -568,6 +613,15 @@ class TestFaultInjection:
         violations = _provenance_line_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "some-decision.md" in violations[0]
+
+    def test_provenance_line_rejects_file_under_three_lines(self, tmp_path: Path) -> None:
+        """Exercises the `lines[2] if len(lines) >= 3 else ""` fallback --
+        a file too short to even have a line 3 must still fail the shape
+        check rather than raise an IndexError."""
+        (tmp_path / "short-decision.md").write_text("# Title\n", encoding="utf-8")
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "found ''" in violations[0]
 
     def test_provenance_line_rejects_bold_line(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(
@@ -627,8 +681,7 @@ class TestFaultInjection:
             _decision_files(tmp_path), expected_legacy_numbers=frozenset({1, 2, 3})
         )
         assert len(violations) == 1
-        assert "missing" in violations[0]
-        assert "3" in violations[0]
+        assert "missing [3] from the expected closed set" in violations[0]
 
     def test_legacy_closure_detects_duplicate_within_full_coverage(
         self, tmp_path: Path
@@ -680,7 +733,7 @@ class TestFaultInjection:
         )
         assert len(violations) == 1
         assert "outside the expected closed set" in violations[0]
-        assert "64" in violations[0]
+        assert "include [64]," in violations[0]
 
     def test_provenance_line_rejects_garbled_formerly_no_date(self, tmp_path: Path) -> None:
         """has_formerly must come from an anchored _PROVENANCE_RE match, not
@@ -698,6 +751,32 @@ class TestFaultInjection:
         violations = _provenance_line_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "carries neither" in violations[0]
+
+    def test_malformed_formerly_fragment_detected_outside_line_three(
+        self, tmp_path: Path
+    ) -> None:
+        """A garbled 'Formerly `docs/design-decisions.md`'-shaped fragment
+        landed outside line 3 -- a corpus-corruption artifact that repeats a
+        number already legitimately recorded by an unrelated file -- must
+        still be caught even though the file's own line 3 is a clean,
+        well-formed provenance line (a bare date, no Formerly clause).
+        Covers a gap _provenance_line_violations' line-3-only shape check
+        can't reach, since it never inspects the rest of the file."""
+        (tmp_path / "first-decision.md").write_text(
+            "# First Decision\n\nFormerly `docs/design-decisions.md` §5.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "second-decision.md").write_text(
+            "# Second Decision\n\n*2026-01-01.*\n\n"
+            "Body prose that garbles the record: Formerly "
+            "`docs/design-decisions.md` §5, no trailing period or italics.\n",
+            encoding="utf-8",
+        )
+        violations = _malformed_formerly_fragment_violations(
+            _decision_files(tmp_path)
+        )
+        assert len(violations) == 1
+        assert "second-decision.md" in violations[0]
 
     def test_legacy_closure_accepts_full_default_closed_set(self, tmp_path: Path) -> None:
         """Exercises _legacy_number_range_violations against its actual
@@ -728,7 +807,7 @@ class TestFaultInjection:
         violations = _legacy_number_range_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "outside the expected closed set" in violations[0]
-        assert "64" in violations[0]
+        assert "include [64]," in violations[0]
 
     def test_numbered_heading_detects_revived_heading(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(

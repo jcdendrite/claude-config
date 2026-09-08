@@ -8,23 +8,12 @@ now cover **Phase 1 only**. Phases 2 (the machine-wide sleep-poll measurement)
 and 3 (the case study) move to a follow-on branch; see "Deferred: Phase 2 and
 3" below for why and what carries forward.
 
-**Correction after commit.** The engineer flagged that "What this plan
-deliberately does not ground" (row 17, retained above) was wrong on its own
-terms: citing the *absence* of a repo-documented norm is not a reason to
-skip grounding one, if a norm actually exists at the vendor level that this
-repo simply hadn't cited yet. `verify-sources` confirmed one does: Anthropic's
-Week 15 (2026-04-06–10) release digest and `CHANGELOG.md` v2.1.246 both
-document a no-polling norm for a session's own backgrounded Bash work,
-independent of and broader than the sub-agents-page mechanism this plan
-originally grounded. Row 29's claim that "the dispatching session's schema...
-contains no no-polling instruction" was also independently found wrong —
-this session's own live Bash schema, and a freshly dispatched
-`general-purpose` agent's schema, both carry an explicit no-poll sentence,
-word for word. `docs/design-decisions/passive-notification-over-polling.md`
-is revised accordingly (a follow-up commit on this branch, not a plan
-rewrite): it now states the norm plainly and cites both new sources, rather
-than only the notification mechanism. No new CLAUDE.md/SKILL.md rule text is
-added — the vendor-owned tool schema already enforces the own-Bash case
+The no-polling norm for a session's own backgrounded Bash work is grounded
+independently of the sub-agents-page mechanism, via Anthropic's Week 15
+(2026-04-06–10) release digest and `CHANGELOG.md` v2.1.246.
+`docs/design-decisions/passive-notification-over-polling.md` cites both
+alongside the sub-agents-page mechanism. No new CLAUDE.md/SKILL.md rule text
+is added — the vendor-owned tool schema already enforces the own-Bash case
 uniformly every turn, so a repo-level rule restating it would duplicate an
 already-enforced mechanism rather than close a real gap.
 
@@ -49,22 +38,9 @@ description varies by agent type, so only its mechanism sentence is citable.
 Point at that entry from `subagent-delegation/SKILL.md` alone, leaving
 `claude/.claude/CLAUDE.md` and `handoff/SKILL.md` untouched.
 
-**Which source grounds which claim.** Two mechanism claims, two sources, one
-shared disclaimer. The public sub-agents page grounds completion notification
-for a *dispatched subagent*. The Bash tool description's `run_in_background`
-sentence — a backgrounded command "keeps running across turns and re-invokes
-you when it exits" — grounds the same thing for a session's *own* backgrounded
-command. The sub-agents page prohibits no polling, and the entry says so in
-drafted words (row 33) rather than leaving the framing to execution time. The
-entry makes no claim either way about what the Bash tool description
-prohibits: row 29 establishes that it varies by agent type, so its mechanism
-sentence is citable and its prohibitions are not. The `ScheduleWakeup`
-prohibition is cited via `[§41]`, and the Bash sentence via row 28's existing
-in-repo copy, because a version-bound tool description has no URL a reader can
-re-check — so the repo keeps exactly one copy of each and everything else
-points at it (row 31). A URL-backed page carries no such constraint, which is
-why the sub-agents quote appears verbatim in the entry and the tool-description
-quotes do not.
+Rows 31 and 33 in the Mechanisms table below are this section's canonical
+record of which source grounds which claim and how the entry's disclaimer is
+worded — not restated here.
 
 **What this plan deliberately does not ground.** A plan-review finding asked
 this plan to ground a repo *norm* against Bash sleep-polling. No such norm
@@ -75,17 +51,22 @@ pinned there by `test_skills.py:1440-1442`. The finding's residue is taken:
 the Bash tool description was genuinely an unchecked candidate, and its
 mechanism half is adopted as row 28.
 
-**On the duplication and the citation's audience.** Don't relitigate the
-duplication — `no-op-dispatch-guard.md:20` names the exception correctly.
-State the audience instead, because the Context section's goal reads
-reader-agnostically and it is not: **this citation's reader is a maintainer
-auditing why the rule exists, not a mid-dispatch session.** That follows from
-`no-op-dispatch-guard.md:5`'s own account of why the CLAUDE.md copy exists —
-to reach a session at a moment that does not look like a delegation decision,
-so it stops the behavior rather than justifying it. `subagent-delegation`
-already owns the delegation-cost-reasoning half of the documented split, and
-grounding *why* passive notification works is reasoning. One pointer, on that
-surface, below the identical run, touching neither copy.
+**On the duplication and the citation's audience.** The Context section's
+goal reads reader-agnostically, and it is not:
+
+- Don't relitigate the duplication — `no-op-dispatch-guard.md:20` names the
+  exception correctly.
+- This citation's reader is a maintainer auditing why the rule exists, not a
+  mid-dispatch session.
+- That follows from `no-op-dispatch-guard.md:5`'s own account of why the
+  CLAUDE.md copy exists: to reach a session at a moment that does not look
+  like a delegation decision, so it stops the behavior rather than
+  justifying it.
+- `subagent-delegation` already owns the delegation-cost-reasoning half of
+  the documented split, and grounding *why* passive notification works is
+  reasoning.
+- One pointer lands on that surface, below the identical run, touching
+  neither copy.
 
 **Root problem.** The rule was uncited on all three surfaces that carry it,
 and its one quantitative support is documented as non-generalizing, so both
@@ -100,24 +81,8 @@ confirmed still open and unmerged as of this session (`origin/main:CLAUDE.md`
 still contains "inherits the private half"; that branch is separately in
 progress under session `narrow-provenance-redaction-rule-f4`). Phase 2's
 publishable content depends entirely on which redaction rule ends up in
-force, and rows 19, 20, 38, 41, 42, and 43 that this plan previously carried
-show what happens when a plan tries to design a disclosure policy for both
-possible rule-states at once: row 19 discloses a threshold beside a withheld
-share; row 20 adds three precision constraints to stop that threshold from
-bracketing the share; row 38 extends the same constraints to the count axis;
-row 42 adds a cross-artifact differencing note; row 43 forbids a
-representativeness claim. Five successive layers, each closing a gap the
-previous one opened — the compounding-defensive-layers pattern this repo's
-own `CLAUDE.md` names as a wrong-foundation tell, and the foundation here was
-trying to pre-design a disclosure policy against a rule that had not yet
-resolved.
-
-The fix is not a sixth layer. Phase 2 is not written until the redaction
-rule's fate is known, then written once, against whichever rule is actually
-in force at that time. That removes the old rows 19–21, 38, 41–43 and the
-three-part runtime check they required (the old plan's Verification step 4)
-entirely — none of that apparatus is needed once the plan stops trying to
-hold two rule-states open simultaneously.
+force, so its disclosure policy is designed once, against whichever rule is
+actually in force, when its own follow-on branch starts.
 
 Two things from the discarded apparatus carry forward rather than needing
 re-derivation when that follow-on plan is written:
