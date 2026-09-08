@@ -108,38 +108,47 @@ extends by analogy:
 - *What may be counted:* this repo's own tooling in use — Claude Code
   tool calls, sessions, and agent dispatches. Nothing else.
 - *How it may be reported:*
-  - Counts and duration may be reported as any statistic over those
-    counts — a total, a share, a median — computed per tool call,
-    session, or dispatch, or pooled. Neither carries an external
-    reference point that converts it into an engagement-value
-    estimate.
-  - Cost is dollar or token spend on running the tooling, never a
-    client-billed or engagement-revenue figure. Report it only as a
-    rate per tool call, session, or dispatch (for example, median
-    cost per session), never as a raw pooled total. A dollar or token
-    total scales with pool volume and, unlike a per-unit rate, can be
-    converted to an engagement-value estimate using public day-rate
+  - Counts may be reported as a total, a share, or a median. Report
+    each at any granularity — per tool call, per session, per
+    dispatch, or pooled. A count carries no external reference point
+    that converts it into an engagement-value estimate on its own.
+  - Cost is dollar or token spend on running the tooling. Duration is
+    wall-clock time spent running it. Neither may be reported as a
+    client-billed, engagement-revenue, or billable-hours figure.
+    Report each only as a rate per tool call, session, or dispatch
+    (e.g., median cost per session) — never as a raw pooled total. A
+    raw total scales with pool volume and, unlike a per-unit rate, can
+    be converted to an engagement-value estimate using public day-rate
     references.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
 
-**Before publishing, check two things:**
+**Before publishing, check four things:**
 
 - **A correlated proxy.** Does any axis of the figure track project,
   account, or engagement without naming one?
 - **Cross-artifact reconstruction.** Does combining this figure with
   another already-published one reconstruct a per-project,
-  per-account, or per-engagement number? Check every prior publication
-  of the same pooled statistic too — a trend across repeated
-  publications (quarter-over-quarter cost or duration, say) can
-  reveal an engagement's schedule as directly as cadence would.
+  per-account, or per-engagement number?
+- **Arithmetic reconstruction of a barred total.** Does combining this
+  figure with another permitted figure — a count total, share, or
+  median, in the same publication or a prior one — reconstruct a
+  total the "how it may be reported" list bars? A published count
+  total multiplied by a published cost or duration rate reconstructs
+  that total. A count share folded into the same multiplication
+  reconstructs a barred total for the subgroup the share names, not
+  only for the whole pool.
+- **Repeated-publication trend.** Checked against every prior
+  publication of the same statistic: does a trend across publications
+  — quarter-over-quarter cost, duration, or count, say — reveal an
+  engagement's schedule as directly as cadence would?
 
-A share or a median reconstructs more readily under the second check
-than a raw total does — apply extra scrutiny there before publishing
-either.
+A share or a median reconstructs more readily than a raw total does
+under both the cross-artifact and arithmetic-reconstruction checks —
+apply extra scrutiny there before publishing either.
 
-If either check fires, don't publish. If you doubt the pool is diverse
+If any check fires, don't publish. If you doubt the pool is diverse
 enough to keep the figure from being attributed to a single project,
 account, or engagement, don't publish either — closed by default, same
 as the blocklist tier's "if in doubt, strip it."
