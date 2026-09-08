@@ -69,9 +69,10 @@ _PROVENANCE_RE = re.compile(r"Formerly `docs/design-decisions\.md` §(\d+)\.")
 # and attribution-in-skill-prose-and-hook.md:14,32,38.
 _ITALIC_PROVENANCE_LINE_RE = re.compile(r"^\*(?!\*)(?P<body>.*)(?<!\*)\*$")
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-# The pre-split monolith is retired, so this set can never grow past §63 --
-# see .claude/rules/design-decisions.md's Format bullet for the same bound,
-# pinned together by test_rule_file_closed_legacy_upper_bound_matches_module_constant.
+# The pre-split monolith is retired, so this set can never grow past §63.
+# See .claude/rules/design-decisions.md's Format bullet for the same bound;
+# test_rule_file_closed_legacy_upper_bound_matches_module_constant pins the
+# two together.
 _CLOSED_LEGACY_NUMBERS: frozenset[int] = frozenset(range(1, 64))
 _LEGACY_HEADING_RE = re.compile(r"^## \d+\.", re.MULTILINE)
 # Phase A's own conversion format for an intra-file cross-reference, e.g.
@@ -184,9 +185,10 @@ _RULE_CLOSED_LEGACY_UPPER_BOUND_RE = re.compile(r"closed at `§(\d+)`")
 def test_rule_file_closed_legacy_upper_bound_matches_module_constant() -> None:
     """Pins .claude/rules/design-decisions.md's stated closed-legacy-set
     upper bound to max(_CLOSED_LEGACY_NUMBERS), the constant
-    _legacy_number_range_violations actually enforces below, so the two
-    can't silently drift apart the way the filename grammar could without
-    test_rule_file_filename_grammar_matches_enforced_regex."""
+    _legacy_number_range_violations actually enforces below.
+
+    Mirrors test_rule_file_filename_grammar_matches_enforced_regex's
+    drift-prevention shape."""
     rule_path = REPO_ROOT / ".claude" / "rules" / "design-decisions.md"
     rule_text = rule_path.read_text(encoding="utf-8")
     match = _RULE_CLOSED_LEGACY_UPPER_BOUND_RE.search(rule_text)
@@ -252,6 +254,12 @@ def _provenance_line_violations(paths: list[Path]) -> list[str]:
                 f"{path.name}: provenance line carries neither an ISO-8601 date "
                 "nor a 'Formerly `docs/design-decisions.md` §N.' clause"
             )
+        elif date_match is not None and not has_formerly and "Formerly" in body:
+            violations.append(
+                f"{path.name}: provenance line has a date but its 'Formerly' "
+                "clause doesn't match the expected "
+                "'Formerly `docs/design-decisions.md` §N.' shape"
+            )
         if date_match is not None:
             try:
                 datetime.date.fromisoformat(date_match.group(0))
@@ -266,8 +274,8 @@ def _provenance_line_violations(paths: list[Path]) -> list[str]:
 def test_provenance_line_is_well_formed() -> None:
     """Assertion 2 (shape half): line 3 of every file is an italic
     provenance line carrying an ISO-8601 date, a 'Formerly §N' clause, or
-    both -- a file with no Formerly clause (a decision recorded after the
-    split) must carry a date instead. Absence of a Formerly clause is not
+    both. A file with no Formerly clause -- a decision recorded after the
+    split -- must carry a date instead. Absence of a Formerly clause is not
     itself a violation here; test_legacy_numbers_form_contiguous_range's
     closed-set check is what catches a dropped or fabricated one."""
     paths = _decision_files()
@@ -527,11 +535,26 @@ class TestFaultInjection:
         assert violations == []
 
     def test_provenance_line_accepts_formerly_no_date(self, tmp_path: Path) -> None:
-        """The shape 15 real files have -- a decision that predates the
-        split but whose original section carried no recorded date."""
+        """The shape 15 real files have.
+
+        A decision that predates the split but whose original section
+        carried no recorded date."""
         (tmp_path / "some-decision.md").write_text(
             "# Some Decision\n\n*Formerly `docs/design-decisions.md` §1.*\n\n"
             "Body text.\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert violations == []
+
+    def test_provenance_line_accepts_date_and_formerly(self, tmp_path: Path) -> None:
+        """The shape 48/63 real files have -- a date and a Formerly clause
+        together.
+
+        Otherwise exercised only by the live-corpus test."""
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n*2026-01-01. Formerly "
+            "`docs/design-decisions.md` §1.*\n",
             encoding="utf-8",
         )
         violations = _provenance_line_violations(_decision_files(tmp_path))
@@ -546,6 +569,25 @@ class TestFaultInjection:
         assert len(violations) == 1
         assert "some-decision.md" in violations[0]
 
+    def test_provenance_line_rejects_bold_line(self, tmp_path: Path) -> None:
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n**2026-01-01. Formerly "
+            "`docs/design-decisions.md` §1.**\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "must be an italic provenance line" in violations[0]
+
+    def test_provenance_line_rejects_neither_date_nor_formerly(self, tmp_path: Path) -> None:
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n*Just italic prose, no provenance data at all.*\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "carries neither" in violations[0]
+
     def test_provenance_line_rejects_malformed_date(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(
             "# Some Decision\n\n*2026-13-45. Formerly "
@@ -555,6 +597,19 @@ class TestFaultInjection:
         violations = _provenance_line_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "2026-13-45" in violations[0]
+
+    def test_provenance_line_rejects_garbled_formerly_with_date(self, tmp_path: Path) -> None:
+        """A co-occurring valid date must not excuse a 'Formerly' clause that
+        fails to match _PROVENANCE_RE -- has_formerly stays load-bearing even
+        when a date is also present on the line."""
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n*2026-01-01. Formerly section one of the "
+            "old doc.*\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "has a date but its 'Formerly' clause doesn't match" in violations[0]
 
     def test_legacy_closure_detects_dropped_highest_number(self, tmp_path: Path) -> None:
         """A fixed expected set catches losing the top element, which a
@@ -642,6 +697,37 @@ class TestFaultInjection:
         violations = _provenance_line_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "malformed-decision.md" in violations[0]
+
+    def test_legacy_closure_accepts_full_default_closed_set(self, tmp_path: Path) -> None:
+        """Exercises _legacy_number_range_violations against its actual
+        default _CLOSED_LEGACY_NUMBERS (1..63) rather than an overridden
+        small set, unlike every other TestFaultInjection case above."""
+        for number in range(1, 64):
+            (tmp_path / f"decision-{number}.md").write_text(
+                f"# Decision {number}\n\n"
+                f"Formerly `docs/design-decisions.md` §{number}.\n",
+                encoding="utf-8",
+            )
+        violations = _legacy_number_range_violations(_decision_files(tmp_path))
+        assert violations == []
+
+    def test_legacy_closure_rejects_number_beyond_default_closed_set(
+        self, tmp_path: Path
+    ) -> None:
+        for number in range(1, 64):
+            (tmp_path / f"decision-{number}.md").write_text(
+                f"# Decision {number}\n\n"
+                f"Formerly `docs/design-decisions.md` §{number}.\n",
+                encoding="utf-8",
+            )
+        (tmp_path / "decision-64.md").write_text(
+            "# Decision 64\n\nFormerly `docs/design-decisions.md` §64.\n",
+            encoding="utf-8",
+        )
+        violations = _legacy_number_range_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "outside the expected closed set" in violations[0]
+        assert "64" in violations[0]
 
     def test_numbered_heading_detects_revived_heading(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(
