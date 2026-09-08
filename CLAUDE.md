@@ -155,32 +155,16 @@ engagement's fingerprint — whatever the datatype, and whether you
 quoted it, computed it, or recalled it. The test is where the
 knowledge came from, not what shape it takes.
 
-One carve-out: measurements of this repo's own tooling — Claude Code
-tool calls, sessions, and agent dispatches, and nothing else. Cost,
-spend, duration, and cadence stay excluded; they double as
-engagement-sensitivity signals on their own. A figure pooled across a
-corpus that mixes private and public sources is publishable when it
-carries no per-project, per-account, or per-engagement dimension.
-Cite the command or script that produced it. Before publishing,
-check two things:
-
-- A correlated proxy variable: an axis that isn't named but tracks
-  project, account, or engagement.
-- Cross-artifact reconstruction: whether combining this figure with
-  another published one reconstructs a per-project, per-account, or
-  per-engagement number.
-
-Either check matching, or any doubt the pool is diverse enough to
-prevent attribution to one project, account, or engagement, means
-don't publish — closed by default, same as the blocklist tier's "if
-in doubt, strip it."
-
-Decomposing that same figure by project, account, or engagement is
-prohibited outright, with no factor-weighing or borderline case — in
-any artifact and any form, a commit message, PR body, decision entry,
-or illustrative example included. A wrongly-scoped figure discovered
-already published gets the same remediation as a leaked secret: ask
-the owner, then rewrite history.
+Never publish a figure carrying a per-project, per-account, or
+per-engagement dimension. This is absolute — not a factor to weigh, no
+borderline case. It binds every artifact: a commit message, PR body,
+decision entry, or illustrative example included. One narrow carve-out
+covers pooled measurements of this repo's own tooling — tool calls,
+sessions, agent dispatches, and nothing else — and it is conditional.
+`docs/private-project-redaction.md` § "Publishing a pooled tooling
+measurement" states the two pre-publication checks and the citation
+requirement. Work that section before publishing under it; if in
+doubt, don't.
 
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.

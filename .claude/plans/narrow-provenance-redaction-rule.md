@@ -254,6 +254,25 @@ provenance"` — rather than introducing a new pointer style.
    working tree — the review then exercises the updated P1 wording against
    a real diff.
 
+## Amendment: length reduction (PR #928 review)
+
+The originally drafted carve-out paragraph added 26 lines to a
+`CLAUDE.md` that sits at the hook-enforced 200-line cap with zero
+headroom, against row 8's (above) budgeted "roughly 12" — resolving
+row 8 from `[unverified]`. The full procedure (scope list, two
+pre-publication checks, citation requirement, remediation path) is
+reachable only by a session that has already decided to publish a
+figure, so it does not need to live in the always-loaded file; the
+failure mode of a session not knowing the procedure is over-redaction,
+which fails closed. `CLAUDE.md` now keeps only the absolute
+prohibition plus a conditional pointer; the rest moved to a new
+`docs/private-project-redaction.md` § "Publishing a pooled tooling
+measurement" section, with `.claude/skills/code-review-claude-config/SKILL.md`'s
+P1 citation redirected to it. This supersedes Critical Files' "exactly
+two files change" and Out of scope's "no edit" for
+`docs/private-project-redaction.md` — a three-file diff is correct for
+this PR.
+
 ## Out of scope
 
 - **Publishing any measurement figure.** This PR changes what the rule
