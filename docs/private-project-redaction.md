@@ -124,7 +124,22 @@ extends by analogy:
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
 
-**Before publishing, check four things:**
+**Before publishing, check four things.** "Already-published" and
+"prior publication" mean the full repo history — commits, PR and
+issue text, decision entries, and docs — not only the current
+working tree.
+
+Search git-tracked content with `git log -p --all`. Search PR and
+issue text separately with `gh pr list --search <term> --state all`
+and `gh issue list --search <term> --state all` — `git log` cannot
+reach GitHub-hosted PR or issue bodies, since they are metadata, not
+git objects. A negative result from any of these commands is only as
+trustworthy as that command's own depth, limit, or pagination bound:
+
+- `git log`: confirm the clone isn't shallow and has every branch
+  fetched.
+- `gh`: raise `--limit` (default 30) past the search's plausible hit
+  count.
 
 - **A correlated proxy.** Does any axis of the figure track project,
   account, or engagement without naming one?
