@@ -149,8 +149,9 @@ per-project channel.
   `claude/.claude/hooks/tests/test_design_decision_files.py` blocks adding
   a post-split decision entry here. Its fix lives on an unlanded sibling
   branch — another change owns it. `[verified:
-  standardize-background-wait-mechanism branch, commit 85eac0b7, Phase 1
-  description]` — the engineer's own decision, made this session, is the
+  standardize-background-wait-mechanism branch, commit 85eac0b7 fixes the
+  test_legacy_numbers_form_contiguous_range conflict]` — the engineer's own
+  decision, made this session, is the
   separate choice of how to sequence around G1 (ship the rule change now,
   add the decision entry once the sibling branch's fix lands), not the
   underlying fact G1 states.
@@ -291,16 +292,15 @@ this PR.
   `docs/design-decisions/schedulewakeup-misapplied-documented.md:14`, and
   `docs/cost-levers-considered.md:501`. Also cite
   `.claude/plans/private-corpus-provenance-redaction.md` (commit `ddeb74b`,
-  "Private corpus provenance redaction (#687)") as the mechanism's original
-  design record — it authored both the CLAUDE.md paragraph and the
-  `code-review-claude-config` P1 checklist item this PR edits, and its
-  documented two-arm verification experiment (`:95`) concluded that
-  "inherits the private half" was necessary to resolve a "mixed aggregate"
-  fixture case, a conclusion this narrowing changes for the undecomposed
-  case. This file is a preserved historical record (Axis 3) and is not
-  edited here; cite it in the commit message for lineage, distinct from the
-  three sites above, which *applied* the rule to withhold a figure rather
-  than designed it.
+  PR #687) in the commit message as the mechanism's original design record.
+  It authored both the CLAUDE.md paragraph and the
+  `code-review-claude-config` P1 checklist item this PR edits. Note in the
+  commit message that its two-arm verification experiment (`:95`) concluded
+  "inherits the private half" was necessary for a "mixed aggregate" fixture
+  case — a conclusion this narrowing changes for the undecomposed case.
+  This file is a preserved historical record (Axis 3) and is not edited
+  here, distinct from the three sites above, which *applied* the rule to
+  withhold a figure rather than designed it.
 - **Amending those three sites.** Preserved records per G2.
 - **Any numeric, percentage, or ratio detector in
   `deny-private-project-refs.sh`,** or any other hook change. It would

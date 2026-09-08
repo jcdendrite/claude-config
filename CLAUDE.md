@@ -159,12 +159,12 @@ Never publish a figure carrying a per-project, per-account, or
 per-engagement dimension. This is absolute — not a factor to weigh, no
 borderline case. It binds every artifact: a commit message, PR body,
 decision entry, or illustrative example included. One narrow carve-out
-covers pooled measurements of this repo's own tooling — tool calls,
-sessions, agent dispatches, and nothing else — and it is conditional.
-`docs/private-project-redaction.md` § "Publishing a pooled tooling
-measurement" states the two pre-publication checks and the citation
-requirement. Work that section before publishing under it; if in
-doubt, don't.
+covers pooled measurements of this repo's own tooling: tool calls,
+sessions, agent dispatches, and nothing else. That carve-out is
+conditional — `docs/private-project-redaction.md` § "Publishing a
+pooled tooling measurement" states the two pre-publication checks and
+the citation requirement. Work that section before publishing under
+it; if in doubt, don't.
 
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
