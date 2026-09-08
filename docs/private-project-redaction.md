@@ -132,9 +132,8 @@ extends by analogy:
   another already-published one reconstruct a per-project,
   per-account, or per-engagement number?
 - **Arithmetic reconstruction of a barred total.** Does any chain of
-  permitted count and rate figures — not just an adjacent pair, drawn
-  from any number of publications rather than only the current one
-  and a single prior one — multiply out to a total the "how it may be
+  permitted count and rate figures — this figure plus any number of
+  already-published ones — multiply out to a total the "how it may be
   reported" list bars? For example, a per-session tool-call median
   times a session total yields a tool-call total, which times a
   per-tool-call cost rate reconstructs a barred cost total, even
