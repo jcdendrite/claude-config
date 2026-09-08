@@ -533,10 +533,11 @@ Whether the plan-review/code-review/ready-for-review loop itself is a
 worthwhile cost-reduction target, now that PR #914 shipped a subcommand to
 measure it directly.
 
-Figures are `review-round-cost`, run 2026-09-07, default (machine-wide)
-scope on each of two machines — every declared account, not scoped to one
-repo — pooled into one total. Per-account splits and branch identities are
-withheld here for the same reason cited in the
+Figures are from `review-round-cost`, run 2026-09-07, at default
+machine-wide scope — every declared account, not one repo — on each of two
+machines. The two machines' output is pooled into one total. Per-account
+splits and branch identities are withheld here for the same reason cited in
+the
 `subagent-idle-gap-cache-rebuild-split.md` section above: the corpus mixes
 private-project and public transcripts, and any more granular figure would
 inherit the private half's composition. The pooled ratio below is not

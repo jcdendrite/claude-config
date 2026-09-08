@@ -105,7 +105,10 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
   - the repo
   - the PR number
   - the account name
-- **A generalized statistical fact about a single outlier is safe to publish only when stripped of anything that could correlate it back to its source.** "One branch reached over 40 review rounds" is fine on its own — nothing to redact. Attaching a date, a dollar figure specific to that one item, or narrative detail about what the branch was doing turns the same fact into a structural fingerprint (see the repo CLAUDE.md's "Also redact structural fingerprints and provenance" section) even with the name stripped out.
+- **A generalized statistical fact about a single outlier is safe to publish only when stripped of anything that could correlate it back to its source.** "One branch reached over 40 review rounds" is fine on its own — nothing to redact. Any of the following turns the same fact into a structural fingerprint (see the repo CLAUDE.md's "Also redact structural fingerprints and provenance" section) even with the name stripped out:
+  - a date
+  - a dollar figure specific to that one item
+  - detail specific enough to narrow which branch or project it could be (e.g. naming the exact hook, gate, or denial message that fired)
 - **Don't enumerate account or project *types* in a write-up, even generically.** A phrase like "across every account (type-A, type-B, type-C)" discloses the operator's own business structure — how many kinds of relationships exist — independent of any name. Prefer an aggregate phrasing ("across the corpus," "pooled across N accounts") that states the scope was multi-account without characterizing what the accounts are.
 
 ## Example usage
