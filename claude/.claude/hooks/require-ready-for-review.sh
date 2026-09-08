@@ -33,6 +33,9 @@
 #   session_id) a gate run it already completed at the same HEAD.
 #
 # Bypass cases (allow without checking marker):
+# - The skill is currently running (active marker live for this session).
+#   Checked before the command-shape, repo-resolution, and default-branch
+#   checks, so it fires regardless of what they would decide.
 # - Not Bash tool, or not git push / gh pr ready / gh pr create.
 # - The next three are judged per git-push fragment, so a bypassable push
 #   chained ahead of a gated fragment does not exempt it:
@@ -115,6 +118,9 @@
 #   push/pr-create/pr-ready commands, so any latent portability gap in that
 #   shared path is now fully exposed, not reached only by a narrow slice of
 #   commands.
+# - The active-marker bypass check now also runs before that same
+#   command-shape scan, so its cost is paid on every Bash call during an
+#   active /ready-for-review run, not only at the terminal push/PR command.
 
 set -uo pipefail
 
@@ -162,6 +168,12 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
 fi
 
 [ -z "$CWD" ] && CWD="$PWD"
+
+# Active-marker bypass, checked before the command-shape scan so a
+# non-gated Bash call still refreshes the marker's idle window.
+if _lib_active_bypass_marker_live_and_touch ".ready-for-review-active.d" "$SESSION_ID"; then
+  exit 0
+fi
 
 # Strips a bare origin/upstream token only when it is the first non-flag word
 # (the <repository> slot per git-push's own grammar).
@@ -295,13 +307,6 @@ if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$REPO_ROOT"); then
   DEFAULT_BRANCH=""
 fi
 if [ -n "$CURRENT_BRANCH" ] && [ -n "$DEFAULT_BRANCH" ] && [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
-  exit 0
-fi
-
-# Active-marker bypass: the skill is currently running. An absent or
-# path-escaping id withholds the bypass, which just means the
-# completion-marker check further down decides the gate instead.
-if _lib_active_bypass_marker_live_and_touch ".ready-for-review-active.d" "$SESSION_ID"; then
   exit 0
 fi
 
