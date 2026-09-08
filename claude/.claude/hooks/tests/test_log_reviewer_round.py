@@ -337,6 +337,145 @@ class TestLogReviewerRoundStateAppend:
         assert not state_file.exists()
 
 
+class TestLogReviewerRoundPilotCap:
+    """The round-2 pilot sentinel (`.round-consult-round2-pilot`) lowers the
+    recorder's own resolved cap from 2 to 1 -- see
+    docs/design-decisions/round2-consult-trigger-pilot.md."""
+
+    def test_recorder_stops_at_one_line_under_pilot(self, isolated_home, tmp_path):
+        """Cap=1 under the pilot: a second, genuinely new state must not
+        append past the single already-recorded line -- the write-side
+        mirror of test_file_never_exceeds_cap, one recorded state short
+        since cap=1 trips there instead of at two."""
+        repo = tmp_path / "pilot-cap-one"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        value1 = reviewer_round_state_value(repo)
+        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+
+        _stage_change(repo, "first\nround-two\n")
+        payload = agent_input(session_id="s-pilot-cap-one", subagent_type=REVIEWER_PERSONA)
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+
+        assert state_file.read_text().splitlines() == [value1]
+
+    def test_latch_short_circuit_unchanged_under_pilot(self, isolated_home, tmp_path):
+        """The latch short-circuit fires identically regardless of which cap
+        is in effect -- once a consult has run for this branch, further
+        round tracking stays skipped under cap=1 exactly as it does under
+        the default cap=2."""
+        repo = tmp_path / "pilot-latch-shortcircuit"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        value1 = reviewer_round_state_value(repo)
+        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+
+        latch = architect_consult_latch_path(isolated_home / ".claude", repo)
+        latch.parent.mkdir(parents=True, exist_ok=True)
+        latch.touch()
+
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        payload = agent_input(session_id="s-pilot-latch-shortcircuit", subagent_type=REVIEWER_PERSONA)
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+
+        assert state_file.read_text().splitlines() == [value1]
+
+    def test_live_plan_review_active_marker_preserves_state_file_under_pilot(self, isolated_home, tmp_path):
+        """Under cap=1, a live /plan-review fan-out for this session leaves
+        a pre-seeded, already-at-cap state file byte-identical to what it
+        held before the call. This does not pin marker-check-before-cap
+        ordering: at cap=1 with one state already recorded, the recorder's
+        own independent at-cap guard already blocks the append regardless
+        of whether the live-marker check ran at all --
+        test_live_plan_review_active_marker_skips_recording_below_pilot_cap
+        is the one that actually guards that ordering, since it starts
+        below the cap where only the marker check stands between the call
+        and an observable write."""
+        repo = tmp_path / "pilot-plan-review-preserve"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        value1 = reviewer_round_state_value(repo)
+        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
+        pre_seeded_content = state_file.read_bytes()
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        sid = "s-pilot-plan-review-preserve"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+
+        assert state_file.read_bytes() == pre_seeded_content
+
+    def test_live_ready_for_review_active_marker_preserves_state_file_under_pilot(self, isolated_home, tmp_path):
+        """Same at-cap preservation check as
+        test_live_plan_review_active_marker_preserves_state_file_under_pilot,
+        for the sibling /ready-for-review active marker --
+        test_live_ready_for_review_active_marker_skips_recording_below_pilot_cap
+        is the one that guards the ordering regression."""
+        repo = tmp_path / "pilot-ready-for-review-preserve"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        value1 = reviewer_round_state_value(repo)
+        state_file = write_reviewer_round_state(isolated_home / ".claude", repo, [value1])
+        pre_seeded_content = state_file.read_bytes()
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+
+        _stage_change(repo, "first\nround-one\nround-two\n")
+        sid = "s-pilot-ready-for-review-preserve"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+
+        assert state_file.read_bytes() == pre_seeded_content
+
+    def test_live_plan_review_active_marker_skips_recording_below_pilot_cap(self, isolated_home, tmp_path):
+        """Row 15's actual load-bearing check: under the pilot sentinel with
+        zero states recorded yet (below cap=1, not at it), a live
+        /plan-review fan-out for this session must still short-circuit
+        before any write -- the recorder's own at-cap guard only fires once
+        a state file already exists, so this precondition is the one where
+        the live-marker check is the only thing standing between the call
+        and an observable write. Mirrors
+        test_live_plan_review_active_marker_skips_recording, starting from
+        no state file at all, but under the pilot sentinel."""
+        repo = tmp_path / "pilot-plan-review-skip-below-cap"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        sid = "s-pilot-plan-review-skip-below-cap"
+        marker_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+        state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
+        assert not state_file.exists()
+
+    def test_live_ready_for_review_active_marker_skips_recording_below_pilot_cap(self, isolated_home, tmp_path):
+        """Sibling of
+        test_live_plan_review_active_marker_skips_recording_below_pilot_cap
+        for the /ready-for-review active marker."""
+        repo = tmp_path / "pilot-ready-for-review-skip-below-cap"
+        _init_repo(repo)
+        _stage_change(repo, "first\nround-one\n")
+        (isolated_home / ".claude" / ".round-consult-round2-pilot").touch()
+        sid = "s-pilot-ready-for-review-skip-below-cap"
+        marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / sid).write_text(str(os.getpid()))
+        payload = agent_input(session_id=sid, subagent_type=REVIEWER_PERSONA)
+        run_hook_advisory(LOG_REVIEWER_ROUND_HOOK, payload, cwd=repo, home=isolated_home)
+        state_file = reviewer_round_state_path(isolated_home / ".claude", repo)
+        assert not state_file.exists()
+
+
 class TestLogReviewerRoundPayloadCwd:
     def test_payload_cwd_field_resolves_state_over_subprocess_pwd(self, isolated_home, tmp_path):
         """CWD=$(jq -r '.cwd // empty' ...) inside _resolve_round_context is

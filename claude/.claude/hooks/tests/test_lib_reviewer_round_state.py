@@ -9,6 +9,7 @@ functions directly rather than through either hook.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -45,6 +46,25 @@ def _state_value(repo: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def _state_cap(config_dir: str | None) -> subprocess.CompletedProcess:
+    """Shell out to the real _lib_reviewer_round_state_cap with
+    CLAUDE_CONFIG_DIR set to config_dir (or unset when None) -- isolates
+    from any ambient CLAUDE_CONFIG_DIR the real environment carries, per
+    helpers._build_subprocess_env's documented caveat."""
+    env = dict(os.environ)
+    if config_dir is None:
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    else:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_reviewer_round_state_cap'],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
     )
 
 
@@ -180,3 +200,33 @@ class TestLibReviewerRoundStateKeyValueIndependence:
         value_after = _state_value(repo)
         assert key_before.stdout == key_after.stdout
         assert value_before.stdout != value_after.stdout
+
+
+class TestLibReviewerRoundStateCap:
+    """Contract for _lib_reviewer_round_state_cap, the resolver both
+    require-architect-consult.sh (read side) and log-reviewer-round.sh
+    (write side) consume via `$(...)` into an integer comparison -- it must
+    always print a valid integer to stdout, never fail silently."""
+
+    def test_default_cap_without_pilot_sentinel(self, tmp_path):
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        result = _state_cap(str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
+
+    def test_cap_is_one_with_pilot_sentinel_present(self, tmp_path):
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / ".round-consult-round2-pilot").touch()
+        result = _state_cap(str(config_dir))
+        assert result.returncode == 0
+        assert result.stdout.strip() == "1"
+
+    def test_default_cap_on_unresolvable_config_dir(self):
+        """A relative CLAUDE_CONFIG_DIR fails _lib_config_dir's own
+        resolution -- the cap must still print the default rather than
+        leaving stdout empty."""
+        result = _state_cap("relative/config/dir")
+        assert result.returncode == 0
+        assert result.stdout.strip() == "2"
