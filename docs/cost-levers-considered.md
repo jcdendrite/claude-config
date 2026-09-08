@@ -154,7 +154,7 @@ subsequent turn.
 |---|---|---|
 | Delegating the diff read in `/code-review` to a cheaper subagent | Rejected | Diff-family output is 1.25% of cumulative main-context tokens amplification-weighted, against `Read` output at 7.95x that volume. The diff `/code-review` reads is the artifact under review, which `subagent-delegation`'s own frontmatter already excludes from delegation by name — delegating it delegates the review. |
 | Replacing in-context diff reads with deterministic scripts | No change needed | Already the case wherever it applies. Every marker and hook hash computes `git diff --cached \| sha256sum` inside a subprocess with output redirected to a file, so no diff bytes reach the model; only a deny message can surface. The seven `staff-*` agents and `ciso-reviewer` all carry `Bash` and re-fetch the diff inside their own contexts, so the parent never relays to them. |
-| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md:102`); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
+| File-path handoff of diff text to the reviewers that lack `Bash` | Rejected as below the noise floor | `skill-fidelity-reviewer` is handed literal diff text the parent already holds (`ready-for-review/SKILL.md` § "4. Skill-procedural-fidelity review (halt on findings)"); `comment-discipline-reviewer` has the same no-`Bash` shape. The duplication lands at handoff time, when few turns remain to re-amplify it. Full-patch dumps are 24.6% of diff calls and 56.5% of diff bytes; the largest single call measured ~7,500 tokens. |
 
 **Unreconciled, noted rather than resolved:** `subagent-delegation/SKILL.md`
 names "verbose `git diff` / state-survey bursts" as delegation candidates,
@@ -168,6 +168,14 @@ names the discriminator directly — the locate-and-report vs.
 read-and-reason split Step 2 already defines — so `ready-for-review`
 Step 3 and `/code-review`'s inline diff reads are governed by that
 stated rule.
+
+**2026-09-05 follow-up:** above the Bash tool's 30,000-byte truncation
+threshold, the parent session never holds the full diff text in context, so
+a paste-based handoff of diff text to `skill-fidelity-reviewer` is
+unsatisfiable, not merely expensive. `pr-diff-against-base.sh --diff-file`
+hands step 4's `skill-fidelity-reviewer` dispatch a file path instead,
+which is the same handle `/code-review`'s own Step 0, Step 0.6, and item 9d
+truncation-degradation logic needs to recover from a truncated diff.
 
 ## From `opus-plan-boundary-handoff.md` — "Opus-anchored plan boundary: continue, switch, or hand off"
 
@@ -481,3 +489,14 @@ The pooled subagent ratio (5.2%) sits far under both the 0.3947 break-even and t
 **Verdict: decline.** Both criteria fail, exactly the outcome the plan named as expected before the run. No `experimental.cacheTtl` edit ships from this plan. The instrument change ships regardless — the origin split and switch-delta pricing are now a permanent, rerunnable part of `cache-rebuild --this-repo`, not a one-off scan, so a future re-measurement (a corpus shift, a change in subagent dispatch volume or duration) costs one command, not a new plan.
 
 Two follow-ups named, neither pursued here: (1) if long in-dispatch `Bash` stalls dominate the 300–3600s gaps, cutting the stall — this repo already mandates `select-tests.py` over the full suite in agents — shrinks both `W5m` and `X`, and is the first thing to re-examine before ever revisiting `cacheTtl`; (2) per-agent-type attribution, which the oracle bound's own dispersion result gives no reason to build, since even the ex-post-best-case subpopulation misses the floor by an order of magnitude, so a selective lever restricted to real agent-type policy would fare no better.
+
+## From `handoff-threshold-cost-audit.md` — "Did raising the handoff hard-block floor to 470,000 tokens (PR #769, inherited unchanged by PR #782) cut cost?" (2026-09-06)
+
+Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-studies/handoff-hard-block-position.md).
+
+| Question | Verdict | Headline figure (scope) |
+|---|---|---|
+| Does the mechanism-engagement gate confirm the floor raise fired at the right boundary, and nowhere else? | Yes, and the falsifiable no-shift-at-#782 prediction holds | Block rate 29.8%→4.2% same-machine (macOS), 3.5% pooled across both machines' after-era data; no detectable shift at the 2026-08-31 sub-boundary (#782) across 21 after-era block fires spanning seven days |
+| Does cost per shipped PR improve? | Yes — a clean win | Mean $/PR fell 47.5% ($49.55→$26.01, pooled n=19 before / n=49 after); both machines' own after-era medians sit at or below the before-era median |
+| Does handoff/continuation overhead fall, and does deep-tail spend absorb some of the savings? | Both, in the predicted direction | Startup-burn share 3.6%→2.1–2.3% (both machines); share of session dollars past the advisory threshold 57.6%→77.3% (pooled) |
+| Does review quality decline under the raised floor? | No | Reviewer dispatch/finding volume roughly doubled between checkpoints against a ~1.45x rise in active branches on the one machine where both eras are directly comparable — engagement outpaced corpus growth |

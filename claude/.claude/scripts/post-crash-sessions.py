@@ -3,7 +3,7 @@
 unclean shutdown and print a resume command for each one that is recoverable.
 
 Read-only, always: writes no file, creates no directory, emits only to
-stdout/stderr. Four evidence sources are cross-referenced per session id:
+stdout/stderr. Five evidence sources are cross-referenced per session id:
 
   A. The session registry (<config-dir>/sessions/<pid>.json) — Claude Code's
      own first-party, undocumented record of interactive sessions.
@@ -23,6 +23,11 @@ stdout/stderr. Four evidence sources are cross-referenced per session id:
      routine tail every session ever run leaves behind. This is the source
      that survives a non-reboot crash once Claude Code has already pruned
      source A.
+  E. record-session-end.sh's <config-dir>/session-end-records/<pid> — a
+     per-pid record written when Claude Code's SessionEnd hook fires,
+     meaning that process shut down gracefully. No crash window is applied
+     at read time. Instead, the match rule that consults it does its own
+     mtime ordering against the dead entry it's explaining.
 
 A dead pid's weight as crash evidence tracks whether its source deletes the
 entry on a clean exit:
@@ -31,6 +36,9 @@ entry on a clean exit:
     entry there is anomalous on its own.
   - D is never swept, so only its recency is meaningful, never its mere
     existence.
+  - E is exculpatory, not incriminating. A record can only move a row out of
+    possible-crash into confirmed-clean-exit, never the reverse. Its absence
+    proves nothing, since a hard kill also leaves no record.
   - Boot time narrows classification where it's informative: a dead A/B
     entry that predates the last boot is definitively unclean, since the
     reboot explains the death.
@@ -141,9 +149,10 @@ _FIND_ROOT_ENV_VAR = "POST_CRASH_SESSIONS_FIND_ROOT"
 
 CLASS_RESUMABLE = "resumable"
 CLASS_CRASHED_NO_TRANSCRIPT = "crashed-no-transcript"
-CLASS_CLEAN_EXIT = "clean-exit"
+CLASS_LIVE_PROCESS = "live-process"
 CLASS_UNKNOWN = "unknown"
 CLASS_POSSIBLE_CRASH = "possible-crash"
+CLASS_CONFIRMED_CLEAN_EXIT = "confirmed-clean-exit"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +203,22 @@ class LookupEntry:
 
 
 @dataclass
+class SessionEndRecord:
+    """record-session-end.sh's <config-dir>/session-end-records/<pid> record
+    -- written once, at SessionEnd, by the process that pid names. Purely
+    exculpatory evidence: _graceful_end_record can only use it to move a dead
+    entry out of possible-crash, never the reverse."""
+    session_id: str
+    pid: int
+    reason: str | None
+    mtime: float
+    path: Path
+    # The config dir this record was read from -- raw, unresolved, like every
+    # other dataclass's config_dir field; resolved only at comparison time.
+    config_dir: Path
+
+
+@dataclass
 class TranscriptInfo:
     session_id: str
     cwd: str | None
@@ -237,6 +262,7 @@ class Report:
     pid_mismatches: list[Path]
     config_dirs: list[Path]
     any_sessions_dir_found: bool
+    any_session_end_dir_found: bool
 
 
 # ---------------------------------------------------------------------------
@@ -820,6 +846,169 @@ def _read_lookup_entries(
     return entries
 
 
+# ---------------------------------------------------------------------------
+# Source E — record-session-end.sh SessionEnd records
+# ---------------------------------------------------------------------------
+
+def _read_session_end_records(
+    config_dirs: list[Path],
+) -> tuple[dict[tuple[Path, int], SessionEndRecord], bool]:
+    """Read <config_dir>/session-end-records/<pid> across every supplied
+    config dir.
+
+    Returns (records keyed by (resolved config dir, pid), any_dir_found).
+    Keying the dict by the *resolved* config dir means a lookup keyed the
+    same way already satisfies half of _graceful_end_record's match rule
+    (condition 1: both sides' config dir resolve and are equal). No crash
+    window is applied on read -- staleness is entirely the match rule's
+    concern, and a window here would only re-suppress valid exculpatory
+    evidence for a session that ended long ago.
+    """
+    records: dict[tuple[Path, int], SessionEndRecord] = {}
+    any_dir_found = False
+    for cdir in config_dirs:
+        records_dir = cdir / "session-end-records"
+        if not records_dir.is_dir():
+            continue
+        any_dir_found = True
+        try:
+            candidates = sorted(records_dir.iterdir())
+        except OSError:
+            continue
+        for path in candidates:
+            pid = _coerce_pid(path.name)
+            if pid is None:
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            session_id = data.get("sessionId")
+            if not isinstance(session_id, str) or not session_id:
+                continue
+            mtime = _safe_mtime(path)
+            if mtime is None:
+                continue
+            key = (cdir.resolve(), pid)
+            existing = records.get(key)
+            if existing is not None and existing.mtime >= mtime:
+                continue
+            records[key] = SessionEndRecord(
+                session_id=_sanitize_for_terminal(session_id), pid=pid,
+                reason=_sanitize_for_terminal(data.get("reason")), mtime=mtime, path=path, config_dir=cdir,
+            )
+    return records, any_dir_found
+
+
+def _graceful_end_record(
+    entry: RegistryEntry | LookupEntry, records: dict[tuple[Path, int], SessionEndRecord],
+) -> SessionEndRecord | None:
+    """The match rule: a record explains a dead entry iff all three hold:
+    (1) both sides' config dir resolve and are equal, (2) pids are equal,
+    (3) the record's mtime is not older than the entry's. Condition 1 is
+    satisfied by looking the record up under entry's own resolved config
+    dir, since records is keyed the same way. Condition 3 is >=, not >:
+    an exact mtime tie counts as a match, and is what makes pid reuse
+    safe without a stored process-identity field -- every session writes
+    its start-side evidence at the same pid it later writes its end
+    record to, so a process reusing pid P necessarily rewrites P's entry
+    after the previous occupant's record. For source D (LookupEntry) this is
+    code-verified: capture-session-id.sh explicitly rewrites its lookup file
+    at every SessionStart/SubagentStart under the resolved pid. For source A
+    (RegistryEntry), the same soundness rests on an unverified assumption
+    about Claude Code's own undocumented registry-write behavior on pid
+    reuse -- unconfirmed against any primary source, like every other
+    registry-format claim in this module's docstring.
+
+    `record.session_id` is deliberately not one of the three conditions: a
+    subagent's SessionEnd payload can carry a session id that differs from
+    its parent session's, so matching on (config_dir, pid) alone -- not
+    session id -- is what lets a subagent-attributed record still explain
+    its parent session's dead entry.
+    """
+    if entry.config_dir is None or entry.mtime is None:
+        return None
+    record = records.get((entry.config_dir.resolve(), entry.pid))
+    if record is None or record.mtime < entry.mtime:
+        return None
+    return record
+
+
+def _graceful_end_coverage(
+    entries: list[RegistryEntry] | list[LookupEntry], records: dict[tuple[Path, int], SessionEndRecord],
+) -> tuple[int, int, list[SessionEndRecord]]:
+    """Coverage of a dead-entry list by graceful-exit records: how many of
+    entries have a matching SessionEnd record, out of how many total, plus
+    the matched records themselves (used to cite the newest one's reason and
+    time when coverage is full). A record is exculpatory only -- this can
+    move a row out of possible-crash, never promote a row that had no other
+    evidence for it."""
+    matched = [record for e in entries if (record := _graceful_end_record(e, records)) is not None]
+    return len(matched), len(entries), matched
+
+
+def _all_entries_explained(
+    entries: list[RegistryEntry] | list[LookupEntry], covered: int, total: int,
+) -> bool:
+    """Full coverage of the dead subset (covered == total) is not enough on
+    its own -- it must also equal every entry from the source, or an
+    indeterminate-liveness or undated sibling outside the dead subset would
+    be silently ignored."""
+    return total == len(entries) and covered == total
+
+
+def _has_indeterminate_liveness(
+    entries: list[RegistryEntry] | list[LookupEntry], liveness: dict[tuple[str, int], str], source_name: str,
+) -> bool:
+    """True when any entry in `entries` carries indeterminate liveness under
+    `source_name` in `liveness` -- used to withhold Confirmed-clean-exit
+    promotion when a same-session sibling from the *other* evidence source
+    hasn't resolved to live or dead."""
+    return any(liveness[(source_name, e.pid)] == "indeterminate" for e in entries)
+
+
+def _partial_coverage_note(covered: int, total: int) -> str:
+    return (
+        f" {covered} of {total} tracked process instances for this session recorded a graceful "
+        "SessionEnd; at least one did not."
+    )
+
+
+def _confirmed_clean_exit_detail(
+    newest_record: SessionEndRecord, *, has_main_transcript: bool, subagent_note: str,
+) -> str:
+    reason_note = f"reason {newest_record.reason}" if newest_record.reason else "no reason recorded"
+    clean_exit_note = (
+        "a graceful SessionEnd was recorded for every tracked process instance for this session "
+        f"(newest: {reason_note}, {_fmt_ts(newest_record.mtime)})."
+    )
+    if has_main_transcript:
+        return f"{clean_exit_note} A transcript exists for this session."
+    return f"{clean_exit_note} No main transcript was found for this session.{subagent_note}"
+
+
+def _confirmed_clean_exit_detail_with_pre_boot_sibling(
+    newest_record: SessionEndRecord, *, pre_boot_mtime: float, boot_time: float,
+    has_main_transcript: bool, subagent_note: str,
+) -> str:
+    """Detail sentence for a session with a dead_before_boot entry (explained
+    by the reboot, not by a SessionEnd record) alongside a dead_after_boot
+    instance confirmed by one. Wording differs from _confirmed_clean_exit_detail
+    because only the post-boot instance was actually checked."""
+    reason_note = f"reason {newest_record.reason}" if newest_record.reason else "no reason recorded"
+    clean_exit_note = (
+        f"an earlier registry entry (written {_fmt_ts(pre_boot_mtime)}, before boot at {_fmt_ts(boot_time)}) "
+        "predates the last boot and is explained by the reboot itself, not by a SessionEnd record; "
+        "a graceful SessionEnd was recorded for every process instance tracked since boot "
+        f"(newest: {reason_note}, {_fmt_ts(newest_record.mtime)})."
+    )
+    if has_main_transcript:
+        return f"{clean_exit_note} A transcript exists for this session."
+    return f"{clean_exit_note} No main transcript was found for this session.{subagent_note}"
+
+
 def _recent_transcript_only_ids(
     transcripts: dict[str, TranscriptInfo],
     known_session_ids: set[str],
@@ -885,9 +1074,11 @@ def _classify_session(
     near_boot_window_seconds: float = _CRASH_EVIDENCE_WINDOW_SECONDS,
     lookup_entries: tuple[LookupEntry, ...] = (),
     now: float | None = None,
+    session_end_records: dict[tuple[Path, int], SessionEndRecord] | None = None,
 ) -> SessionRow:
     entry_count = len(registry_entries) + len(lock_entries) + len(lookup_entries)
     has_main_transcript = transcript is not None and transcript.has_main
+    session_end_records = session_end_records or {}
     # A scheduled-task lock's path lives under the session's own cwd, not
     # under any declared config dir, so it carries no account attribution;
     # prefer the transcript's config dir, falling back to the registry's,
@@ -925,7 +1116,7 @@ def _classify_session(
     if "live" in liveness.values():
         cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
         return SessionRow(
-            session_id, CLASS_CLEAN_EXIT, cwd, branch, last_activity,
+            session_id, CLASS_LIVE_PROCESS, cwd, branch, last_activity,
             "a live process matches a tracked pid; not crash evidence.",
             entry_count, False, config_dir=row_config_dir,
         )
@@ -952,7 +1143,23 @@ def _classify_session(
             if liveness[("registry", e.pid)] == "dead" and e.mtime is None
         ]
 
-        if dead_before_boot:
+        covered, total, matched_records = _graceful_end_coverage(dead_after_boot, session_end_records)
+        # A dead_before_boot sibling is explained by the reboot itself, not by a
+        # SessionEnd record, so its count is folded into this deficit check instead
+        # of disqualifying confirmation on its own.
+        registry_sibling_deficit = len(dead_before_boot) + total != len(registry_entries)
+        # A same-session lookup_entries sibling with unresolved liveness is cross-source
+        # evidence this branch would otherwise ignore entirely, since it only ever
+        # partitions registry_entries.
+        lookup_sibling_indeterminate = _has_indeterminate_liveness(lookup_entries, liveness, "lookup")
+        dead_after_boot_fully_confirmed = (
+            bool(dead_after_boot)
+            and not registry_sibling_deficit
+            and covered == total
+            and not lookup_sibling_indeterminate
+        )
+
+        if dead_before_boot and not dead_after_boot_fully_confirmed:
             newest = max(dead_before_boot, key=lambda e: e.mtime)
             cwd = (transcript.cwd if has_main_transcript else None) or newest.cwd
             branch = transcript.git_branch if has_main_transcript else None
@@ -977,19 +1184,64 @@ def _classify_session(
                 "the process's death is unexplained by a reboot, which is what an unclean application "
                 "crash looks like, but a deliberate clean exit looks identical."
             )
+            # dead_after_boot_fully_confirmed rejects an indeterminate-liveness or
+            # undated registry sibling (like _all_entries_explained) or an
+            # indeterminate-liveness lookup sibling for the same session, but also
+            # tolerates a dead_before_boot sibling (already explained by the reboot).
+            fully_confirmed = dead_after_boot_fully_confirmed
+            if fully_confirmed:
+                coverage_note = ""
+            # When both a registry-sibling deficit and a lookup-sibling indeterminate exist
+            # simultaneously, the registry-sibling message below wins (this elif's
+            # `not registry_sibling_deficit` guard excludes that case) -- message-only
+            # precedence, deliberate but untested; classification correctness is unaffected either way.
+            elif covered == total and lookup_sibling_indeterminate and not registry_sibling_deficit:
+                coverage_note = (
+                    " Every tracked post-boot process instance recorded a graceful SessionEnd, but "
+                    "a capture-session-id.sh lookup file for this session could not be confirmed dead, "
+                    "so this session is not being classified as a confirmed clean exit."
+                )
+            elif covered == total:
+                coverage_note = (
+                    " Every tracked post-boot process instance recorded a graceful SessionEnd, but "
+                    "another registry entry for this session could not be confirmed dead or dated, "
+                    "so this session is not being classified as a confirmed clean exit."
+                )
+            else:
+                coverage_note = _partial_coverage_note(covered, total) if 0 < covered < total else ""
             if has_main_transcript:
                 cwd = transcript.cwd or newest.cwd
                 branch = transcript.git_branch
                 last_activity = transcript.last_activity
+            else:
+                cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
+            if fully_confirmed:
+                # matched_records is non-empty here: this branch only runs inside
+                # `if dead_after_boot:`, so total >= 1 and covered == total >= 1.
+                newest_record = max(matched_records, key=lambda r: r.mtime)
+                if dead_before_boot:
+                    pre_boot_newest = max(dead_before_boot, key=lambda e: e.mtime)
+                    detail = _confirmed_clean_exit_detail_with_pre_boot_sibling(
+                        newest_record, pre_boot_mtime=pre_boot_newest.mtime, boot_time=boot_time,
+                        has_main_transcript=has_main_transcript, subagent_note=subagent_note,
+                    )
+                else:
+                    detail = _confirmed_clean_exit_detail(
+                        newest_record, has_main_transcript=has_main_transcript, subagent_note=subagent_note,
+                    )
+                return SessionRow(
+                    session_id, CLASS_CONFIRMED_CLEAN_EXIT, cwd, branch, last_activity,
+                    detail, entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+                )
+            if has_main_transcript:
                 return SessionRow(
                     session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
-                    f"{boot_note} A transcript exists for this session.",
+                    f"{boot_note} A transcript exists for this session.{coverage_note}",
                     entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
                 )
-            cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
             return SessionRow(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
-                f"{boot_note} No main transcript was found for this session.{subagent_note}",
+                f"{boot_note} No main transcript was found for this session.{subagent_note}{coverage_note}",
                 entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
 
@@ -1023,17 +1275,36 @@ def _classify_session(
             # is the routine end state of every session that ever ran, including
             # cleanly-exited ones -- it bounds *when* the session ended, not *how*,
             # so it never promotes to Resumable the way a self-pruning source does.
+            covered, total, matched_records = _graceful_end_coverage(dead_lookups, session_end_records)
+            coverage_note = _partial_coverage_note(covered, total) if 0 < covered < total else ""
+            # This branch only runs when registry_entries is empty: the preceding
+            # `if registry_entries:` block above always returns. So there is no
+            # registry-source sibling to cross-check here; the cross-source guard only
+            # needs to run in the registry branch's own direction (checking
+            # lookup_entries from there), not this one.
+            if _all_entries_explained(lookup_entries, covered, total):
+                # matched_records is non-empty here: this branch only runs inside
+                # `if dead_lookups and not indeterminate_lookups:`, so total >= 1
+                # and covered == total >= 1.
+                newest_record = max(matched_records, key=lambda r: r.mtime)
+                detail = _confirmed_clean_exit_detail(
+                    newest_record, has_main_transcript=has_main_transcript, subagent_note=subagent_note,
+                )
+                return SessionRow(
+                    session_id, CLASS_CONFIRMED_CLEAN_EXIT, cwd, branch, last_activity,
+                    detail, entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
+                )
             if has_main_transcript:
                 return SessionRow(
                     session_id, CLASS_POSSIBLE_CRASH, cwd, branch, last_activity,
                     "a capture-session-id.sh lookup file's pid is dead and its mtime sits within the "
-                    "crash-evidence window; a transcript exists for this session.",
+                    f"crash-evidence window; a transcript exists for this session.{coverage_note}",
                     entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
                 )
             return SessionRow(
                 session_id, CLASS_UNKNOWN, cwd, branch, last_activity,
                 f"a capture-session-id.sh lookup file's pid is dead and its mtime sits within the "
-                f"crash-evidence window, but no main transcript was found for this session.{subagent_note}",
+                f"crash-evidence window, but no main transcript was found for this session.{subagent_note}{coverage_note}",
                 entry_count, _cwd_missing(cwd), config_dir=row_config_dir,
             )
         cwd, branch, last_activity = _best_effort_location(registry_entries, lock_entries, transcript)
@@ -1139,6 +1410,7 @@ def build_report(
     lookup_entries = _read_lookup_entries(
         legacy_bare_pid_paths, now=now, window_seconds=near_boot_window_seconds,
     )
+    session_end_records, any_session_end_dir_found = _read_session_end_records(config_dirs)
 
     registry_by_session: dict[str, list[RegistryEntry]] = {}
     for e in registry_entries:
@@ -1181,6 +1453,7 @@ def build_report(
             proc_starttime_ticks=proc_starttime_ticks_fn,
             near_boot_window_seconds=near_boot_window_seconds,
             lookup_entries=tuple(lookup_by_session.get(sid, [])), now=now,
+            session_end_records=session_end_records,
         )
         for sid in sorted(all_session_ids)
     ]
@@ -1209,6 +1482,7 @@ def build_report(
         find_timed_out=find_timed_out, find_elapsed_seconds=find_elapsed,
         version_drift=version_drift, pid_mismatches=pid_mismatches,
         config_dirs=config_dirs, any_sessions_dir_found=any_sessions_dir_found,
+        any_session_end_dir_found=any_session_end_dir_found,
     )
 
 
@@ -1283,6 +1557,12 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
     )
     if not report.any_sessions_dir_found:
         lines.append("NOTE: no sessions/ directory found in any scanned config dir — source A (the session registry) is empty.")
+    if not report.any_session_end_dir_found:
+        lines.append(
+            "NOTE: no session-end-records/ directory found in any scanned config dir — source E (SessionEnd "
+            "records) is empty; either record-session-end.sh isn't installed yet, or no session has cleanly "
+            "exited since it was."
+        )
     if not report.ps_usable:
         lines.append(
             "WARNING: `ps -o lstart=` returned no usable output on this system — no pid liveness could "
@@ -1376,7 +1656,8 @@ def render_report(report: Report, *, redact: bool, config_dirs_explicit: bool = 
 
     other_groups = (
         (CLASS_CRASHED_NO_TRANSCRIPT, "Crashed, no transcript"),
-        (CLASS_CLEAN_EXIT, "Not crash evidence (clean exit or still running)"),
+        (CLASS_CONFIRMED_CLEAN_EXIT, "Confirmed clean exit (SessionEnd recorded)"),
+        (CLASS_LIVE_PROCESS, "Still running (a live process matches a tracked pid)"),
         (CLASS_UNKNOWN, "Unknown"),
     )
     for class_key, label in other_groups:

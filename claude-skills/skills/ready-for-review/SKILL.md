@@ -66,26 +66,22 @@ the existing owner or open a separate branch. Rebase once the default branch is 
 
 ## 3. Code review (halt on findings)
 
-Compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
+<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache start -->
+Before computing anything, run `~/.claude/scripts/marker.sh status`: if its `cumulative-review` line reads `live`, this diff content already passed a full unnarrowed cumulative review — skip the diff computation and the `/code-review` invocation below, report the cache hit in the Completion summary, and continue to step 4. Content type is never a skip reason on its own — on `historical` or `absent`, markdown, skill, and config diffs get the same pass as everything else.
+<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
+
+On a cache miss, compute the **cumulative** PR-vs-default-branch diff — not staged changes, not per-commit deltas (see `docs/worktree-bash-guard.md` for why this resolves through a dedicated script rather than an inline multi-statement Bash call):
 
 ```bash
 ~/.claude/scripts/pr-diff-against-base.sh --record
 ```
 
-**Empty or unresolved diff — halt before anything below** (the rest of this step, including the `marker.sh status` read below, assumes a non-empty diff):
-
-- Non-zero exit: the command already named the reason on stderr; resolve that first, because this step has no diff to review.
-- Exit 0 with no output: the branch's cumulative diff against its base is empty — usually because this branch's PR is already merged. Halt `/ready-for-review` and report both facts.
-
-<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache start -->
-Before invoking `/code-review`, run `~/.claude/scripts/marker.sh status`: if its `cumulative-review` line reads `live`, this diff content already passed a full unnarrowed cumulative review — skip the invocation below, report the cache hit in the Completion summary, and continue to step 4. Content type is never a skip reason on its own — on `historical` or `absent`, markdown, skill, and config diffs get the same pass as everything else.
-<!-- CACHE_RULE:ready-for-review-cumulative-diff-cache end -->
-
+**Empty or unresolved diff — halt before anything below:** a non-zero exit already named the reason on stderr, so resolve that first; exit 0 with no output means the branch's cumulative diff against its base is empty, usually because this branch's PR is already merged — halt `/ready-for-review` and report both facts.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed start -->
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Per-commit findings from earlier in this branch's fix loop feed in as context, not a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-On a cache miss, run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
+Run `/code-review` against that diff. It is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If findings are produced, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every ADDRESS row. The resulting fix commit goes through the standard staged-diff `/code-review` + marker gate before returning to step 2. Do not re-run `/code-review` on its own output (loop risk).
 
 ## 4. Skill-procedural-fidelity review (halt on findings)
 
@@ -98,7 +94,8 @@ Check that skills this branch invoked were executed, not silently abbreviated �
 `skill-invocation` defaults to this repo (omit `--projects`); `review-trace` defaults machine-wide, so `--this-repo` is required — branch names aren't unique across repos, and omitting it leaks another repo's same-named branch in as false spawn evidence.
 
 - Empty list → state no skills were invoked on this branch and continue (an affirmative no-op, not a silent skip).
-- Otherwise, before dispatch, run `~/.claude/scripts/findings-path-suffix.sh` and take its printed `<suffix>` (the script's last line of output, so ignore any earlier warning line) — the script also adds `agent-reviews/` to the repo's ignore list (see `docs/design-decisions.md` §12 for the append's duplicate-tolerance). Spawn `skill-fidelity-reviewer` **synchronously** with: the list; the literal diff **output** step 3's `git diff` already produced (paste that output — never the command that produced it, and never a range expression: the agent has no `Bash` to resolve either); the plan path if one exists; the `review-trace` output; and `findings_path: agent-reviews/skill-fidelity-reviewer-<suffix>.md`. `Read` the findings file after it returns.
+- Otherwise, run `~/.claude/scripts/pr-diff-against-base.sh --diff-file > /dev/null` as its own Bash call: it prints `DIFF_FILE: <path>` on stderr and no diff bytes on stdout. If no `DIFF_FILE:` line appears, halt — do not dispatch and do not fall back to pasted diff text. Quote the script's own stderr line in the halt report when one is present, naming the actual cause (an unresolvable config dir, a failed `mkdir`, a failed `mv`); name a likely skill/script version mismatch only when no such line appeared.
+- Otherwise, before dispatch, run `~/.claude/scripts/findings-path-suffix.sh` and take its printed `<suffix>` (the script's last line of output, so ignore any earlier warning line) — the script also adds `agent-reviews/` to the repo's ignore list (see `docs/design-decisions.md` §12 for the append's duplicate-tolerance). Spawn `skill-fidelity-reviewer` **synchronously** with: the list; the path the `DIFF_FILE:` line named, written out as literal text — never a range expression and never the command that produced it, since the agent has `Read` but no `Bash`; the plan path if one exists; the `review-trace` output; and `findings_path: agent-reviews/skill-fidelity-reviewer-<suffix>.md`. `Read` the findings file after it returns.
 
 Name the pipeline's own skills **out of scope** in the prompt (the agent body also excludes them) — `code-review`, `plan-review`, `ready-for-review`, `skill-review`, `agent-review`, plus still-executing invocations — else the reviewer audits the gate running it. Exception: `code-review`'s Ripple effect triage spawn-dispatch obligation, checked only against the `review-trace` timeline, never `code-review`'s own reasoning.
 

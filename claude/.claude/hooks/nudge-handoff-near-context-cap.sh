@@ -217,42 +217,6 @@ read_latest_usage() {
   return 0
 }
 
-# _advance_offset_past_complete_lines TRANSCRIPT OFFSET CURRENT_SIZE
-# Prints the resume-from byte offset, stopping before any trailing
-# partially-written line — see docs/handoff-nudge.md "What the hook does"
-# for the incremental-read mechanism this supports.
-# Known limitation: on a scan timeout in the slow path below, this returns
-# OFFSET unchanged rather than partial progress — see docs/handoff-nudge.md
-# "Known limitations" for the retry-cost tradeoff that follows from that.
-_advance_offset_past_complete_lines() {
-  local transcript_path="$1" offset="$2" current_size="$3"
-  if [ "$current_size" -le "$offset" ] 2>/dev/null; then
-    printf '%s' "$offset"
-    return
-  fi
-  # Fast path: the file's current last byte is a newline, so everything up
-  # to current_size is complete lines — one 1-byte read covers the common
-  # case (Claude Code writes each transcript record as a complete line).
-  local last_byte
-  last_byte=$(_lib_capped_for 2 tail -c 1 "$transcript_path" 2>/dev/null)
-  if [ -z "$last_byte" ]; then
-    printf '%s' "$current_size"
-    return
-  fi
-  # Slow path: the file currently ends mid-line (caught mid-write). Count
-  # complete lines in the unread slice, then measure exactly that many bytes
-  # with `head`/`wc -c` — avoids locale-sensitive string-length arithmetic on
-  # a captured shell variable.
-  local newline_count complete_bytes
-  newline_count=$(_lib_capped_for 2 tail -c +$((offset + 1)) "$transcript_path" 2>/dev/null \
-    | tr -cd '\n' | wc -c | tr -d '[:space:]')
-  case "$newline_count" in ''|*[!0-9]*|0) printf '%s' "$offset"; return ;; esac
-  complete_bytes=$(_lib_capped_for 2 tail -c +$((offset + 1)) "$transcript_path" 2>/dev/null \
-    | head -n "$newline_count" | wc -c | tr -d '[:space:]')
-  case "$complete_bytes" in ''|*[!0-9]*) printf '%s' "$offset"; return ;; esac
-  printf '%s' "$(( offset + complete_bytes ))"
-}
-
 # read_latest_usage_cached TRANSCRIPT SESSION_ID MARKER_DIR
 # Fire-path-only wrapper around read_latest_usage: sets ESTIMATE and MODEL
 # via an incremental byte-offset scan instead of a full re-scan — see
@@ -317,10 +281,10 @@ read_latest_usage_cached() {
   fi
 
   local new_offset
-  new_offset=$(_advance_offset_past_complete_lines "$transcript_path" "$scan_from" "$current_size")
+  new_offset=$(_lib_advance_offset_past_complete_lines "$transcript_path" "$scan_from" "$current_size")
   case "$new_offset" in ''|*[!0-9]*) new_offset="$scan_from" ;; esac
 
-  mkdir -p "$marker_dir" 2>/dev/null || true
+  _lib_capped_for 2 mkdir -p "$marker_dir" 2>/dev/null || true
   printf '%s\n%s\n%s\n' "$new_offset" "$ESTIMATE" "$MODEL" > "$scan_state" 2>/dev/null || true
 
   [ -n "$ESTIMATE" ] || return 1
@@ -542,7 +506,7 @@ fi
 # Ensure the log parent directory exists before any log write, and assign
 # MARKER_DIR before read_latest_usage_cached below — its incremental-scan
 # state file needs this directory to exist and be known.
-mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+_lib_capped_for 2 mkdir -p "$CONFIG_DIR" 2>/dev/null || true
 NUDGE_LOG="$CONFIG_DIR/.handoff-nudge.log"
 MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 
@@ -551,8 +515,8 @@ MARKER_DIR="$CONFIG_DIR/.handoff-nudge-fired.d"
 # because the -scan state file needs the same bound as FIRED_MARKER/
 # DRIFT_MARKER/-ignored — see docs/handoff-nudge.md "Known limitations" for
 # the resulting marker-directory growth shape.
-mkdir -p "$MARKER_DIR" 2>/dev/null || true
-find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
+_lib_capped_for 2 mkdir -p "$MARKER_DIR" 2>/dev/null || true
+_lib_capped_for 2 find "$MARKER_DIR" -maxdepth 1 -mtime +30 -delete 2>/dev/null || true
 
 read_latest_usage_cached "$TRANSCRIPT_PATH" "$SESSION_ID" "$MARKER_DIR" || exit 0
 
@@ -562,7 +526,7 @@ if [ "$ESTIMATE" -eq 0 ] 2>/dev/null; then
   DRIFT_MARKER="${MARKER_DIR}/${SESSION_ID}-drift"
   if [ ! -f "$DRIFT_MARKER" ]; then
     printf 'schema-drift session=%s event=%s\n' "$SESSION_ID" "$HOOK_EVENT" >> "$NUDGE_LOG" 2>/dev/null || true
-    mkdir -p "$MARKER_DIR" 2>/dev/null || true
+    _lib_capped_for 2 mkdir -p "$MARKER_DIR" 2>/dev/null || true
     touch "$DRIFT_MARKER" 2>/dev/null || true
   fi
   exit 0

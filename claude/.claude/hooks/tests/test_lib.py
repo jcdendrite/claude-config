@@ -771,6 +771,58 @@ def test_lib_emit_allow_with_context_degrades_to_no_output_when_jq_absent(tmp_pa
     assert result.stderr == "", repr(result.stderr)
 
 
+def test_lib_hook_claude_pid_equal_to_ppid_is_accepted() -> None:
+    """`_run_lib_call` spawns bash directly (no intervening shell), so that
+    bash process's own $PPID is this pytest process's pid -- matching
+    $CLAUDE_PID exactly, the no-shim disjunct."""
+    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
+    result = _run_lib_call("_lib_hook_claude_pid", env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
+def test_lib_hook_claude_pid_equal_to_ppids_parent_is_accepted() -> None:
+    """The shim disjunct: $CLAUDE_PID equals $PPID's immediate parent, not
+    $PPID itself. An intervening `sh` forks the bash process that sources
+    _lib.sh, so that bash's own $PPID is the shim's (sh's) pid, and
+    $CLAUDE_PID (this test's own pid) is that shim's parent."""
+    env = {**os.environ, "CLAUDE_PID": str(os.getpid())}
+    result = subprocess.run(
+        ["sh", "-c", f'bash -c ". {_LIB_SH}; _lib_hook_claude_pid"'],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
+def test_lib_hook_claude_pid_rejects_unrelated_live_pid() -> None:
+    """A numeric, live $CLAUDE_PID outside the one-hop bound (not $PPID, not
+    $PPID's immediate parent) must be rejected, falling back to $PPID -- the
+    sole invariant the one-hop design exists to enforce. A `sleep` child of
+    pytest is live but not an ancestor of the harness process at all."""
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        env = {**os.environ, "CLAUDE_PID": str(sleeper.pid)}
+        result = _run_lib_call("_lib_hook_claude_pid", env)
+        assert result.returncode == 0, repr(result)
+        assert result.stdout.strip() == str(os.getpid())
+    finally:
+        sleeper.terminate()
+        sleeper.wait()
+
+
+def test_lib_hook_claude_pid_rejects_non_numeric_value() -> None:
+    """A non-numeric $CLAUDE_PID must fall back to $PPID rather than being
+    compared against it or used as-is."""
+    env = {**os.environ, "CLAUDE_PID": "abc"}
+    result = _run_lib_call("_lib_hook_claude_pid", env)
+    assert result.returncode == 0, repr(result)
+    assert result.stdout.strip() == str(os.getpid())
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
 def test_lib_worktree_lock_absent_reports_absent_under_eacces(tmp_path: Path) -> None:
     """`[ -e ... ]` can't distinguish "doesn't exist" from "exists but
@@ -2119,6 +2171,30 @@ def test_lib_fragment_invokes_git_accepts_documented_invocations(fragment: str) 
 def test_lib_fragment_invokes_git_rejects_documented_look_alikes(fragment: str) -> None:
     result = _run_lib_call(f'_lib_fragment_invokes_git "{fragment}"', env=dict(os.environ))
     assert result.returncode != 0, result.stderr
+
+
+# --- _lib_commit_fragment_has_worktree_target ---------------------------
+#
+# Shared by deny-invisible-commit-content.sh (denies outright) and
+# deny-pii-in-commits.sh (widens the scan to git diff HEAD) -- the two
+# callers read this helper's return value for different purposes, so the
+# tool-missing fail-safe direction gets its own direct test here rather
+# than relying on either caller's own behavioral pinning alone.
+
+
+@pytest.mark.parametrize("missing_binary", ["xargs", "awk"])
+def test_commit_fragment_has_worktree_target_fails_safe_when_tool_missing(
+    missing_binary: str, tmp_path: Path
+) -> None:
+    """A commit fragment with no real worktree target (no -a/--all, no --
+    separator, no bare pathspec) still reports "target found" when xargs or
+    awk is missing from PATH -- the safe direction for both callers."""
+    farm_dir = tmp_path / f"path-without-{missing_binary}"
+    farm_dir.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = build_path_without(missing_binary, farm_dir)
+    result = _run_lib_call('_lib_commit_fragment_has_worktree_target "git commit -m x"', env=env)
+    assert result.returncode == 0, result.stderr
 
 
 # --- GH-783: caller-contract quote-blindness + composition -------------

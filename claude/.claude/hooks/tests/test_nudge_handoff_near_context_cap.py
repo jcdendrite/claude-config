@@ -1136,8 +1136,8 @@ class TestNudgeHandoffNearContextCap:
 
     def test_tail_absent_fails_open_not_hard_blocked(self, tmp_path):
         """`tail` backs both read_latest_usage and
-        _advance_offset_past_complete_lines; its absence must fail open like
-        every other missing-dependency case in this file, never hard-block."""
+        _lib_advance_offset_past_complete_lines; its absence must fail open
+        like every other missing-dependency case in this file, never hard-block."""
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
         farm_dir = tmp_path / "path-without-tail"

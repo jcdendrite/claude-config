@@ -19,12 +19,12 @@ behavior change for other contributors or CI.
 
 - `pyproject.toml`'s `[tool.pytest.ini_options]` sets
   `addopts = ["-n", "auto", "--strict-markers"]`
-  (`/Users/jared/MyCode/claude-config/.claude/worktrees/scope-test-worker-count/pyproject.toml:24`).
+  (`pyproject.toml:24`).
   This governs both the documented full-suite command
   (`.venv/bin/pytest claude/.claude/`) and `select-tests.py`, since
   neither passes its own `-n` value.
 - `select-tests.py` (`build_pytest_argv` at
-  `/Users/jared/MyCode/claude-config/.claude/worktrees/scope-test-worker-count/claude/.claude/scripts/select-tests.py:344`)
+  `claude/.claude/scripts/select-tests.py:344`)
   forwards `sys.argv[1:]` straight through to the `pytest` subprocess
   after the resolved target paths, so a CLI override such as
   `select-tests.py -n 4` already reaches pytest unmodified today — no
@@ -48,7 +48,7 @@ behavior change for other contributors or CI.
   no repo code change, works for both the full-suite command and
   `select-tests.py`, and is honored per-process, so each concurrently
   running session can set it independently in its own shell.
-- README.md's Tests section (`/Users/jared/MyCode/claude-config/.claude/worktrees/scope-test-worker-count/README.md:513`)
+- README.md's Tests section (`README.md:513`)
   currently documents only `-n0` for serial debugging — it says
   nothing about `-n auto`'s worker count or how to override it.
 - CI (`.github/workflows/tests.yml`) runs on a `ubuntu-24.04` GitHub-hosted

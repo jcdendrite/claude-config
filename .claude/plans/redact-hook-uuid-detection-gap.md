@@ -45,10 +45,10 @@ test covering all six detectors; the hook's production code is untouched.
    `PreToolUse` hook on the `Bash` matcher, not on `Write`/`Edit`. The
    header comment documents this as deliberate scope, not an oversight.
 4. Searched every declared account's local transcript store
-   (`~/.claude/transcript-config-dirs`) for the authoring session
-   (`session_01VBsCe2LB7R9TTkGxwzxdL7`, from the commit trailers) to
-   directly confirm whether a gated command was attempted. No transcript was
-   found in any account root — likely rotated out.
+   (`~/.claude/transcript-config-dirs`) for the authoring session,
+   identified from the commit trailers, to directly confirm whether a
+   gated command was attempted. No transcript was found in any account
+   root — likely rotated out.
 
 Given (2) and (3), the most consistent explanation is that a `/plan-review`
 or `/code-review` round caught the leaked draft by reading file content

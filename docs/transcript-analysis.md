@@ -44,7 +44,7 @@ This union amplifies two costs, both linearly in the number of declared roots:
 - **Scan time.** Measured on one workstation: ~9s per root at top-level scope, ~16s per root with `--include-subagents`. A four-root union runs roughly 35–65s against ~9s at one root — expect a per-root progress line on stderr above one root so a long-running scan doesn't read as hung. The one narrowing control, if a given invocation needs to run faster or scope to fewer accounts: pass an explicit single top-level `--config-dir PATH`, which overrides the union back to exactly one root (see "Scoping to this repo" above and the `cost`/`context-distribution`/`context-composition` sections below for their own separate, repeatable `--config-dir`).
 - **Redaction's ordinal fingerprint.** `cost` and `audit-routing --redact` already read every project's transcript bytes to build their redact map, even under `--this-repo` (see the `cost` section's `--config-dir` contract below) — a structural fingerprint of the operator's other local projects. A declared-roots union multiplies both the bytes read and that fingerprint's information content: the ordinals now encode which projects exist across every declared account, not just one. Two redacted reports built from the **same** declared-roots file assign the same `account-N` to the same physical root regardless of which profile produced either report, which makes them correlatable by ordinal across time — a property that did not exist before this file was populated, even though neither report reveals `account-2`'s real name. Two reports built from **different** declared-roots files are not comparable; a changed root set can renumber every ordinal. This comparability guarantee excludes `cost --summary`: it always resolves to exactly one root, so its own per-root `cost: account-N: scanned …` line has no second root in the same run to be ordinally consistent against, and its `account-N` for the active root is not guaranteed to match the ordinal a full (non-`--summary`) report built from the same declared-roots file assigns that same physical root.
 
-Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. Every other subcommand — `audit-routing-samples`, `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list.
+Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. Every other subcommand — `audit-routing-samples`, `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list. `subagent-mix` and `review-round-cost` are outside this three-bucket split entirely: both redact branch names (and, for `subagent-mix`, `subagent_type` values) under more than one root via `account-N/branch-N`-style opaque labels, disclosing the raw value only under `--this-repo` — see their own sections below for the full contract.
 
 `context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
 
@@ -780,22 +780,22 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 
 **Sample output.** From a live `--this-repo` run against this repo's own transcript corpus:
 ```
-CACHE REBUILD SOURCES (this repo (31 project dirs); 4 roots)
+CACHE REBUILD SOURCES (this repo (32 project dirs); 4 roots)
 
 ## Cache-rebuild report (last 30d, threshold >= 100,000 cache-write tokens)
 
-Calls scanned: 33,549
-Calls writing >= 100,000 tokens: 77 (0.2% of calls)
-Per-call write distribution: min=101,351  median=182,851  p90=380,770  max=667,554
+Calls scanned: 32,297
+Calls writing >= 100,000 tokens: 78 (0.2% of calls)
+Per-call write distribution: min=101,351  median=181,764  p90=380,770  max=667,554
 
 ## Cause breakdown
 
 Cause                               Calls   Share
 session start                           0    0.0%
-idle 5m-1h                             18   23.4%
-idle >1h                               33   42.9%
+idle 5m-1h                             15   19.2%
+idle >1h                               35   44.9%
 model switch                            0    0.0%
-unexplained                            26   33.8%
+unexplained                            28   35.9%
 excluded (timestamp anomaly)            0    0.0%
 
 ## Idle-gap concurrency split [unverified]
@@ -805,14 +805,14 @@ account, had a call inside the gap window. This is an association, not proof
 the operator was attending that other session. [unverified]
 
                               Rebuilds     Excess $
-Another session active              48        51.17
-Everything idle (a break)            3         2.36
-Total idle-gap rebuilds             51        53.53
+Another session active              46        51.48
+Everything idle (a break)            4         2.91
+Total idle-gap rebuilds             50        54.39
 
 ## Idle-gap excess by account
 
 Account           Rebuilds     Excess $
-account-1               51        53.53
+account-1               50        54.39
 account-2                0         0.00
 account-3                0         0.00
 account-4                0         0.00
@@ -820,8 +820,38 @@ account-4                0         0.00
 ## Idle-gap rebuilds by origin
 
 Origin      Rebuilds     Excess $
-main              31        40.83
-subagent          20        12.70
+main              34        43.49
+subagent          16        10.90
+
+## Subagent idle-gap cause attribution [unverified]
+
+Sub-classifies the subagent row above (idle 5m-1h and idle >1h pooled,
+so the rows below sum exactly to that row) by the last marker record
+found in each gap's own window, scanning forward:
+  - a tool_result for that call's own Bash tool_use -> waiting on own Bash call
+  - a background-task notification -> waiting on background task
+  - a coordinator message -> waiting on coordinator message
+  - no marker at all -> unattributed
+Last marker before the gap-closing call wins. 5m-1h $ restricts Excess $
+to the idle 5m-1h band only, the band a cacheTtl switch could actually
+rescue (idle >1h stays cold under either tier). Median cov. is the
+median (marker_ts - gap_start_ts) / gap_seconds across each row's own
+attributed candidates, not clamped to [0, 1]: near 100% means the
+marker sits at the gap's end and the attribution is tight, a low value
+means the marker landed early and most of the gap is still unexplained.
+It renders n/a whenever the winning marker's own timestamp is missing
+or unparseable, which never changes the cause itself. Main origin is
+excluded: experimental.cacheTtl cannot reach main-conversation traffic,
+so a main-origin split would have no lever to point at. A large
+'unattributed' share means the marker taxonomy is incomplete, not that
+the gaps are causeless -- a transcript records the marker the harness
+delivered, never a statement of why the subagent was idle. [unverified]
+
+Cause                             Rebuilds     Excess $      5m-1h $  Median cov.
+waiting on own Bash call                 8         7.39         7.39        97.1%
+waiting on background task               5         2.23         1.49        99.7%
+waiting on coordinator message           3         1.28         1.28        99.7%
+unattributed                             0         0.00         0.00          n/a
 
 ## Cache-write tier switch delta (5m -> 1h), threshold-independent
 
@@ -838,7 +868,7 @@ read it as reconciliation context only.
 
 Origin                W5m              X    Ratio       Net$
 main                    0              0     0.0%       0.00
-subagent      117,012,337      6,167,704     5.3%    -183.78
+subagent      113,815,802      5,606,921     4.9%    -181.69
 
 ## Subagent per-dispatch dispersion (ex-post oracle bound)
 
@@ -846,12 +876,12 @@ Dispatches selected by their own realized ratio, which a policy fixed
 before the dispatch cannot do -- a one-sided test for whether a
 selective lever is excluded, never a validation that one would work.
 
-Subagent dispatches (dispatches with any 5m-tier write): 787
-Dispatches individually clearing their own break-even ratio: 15
-Their share of per-dispatch subagent W5m (not the pooled row above): 6.7%
-Net $ restricted to clearing dispatches: 6.18
+Subagent dispatches (dispatches with any 5m-tier write): 770
+Dispatches individually clearing their own break-even ratio: 13
+Their share of per-dispatch subagent W5m (not the pooled row above): 6.3%
+Net $ restricted to clearing dispatches: 5.89
 
-  (0 of 117,012,337 pooled subagent W5m tokens landed in no dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound above has exact W5m coverage, not merely assumed)
+  (0 of 113,815,802 pooled subagent W5m tokens landed in no dispatch group above -- an unpriced-model call, or an inline sidechain record inside the main transcript file, neither of which belongs to any subagent-file group; 0 here means the oracle bound above has exact W5m coverage, not merely assumed)
 ```
 
 The `main` row's `W5m`/`X` are genuinely zero in this corpus: every main-thread cache write observed here landed on the 1-hour tier already, never the 5-minute tier — consistent with the vendor's own statement that subagents, not the main conversation, get the 5-minute tier by default on a subscription (`.claude/plans/subagent-idle-gap-cache-rebuild-split.md`, or the vendor's prompt-caching doc directly).
@@ -866,6 +896,20 @@ bill.
 **Idle-gap excess by account** prints only under a multi-root scope (`--config-dir` or a populated `~/.claude/transcript-config-dirs`), one zero-seeded row per account ordinal so a valid-but-empty root still renders instead of vanishing from the breakdown.
 
 **Idle-gap rebuilds by origin** classifies each idle-gap rebuild as `main` or `subagent`, per record via the transcript's own `isSidechain` flag rather than by which source file it came from — an inline sidechain record living inside the main transcript file still counts as `subagent`. Unlike the by-account table above, this prints unconditionally (a corpus with no sidechain records at all still renders a zero-valued `subagent` row).
+
+**Subagent idle-gap cause attribution** sub-classifies the `subagent` row above (pooling `idle 5m-1h` and `idle >1h`, so its four rows sum exactly to that row) by the last marker record found in each gap's own window, scanning forward:
+
+- a `tool_result` for that call's own Bash `tool_use` → `waiting on own Bash call`
+- a `[SYSTEM NOTIFICATION - NOT USER INPUT]` background-task record → `waiting on background task`
+- a "The coordinator sent a message while you were working" record → `waiting on coordinator message`
+- no marker at all → `unattributed`
+
+Last marker wins, since the question is what released the subagent, and the last marker before the gap-closing call is by construction the one nearest that release. Each leg is self-scoped rather than filtered by origin:
+
+- Bash leg: matches only a `tool_use_id` the prior call itself emitted.
+- Meta legs: require both `isMeta` and `isSidechain` true on the record.
+
+**`Median cov.`** is the median share of each attributed gap the winning marker covered (`(marker_ts - gap_start_ts) / gap_seconds`, not clamped to `[0, 1]`). Near 100% means the marker sits at the gap's end; a low value means it landed early and most of the gap is still unexplained. This measures attribution tightness only — a transcript records the marker the harness delivered, never a statement of why the subagent was idle. It renders `n/a` whenever the winning marker's own timestamp is missing or unparseable, which never changes the cause itself — only its covered-share disclosure. **`5m-1h $`** restricts `Excess $` to the `idle 5m-1h` band only, the only band a `cacheTtl` switch could actually rescue — `idle >1h` rebuilds stay cold under either tier. **Main origin is excluded**: `experimental.cacheTtl` cannot reach main-conversation traffic (see the switch-delta section below), so a main-origin split would have no lever to point at. A large `unattributed` share means the marker taxonomy is incomplete, not that the underlying gaps are causeless — the follow-up is another marker sweep, not a lever choice.
 
 **Cache-write tier switch delta** answers a narrower question than the origin split above: not "what did subagent idle-gap rebuilds already cost," but "would raising subagent conversations from the vendor's default 5-minute cache tier to the 1-hour tier (`experimental.cacheTtl: 1h`) save money." `W5m` is every 5-minute-tier cache-write token in scope, and `X` is the subset of `W5m` written by a call classified `idle 5m-1h` — the switch's break-even is `X / W5m > 0.75 / (2 − r)` (`r` the model's own cache-read multiplier; ≈0.3947 for a default-rate model), because raising the tier also raises the write multiplier on every warm incremental write, not only on the rebuilds themselves. **`W5m` and `X` are threshold-independent** — accumulated over every in-scope call regardless of `--threshold`, not only tail calls — because the extra write cost a switch would charge applies to every warm 5-minute-tier write, tail-sized or not. This is a different denominator than the tail-gated cause-breakdown table above it; the two must never be divided into each other. `>1h`-gap and pure-1-hour-tier writes are excluded from `X`: a 1-hour cache is also cold past 3600s, so those rebuilds happen under either tier. **The `main` row's `Net$` has no corresponding lever in this plan's scope** — `experimental.cacheTtl` is set in subagent frontmatter and cannot reach main-conversation traffic at all, so treat the `main` row as reconciliation context (confirming the origin split adds up against the corpus-wide total), not as an actionable figure.
 
@@ -942,6 +986,53 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **`--check-pr-status`.** Additionally lists every branch with no PR match at all (neither merged nor closed-unmerged) by its last local-activity age in days, oldest first -- a *candidate* abandoned branch, reported as a raw age value rather than a hard classification, since a branch with no PR match may simply not be finished yet. Prints no branch name in either mode.
 
 **When to reach for it.** Run the default mode alongside `pr-cost`/`cost-trend` to see whether a cost change coincided with a shift in session/branch shape (more sessions per branch, more startup burn) rather than a genuine reduction in total spend. Run `--check-pr-status` to spot old branches with local activity and no PR at all.
+
+---
+
+## review-round-cost
+
+**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (both the `Skill` tool_use path and the `/slash` path), closes it at the next round-open or the next fresh user prompt, and prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
+
+**Flags.**
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
+- `--branches B1,B2,...` -- filter to specific branches (default: all)
+- `--since DATE` / `--until DATE` -- inclusive absolute date bounds (`YYYY-MM-DD`) on each round's own opening timestamp, matching `judgment-pair`'s convention. These narrow which *rounds* are counted, not which turns are priced -- a branch's "branch $" denominator in the reconciliation line below is always its full, unwindowed corpus total, so a `--since`-narrowed run compares in-window round dollars against all-time branch spend.
+- `--skill NAME` -- an output filter over already-detected rounds to one of `code-review`/`plan-review`/`ready-for-review` (default: all three), applied after detection exactly like `--branches`/`--since`/`--until`. It never narrows round-window detection itself, so a round's own `main $`/`agent $`/`agents` figures are invariant to which `--skill` value is passed -- only which rounds are printed and aggregated changes. `branch_totals` (the reconciliation line's denominator, below) is likewise never narrowed by `--skill`, so a filtered run's lower round-share percentage reflects an unchanged denominator against a smaller numerator, not a regression.
+
+**Round detection caveats.**
+- **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
+- **A round's dollars are attributed to its own opening branch across its whole window.** Every dollar inside a round's window -- not only the opening record's own turn -- is attributed to the branch the round opened on, even when the session's own `gitBranch` changes partway through the window (e.g. a worktree switch mid-review). A record outside every window carries forward the last main-thread branch, unaffected by any window.
+- **A mid-review user interjection closes the window early.** The window closes at the first fresh user prompt *or* the next round-open, whichever comes first -- a user message sent partway through a review (before the reviewer's own output lands) ends the round there, and everything after it belongs to whatever comes next, not to the interrupted round.
+- **A round open at session end is priced through the last record.** No closing fresh user prompt and no next invocation before EOF still prices every turn and dispatch through the transcript's end -- never dropped or thrown on.
+
+**Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. Under more than one scan root the footer prints one `account-<K>`-prefixed block per root, summed only from that root's own branches, never blended across roots. Under a single root it prints one unprefixed block, as shown below. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted, never silently dropped or priced at `$0`.
+
+**PR numbers.** This subcommand prints branch names only, never a PR number -- compose with `pr-link --branches B1,B2,...` (against this command's own `--this-repo` output) to map a reported branch to its GitHub PR, rather than embedding a `gh` join here (see the architecture doc's package/shim import-direction note for why).
+
+**Redaction.** Follows `subagent-mix`'s own contract exactly (see its section above) for per-branch rows: under more than one scan root, a branch name prints raw only under `--this-repo` (`account-<K>/<branch>`), else opaque (`account-<K>/branch-<N>`), with `DO NOT PUBLISH` on stdout and stderr; under a single root there is nothing to redact, so branch names print raw unconditionally. `subagent-mix` has no cross-branch footer to compare against. This command's own footer is root-partitioned the same way its per-branch rows are, so it never blends two roots' dollars into one recoverable figure. This is a stronger de-anonymization/correlation key than any prior redacted subcommand's aggregate-only output: `subagent-mix`'s own `CR`/`PR`/`RR` columns disclose per-skill *counts* per branch today, but never a dated dollar series the way this table's per-round `date`/`main $`/`agent $` columns do -- the same acknowledgment `redaction.py`'s docstring already makes for an exact-cent dollar column, extended here to a per-branch, per-round, dated one.
+
+**Sample output.**
+```
+REVIEW ROUND COST SOURCES (this repo; 1 root)
+
+account-1/some-feature-branch
+  rounds=6  (code-review=3  plan-review=1  ready-for-review=2)
+  round $12.40 of $31.75 branch $ (39.1%)
+   #  skill              n  date        main $   agent $  agents   total $
+   1  plan-review        1  2026-08-02    0.41      1.88       4      2.29
+   2  code-review        1  2026-08-03    0.55      2.10       5      2.65
+
+Totals: 4 branches, 19 rounds (code-review=11  plan-review=4  ready-for-review=4)
+Mean rounds per branch: 4.75
+Mean $ per round — code-review 2.41  plan-review 1.90  ready-for-review 1.12
+Non-round dollars: 61.2% of branch dollars fell outside every round window
+Dangling dispatches inside round windows: 2 (no readable meta.json/jsonl pair)
+Unpriced turns inside round windows: 0
+```
+
+`#` is the branch-wide round ordinal; `n` is that skill's own ordinal within the branch (the sub-breakdown). A skill with zero rounds anywhere in scope prints `no data` for its own "Mean $ per round" entry, never a computed `0.00` or a division-by-zero.
+
+**When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` collapses a whole branch to one figure with no round-level breakdown. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
 
 ---
 
