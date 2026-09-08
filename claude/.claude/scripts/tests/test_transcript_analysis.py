@@ -703,8 +703,8 @@ class TestBuckets:
         assert cols["Sess"] == "2"
 
     def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
-        """Guards against routing the raw slug through _derive_proj_label first: that
-        transform discards the home/user prefix, which would falsely merge these two
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
         distinct repos into one family and undercount Proj."""
         projects = tmp_path / "projects"
         proj_alice = projects / "-home-alice-repo"
@@ -13253,7 +13253,7 @@ class TestCmdUserInput:
     def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
         """A repo's main checkout and its own linked worktree are one repo, not two --
         the Scope line's project count must collapse the worktree-suffixed slug back
-        to the main slug before counting, same as cmd_buckets's Proj column."""
+        to the main slug before counting. Same as cmd_buckets's Proj column."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _ui_user("prompt in main checkout", branch="feat"),
         ])
