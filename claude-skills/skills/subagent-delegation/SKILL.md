@@ -65,6 +65,8 @@ action a dispatch can perform. It still pays a full agent's context cost
 for an empty return. When pending dispatches are all that remain, end the
 turn without a tool call and let their completion drive the next one.
 
+For why waiting on that completion notification is correct rather than a stopgap, see `docs/design-decisions/passive-notification-over-polling.md` § "Passive notification over polling for background work".
+
 **No permission cost.** A subagent inherits the parent's permission
 mode, so under auto mode its read-only diagnostics clear the same
 classifier as the parent's — no extra prompts, no `permissions.allow`

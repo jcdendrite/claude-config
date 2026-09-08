@@ -8,11 +8,13 @@ collide on the same path. These are the permanent invariants that split
 depends on:
 
   1. Per-file shape: filename matches the slug grammar, exactly one H1.
-  2. The recorded legacy `§N` provenance values, read across the whole
-     directory, form exactly {1..N} with no gaps, duplicates, or
-     fabrications. A file recorded after the split carries no `Formerly §N`
-     clause at all (permitted); one that carries the clause but fails to
-     parse it is a malformed-provenance defect (not permitted).
+  2. Line 3 of every file is an italic provenance line (`*...*`, not
+     `**...**`) carrying an ISO-8601 date, a `Formerly §N` clause, or
+     both -- a file with no `Formerly` clause (a decision recorded after
+     the split) must carry a date instead. Read across the whole
+     directory, the recorded `Formerly §N` values equal exactly the
+     closed set {1..63} -- no gaps, duplicates, or fabrications. That set
+     can never grow: the pre-split monolith is retired.
   3. No `## N.` heading survives anywhere -- the retired monolith numbering
      cannot be revived by copying an old section as a template.
   4. Every converted `[§N](slug.md)` intra-file cross-reference resolves to
@@ -43,6 +45,7 @@ Why hooks/tests/ instead of tests/ or skills/tests/:
 """
 from __future__ import annotations
 
+import datetime
 import re
 from pathlib import Path
 
@@ -58,11 +61,18 @@ DESIGN_DECISIONS_DIR = REPO_ROOT / "docs" / "design-decisions"
 _FILENAME_RE = re.compile(r"^[a-z][a-z0-9-]*\.md$")
 _H1_RE = re.compile(r"^# .+$", re.MULTILINE)
 _PROVENANCE_RE = re.compile(r"Formerly `docs/design-decisions\.md` §(\d+)\.")
-# Looser than _PROVENANCE_RE: matches the clause's fixed prefix regardless
-# of whether the §N suffix is well-formed, so _legacy_number_range_violations
-# can tell "no Formerly clause at all" (a post-split decision, permitted)
-# apart from "a Formerly clause that failed to parse" (malformed, a defect).
-_FORMERLY_PREFIX_RE = re.compile(r"Formerly `docs/design-decisions\.md`")
+# Matches a single-asterisk italic line (`*...*`) and rejects a double-asterisk
+# bold one (`**...**`) via the lookahead/lookbehind pinning the outer
+# delimiters to exactly one asterisk each. Needed because at least two real
+# files carry a **bold** body line elsewhere (not on line 3) that a loose
+# `^\*.*\*$` would also match: ui-notification-defaults-in-stow-source.md:31
+# and attribution-in-skill-prose-and-hook.md:14,32,38.
+_ITALIC_PROVENANCE_LINE_RE = re.compile(r"^\*(?!\*)(?P<body>.*)(?<!\*)\*$")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# The pre-split monolith is retired, so this set can never grow past §63 --
+# see .claude/rules/design-decisions.md's Format bullet for the same bound,
+# pinned together by test_rule_file_closed_legacy_upper_bound_matches_module_constant.
+_CLOSED_LEGACY_NUMBERS: frozenset[int] = frozenset(range(1, 64))
 _LEGACY_HEADING_RE = re.compile(r"^## \d+\.", re.MULTILINE)
 # Phase A's own conversion format for an intra-file cross-reference, e.g.
 # "[§49](schedulewakeup-denied-by-bare-tool-name.md)" -- distinguishes a
@@ -168,6 +178,29 @@ def test_rule_file_filename_grammar_matches_enforced_regex() -> None:
     )
 
 
+_RULE_CLOSED_LEGACY_UPPER_BOUND_RE = re.compile(r"closed at `§(\d+)`")
+
+
+def test_rule_file_closed_legacy_upper_bound_matches_module_constant() -> None:
+    """Pins .claude/rules/design-decisions.md's stated closed-legacy-set
+    upper bound to max(_CLOSED_LEGACY_NUMBERS), the constant
+    _legacy_number_range_violations actually enforces below, so the two
+    can't silently drift apart the way the filename grammar could without
+    test_rule_file_filename_grammar_matches_enforced_regex."""
+    rule_path = REPO_ROOT / ".claude" / "rules" / "design-decisions.md"
+    rule_text = rule_path.read_text(encoding="utf-8")
+    match = _RULE_CLOSED_LEGACY_UPPER_BOUND_RE.search(rule_text)
+    assert match, (
+        f"{rule_path}: closed-legacy-set upper-bound clause not found or "
+        "reworded -- update _RULE_CLOSED_LEGACY_UPPER_BOUND_RE to match its "
+        "current phrasing."
+    )
+    assert int(match.group(1)) == max(_CLOSED_LEGACY_NUMBERS), (
+        f"{rule_path} states §{match.group(1)} but _CLOSED_LEGACY_NUMBERS caps "
+        f"at §{max(_CLOSED_LEGACY_NUMBERS)} -- keep both in sync."
+    )
+
+
 def _filename_grammar_violations(paths: list[Path]) -> list[str]:
     return [path.name for path in paths if not _FILENAME_RE.match(path.name)]
 
@@ -199,51 +232,86 @@ class TestPerFileShape:
         )
 
 
-def _legacy_number_range_violations(paths: list[Path]) -> list[str]:
-    """A file with no 'Formerly §N' clause is not itself a violation --
-    .claude/rules/design-decisions.md reserves that clause for content
-    migrated from the pre-split file, so a decision recorded after the
-    split legitimately carries none. Only the values that ARE recorded
-    must form a contiguous range."""
-    numbers: list[int] = []
-    malformed_provenance: list[str] = []
-    for path in paths:
-        text = path.read_text(encoding="utf-8")
-        number = _provenance_number(text)
-        if number is not None:
-            numbers.append(number)
-        elif _FORMERLY_PREFIX_RE.search(text):
-            # A "Formerly `docs/design-decisions.md` §..." clause is present
-            # but doesn't match the exact required shape -- a genuine
-            # malformed-provenance defect, unlike a file recorded after the
-            # split that carries no such clause at all (permitted per
-            # .claude/rules/design-decisions.md's "A decision recorded after
-            # the split carries no `Formerly §N` clause" convention).
-            malformed_provenance.append(path.name)
+def _provenance_line_violations(paths: list[Path]) -> list[str]:
     violations: list[str] = []
-    if malformed_provenance:
-        violations.append(
-            "Files with a malformed 'Formerly `docs/design-decisions.md` "
-            f"§N.' provenance line: {malformed_provenance}"
-        )
-    if numbers:
-        highest = max(numbers)
-        if sorted(numbers) != list(range(1, highest + 1)):
+    for path in paths:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        line3 = lines[2] if len(lines) >= 3 else ""
+        match = _ITALIC_PROVENANCE_LINE_RE.match(line3)
+        if not match:
             violations.append(
-                f"Legacy §N values do not form a contiguous {{1..{highest}}} range "
-                f"with no gaps or duplicates: {sorted(numbers)}"
+                f"{path.name}: line 3 must be an italic provenance line "
+                f"(`*...*`, single asterisks -- not `**...**`) -- found {line3!r}"
             )
+            continue
+        body = match.group("body")
+        has_formerly = _PROVENANCE_RE.search(body) is not None
+        date_match = _ISO_DATE_RE.search(body)
+        if not has_formerly and date_match is None:
+            violations.append(
+                f"{path.name}: provenance line carries neither an ISO-8601 date "
+                "nor a 'Formerly `docs/design-decisions.md` §N.' clause"
+            )
+        if date_match is not None:
+            try:
+                datetime.date.fromisoformat(date_match.group(0))
+            except ValueError:
+                violations.append(
+                    f"{path.name}: provenance line date {date_match.group(0)!r} "
+                    "does not parse as ISO-8601"
+                )
+    return violations
+
+
+def test_provenance_line_is_well_formed() -> None:
+    """Assertion 2 (shape half): line 3 of every file is an italic
+    provenance line carrying an ISO-8601 date, a 'Formerly §N' clause, or
+    both -- a file with no Formerly clause (a decision recorded after the
+    split) must carry a date instead. Absence of a Formerly clause is not
+    itself a violation here; test_legacy_numbers_form_contiguous_range's
+    closed-set check is what catches a dropped or fabricated one."""
+    paths = _decision_files()
+    _assert_corpus_non_empty(paths)
+    violations = _provenance_line_violations(paths)
+    assert not violations, "\n".join(violations)
+
+
+def _legacy_number_range_violations(
+    paths: list[Path],
+    expected_legacy_numbers: frozenset[int] = _CLOSED_LEGACY_NUMBERS,
+) -> list[str]:
+    numbers = [
+        number
+        for number in (
+            _provenance_number(path.read_text(encoding="utf-8")) for path in paths
+        )
+        if number is not None
+    ]
+    violations: list[str] = []
+    missing = sorted(expected_legacy_numbers - set(numbers))
+    if missing:
+        violations.append(
+            f"Legacy §N values are missing {missing} from the expected closed "
+            f"set {{1..{max(expected_legacy_numbers)}}}: {sorted(numbers)}"
+        )
+    extra = sorted(set(numbers) - expected_legacy_numbers)
+    if extra:
+        violations.append(
+            f"Legacy §N values include {extra}, outside the expected closed "
+            f"set {{1..{max(expected_legacy_numbers)}}}: {sorted(numbers)}"
+        )
+    if len(numbers) != len(set(numbers)):
+        duplicated = sorted({number for number in numbers if numbers.count(number) > 1})
+        violations.append(f"Legacy §N values contain duplicates: {duplicated}")
     return violations
 
 
 def test_legacy_numbers_form_contiguous_range() -> None:
-    """Assertion 2: recorded provenance §N values, across every file, form
-    exactly {1..N} -- no gaps, duplicates, or fabricated numbers -- where N
-    is the highest legacy number any file records. N is read from the files
-    themselves rather than hardcoded, since docs/design-decisions.md is now
-    a stub carrying no section numbers of its own. A file with no `Formerly
-    §N` clause at all is a legitimate post-split decision, not a violation
-    -- only a present-but-malformed clause counts as missing provenance."""
+    """Assertion 2 (closure half): recorded provenance §N values, across
+    every file, equal exactly the closed set {1..63} -- no gaps,
+    duplicates, or fabrications. The set is fixed rather than derived from
+    max(numbers) -- a derived max would silently accept losing §63 itself,
+    since removing the top element leaves the rest trivially contiguous."""
     paths = _decision_files()
     _assert_corpus_non_empty(paths)
     violations = _legacy_number_range_violations(paths)
@@ -444,34 +512,134 @@ class TestFaultInjection:
             "# Second Decision\n\nFormerly `docs/design-decisions.md` §3.\n",
             encoding="utf-8",
         )
-        violations = _legacy_number_range_violations(_decision_files(tmp_path))
+        violations = _legacy_number_range_violations(
+            _decision_files(tmp_path), expected_legacy_numbers=frozenset({1, 2, 3})
+        )
         assert len(violations) == 1
-        assert "contiguous" in violations[0]
+        assert "missing" in violations[0]
+        assert "2" in violations[0]
 
-    def test_legacy_numbers_allows_new_decision_with_no_provenance_line(self, tmp_path: Path) -> None:
-        """A post-split decision carries no `Formerly §N` clause at all --
-        .claude/rules/design-decisions.md's documented convention for a
-        decision recorded after the split. Not a violation."""
+    def test_provenance_line_accepts_bare_date_no_formerly(self, tmp_path: Path) -> None:
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n*2026-09-07.*\n\nBody text.\n", encoding="utf-8"
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert violations == []
+
+    def test_provenance_line_accepts_formerly_no_date(self, tmp_path: Path) -> None:
+        """The shape 15 real files have -- a decision that predates the
+        split but whose original section carried no recorded date."""
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n*Formerly `docs/design-decisions.md` §1.*\n\n"
+            "Body text.\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert violations == []
+
+    def test_provenance_line_rejects_missing_line(self, tmp_path: Path) -> None:
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\nNo provenance line at all -- just prose.\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "some-decision.md" in violations[0]
+
+    def test_provenance_line_rejects_malformed_date(self, tmp_path: Path) -> None:
+        (tmp_path / "some-decision.md").write_text(
+            "# Some Decision\n\n*2026-13-45. Formerly "
+            "`docs/design-decisions.md` §1.*\n",
+            encoding="utf-8",
+        )
+        violations = _provenance_line_violations(_decision_files(tmp_path))
+        assert len(violations) == 1
+        assert "2026-13-45" in violations[0]
+
+    def test_legacy_closure_detects_dropped_highest_number(self, tmp_path: Path) -> None:
+        """A fixed expected set catches losing the top element, which a
+        max()-derived range would silently accept -- removing the highest
+        number leaves the rest trivially contiguous under that scheme."""
         (tmp_path / "first-decision.md").write_text(
             "# First Decision\n\nFormerly `docs/design-decisions.md` §1.\n",
             encoding="utf-8",
         )
-        (tmp_path / "new-decision.md").write_text(
-            "# New Decision\n\n*2026-09-08.*\n\nSome rationale.\n",
+        (tmp_path / "second-decision.md").write_text(
+            "# Second Decision\n\nFormerly `docs/design-decisions.md` §2.\n",
             encoding="utf-8",
         )
-        violations = _legacy_number_range_violations(_decision_files(tmp_path))
-        assert violations == []
+        violations = _legacy_number_range_violations(
+            _decision_files(tmp_path), expected_legacy_numbers=frozenset({1, 2, 3})
+        )
+        assert len(violations) == 1
+        assert "missing" in violations[0]
+        assert "3" in violations[0]
+
+    def test_legacy_closure_detects_duplicate_within_full_coverage(
+        self, tmp_path: Path
+    ) -> None:
+        """Recorded numbers cover the expected set in full ({1, 2, 3}) while
+        §2 is claimed twice, forcing the cardinality check rather than
+        coincidentally re-testing the gap path above."""
+        (tmp_path / "first-decision.md").write_text(
+            "# First Decision\n\nFormerly `docs/design-decisions.md` §1.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "second-decision.md").write_text(
+            "# Second Decision\n\nFormerly `docs/design-decisions.md` §2.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "third-decision.md").write_text(
+            "# Third Decision\n\nFormerly `docs/design-decisions.md` §2.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "fourth-decision.md").write_text(
+            "# Fourth Decision\n\nFormerly `docs/design-decisions.md` §3.\n",
+            encoding="utf-8",
+        )
+        violations = _legacy_number_range_violations(
+            _decision_files(tmp_path), expected_legacy_numbers=frozenset({1, 2, 3})
+        )
+        assert len(violations) == 1
+        assert "duplicate" in violations[0].lower()
+
+    def test_legacy_closure_rejects_number_beyond_closed_set(self, tmp_path: Path) -> None:
+        (tmp_path / "first-decision.md").write_text(
+            "# First Decision\n\nFormerly `docs/design-decisions.md` §1.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "second-decision.md").write_text(
+            "# Second Decision\n\nFormerly `docs/design-decisions.md` §2.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "third-decision.md").write_text(
+            "# Third Decision\n\nFormerly `docs/design-decisions.md` §3.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "fourth-decision.md").write_text(
+            "# Fourth Decision\n\nFormerly `docs/design-decisions.md` §64.\n",
+            encoding="utf-8",
+        )
+        violations = _legacy_number_range_violations(
+            _decision_files(tmp_path), expected_legacy_numbers=frozenset({1, 2, 3})
+        )
+        assert len(violations) == 1
+        assert "outside the expected closed set" in violations[0]
+        assert "64" in violations[0]
 
     def test_legacy_numbers_detects_malformed_formerly_clause(self, tmp_path: Path) -> None:
         """A `Formerly` clause present but not matching the exact required
         shape (e.g. a missing trailing period) is a genuine defect, unlike
-        a file carrying no clause at all -- must still be flagged."""
+        a file carrying no clause at all -- must still be flagged. Checked
+        via _provenance_line_violations (the shape half): the malformed
+        clause means line 3 isn't a well-formed italic provenance line, so
+        it's caught there rather than by the closure check, which only
+        sees successfully-parsed §N numbers."""
         (tmp_path / "malformed-decision.md").write_text(
             "# Malformed Decision\n\nFormerly `docs/design-decisions.md` §1\n",
             encoding="utf-8",
         )
-        violations = _legacy_number_range_violations(_decision_files(tmp_path))
+        violations = _provenance_line_violations(_decision_files(tmp_path))
         assert len(violations) == 1
         assert "malformed-decision.md" in violations[0]
 
