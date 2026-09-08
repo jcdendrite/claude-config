@@ -163,7 +163,9 @@ Branch                                    Span(min) Active(min)  Idle(min)    Bu
 GH-333/audit-routing-samples-subcommand        1553         112       1442         5      30
 ```
 
-**`Bursts` is not a session count.** It is `len(idle_gaps) + 1` — the number of contiguous activity bursts separated by a `--gap-minutes`-or-longer idle gap. One burst can span several session files (a continuation with no idle gap between consecutive files' timestamps), and one session file can itself span several bursts (a long idle pause mid-session), so this column can legitimately disagree with a plain count of distinct session files for the same branch — a label/docstring fix, not a change to the computed value.
+**`Bursts` is not a session count.** It is `len(idle_gaps) + 1` — the number of contiguous activity bursts separated by a `--gap-minutes`-or-longer idle gap — not a count of distinct session files:
+- One burst can span several session files (a continuation with no idle gap between consecutive files' timestamps).
+- One session file can itself span several bursts (a long idle pause mid-session).
 
 **When to reach for it.** Estimate how many hours were actually spent on a branch, stripping calendar time. Use `Active(min)`, not `Span(min)` — the span is wall-clock dominated by idle gaps.
 
@@ -203,7 +205,7 @@ GH-333/audit-routing-samples-subcommand  main       Read                        
 
 Byte totals are aggregate-only: no tool-result content, file paths, session IDs, or cwd are ever printed. There is no per-byte dollar model — this is an un-dollar-weighted signal for where verbose tool output accumulates, not a cost figure.
 
-**Turn counts here and in `cost` use different denominators.** This subcommand's turn totals count every post-dedup assistant record, split by thread (main/sidechain). `cost`'s own turn counts (e.g. `--summary`'s "priced turns") count priced turns across main **and** sidechain but skip any assistant record carrying no `usage` block at all. A record can be a real, dedup-surviving turn and still be usage-less (a synthetic error record, for instance), so `subagents`' total legitimately exceeds `cost`'s for the same scope — the gap is a scope difference between "every turn" and "every turn `cost` can price," not a bug in either counter.
+**Turn counts here and in `cost` use different denominators.** `subagents` counts every dedup-surviving assistant record, while `cost` additionally requires a `usage` block, so `subagents`'s total can legitimately exceed `cost`'s for the same scope without either being a bug.
 
 **When to reach for it.** Understand how much work was delegated versus inline. Compare against `subagent-mix` for a breakdown of what *kind* of subagents were spawned.
 
@@ -439,17 +441,16 @@ CLASSIFICATION SUMMARY
 - `--branches B1,B2,...` — filter to specific branches
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
-- `--deny-only` — restrict to sessions containing at least one hook denial. Has no effect combined with `--round-cost` (a notice prints to stderr) — round-cost has no denial-selection concept to apply it to.
+- `--deny-only` — restrict to sessions containing at least one hook denial.
 - `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
-- `--round-cost` — replace the per-session event listing with a per-review-round dollar breakdown (see "`--round-cost`" below). Mutually exclusive with `--deny-summary`.
-- `--skill NAME` — restrict skill-invocation matching to one skill name. Combined with `--round-cost`, this also redefines what counts as a round boundary: only an invocation of that one skill opens a new round, so an intervening invocation of a different `REVIEW_TRACE_SKILLS` member no longer splits one.
+- `--skill NAME` — restrict skill-invocation matching to one skill name.
 - Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
 
-Under more than one root — the default once `~/.claude/transcript-config-dirs` declares another account, since `review-trace` has no repeatable `--config-dir` of its own — `DO NOT PUBLISH` prints on stdout and stderr, and each session's own `### <path>` header (both the default timeline's and `--round-cost`'s) is redacted to an opaque `account-<K>/session-<N>` label instead of the real per-session file path, since that path embeds the real project directory name. Unlike `subagent-mix`'s branch/`subagent_type` redaction, there is no `--this-repo` disclosure carve-out here.
+Multi-root scope — the default once `~/.claude/transcript-config-dirs` declares another account, since `review-trace` has no repeatable `--config-dir` of its own — prints `DO NOT PUBLISH` on stdout and stderr. Each session's own `### <path>` header is redacted to an opaque `account-<K>/session-<N>` label instead of the real per-session file path. That path embeds the real project directory name. Unlike `subagent-mix`'s branch/`subagent_type` redaction, there is no `--this-repo` disclosure carve-out here.
 
 **Sample output.**
 ```
@@ -533,28 +534,6 @@ interrupted                    1
 - **Friction events are a different axis from denials.** A `denial` event is a hook or `permissions.allow` block, matched by message text. A `friction` event is one of four other reasons a tool call didn't go through, read from the record's own `toolDenialKind` field: `user-rejected` (a permission prompt the user declined), `automode-blocked`, `automode-unavailable`, or `interrupted` (`[Request interrupted by user for tool use]`). A `toolDenialKind` value outside that four-value set prints as `other-kind` rather than being echoed raw. Friction events never change `has_denial`, the per-session `denials=N` header, or `--deny-only`'s session-selection — those three stay denial-kind-only. `--deny-summary` is the only surface that tallies friction into a table; without it, the default per-session timeline still renders a `friction` line for each one, but nothing counts them.
 - **Combined with `--deny-only`.** Friction counts are tallied from a session's full event list before the `--deny-only` session filter is applied, so a session whose only events are friction (no denials at all) still contributes to the friction breakout even though `--deny-only` alone wouldn't select that session for the default timeline view.
 - **Corpus window and the pre-regime caveat.** The printed window is the earliest/latest timestamp among in-scope events, after `--branches`/`--since`/`--until` are applied. `toolDenialKind` was not recorded on any transcript before 2026-07-20, so an errored, non-gate tool result timestamped earlier than that can't be classified into the friction breakdown at all. Those records are counted separately, on the line under the friction table, rather than folded into the breakdown as zero friction.
-
-### `--round-cost`
-
-Replaces the per-session event listing with a per-review-round dollar breakdown: each round's own main-thread window plus every reviewer/writer/consult dispatch spawned inside it, joined through `_index_subagent_dispatches`. `review-trace` emits only skill *start* events, never a completion, which drives every rule below. A session with no skill invocation at all is excluded from `--round-cost` entirely (no pre-loop line, no round) — a hook denial or a reviewer/writer/consult dispatch alone is not enough to admit a session, since without a skill invocation there is no review round for its cost to attribute to.
-
-**The window-boundary rule.** Round *i*'s window is `[skill_start_i, skill_start_{i+1})`, left-closed at each boundary — a dispatch or main-thread turn timestamped exactly at a skill invocation belongs to the round that invocation opens, never the round before it. The last round has no `skill_start_{n+1}` to close it, so it extends to `--until` (or is unbounded, printed as `session end`, when `--until` isn't given). A dispatch or main-thread turn timestamped before the *first* skill event is reported under a separate `Pre-loop (unattributed)` line — there is no round 0.
-
-**Sample output.**
-```
-REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
-
-### <config-dir>/projects/my-project/abc123.jsonl
-  Pre-loop (unattributed) [.. 2026-05-20T10:15:00+00:00)  main=$0.42  dispatches=$0.00 (0)  total=$0.42
-  Round 1 [2026-05-20T10:15:00+00:00 .. 2026-05-20T11:02:00+00:00)  main=$1.85  dispatches=$3.10 (2)  total=$4.95
-  Round 2 [2026-05-20T11:02:00+00:00 .. session end)  main=$0.60  dispatches=$2.85 (1)  total=$3.45
-```
-
-Each round's `main=` figure prices the round's own main-thread window: records are deduped via `dedup_turns_by_request_id` before pricing, the same dedup-before-pricing convention `subagent-mix`'s `Actual$` column uses, since pricing a raw per-content-block record would double-count it. `dispatches=` sums each in-round dispatch's own full-lifetime `Actual$` via `_dispatch_usage_summary`, unwindowed — a dispatch is attributed to a round in full, never sub-windowed by the round's own edges. This is a source of round-attribution noise for a dispatch whose own work spans a round boundary: its whole cost lands in the round its spawn event falls in, none in the round its work actually continues into. The dispatch count prints in parentheses. A dangling dispatch (no readable `.jsonl`) contributes no dollars and no count, matching `subagent-mix`'s own `Dangling` handling. `reviewer`-kind spawns (`staff-*`, `ciso-reviewer`, and the other exact-name reviewer types), `code-writer`/`general-purpose` spawns, and `plan-architect` consult dispatches all count toward `dispatches=` — the same "reviewer/writer/consult work" scope the rest of this file's dollar-forensics use.
-
-A trailing `(N unpriced turns / M tokens excluded from priced spend)` line prints when any turn (main-thread or dispatch) used a model absent from `_MODEL_BASE_INPUT_RATES`, matching every other dollar-reporting surface in this file. A `STALE PRICING` banner prints when any priced model is past its `_MODEL_RATE_EXPIRES` re-verify-by date, same as `cost`'s and `subagent-mix`'s own banner. A trailing `(N meta.json files failed to parse, excluded)` line prints when any dispatch's `meta.json` sidecar was unreadable, matching `subagent-mix`'s identical diagnostic for the same `_index_subagent_dispatches` join — this is distinct from a dangling dispatch (readable `meta.json`, missing or unreadable `.jsonl`), which is counted separately.
-
-**When to reach for it.** Attribute a review loop's spend to the round that drove it, instead of only the loop's aggregate cost — separating "round 1 was expensive because of dispatch fan-out" from "round 3 was expensive because of a large main-thread re-read."
 
 ---
 
