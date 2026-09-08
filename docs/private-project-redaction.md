@@ -96,32 +96,44 @@ on how it was computed, not what string it contains. The repo-root
 [`CLAUDE.md`](../CLAUDE.md) "Also redact structural fingerprints and
 provenance" rule states the carve-out these conditions gate.
 
-**Scope — closed, not illustrative.** The one carve-out is measurements
-of this repo's own tooling: Claude Code tool calls, sessions, and agent
-dispatches, and nothing else. Cost, spend, duration, and cadence stay
-excluded even when pooled — they double as engagement-sensitivity
-signals on their own.
+**What it permits.** A figure pooled across a corpus that mixes private
+and public sources is publishable when it carries no per-project,
+per-account, or per-engagement dimension. Cite the command or script
+that produced it.
 
-A figure pooled across a corpus that mixes private and public sources
-is publishable when it carries no per-project, per-account, or
-per-engagement dimension. Cite the command or script that produced it.
+**Scope — two closed lists.** Both have to be satisfied, and neither
+extends by analogy:
+
+- *What may be counted:* this repo's own tooling in use — Claude Code
+  tool calls, sessions, and agent dispatches. Nothing else.
+- *How it may be reported:* any statistic over those counts — a total,
+  a share, a median. Not cost, spend, duration, or cadence, even when
+  computed per tool call, session, or dispatch, and even when pooled: a
+  count describes how the tooling behaves, while cost, spend, duration,
+  and cadence describe how much work the engagements behind the corpus
+  generated.
 
 **Before publishing, check two things:**
 
-- A correlated proxy variable: an axis that isn't named but tracks
-  project, account, or engagement.
-- Cross-artifact reconstruction: whether combining this figure with
-  another published one reconstructs a per-project, per-account, or
-  per-engagement number.
+- **A correlated proxy.** Does any axis of the figure track project,
+  account, or engagement without naming one?
+- **Cross-artifact reconstruction.** Does combining this figure with
+  another already-published one reconstruct a per-project,
+  per-account, or per-engagement number?
 
-Either check matching, or any doubt the pool is diverse enough to
-prevent attribution to one project, account, or engagement, means
-don't publish — closed by default, same as the blocklist tier's "if in
-doubt, strip it."
+A share or a median reconstructs more readily under the second check
+than a raw total does — apply extra scrutiny there before publishing
+either.
+
+If either check fires, don't publish. If you doubt the pool is diverse
+enough to keep the figure from being attributed to a single project,
+account, or engagement, don't publish either — closed by default, same
+as the blocklist tier's "if in doubt, strip it."
 
 **Remediation.** A wrongly-scoped figure discovered already published
-gets the same remediation as a leaked secret: ask the owner, then
-rewrite history.
+is the owner's call, not the agent's. Stop and report what was
+published and where — a rewrite is not a retraction once a public
+repo's history can be cloned, forked, or cached.
 
 ## Why the blocklist can't be armed by default
 

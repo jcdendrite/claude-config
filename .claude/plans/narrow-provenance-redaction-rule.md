@@ -323,3 +323,17 @@ this PR.
 - **A test pinning the new rule's wording or the two files' agreement.**
   Rejected above; the enforcing mechanism for this convention is the
   `/code-review` project-layer P1 item.
+
+## Amendment: secrets-subsection actor fix (PR #928 review, round 2)
+
+A `plan-architect` consult, dispatched per the engineer's explicit
+request rather than a routine code-review trigger, found an actor
+ambiguity in the pooled-figure remediation line: "ask the owner, then
+rewrite history" reads as instructing the agent to run the rewrite. The
+same ambiguity predates this PR in `CLAUDE.md:176-177`'s
+secrets-remediation line, "ask the owner to rotate it *then* rewrite
+history." The engineer authorized folding a matching one-sentence fix
+into this PR rather than deferring it. This supersedes Out of scope's
+"the secrets subsection are untouched" for that one sentence only — the
+rest of the subsection, and the structural-fingerprints paragraph,
+remain untouched as originally scoped.
