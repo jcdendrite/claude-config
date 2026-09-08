@@ -99,6 +99,7 @@ from transcript_analysis.redaction import (
     _build_redact_map,
     _corpus_fingerprint,
     _derive_proj_label,
+    _project_family,
     _redact_proj_label,
     _redact_session_id,
     _RedactMapKey,
@@ -287,7 +288,7 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         for branch, fb in file_branches.items():
             d = branch_data[branch]
             d["sessions"] += 1
-            d["projects"].add(jsonl.parent.name)
+            d["projects"].add(_project_family(jsonl.parent.name))
             for fam in ("opus", "sonnet", "haiku", "other"):
                 d[fam] += fb[fam]
             if fb["ts_min"] < float("inf"):
@@ -568,7 +569,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 
     for jsonl, records in iter_sessions(scope.PROJECTS_DIR, projects_glob):
         proj_label = _derive_proj_label(jsonl)
-        total_projects_seen.add(proj_label)
+        total_projects_seen.add(_project_family(jsonl.parent.name))
 
         # Count unrecognized shapes regardless of other filters.
         for rec in records:
