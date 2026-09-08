@@ -37,8 +37,8 @@ _LIST_PRICE_CAVEAT = (
 _LIST_PRICE_CAVEAT_ALERT = f"> [!IMPORTANT]\n> {_LIST_PRICE_CAVEAT}"
 
 # Printed after --summary's scan-coverage table. Published into every stow
-# consumer's PR bodies, so it names no CLI flag — the command a PR reader
-# sees is the wrapper script, which has no --summary to drop.
+# consumer's PR bodies. It names no CLI flag: the command a PR reader sees
+# is the wrapper script, which has no --summary to drop.
 _SINGLE_ACCOUNT_SCOPE_NOTE = (
     "Spend recorded under a different Claude account on the same machine is"
     " not counted here — ask the author for the full report, which covers"

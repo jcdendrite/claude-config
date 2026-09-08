@@ -2347,16 +2347,21 @@ class TestCostSummary:
             " every Claude account configured on that machine."
         ) in out
 
-    def test_summary_scan_coverage_table_omits_unreadable_column_when_zero(
+    def test_summary_scan_coverage_table_distinguishes_sessions_from_turns(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Absent arm: a scan with no unreadable transcripts prints the
-        three-column table, with no Of those, unreadable column at all —
-        not an empty or zero-valued one."""
+        """This fixture's one session contributes two priced turns, so
+        Sessions with priced turns must read 1 and Priced turns must read
+        2. Every other --summary fixture has exactly one of each, so a
+        positional-argument swap at _print_scan_coverage_table's call site
+        would otherwise pass every existing test undetected."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        _write_jsonl(mine / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),
+            _priced("claude-sonnet-5", input=1_000_000),
+        ])
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
@@ -2369,9 +2374,9 @@ class TestCostSummary:
 
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
-        assert "Of those, unreadable" not in out
         coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
-        assert coverage_cols["Transcript files scanned"] == "1"
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "2"
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_summary_scan_coverage_table_includes_unreadable_column_when_nonzero(
