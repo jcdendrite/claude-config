@@ -29,6 +29,10 @@
 #     substitution that builds COLLAPSED_PROMPT fails and yields an empty
 #     string. An empty COLLAPSED_PROMPT no-matches both grep arms below,
 #     reaching the same fail-open outcome by a different mechanism.
+#   - Neither `tr` nor `grep` has a timeout wrap; a hung (not missing) one
+#     blocks every dispatch until the harness's own timeout intervenes --
+#     see the decision doc's Known gaps for why this is accepted rather
+#     than wrapped.
 
 set -uo pipefail
 
@@ -55,15 +59,10 @@ NOOP_MAX_PROMPT_LEN=600
 # remaining tokens name the same "do nothing" shape.
 NOOP_STUB_TOKEN_RE='^(noop|no-op|placeholder|wait|nothing|standby|stand by|ack)[[:punct:]]*$'
 
-# Unanchored against the prompt alone. `do(ing|es)? nothing`, `just
-# wait`, `report back immediately`, `exists only (so|to)`, and `no
-# action` each appear verbatim in a confirmed no-op corpus fixture.
-# `occupy the turn` and `hold while` are named verbatim in the CLAUDE.md
-# bullet described above. A read-scoping instruction ("do not read any
-# files") is deliberately excluded: it restricts tool access rather than
-# instructing the agent to do no work, a materially different shape from
-# every idiom actually in this list -- see
-# docs/design-decisions/no-op-dispatch-hook-gate.md.
+# Unanchored against the prompt alone, per the same two-source grounding
+# rule as NOOP_STUB_TOKEN_RE above. A read-scoping instruction ("do not
+# read any files") is deliberately excluded -- see the decision doc for
+# why.
 NOOP_PHRASE_RE='do(ing|es)? nothing|just wait|report back immediately|exists only (so|to)|no action|occupy the turn|hold while'
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.

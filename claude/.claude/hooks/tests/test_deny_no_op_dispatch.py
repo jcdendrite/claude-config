@@ -15,14 +15,19 @@ from helpers import HOOKS_DIR, agent_input, bash_input, build_path_without, run_
 
 DENY_NO_OP_DISPATCH_HOOK = HOOKS_DIR / "deny-no-op-dispatch.sh"
 
-# Every NOOP_STUB_TOKEN_RE and NOOP_PHRASE_RE alternative not already
-# exercised by a dedicated test below, as a standalone or minimally-wrapped
-# short prompt, plus one mixed-case fixture pinning grep -qiE's
-# case-insensitivity, plus exhaustive branch coverage for the regex's two
-# nested groups: every `do(ing|es)? nothing` verb form and both `exists
-# only (so|to)` prepositions, plus one fixture pinning
-# NOOP_STUB_TOKEN_RE's `[[:punct:]]*` trailing-punctuation quantifier
-# (`noop.`).
+# Mirrors deny-no-op-dispatch.sh's own NOOP_MAX_PROMPT_LEN so this file's
+# boundary tests derive from one place rather than repeating the literal.
+NOOP_MAX_PROMPT_LEN = 600
+
+# This table covers every NOOP_STUB_TOKEN_RE and NOOP_PHRASE_RE alternative
+# not already exercised by a dedicated test below, as a standalone or
+# minimally-wrapped short prompt. It also covers:
+# - one mixed-case fixture pinning grep -qiE's case-insensitivity.
+# - exhaustive branch coverage for the regex's two nested groups: every
+#   `do(ing|es)? nothing` verb form and both `exists only (so|to)`
+#   prepositions.
+# - one fixture pinning NOOP_STUB_TOKEN_RE's `[[:punct:]]*`
+#   trailing-punctuation quantifier (`noop.`).
 NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
     ("wait", "stub_wait"),
     ("nothing", "stub_nothing"),
@@ -41,10 +46,10 @@ NOOP_IDIOM_COVERAGE_TABLE: list[tuple[str, str]] = [
     ("Report Back Immediately", "phrase_mixed_case"),
 ]
 
-# The 2026-09-08 incident prompt (302 characters), verbatim from this
-# repo's own transcript history, with the real agentId replaced by a
-# same-length synthetic placeholder -- the idiom-bearing text is preserved
-# exactly, per docs/design-decisions/no-op-dispatch-hook-gate.md's
+# The 2026-09-08 incident prompt, verbatim from this repo's own transcript
+# history (302 characters). The real agentId is replaced with a
+# same-length synthetic placeholder; the idiom-bearing text is otherwise
+# preserved exactly, per docs/design-decisions/no-op-dispatch-hook-gate.md's
 # provenance requirement.
 INCIDENT_PROMPT = (
     "Do nothing except wait. This turn exists only so the parent session "
@@ -52,25 +57,6 @@ INCIDENT_PROMPT = (
     "dispatch (agentId a0000000000000000) finishes. Reply with a one-line "
     "acknowledgment and stop — do not read any files, do not run any "
     "commands, do not investigate anything."
-)
-
-# A synthesized multi-paragraph structured task prompt (775 characters),
-# well over NOOP_MAX_PROMPT_LEN (600) -- pins that a genuine task
-# specification is allowed through regardless of its own content.
-STRUCTURED_TASK_PROMPT = (
-    "Implement the retry-with-backoff logic described in "
-    "docs/http-retry-policy.md for the internal HTTP client, which "
-    "currently retries every failed request immediately with no delay and "
-    "no cap, hammering the upstream service during an outage.\n\n"
-    "Your job: add exponential backoff with jitter to "
-    "src/http_client.py's request() method. Cap the retry count at 5 "
-    "attempts and the per-attempt delay at 30 seconds, and cover the "
-    "boundary between the 4th and 5th retry with a new unit test in "
-    "tests/test_http_client.py. Match the existing test file's fixture "
-    "and mocking conventions rather than introducing a new pattern.\n\n"
-    "Report back: which files you changed, the exact backoff formula and "
-    "constants you chose, and the exact test command you ran to confirm "
-    "the new boundary case passes."
 )
 
 # A long, over-ceiling prompt that deliberately contains two idioms
@@ -92,9 +78,7 @@ ADVERSARIAL_OVER_CEILING_PROMPT = (
     "dashboard query you used to confirm the error-rate figure."
 )
 
-assert len(INCIDENT_PROMPT) == 302
-assert len(STRUCTURED_TASK_PROMPT) > 600
-assert len(ADVERSARIAL_OVER_CEILING_PROMPT) > 600
+assert len(ADVERSARIAL_OVER_CEILING_PROMPT) > NOOP_MAX_PROMPT_LEN
 
 NBSP_GLIBC_ONLY_SKIP_REASON = (
     "NBSP-as-non-whitespace under `tr -s '[:space:]'` is verified only "
@@ -246,16 +230,6 @@ class TestDenyNoOpDispatch:
     # Allow                                                               #
     # ------------------------------------------------------------------ #
 
-    def test_structured_task_prompt_over_ceiling_allowed(self, isolated_home):
-        assert (
-            run_hook(
-                DENY_NO_OP_DISPATCH_HOOK,
-                agent_input(prompt=STRUCTURED_TASK_PROMPT),
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
     def test_adversarial_idiom_bearing_prompt_over_ceiling_allowed(self, isolated_home):
         """The length conjunct, not the idiom list, is what protects a
         real task specification that happens to use idiom vocabulary in a
@@ -354,13 +328,13 @@ class TestDenyNoOpDispatch:
     # ------------------------------------------------------------------ #
 
     def test_idiom_bearing_prompt_one_under_ceiling_denied(self, isolated_home):
-        prompt = _padded_idiom_prompt(599)
-        assert len(prompt) == 599
+        prompt = _padded_idiom_prompt(NOOP_MAX_PROMPT_LEN - 1)
+        assert len(prompt) == NOOP_MAX_PROMPT_LEN - 1
         assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "deny"
 
     def test_idiom_bearing_prompt_at_ceiling_allowed(self, isolated_home):
-        prompt = _padded_idiom_prompt(600)
-        assert len(prompt) == 600
+        prompt = _padded_idiom_prompt(NOOP_MAX_PROMPT_LEN)
+        assert len(prompt) == NOOP_MAX_PROMPT_LEN
         assert run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt=prompt), home=isolated_home) == "allow"
 
     def test_stub_token_with_leading_space_denied(self, isolated_home):
@@ -389,14 +363,9 @@ class TestDenyNoOpDispatch:
 
     @pytest.mark.skipif(sys.platform == "darwin", reason=NBSP_GLIBC_ONLY_SKIP_REASON)
     def test_stub_token_padded_with_nbsp_allowed(self, isolated_home):
-        """Accepted false-positive residual, disclosed inline in the hook
-        just after COLLAPSED_PROMPT's trim: `tr -s '[:space:]'` and the
-        single-space trim operate on ASCII whitespace only, so a stub
-        token padded with NBSP (U+00A0) passes through uncollapsed and
-        doesn't match the anchored stub arm. Unlike the ASCII-padded
-        equivalent (`" noop "`) above, which correctly denies. See
-        docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps
-        section for this claim's platform-verification scope."""
+        """Accepted residual: NBSP padding evades the ASCII-only `tr`
+        collapse and this gate's own leading/trailing-space trim (see
+        no-op-dispatch-hook-gate.md's Known gaps)."""
         assert (
             run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt="\xa0noop\xa0"), home=isolated_home)
             == "allow"
@@ -411,6 +380,43 @@ class TestDenyNoOpDispatch:
         space, so NOOP_PHRASE_RE's literal space never matches."""
         assert (
             run_hook(DENY_NO_OP_DISPATCH_HOOK, agent_input(prompt="do\xa0nothing"), home=isolated_home)
+            == "allow"
+        )
+
+    def test_multibyte_idiom_bearing_prompt_denied_under_utf8_locale(self, isolated_home):
+        """`${#PROMPT}` counts characters, not bytes, under a UTF-8 locale
+        (the hook header's documented claim, design-decision row 24). This
+        fixture's character count (211) sits well under
+        NOOP_MAX_PROMPT_LEN, so the idiom it carries still denies."""
+        prompt = "do nothing " + "中" * 200
+        assert len(prompt) == 211
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt=prompt),
+                home=isolated_home,
+                extra_env={"LC_ALL": "en_US.UTF-8"},
+            )
+            == "deny"
+        )
+
+    def test_multibyte_idiom_bearing_prompt_allowed_under_c_locale_byte_count(self, isolated_home):
+        """Same fixture as test_multibyte_idiom_bearing_prompt_denied_under_utf8_locale,
+        under the C locale instead. `${#PROMPT}` there counts the UTF-8
+        encoded byte length (611), at or over the ceiling, so the ceiling
+        conjunct's early exit allows the dispatch even though its idiom
+        would otherwise deny it. This is the documented safe direction:
+        byte-counting can only move a dispatch out of this gate's reach,
+        never into it."""
+        prompt = "do nothing " + "中" * 200
+        assert len(prompt.encode("utf-8")) == 611
+        assert (
+            run_hook(
+                DENY_NO_OP_DISPATCH_HOOK,
+                agent_input(prompt=prompt),
+                home=isolated_home,
+                extra_env={"LC_ALL": "C"},
+            )
             == "allow"
         )
 

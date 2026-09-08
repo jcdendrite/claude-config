@@ -25,6 +25,7 @@ Two advisory-only fixes for a subagent dispatched solely to wait, occupy the tur
 - This gate is a cooperative guardrail, not an adversarial-resistant security boundary. A caller can clear it by padding a no-op prompt past the ceiling or avoiding the closed idiom list, so it must not be cited as evidence of an enforced cost or abuse control.
 - `do(ing|es)? nothing` and `no action` can describe another actor's inaction rather than the dispatched agent's own, e.g. "Check whether the retry handler does nothing on the third attempt." This is an accepted false-positive residual: narrowing either idiom further risks losing real no-op coverage.
 - `tr -s '[:space:]'` and the hook's own single-space trim operate on ASCII whitespace only, so a no-op idiom padded or separated with non-ASCII whitespace (e.g. U+00A0 NBSP) passes through uncollapsed and evades both regex arms, not only the anchored stub-token arm. This is empirically observed on glibc (`C`, `C.UTF-8`, `en_US.UTF-8`), not spec-derived from a cited `tr` standard, and is unverified on BSD/macOS `tr`.
+- Neither `tr` nor `grep` carries a timeout, unlike `_lib_jq`'s 5s backstop. A hung (not missing) binary blocks every dispatch in the session with no backstop until the harness's own hook-execution timeout intervenes. Accepted rather than wrapped, since the input is already capped under `NOOP_MAX_PROMPT_LEN` bytes and neither regex has a ReDoS-prone nested-quantifier shape.
 
 ## Sources
 
