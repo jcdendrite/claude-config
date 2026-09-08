@@ -2,7 +2,7 @@
 
 Covers _config_enabled/_config_value's resolution semantics (schema
 default, legacy-file fallback per legacy-polarity, the config-dir-or-home
-union, and row-19's state-file-row-is-authoritative precedence over a
+union, and the state-file-row-is-authoritative precedence over a
 disagreeing legacy file), _config_set's comment/key-order-preserving
 rewrite and refuse-on-malformed-content contract, and _config_scaffold's
 additive-only and exclude-list contracts.
@@ -96,7 +96,7 @@ class TestDefaultResolution:
 
 
 # ---------------------------------------------------------------------------
-# Row 13: _config_enabled's three-way exit code contract
+# _config_enabled's three-way exit code contract
 # ---------------------------------------------------------------------------
 
 
@@ -141,8 +141,8 @@ class TestConfigDirOverrideArgument:
 
 
 # ---------------------------------------------------------------------------
-# Row 18: legacy-probe-on-resolution-failure divergence between
-# worktree_required (true) and autonomous_shipping (false)
+# legacy-probe-on-resolution-failure divergence between worktree_required
+# (true) and autonomous_shipping (false)
 # ---------------------------------------------------------------------------
 
 
@@ -163,7 +163,7 @@ class TestLegacyProbeOnResolutionFailure:
 
 
 # ---------------------------------------------------------------------------
-# Row 4/33: config-dir-or-home union semantics
+# config-dir-or-home union semantics
 # ---------------------------------------------------------------------------
 
 
@@ -172,7 +172,7 @@ class TestUnionSemantics:
         """An explicit `false` state-file row at the resolved config dir must
         not defeat a `true` produced by $HOME/.claude's legacy file -- the
         union is OR'd across each location's own independently-resolved
-        effective value, not "first location found wins" (row 4)."""
+        effective value, not "first location found wins"."""
         config_dir = isolated_home / "altconfig"
         config_dir.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
@@ -199,7 +199,7 @@ class TestUnionSemantics:
 
 
 # ---------------------------------------------------------------------------
-# Row 19: state-file-row precedence over a disagreeing legacy file, for a
+# State-file-row precedence over a disagreeing legacy file, for a
 # content-matches key (pr_cost_disclosure) -- not just a boolean presence
 # check, since this migration's own motivating bug lives in that key.
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ class TestPrCostDisclosureDoesNotUnion:
 
 
 # ---------------------------------------------------------------------------
-# Row 7: a subset-violating line is skipped (with a warning), not treated as
+# A subset-violating line is skipped (with a warning), not treated as
 # a whole-document parse failure -- the remaining valid keys still resolve.
 # ---------------------------------------------------------------------------
 
@@ -465,7 +465,7 @@ class TestSchemaTypeValidationOnRead:
 
 
 # ---------------------------------------------------------------------------
-# Row 9: _config_set's atomic, comment/order-preserving rewrite, and its
+# _config_set's atomic, comment/order-preserving rewrite, and its
 # refuse-on-malformed-content contract.
 # ---------------------------------------------------------------------------
 
@@ -536,12 +536,12 @@ class TestConfigSet:
 
 
 # ---------------------------------------------------------------------------
-# Row 32, as narrowed by the routine-path-regression fix: _config_scaffold
-# is additive-only, honors an exclude-list, and -- for a key whose
-# legacy-polarity is presence-enables/presence-disables/content-matches --
-# never backfills a default row over an absent one, so that key's own
-# legacy file stays reachable via _config_location_value's read-time
-# fallback for as long as the key has no state-file row of its own.
+# _config_scaffold is additive-only, honors an exclude-list, and -- for a
+# key whose legacy-polarity is presence-enables/presence-disables/
+# content-matches -- never backfills a default row over an absent one, so
+# that key's own legacy file stays reachable via _config_location_value's
+# read-time fallback for as long as the key has no state-file row of its
+# own.
 # ---------------------------------------------------------------------------
 
 

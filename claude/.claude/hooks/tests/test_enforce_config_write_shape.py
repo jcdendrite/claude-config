@@ -124,6 +124,24 @@ class TestBashNameScanArm:
         home.mkdir()
         assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("git status"), home=home) == "allow"
 
+    def test_grep_searching_for_config_set_is_also_denied(self, tmp_path):
+        """The name-scan is a bare substring test, not a positional-argument-
+        grammar parser (this file's header/the hook's own header explains
+        why) -- so a plain `grep` search for the literal `_config_set`
+        substring is denied too, even though it invokes nothing. Deliberate
+        over-blocking, documented here as the current, accepted trade-off
+        rather than a bug to fix."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input("grep -rn '_config_set' claude/.claude/hooks/_config.sh"),
+                home=home,
+            )
+            == "deny"
+        )
+
 
 class TestSanctionedCallerAllowPaths:
     """The two sanctioned writers (docs/config-file.md's "Writing a value")
@@ -191,6 +209,23 @@ class TestBashRedirectScanArm:
             run_hook(
                 ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
                 bash_input(f"echo 'worktree_required = true' | TEE {target}"),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_cp_trailing_flag_after_target_denied(self, tmp_path):
+        """A trailing flag after the true destination (`cp SRC DEST -v`)
+        must still deny -- cp's own argument parser accepts a flag in this
+        position and still performs the write against DEST, confirmed
+        empirically against a real cp binary."""
+        home = tmp_path / "home"
+        home.mkdir()
+        target = home / ".claude" / "claude-config.toml"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(f"cp /tmp/payload.toml {target} -v"),
                 home=home,
             )
             == "deny"
@@ -410,6 +445,180 @@ class TestBashRedirectScanArm:
         )
         assert not call_marker.exists(), (
             "_lib_split_fragments must not run for a command with no write construct"
+        )
+
+    def test_reading_state_file_as_a_copy_source_denied_as_accepted_tradeoff(self, tmp_path):
+        """Documents the accepted tradeoff this hook's own header discloses:
+        widened candidate emission tests every word of a write-gated
+        fragment, so a `cp`/`rsync` whose only claude-config.toml mention is
+        the SOURCE argument (a read, e.g. backing the file up) is denied
+        too, even though nothing is written to it. Expected-fail by design,
+        not a bug -- a `cat`/`grep`/`less` read of the same source is
+        unaffected, since neither invokes a recognized write utility."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        source = home / ".claude" / "claude-config.toml"
+        source.write_text("worktree_required = true\n")
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(f"cp {source} /tmp/backup.toml"),
+                home=home,
+            )
+            == "deny"
+        )
+
+
+class TestReAddedWriteUtilitiesDenyExplicitDestinations:
+    """rsync/curl/scp/wget/openssl are in _LIB_WRITE_UTILITIES -- see that
+    array's own header comment in _lib.sh for the membership criterion (a
+    single-word command whose ordinary invocation writes a file the caller
+    names as an explicit token). Each of these five names an explicit
+    destination token in the commands below (rsync/scp positionally,
+    curl -o/wget -O/openssl -out the same way dd's of= does), so each must
+    deny like the existing cp/dd/sed deny-path tests above."""
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "rsync /tmp/payload.toml {target}",
+            "curl -s -o {target} https://example.invalid/payload",
+            "scp /tmp/payload.toml localhost:{target}",
+            "wget -O {target} https://example.invalid/payload",
+            "openssl enc -out {target} -in /tmp/payload.toml",
+        ],
+    )
+    def test_explicit_destination_token_denied(self, command_template, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        target = home / ".claude" / "claude-config.toml"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(command_template.format(target=target)),
+                home=home,
+            )
+            == "deny"
+        )
+
+
+class TestGluedShortFlagBypassClosed:
+    """CRITICAL bypass (round 4 finding): _lib_fragment_candidates emits a
+    glued short-option token (curl -so<path>, wget -O<path>/-qO<path> --
+    flag and value in one word, no space or '=') verbatim. _lib_shape_match's
+    pass-1 exact-match branch and passes 2-4's `-ef` calls all compare from
+    the candidate's own position 0, so the glued flag prefix defeated every
+    one of them whenever the resolved config dir has no literal '.claude'
+    path segment -- this repo's own documented
+    ~/.local/state/claude-accounts/<account>/ multi-account layout is
+    exactly that shape. Only pass 1's wildcard branch happened to tolerate
+    the prefix, and only because of its own leading '*'. Empirically
+    confirmed against real curl 8.5.0 and wget binaries: both accept a
+    glued short-option value with no separator; openssl's own option parser
+    does not (verified: 'openssl rand -out/tmp/x 8' errors 'Unknown
+    option'), but _lib_fragment_candidates emits every fragment word as a
+    candidate regardless of what the specific utility's own parser would
+    accept, so the shape-match fix must still close this word shape for
+    openssl too. Parametrized across both a default (.claude-segment-
+    present) and a .claude-segment-free CLAUDE_CONFIG_DIR to prove the fix
+    isn't itself keyed off the '.claude' substring."""
+
+    @pytest.fixture(params=[True, False], ids=["default-dotclaude-segment", "dotclaude-free-config-dir"])
+    def config_dir_topology(self, request, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        if request.param:
+            target = home / ".claude" / "claude-config.toml"
+            extra_env = None
+        else:
+            config_dir = tmp_path / "profile"
+            config_dir.mkdir()
+            target = config_dir / "claude-config.toml"
+            extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)}
+        return home, target, extra_env
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "curl -sSo{target} https://example.invalid/payload",
+            "wget -O{target} https://example.invalid/payload",
+            "wget -qO{target} https://example.invalid/payload",
+            "openssl enc -out{target} -in /tmp/payload.toml",
+        ],
+        ids=["curl-sSo-glued", "wget-O-glued", "wget-qO-glued", "openssl-out-glued"],
+    )
+    def test_glued_flag_value_denied(self, command_template, config_dir_topology):
+        home, target, extra_env = config_dir_topology
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(command_template.format(target=target)),
+                home=home,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+
+class TestReAddedWriteUtilitiesAllowUnrelatedDestinations:
+    """Mirrors TestReAddedWriteUtilitiesDenyExplicitDestinations' deny-path
+    parametrization, pointed at a destination with no relationship to
+    claude-config.toml -- cp/dd/sed already have this allow-path coverage
+    (test_redirect_to_unrelated_file_allowed and the no-write-construct/
+    read-source tests above); rsync/scp/openssl had none."""
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "rsync /tmp/payload.toml {target}",
+            "scp /tmp/payload.toml localhost:{target}",
+            "openssl enc -out {target} -in /tmp/payload.toml",
+        ],
+        ids=["rsync", "scp", "openssl"],
+    )
+    def test_explicit_destination_token_to_unrelated_file_allowed(self, command_template, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        target = home / ".claude" / "some-other-file.md"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(command_template.format(target=target)),
+                home=home,
+            )
+            == "allow"
+        )
+
+
+class TestCurlWgetImplicitDestinationResidual:
+    """curl -O and a bare `wget URL` derive their write target from the URL
+    or a server response rather than naming it as a literal token in the
+    command -- the one residual _LIB_WRITE_UTILITIES's membership criterion
+    excludes (see that array's own header comment in _lib.sh). Pins that
+    this specific implicit-destination shape stays allowed, so a future
+    attempt to close it reads as a deliberate mechanism change to this test,
+    not an unnoticed capability drift -- distinct from the deny-path
+    coverage above, which covers only the explicit-destination forms of the
+    same five utilities."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -O https://example.invalid/claude-config.toml",
+            "wget https://example.invalid/claude-config.toml",
+        ],
+    )
+    def test_url_derived_destination_basename_allowed_residual(self, command, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(command),
+                home=home,
+            )
+            == "allow"
         )
 
 

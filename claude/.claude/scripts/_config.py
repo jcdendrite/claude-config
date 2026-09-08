@@ -270,7 +270,12 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     config-dir-or-home union below entirely -- mirrors _config.sh's own
     CONFIG_DIR_OVERRIDE parameter. An empty-string override is treated the
     same as no override at all, matching _config.sh's `[ -n
-    "$config_dir_override" ]` test.
+    "$config_dir_override" ]` test -- but only for a `str` argument. A
+    `Path("")` argument is NOT treated as "no override": pathlib normalizes
+    `Path("")` to the truthy `PosixPath('.')`, so the `if config_dir_override`
+    check above passes and resolves against cwd. Not currently reachable --
+    no call site in this repo constructs a `Path("")` override -- but a
+    future caller that does would silently get cwd instead of "no override".
 
     Union semantics: for a config-dir-or-home key, the value is
     OR'd across BOTH locations' own independently-resolved effective value

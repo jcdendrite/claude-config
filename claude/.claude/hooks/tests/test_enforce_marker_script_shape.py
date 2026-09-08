@@ -1226,6 +1226,15 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
             "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
             "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
+            # A trailing flag after the true destination -- an argument
+            # shape cp's own parser accepts and still performs the write, so
+            # it must still deny.
+            "cp /tmp/attacker-plan.md ~/.claude/code-review-markers/forged -v",
+            "rsync /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "curl -s -o ~/.claude/code-review-markers/forged https://example.invalid/payload",
+            "scp /tmp/attacker-plan.md localhost:~/.claude/code-review-markers/forged",
+            "wget -O ~/.claude/code-review-markers/forged https://example.invalid/payload",
+            "openssl enc -out ~/.claude/code-review-markers/forged -in /tmp/attacker-plan.md",
         ],
     )
     def test_write_utility_to_marker_path_denied(self, command):
@@ -1246,6 +1255,12 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
             "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
             "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
+            "cp /tmp/attacker-plan.md ~/.claude/code-review-markers/forged -v",
+            "rsync /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "curl -s -o ~/.claude/code-review-markers/forged https://example.invalid/payload",
+            "scp /tmp/attacker-plan.md localhost:~/.claude/code-review-markers/forged",
+            "wget -O ~/.claude/code-review-markers/forged https://example.invalid/payload",
+            "openssl enc -out ~/.claude/code-review-markers/forged -in /tmp/attacker-plan.md",
         ],
     )
     def test_full_tool_set_agent_may_use_any_write_utility_on_a_marker_path(self, command):
@@ -1256,6 +1271,30 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="general-purpose"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -O https://example.invalid/forged",
+            "wget https://example.invalid/forged",
+        ],
+    )
+    def test_curl_wget_implicit_destination_allowed_residual(self, command):
+        """curl -O and a bare `wget URL` derive their write target from the
+        URL or a server response rather than naming it as a literal token in
+        the command -- the one residual _LIB_WRITE_UTILITIES's membership
+        criterion excludes (see that array's own header comment in
+        _lib.sh). Pins that this specific implicit-destination shape stays
+        allowed, even for a no-gate-release agent, so a future attempt to
+        close it reads as a deliberate mechanism change to this test, not
+        an unnoticed capability drift."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
             )
             == "allow"
         )
@@ -1392,9 +1431,11 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
 
     def test_claude_mention_in_a_non_target_argument_allowed(self):
         """The fast-reject fires on `.claude` appearing anywhere in the
-        command, but only the extracted write-target word is shape-tested --
-        a `.claude`-rooted source with a non-marker destination must not
-        deny."""
+        command, and every word of the fragment (source included) is now a
+        shape-tested candidate -- but a `.claude`-rooted source whose own
+        path shape doesn't match a marker suffix pattern (this one names a
+        script, not a marker file under a `*-markers`/`.*-active.d`
+        directory) must still not deny."""
         cmd = "cp ~/.claude/scripts/marker.sh /tmp/backup.sh"
         assert (
             run_hook(
@@ -1442,9 +1483,11 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         ],
     )
     def test_target_directory_form_allowed_residual(self, command):
-        """Accepted residual: the destination isn't the last argument for
-        `-t DIR`/`--target-directory=DIR`, so the last-argument heuristic
-        misses it."""
+        """Accepted residual: `-t DIR`/`--target-directory=DIR` writes to
+        DIR/basename(source), a path no single token in the command spells
+        out literally -- DIR alone, with no trailing marker-suffix path
+        component, does not shape-match a marker path even though every
+        word of the fragment is now a candidate."""
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1543,6 +1586,27 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         assert elapsed < 1.0, (
             f"a 60-target tee fanout with no .claude mention took {elapsed:.2f}s -- "
             "should stay near the fast-reject's cost, not scale with target count"
+        )
+
+    @pytest.mark.timing
+    def test_many_header_flag_curl_with_no_claude_mention_completes_quickly(self):
+        """Unlike tee's branch above (still flag-filtered), the widened cp/
+        mv/install/dd/sed/curl/wget/rsync/scp/openssl class emits every word
+        of the fragment as a candidate, flags included -- so its candidate
+        count scales with total argv word count instead of staying O(1). A
+        curl invocation with 30 unrelated `-H header` flags exercises that
+        wider path specifically, with no target ever mentioning `.claude`."""
+        headers = " ".join(f'-H "X-Test-{i}: v{i}"' for i in range(30))
+        started = time.monotonic()
+        decision = run_hook(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"curl {headers} https://example.invalid/payload", agent_type="code-writer"),
+        )
+        elapsed = time.monotonic() - started
+        assert decision == "allow"
+        assert elapsed < 1.0, (
+            f"a 30-header curl invocation with no .claude mention took {elapsed:.2f}s -- "
+            "should stay near the fast-reject's cost, not scale with argv word count"
         )
 
     def test_sed_absent_from_path_denied(self, isolated_home, tmp_path):
@@ -1688,6 +1752,85 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(f"printf x > {hardlinked_path}", agent_type="general-purpose"),
                 home=marker_home,
+            )
+            == "allow"
+        )
+
+
+class TestGateReleaseAuthorityGluedShortFlagBypassClosed:
+    """CRITICAL bypass (round 4 finding) -- see
+    TestGluedShortFlagBypassClosed in test_enforce_config_write_shape.py for
+    the shared _lib_shape_match root cause and the curl/wget/openssl
+    empirical verification of which of these three actually accept a glued
+    (no space, no '=') short-option value. Parametrized across both a
+    default (.claude-segment-present) and a .claude-segment-free
+    CLAUDE_CONFIG_DIR to prove the fix isn't itself keyed off the '.claude'
+    substring."""
+
+    @pytest.fixture(params=[True, False], ids=["default-dotclaude-segment", "dotclaude-free-config-dir"])
+    def config_dir_topology(self, request, tmp_path):
+        home = tmp_path / "home"
+        if request.param:
+            (home / ".claude" / "code-review-markers").mkdir(parents=True)
+            target = home / ".claude" / "code-review-markers" / "forged"
+            extra_env = None
+        else:
+            config_dir = tmp_path / "profile"
+            (config_dir / "code-review-markers").mkdir(parents=True)
+            home.mkdir()
+            target = config_dir / "code-review-markers" / "forged"
+            extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)}
+        return home, target, extra_env
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "curl -sSo{target} https://example.invalid/payload",
+            "wget -O{target} https://example.invalid/payload",
+            "wget -qO{target} https://example.invalid/payload",
+            "openssl enc -out{target} -in /tmp/attacker-plan.md",
+        ],
+        ids=["curl-sSo-glued", "wget-O-glued", "wget-qO-glued", "openssl-out-glued"],
+    )
+    def test_glued_flag_value_denied(self, command_template, config_dir_topology):
+        home, target, extra_env = config_dir_topology
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command_template.format(target=target), agent_type="code-writer"),
+                home=home,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+
+class TestGateReleaseAuthorityWriteUtilitiesAllowUnrelatedDestinations:
+    """Mirrors TestGateReleaseAuthorityBashRedirectAndUtility's deny-path
+    parametrization, pointed at a destination with no relationship to any
+    marker/active-bypass path -- cp/dd/sed/tee already have this allow-path
+    coverage elsewhere in that class (e.g.
+    test_claude_mention_in_a_non_target_argument_allowed); rsync/scp/openssl
+    had none."""
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "rsync /tmp/attacker-plan.md {target}",
+            "scp /tmp/attacker-plan.md localhost:{target}",
+            "openssl enc -out {target} -in /tmp/attacker-plan.md",
+        ],
+        ids=["rsync", "scp", "openssl"],
+    )
+    def test_explicit_destination_token_to_unrelated_file_allowed(self, command_template, tmp_path):
+        home = tmp_path / "home"
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        target = home / ".claude" / "some-other-file.md"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command_template.format(target=target), agent_type="code-writer"),
+                home=home,
             )
             == "allow"
         )
