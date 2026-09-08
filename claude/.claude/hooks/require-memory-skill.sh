@@ -104,7 +104,7 @@ fi
 
 if [ "$IS_CANDIDATE" -eq 0 ] && [ -n "$REAL_PROJECTS_DIR" ]; then
   # Class (a): MEMORY.md index — always gated regardless of tool or existence.
-  if [ "$IS_CANDIDATE" -eq 0 ] && [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"*"/memory/MEMORY.md" ]]; then
+  if [[ "$REAL_PATH" == "$REAL_PROJECTS_DIR/"*"/memory/MEMORY.md" ]]; then
     IS_CANDIDATE=1
   fi
 

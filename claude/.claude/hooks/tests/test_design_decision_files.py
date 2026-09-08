@@ -478,7 +478,8 @@ class TestFaultInjection:
     ) -> None:
         (tmp_path / "mangled-decision.md").write_text(
             "# Mangled Decision\n\nFormely `docs/design-decisions.md` §1.\n\n"
-            "Body text noting this was *2026-08-21.* in an unrelated aside.\n",
+            "Body text quoting a sibling decision's clause verbatim: "
+            "Formerly `docs/design-decisions.md` §7.\n",
             encoding="utf-8",
         )
         violations = _legacy_number_range_violations(_decision_files(tmp_path))
