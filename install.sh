@@ -427,14 +427,9 @@ fi
 # Caller must check `[ -t 0 ]` before invoking this — it has no TTY guard of
 # its own and will block on `read` forever against an open, never-closed
 # stdin. configure_machine_level_opt_ins below is the only sanctioned caller.
-# Writes via _config_set to the resolved config dir (the write-path fix
-# _config_set's own key/value interface gives every promptable key, not just
-# the four that used to read from the resolved config dir already) rather
-# than always to $HOME/.claude as the pre-migration version did. KEY is a
-# config-keys.psv key name, not a caller-supplied path, so the old
-# path-confinement guard (a defense-in-depth check against a future
-# non-hardcoded/repo-influenced path argument) is gone: there is no longer a
-# path argument to confine.
+# Writes via _config_set to the resolved config dir for every promptable
+# key. KEY is a config-keys.psv key name, not a caller-supplied path, so no
+# path-confinement check is needed.
 _prompt_sentinel_opt_in() {
   local key="$1" human_name="$2" description="$3" answer current
   current=$(_config_value "$key") || current="false"
@@ -611,11 +606,11 @@ _report_config_key() {
   if [ -n "$_REPORT_CONFIG_DIR" ]; then
     source=$(_config_key_source "$key" "$_REPORT_CONFIG_DIR")
   else
-    # Only reachable for worktree_required (row 18's
-    # legacy-probe-on-resolution-failure): _config_value still resolved via
-    # a raw $HOME/.claude probe even though the config dir itself could not
-    # be resolved at all, so there is no config-dir-side state/legacy file
-    # to check here.
+    # Only reachable for worktree_required, the sole key whose schema row
+    # carries legacy-probe-on-resolution-failure: true -- _config_value
+    # still resolved via a raw $HOME/.claude probe even though the config
+    # dir itself could not be resolved at all, so there is no config-dir-side
+    # state/legacy file to check here.
     source="legacy file"
   fi
   printf '  %s: %s (source: %s)\n' "$human_name" "$value" "$source"
@@ -632,9 +627,9 @@ _report_config_key() {
 # Read-only: creates and removes nothing. Reports every config-keys.psv key
 # (schema order), then the four repo markers. Called after
 # configure_machine_level_opt_ins so a just-prompted repo-marker row's hint
-# can be suppressed -- no config key needs that suppression, since none of
-# their CTAs exist any more (row 39: a hand-editable file, not a raw
-# touch/rm target, is the sanctioned way to change a non-promptable key).
+# can be suppressed -- no config key needs that suppression, since a
+# hand-edited claude-config.toml row, not a raw touch/rm target, is the
+# sanctioned way to change a non-promptable key.
 report_sentinel_inventory() {
   echo ""
   echo "=== Opt-in sentinel inventory ==="

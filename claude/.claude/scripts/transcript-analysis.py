@@ -7199,7 +7199,25 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
 
     # No config_dir_override -- this is the single-account path, not the
     # --all-accounts loop below, which passes its own account_config_dir.
-    cost_ledger_recording_enabled = _config.config_enabled("cost_ledger_recording")
+    try:
+        cost_ledger_recording_enabled = _config.config_enabled("cost_ledger_recording")
+    except KeyError as exc:
+        if _config.schema():
+            # config-keys.psv parsed fine (schema() returned rows), so this
+            # KeyError is a real unknown-key bug -- a renamed or typo'd
+            # literal at this call site -- not the infrastructure cause the
+            # message below assumes.
+            print(f"cost-ledger: --record: unknown config key {exc}", file=sys.stderr)
+            sys.exit(1)
+        # config-keys.psv itself was unreadable at the moment of this call
+        # (see _config.py's module docstring) -- a partial stow-relink or
+        # interrupted `git pull`, not a caller-side key-name typo.
+        print(
+            "cost-ledger: --record could not read config-keys.psv (partial stow-relink"
+            " or interrupted git pull) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if cost_ledger_recording_enabled is None:
         # Distinguishes "config dir unresolvable" from "disabled" -- the
         # single message below would otherwise misdiagnose an unresolvable
@@ -8464,9 +8482,28 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             )
             continue
 
-        pr_cost_recording_enabled = _config.config_enabled(
-            "pr_cost_recording", config_dir_override=account_config_dir
-        )
+        try:
+            pr_cost_recording_enabled = _config.config_enabled(
+                "pr_cost_recording", config_dir_override=account_config_dir
+            )
+        except KeyError as exc:
+            if _config.schema():
+                # config-keys.psv parsed fine (schema() returned rows), so
+                # this KeyError is a real unknown-key bug -- a renamed or
+                # typo'd literal at this call site -- not the infrastructure
+                # cause the message below assumes.
+                print(f"pr-cost: --record: unknown config key {exc}", file=sys.stderr)
+                sys.exit(1)
+            # config-keys.psv itself was unreadable at the moment of this
+            # call (see _config.py's module docstring) -- a partial
+            # stow-relink or interrupted `git pull`, not a caller-side
+            # key-name typo.
+            print(
+                "pr-cost: --record could not read config-keys.psv (partial stow-relink"
+                " or interrupted git pull) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if pr_cost_recording_enabled is None:
             # account_config_dir is always a concrete, already-resolved
             # directory here (root.parent) -- not expected to be reachable

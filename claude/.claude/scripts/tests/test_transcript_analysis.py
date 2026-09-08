@@ -10746,6 +10746,49 @@ class TestCostLedgerSentinelGate:
         assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
 
+    def test_record_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """_config.config_enabled raising KeyError with an empty schema()
+        means config-keys.psv itself was unreadable -- the message must
+        name that cause, not an unknown-key bug."""
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        assert "could not read config-keys.psv" in capsys.readouterr().err
+
+    def test_record_reports_unknown_key_when_key_error_and_schema_populated(
+        self, fake_projects, cost_ledger_file, monkeypatch, capsys,
+    ):
+        """The same KeyError with a non-empty schema() means config-keys.psv
+        parsed fine -- a real unknown-key bug at the call site, not the
+        stow-relink/git-pull infrastructure cause. The message must name the
+        actual key and must not misattribute it to config-keys.psv being
+        unreadable."""
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
+        ])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cost_ledger_report(_cost_ledger_args(record=True, machine_label="tstm1"), date(2026, 6, 3))
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "unknown config key" in err
+        assert "cost_ledger_recording" in err
+        assert "could not read config-keys.psv" not in err
+
     def test_record_refuses_without_machine_label(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
@@ -20681,6 +20724,50 @@ class TestPrCostRecordingConfigDirUnresolvable:
         captured = capsys.readouterr()
         assert "account-1's config directory could not be resolved -- skipped" in captured.err
         assert "recorded 1 of 2 declared accounts (0 not opted in, 1 skipped)" in captured.out
+
+
+class TestPrCostRecordingKeyError:
+    """_config.config_enabled("pr_cost_recording", ...) raising KeyError is
+    ambiguous on its own -- config-keys.psv unreadable and a genuine
+    unknown-key bug both raise the identical KeyError. These force each
+    schema() outcome directly to pin the message picks the right cause."""
+
+    def test_reports_unreadable_schema_when_key_error_and_schema_empty(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        assert "could not read config-keys.psv" in capsys.readouterr().err
+
+    def test_reports_unknown_key_when_key_error_and_schema_populated(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+
+        def _raise_key_error(key, config_dir_override=None):
+            raise KeyError(key)
+
+        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+
+        args = _pr_cost_args(record=True, machine_label="ci1")
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "unknown config key" in err
+        assert "pr_cost_recording" in err
+        assert "could not read config-keys.psv" not in err
 
 
 class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:

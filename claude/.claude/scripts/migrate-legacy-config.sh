@@ -9,27 +9,14 @@
 # install.sh runs to materialize claude-config.toml on its own, since
 # claude/.claude/** goes live on `git pull` with no install.sh re-run.
 #
-# Two phases, always in this order:
-#   1. Non-interactive import, then schema-default scaffold. Import is
-#      fully non-interactive for nine of the fourteen keys; the five
-#      enforcement-critical keys (worktree_required, autonomous_shipping,
-#      round_consult_gate, commit_stall_block, authorization_boundary_restore)
-#      require a `[ -t 0 ]`-gated `[y/N]` confirmation before import writes
-#      anything -- security load-bearing, not hang-prevention, since a
-#      state-file row for one of these five is then protected from later
-#      Claude-Code-mediated reversal by enforce-config-write-shape.sh. A
-#      key's legacy-file read failing, or its enforcement-critical import
-#      being declined or skipped (non-TTY), excludes it from the scaffold
-#      pass that follows, so scaffold never backfills a schema default over
-#      a value that either failed to read this run or was never confirmed.
-#   2. Interactive per-file delete offer, `[ -t 0 ]`-gated once for the
-#      whole phase -- hang-prevention only, not a security control, since
-#      nothing here stops an agent from running `rm` on a legacy sentinel
-#      directly. Never offered for a key that wasn't actually imported this
-#      run (an existing state-file row already governs, or import was
-#      deferred), and never offered at all for $HOME/.claude/worktree-required
-#      specifically, since that file stays load-bearing as
-#      worktree_required's resolution-failure fallback after migration.
+# Two phases, always in this order: (1) non-interactive import for all
+# fourteen keys, then schema-default scaffold; (2) an interactive per-file
+# delete offer, `[ -t 0 ]`-gated once for the whole phase -- hang-prevention
+# only, not a security control, since nothing here stops an agent from
+# running `rm` on a legacy sentinel directly. See docs/config-file.md's
+# "## Migration" section for the full design: what each phase does, the
+# enforcement-critical direction-aware import gating, and the fail-closed
+# safe-value list.
 set -euo pipefail
 
 # ${BASH_SOURCE[0]}, not $0: a test sources this file directly (per the
@@ -46,6 +33,35 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # its resolution, legacy-probe-on-resolution-failure, or
 # legacy-import-locations column.
 _MIGRATE_ENFORCEMENT_CRITICAL_KEYS=" worktree_required autonomous_shipping round_consult_gate commit_stall_block authorization_boundary_restore "
+
+# _migrate_enforcement_critical_safe_value KEY
+# Populates _MIGRATE_SAFE_VALUE with KEY's fail-closed value and returns 0,
+# or returns 1 for a key outside _MIGRATE_ENFORCEMENT_CRITICAL_KEYS. A case
+# statement, not an associative array (bash 3.2 has none -- see this
+# script's own header for why that matters here). Deliberately not
+# config-keys.psv's own legacy-probe-on-resolution-failure column, which
+# answers a different question (does resolution-failure fall back to
+# $HOME/.claude?) and only coincides with these values for today's five
+# rows by accident -- a future schema-column edit to that column must not
+# silently change which value this function treats as safe. Each value
+# below is this key's own enforcement-stays-on (or kill-switch-stays-off)
+# direction per config-keys.psv's row-level comments, not simply "matches
+# the default column":
+#   worktree_required=true: enforcement stays on.
+#   autonomous_shipping=false: the ship-without-asking kill switch stays off.
+#   round_consult_gate=true, commit_stall_block=true,
+#   authorization_boundary_restore=true: the gate/block/restore stays on.
+_migrate_enforcement_critical_safe_value() {
+  _MIGRATE_SAFE_VALUE=""
+  case "$1" in
+    worktree_required) _MIGRATE_SAFE_VALUE="true" ;;
+    autonomous_shipping) _MIGRATE_SAFE_VALUE="false" ;;
+    round_consult_gate) _MIGRATE_SAFE_VALUE="true" ;;
+    commit_stall_block) _MIGRATE_SAFE_VALUE="true" ;;
+    authorization_boundary_restore) _MIGRATE_SAFE_VALUE="true" ;;
+    *) return 1 ;;
+  esac
+}
 
 # _migrate_probe_legacy_location TYPE LEGACY_POLARITY PATH
 # Populates _MIGRATE_DERIVED_VALUE and returns 0 (PATH exists, value
@@ -110,24 +126,6 @@ _migrate_add_record() {
   _MIGRATE_RECORDS+=("$path|$key|$value|$outcome|$load_bearing")
 }
 
-# Caller must check $_MIGRATE_TTY before invoking this -- hangs forever on
-# `read` against a closed/non-interactive stdin otherwise, the same
-# contract install.sh's own _prompt_sentinel_opt_in documents. Unlike the
-# delete-confirmation prompt below, this one is security load-bearing:
-# declining leaves the key resolving via its legacy fallback exactly as it
-# did before this script ran, so nothing is granted by running this script
-# rather than not running it, and everything is granted by a confirmed
-# "y".
-_migrate_prompt_import_enforcement_critical() {
-  local human_name="$1" value="$2" answer
-  printf '%s: a legacy file says this should be %s.\n' "$human_name" "$value"
-  read -r -p "Import this into claude-config.toml now? [y/N] " answer || answer=""
-  case "$answer" in
-    [Yy]*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Caller must check `[ -t 0 ]` before invoking this -- same contract as
 # install.sh's own _prompt_delete_stale_migration_copy, which this mirrors.
 # Hang-prevention only, not a security control: nothing here stops an agent
@@ -147,27 +145,23 @@ _migrate_prompt_delete_legacy_file() {
 # _config_set when this run's import decision says to (only when KEY has no
 # existing state-file row, so a hand-edit or an earlier import is never
 # overwritten by a later run), and appends KEY to _MIGRATE_SCAFFOLD_EXCLUDE
-# when its enforcement-critical import was deferred (a non-TTY invocation or
-# a declined [y/N] confirmation) or its legacy-file read failed this run
-# (any key) -- so the _config_scaffold call that runs once after every key
-# has gone through this function never backfills a schema default over a
-# value that either failed to read this run or was never confirmed. Relies
-# on the caller having already set $_MIGRATE_CONFIG_DIR, $_MIGRATE_HOME_DIR,
-# $_MIGRATE_STATE_FILE, and $_MIGRATE_TTY.
+# when its enforcement-critical import was deferred (a permissive-direction
+# legacy value) or its legacy-file read failed this run (any key) -- so the
+# _config_scaffold call that runs once after every key has gone through this
+# function never backfills a schema default over a value that either failed
+# to read this run or was never imported. Relies on the caller having
+# already set $_MIGRATE_CONFIG_DIR, $_MIGRATE_HOME_DIR, and
+# $_MIGRATE_STATE_FILE.
 #
 # At most two locations exist per key (the resolved config dir, and --
 # only for a config-dir-and-home key -- $HOME/.claude), so they are handled
-# as two explicit variables rather than a generic array: the config-dir
-# copy is always primary (it wins on disagreement between the two legacy
-# locations -- for a diverged user it's the one that actually governed
-# pre-migration behavior, since the old `_report_account_sentinel` resolver
-# read $CLAUDE_CONFIG_DIR when set and absolute, else $HOME/.claude, never
-# both -- and it's also the only copy any config-dir-only key's regular
-# reads ever consult), so a read failure THERE defers the whole key
-# regardless of home's own status, while a read failure at home ALONE
-# (config-dir found cleanly) still lets config-dir's value import -- home
-# was never authoritative over config-dir to begin with, so its own
-# unreadable copy is recorded but does not block the key.
+# as two explicit variables rather than a generic array. The config-dir
+# copy is primary: it wins on disagreement between the two legacy
+# locations, and it is the only copy a config-dir-only key's regular reads
+# ever consult. A read failure at the config-dir copy defers the whole key
+# regardless of home's own status; a read failure at home alone (config-dir
+# found cleanly) still lets config-dir's value import, since home was never
+# authoritative over config-dir to begin with.
 _migrate_process_key() {
   local key="$1" type="$2" legacy_import="$3" legacy_filename="$4" legacy_polarity="$5" human_name="$6"
 
@@ -274,9 +268,20 @@ _migrate_process_key() {
   local should_import=0
   case "$_MIGRATE_ENFORCEMENT_CRITICAL_KEYS" in
     *" $key "*)
-      if [ "$_MIGRATE_TTY" -eq 1 ] \
-         && _migrate_prompt_import_enforcement_critical "$human_name" "$winner_value"; then
+      # No TTY check: `[ -t 0 ]` is evaluated inside this script's own
+      # process, which a caller fully controls and can fabricate a pty
+      # for, so it can never attest a human approved the value (see this
+      # script's own header). Importing is safe with no gate at all when
+      # the legacy-derived value already matches the fail-closed
+      # direction; a permissive-direction value is never written -- it is
+      # deferred below and printed for a human to hand-paste in.
+      if _migrate_enforcement_critical_safe_value "$key" \
+         && [ "$winner_value" = "$_MIGRATE_SAFE_VALUE" ]; then
         should_import=1
+      else
+        printf '%s (%s): the legacy value %s is the permissive direction -- not imported automatically. To accept it, add this line to claude-config.toml by hand:\n' \
+          "$human_name" "$key" "$winner_value" >&2
+        printf '  %s = %s\n' "$key" "$winner_value" >&2
       fi
       ;;
     *) should_import=1 ;;
@@ -374,10 +379,9 @@ main() {
   local -a _MIGRATE_RECORDS=()
 
   # Read config-keys.psv into an array first, then iterate the array with
-  # `for`/here-string parsing (never `while read ... < file`) -- the loop
-  # body below calls `read -r -p` for the enforcement-critical import
-  # prompt, and a `while read` loop redirected from a file would steal that
-  # same fd 0 away from the terminal for the loop's whole duration.
+  # `for`/here-string parsing (never `while read ... < file`) -- keeps fd 0
+  # free of any file redirection for this loop's whole duration, so any
+  # helper this loop calls stays safe to read interactive input from stdin.
   local -a _migrate_schema_lines=()
   local _migrate_line=""
   while IFS= read -r _migrate_line; do

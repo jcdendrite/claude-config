@@ -278,9 +278,9 @@ class TestConfigGetShExitCodes:
 
     def test_unresolvable_config_dir_exits_3(self, tmp_path, monkeypatch):
         # round_consult_gate carries legacy-probe-on-resolution-failure:
-        # false (row 18), unlike worktree_required -- it has no raw
-        # $HOME/.claude fallback to fall through to on a resolution
-        # failure, so it genuinely reaches "unresolvable" here.
+        # false, unlike worktree_required -- it has no raw $HOME/.claude
+        # fallback to fall through to on a resolution failure, so it
+        # genuinely reaches "unresolvable" here.
         home = _make_home(tmp_path, monkeypatch)
         result = _run_config_get(
             ["round_consult_gate"], env={"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/not-absolute"},
@@ -288,7 +288,7 @@ class TestConfigGetShExitCodes:
         assert result.returncode == 3
 
     def test_unknown_key_takes_precedence_over_unresolvable_config_dir(self, tmp_path, monkeypatch):
-        """Row 26: unknown-key detection always runs first, independent of
+        """Unknown-key detection always runs first, independent of
         config-dir resolvability -- both failure modes are present here, and
         the unknown-key exit code (2) must win, not the unresolvable one (3)."""
         home = _make_home(tmp_path, monkeypatch)

@@ -4,13 +4,10 @@
 when set and absolute, else `$HOME/.claude`) is the single, hand-editable
 state file for every machine- and account-scope toggle this repo ships —
 worktree enforcement, autonomous shipping, the PR-cost ledger and its
-disclosure mode, and the various advisory-nudge kill switches. It replaces
-14 previously independent sentinel files, each of which had its own
-presence/content check re-derived by every consumer; that per-sentinel
-duplication is what let `install.sh`'s `[:space:]` trim and
-`pr-cost-section.sh`'s `[:blank:]` trim silently disagree on a
-CRLF-authored `pr-cost-disclosure` file. This file, `config-keys.psv`'s
-schema, and one reader per language runtime (`_config.sh` for bash,
+disclosure mode, and the various advisory-nudge kill switches. No consumer
+re-derives its own presence/content check for a given toggle from a
+standalone sentinel file. This file, `config-keys.psv`'s schema, and one
+reader per language runtime (`_config.sh` for bash,
 `_config.py` for Python) are this repo's single canonical home for that
 whole mechanism — every other doc, skill body, and hook comment in this
 repo references this page rather than restating its format or resolution
@@ -149,12 +146,18 @@ It runs two phases, always in this order:
    has no existing state-file row — a hand-edit or an earlier import is
    never overwritten by a later run. For the nine non-enforcement-critical
    keys this happens fully non-interactively. For the five
-   enforcement-critical keys, import instead requires a `[y/N]`-gated
-   confirmation (default No) naming the key and the value about to be
-   imported; on a non-TTY invocation (including a Claude Code Bash tool
-   call, which carries no attached TTY) import for these five is skipped
-   entirely rather than performed silently, leaving each to keep resolving
-   via its ordinary legacy fallback. A legacy-file read failure for one key
+   enforcement-critical keys, import is direction-aware rather than
+   TTY-gated: it compares the legacy-derived value against that key's
+   fail-closed value (`worktree_required=true`, `autonomous_shipping=false`,
+   `round_consult_gate=true`, `commit_stall_block=true`,
+   `authorization_boundary_restore=true`) and writes it, with no
+   confirmation of any kind, only when the two match — turning enforcement
+   further on can only make the machine more restrictive, so it needs no
+   gate. A permissive-direction legacy value is never written; it is
+   deferred the same way a read failure is (below) and printed for a human
+   to hand-paste into `claude-config.toml`. See
+   [`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)
+   for the full design rationale. A legacy-file read failure for one key
    (unreadable file, or content that fails `pr_cost_disclosure`'s
    `content-matches` grammar) does not abort the run; the remaining keys
    still import normally. After every key has been processed, a
@@ -195,7 +198,10 @@ keys) and `migrate-legacy-config.sh`'s import phase, described above.
 Claude-Code-tool-mediated `Write`/`Edit`/`MultiEdit` targeting
 `claude-config.toml`, and every `Bash` command invoking `_config_set` by
 name or whose redirect/utility-write candidates resolve to the same path —
-this is a blanket denial with no agent-type carve-out.
+this is a blanket denial with no agent-type carve-out, bounded to the
+fixed set of write utilities `_LIB_WRITE_UTILITIES` recognizes (see that
+hook's header for the current list and its open residuals), not a
+guarantee against every possible write mechanism.
 
 A human editing the file directly, with their own editor or a shell
 command run outside Claude Code's own tool calls (e.g. the `!` shell
@@ -235,10 +241,10 @@ as its own regular file — never a symlink to another account's copy.
 
 A hand-edited row for one of the five enforcement-critical keys is the
 sole record of that key's value: nothing mirrors it into a legacy file.
-If the hook code that reads `claude-config.toml` is reverted (a `git
-revert` of these commits, not merely a deploy-level rollback), the
+If the code that reads `claude-config.toml` for one of these keys is
+ever reverted to a version that only knows the legacy per-key file, that
 reverted code reads only that key's old per-key legacy file. That file
 was never written for a value that only ever lived in the state file.
 The reverted code therefore silently resolves to the key's old default
 — in whichever direction that default happens to be — discarding the
-hand-edit with no warning.
+hand-edited row with no warning.

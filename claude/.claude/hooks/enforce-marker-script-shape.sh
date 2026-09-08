@@ -20,28 +20,57 @@
 #     caught. Documented at that check; the path-based arm is what makes the
 #     gate-release property hold regardless.
 #   - A Bash-tool write to a marker path via `>`/`>>`/`&>`/`&>>`/`<>`, `tee`,
-#     `cp`/`mv`/`install` (last-argument form), `dd of=`, or `sed -i` is
-#     caught by a dedicated scan that runs before Stage 1, independent of the
-#     command mentioning `marker.sh`. Still open: `>|` (clobber-override --
-#     its literal `|` gets severed from the operator by the fragment
-#     splitter this scan reuses, before extraction ever sees a whole token);
-#     `python3 -c "open(...).write(...)"` and here-doc bodies handed to an
-#     interpreter; a `$(...)`-computed target path; shell-function/variable
-#     indirection around the write utility itself; `cp`/`mv`/`install -t DIR`
-#     or `--target-directory=DIR` (destination isn't the last argument, so
-#     the last-argument heuristic misses it).
+#     `cp`/`mv`/`install`/`dd`/`sed`/`curl`/`wget`/`rsync`/`scp`/`openssl`
+#     (every word of the fragment is a candidate, not just an identified
+#     destination -- see _lib.sh's _lib_fragment_candidates for why) is
+#     caught by a dedicated scan that runs before Stage 1, independent of
+#     the command mentioning `marker.sh`. Every word of a write-gated
+#     fragment being a candidate also means a command that merely READS a
+#     marker path as a non-destination argument (e.g. `cp
+#     ~/.claude/code-review-markers/x /tmp/backup`) is denied too for a
+#     no-gate-release agent, even though it is not a write -- a `cat`,
+#     `grep`, or `less` read of the same path is unaffected (it invokes none
+#     of the recognized write utilities), so a denied read has an
+#     actionable alternative. Three residuals remain open, none closed by
+#     the addition of curl/wget/rsync/scp/openssl to the recognized set:
+#     (a) a URL/server-derived destination basename (`curl -O URL`, bare
+#     `wget URL`) -- the write target is never a literal token in the
+#     command; (b) a directory destination via `-t DIR`/`--target-directory=
+#     DIR` when the destination directory's own token carries no trailing
+#     path component matching a marker suffix pattern (the joined
+#     DIR/basename path this actually writes to is never a single literal
+#     token in the command) -- a plain trailing-slash directory form (`cp
+#     file ~/.claude/code-review-markers/`) is already caught here
+#     incidentally, since the marker suffix patterns (`*-markers/*`,
+#     `.*-active.d/*`) end in a glob segment that also matches an empty
+#     trailing component; (c) a relative destination token when the
+#     process's cwd (from the tool-call payload) sits inside a marker
+#     directory -- candidate extraction never joins a candidate to that cwd.
+#     Still open beyond the utility-recognition class: `>|`
+#     (clobber-override -- its literal `|` gets severed from the operator by
+#     the fragment splitter this scan reuses, before extraction ever sees a
+#     whole token); `python3 -c "open(...).write(...)"` and here-doc bodies
+#     handed to an interpreter; a `$(...)`-computed target path;
+#     shell-function/variable indirection around the write utility itself;
+#     and any write-capable utility outside this named set entirely --
+#     `aws s3 cp`, `git archive`, `docker cp`, `sftp`, `ftp`, `tar` writing
+#     through a pipe to a shell that redirects, or anything else with its
+#     own destination-argument syntax -- this scan is a fixed name list, not
+#     a general write-syscall trace, so a program not on the list is
+#     entirely unscanned.
 #   - `_lib_shape_match`'s `-ef`-based inode-identity checks (shared with
-#     enforce-config-write-shape.sh) have two residuals: (a) a `..` path
-#     segment through a not-yet-created directory has no inode to stat yet
-#     (narrow — in nearly every such case the write itself would ENOENT
-#     first), and (b) `-ef` has no timeout backstop at all, unlike the prior
-#     `_lib_capped`-wrapped `realpath` design — a real regression against a
-#     merely slow-but-responsive network stat, though unchanged against a
-#     fully-hung (D-state) mount, which a `timeout`-wrapped external process
-#     could never interrupt either. Only
-#     `$HOME`/`${HOME}`/`$CLAUDE_CONFIG_DIR`/`${CLAUDE_CONFIG_DIR}`
-#     are expanded in candidate text; every other shell-variable reference
-#     stays under the shell-function/variable indirection gap above.
+#     enforce-config-write-shape.sh) have two residuals: a `..` path segment
+#     through a not-yet-created directory has no inode to stat yet — narrow,
+#     since in nearly every such case the write itself would ENOENT first.
+#   - `-ef` has no timeout backstop, so a hung network mount can block the
+#     check indefinitely — a fully hung D-state mount was never
+#     interruptible either.
+#   - Only `$HOME`/`${HOME}`/`$CLAUDE_CONFIG_DIR`/`${CLAUDE_CONFIG_DIR}` are
+#     expanded in candidate text; every other shell-variable reference stays
+#     under the shell-function/variable indirection gap above.
+#   - The number of `_lib_shape_match`/`-ef` calls per Bash command is
+#     unbounded — see `_lib.sh`'s own disclosure on `_lib_shape_match` for
+#     why this is deliberate.
 #   - A hardlink at an arbitrary, non-marker-shaped path (e.g. `/tmp/x`)
 #     pointing at one specific real, already-existing marker file's inode is
 #     not caught: doing so would require enumerating every file under every
@@ -134,7 +163,9 @@ GATE_RELEASE_DENIAL_GUIDANCE="Releasing a gate requires having run the review th
 
 Report the denial to the dispatching session instead: name the gate that blocked you, the command or path it blocked, and what you had completed. The dispatching session runs the review skill (or delegates it to a general-purpose subagent, which does carry Skill) and re-dispatches you.
 
-Matching a hash you computed yourself is not authorization — an equal hash shows the state is unchanged, not that anyone reviewed it."
+Matching a hash you computed yourself is not authorization — an equal hash shows the state is unchanged, not that anyone reviewed it.
+
+If you only meant to read a marker file rather than write one, use cat/grep/less instead — this gate scans for write utilities, not reads."
 
 # _marker_shape_match TARGET_PATH
 # True (exit 0) iff TARGET_PATH matches the marker-directory SHAPE
@@ -200,10 +231,12 @@ esac
 
 # _bash_marker_fragment_candidates FRAGMENT
 # Emits, one per line, every write-target word in FRAGMENT worth
-# shape-testing: `>`/`>>` operands (bare or glued, fd-prefixed), `tee`
-# arguments, `cp`/`mv`/`install` last arguments, `dd of=` glued arguments,
-# and `sed -i` last arguments. Over-emission is safe — each candidate is
-# independently shape-tested by _marker_shape_match.
+# shape-testing: `>`/`>>` operands (bare or glued, fd-prefixed), `tee`'s own
+# non-flag arguments, and — for every other write utility in
+# `_LIB_WRITE_UTILITIES` this invocation could use to write a file — every
+# word of the fragment, not an identified destination token. Over-emission
+# is safe — each candidate is independently shape-tested by
+# _marker_shape_match.
 #
 # A thin wrapper around the shared `_lib_fragment_candidates` engine in
 # `_lib.sh` — see that function's own header for the extraction fixture and

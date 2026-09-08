@@ -28,7 +28,32 @@
 # Known gaps this hook does NOT close (inherited from
 # enforce-marker-script-shape.sh's own documented limitations, since this
 # hook shares its redirect-candidate engine — see that file's header for
-# the fuller catalog this one does not repeat):
+# the fuller catalog this one does not repeat, including the exact set of
+# write utilities recognized today (`tee`, `cp`/`mv`/`install`/`dd`/`sed`/
+# `curl`/`wget`/`rsync`/`scp`/`openssl`) and the residual gap that any other
+# write-capable utility outside that fixed name list is entirely unscanned.
+#   - This hook's suffix pattern is a bare filename (`claude-config.toml`),
+#     not a glob ending in a trailing segment like the marker patterns'
+#     `*-markers/*` — narrower matching than the marker hook's own glob
+#     shape.
+#   - Because of that narrower pattern, a directory-destination write
+#     (`cp`/`mv`/`install`/`rsync`/`scp` with a trailing-slash directory
+#     target, or `-t DIR`/`--target-directory=DIR`) is never caught here,
+#     not just the flag-argument forms — unlike the marker hook, whose glob
+#     pattern does catch it.
+#   - A URL/server-derived destination basename (`curl -O URL`, bare
+#     `wget URL`) and a relative destination when the process cwd sits
+#     inside the config directory are open the same way as in the marker
+#     hook — see that file's header for why.
+#   - The Bash arm's redirect/utility-write scan emits every word of a
+#     write-gated fragment as a candidate (see _lib.sh's
+#     _lib_fragment_candidates for why), not only the true destination. A
+#     command that merely READS claude-config.toml as a non-destination
+#     argument (e.g. `cp ~/.claude/claude-config.toml /tmp/backup.toml`) is
+#     denied too, even though it is not a write. A `cat`, `grep`, or `less`
+#     read of the file is unaffected by this hook, since it invokes none of
+#     the recognized write utilities, so a denied read has an actionable
+#     alternative.
 #   - Shell-level indirection around the `_config_set` function name
 #     (a variable or function wrapper) is not matched by the raw name-scan
 #     below.
@@ -46,17 +71,18 @@
 #     makes internally is invisible to this hook regardless — the same
 #     script-indirection gap disclosed just above.
 #   - _lib_shape_match's `-ef`-based inode-identity checks (shared with
-#     enforce-marker-script-shape.sh) have two residuals: (a) a `..` path
-#     segment through a not-yet-created directory has no inode to stat yet
-#     (narrow — in nearly every such case the write itself would ENOENT
-#     first), and (b) `-ef` has no timeout backstop at all, unlike the prior
-#     `_lib_capped`-wrapped `realpath` design — a real regression against a
-#     merely slow-but-responsive network stat, though unchanged against a
-#     fully-hung (D-state) mount, which a `timeout`-wrapped external process
-#     could never interrupt either. Only
-#     `$HOME`/`${HOME}`/`$CLAUDE_CONFIG_DIR`/`${CLAUDE_CONFIG_DIR}`
+#     enforce-marker-script-shape.sh): a `..` path segment through a
+#     not-yet-created directory has no inode to stat yet — narrow, since in
+#     nearly every such case the write itself would ENOENT first.
+#   - `-ef` has no timeout backstop, so a hung network mount can block the
+#     check indefinitely — a fully hung D-state mount was never
+#     interruptible either.
+#   - Only `$HOME`/`${HOME}`/`$CLAUDE_CONFIG_DIR`/`${CLAUDE_CONFIG_DIR}`
 #     are expanded in candidate text; every other shell-variable reference
 #     stays under the shell-indirection gap above.
+#   - The number of `_lib_shape_match`/`-ef` calls per Bash command is
+#     unbounded — see `_lib.sh`'s own disclosure on `_lib_shape_match` for
+#     why this is deliberate.
 #
 # WARNING: Do NOT remove the internal _config_set/redirect-candidate checks
 # below. The "if" field in settings.json is unreliable — see
@@ -139,7 +165,7 @@ while IFS= read -r CONFIG_WRITE_CANDIDATE; do
   fi
   if [ "$CONFIG_WRITE_SHAPE_STATUS" -eq 0 ]; then
     CONFIG_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$CONFIG_WRITE_CANDIDATE" | cut -c1-80)
-    emit_deny "Config-file write — '$CONFIG_WRITE_CANDIDATE_TRUNCATED' is (or resolves to) this machine's claude-config.toml. Agent-mediated writes to the consolidated config-key state file are denied; a human editing it directly, outside Claude Code, is unaffected."
+    emit_deny "Config-file write — '$CONFIG_WRITE_CANDIDATE_TRUNCATED' is (or resolves to) this machine's claude-config.toml. Agent-mediated writes to the consolidated config-key state file are denied; a human editing it directly, outside Claude Code, is unaffected. If you only meant to read the file, use cat/grep/less instead — this gate scans for write utilities, not reads."
     exit 0
   fi
 # Here-string over the already-captured CONFIG_WRITE_REDIRECT_CANDIDATES,

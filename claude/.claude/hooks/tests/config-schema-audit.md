@@ -37,18 +37,22 @@ Column legend:
 
 - Call site: `claude/.claude/hooks/_lib.sh`'s `_lib_worktree_enforcement_active`
   (delegated to by `require-worktree-for-git-writes.sh:218` and
-  `require-worktree-for-file-writes.sh:134`).
-- Resolution: **config-dir-or-home**. `_lib_worktree_enforcement_active`
-  checks `$config_dir/worktree-required` first; only when that arm's own
-  `_lib_config_dir` call fails does it fall through to a raw
-  `[ -f "$HOME/.claude/worktree-required" ]` probe — a union, not a swap
-  (`_lib.sh`'s own comment: "a machine-wide `worktree-required` armed before
-  `CLAUDE_CONFIG_DIR` adoption must not silently go dark").
-- Legacy-probe-on-resolution-failure: **true**. The fallback `[ -f
-  "$HOME/.claude/worktree-required" ]` line runs unconditionally after the
-  resolved-config-dir arm, independent of whether `_lib_config_dir` itself
-  failed — this is what makes the key resolve even when config-dir
-  resolution fails outright.
+  `require-worktree-for-file-writes.sh:134`). After its own
+  committed-repo-sentinel check, this function calls `_config_enabled
+  worktree_required` — a single call, no raw `[ -f ]` probe at the call
+  site itself.
+- Resolution: **config-dir-or-home**. `_config_enabled` (via `_config_value`
+  in `_config.sh`) reads `worktree_required`'s `resolution` column from
+  `config-keys.psv` and unions the resolved config dir with the literal
+  `$HOME/.claude` — a union, not a swap (`_config_value`'s own comment:
+  "an explicit `false` row in the config dir's state file must not defeat a
+  `true` produced by `$HOME/.claude`'s legacy file").
+- Legacy-probe-on-resolution-failure: **true**. `_config_value` reads this
+  from `worktree_required`'s schema row and, when the primary config-dir
+  resolution itself fails, falls through to `$HOME/.claude` unconditionally
+  — this is what makes the key resolve even when config-dir resolution
+  fails outright. `worktree_required` is the only key whose row carries
+  `true` here (`_config_value`'s own comment on that line).
 - Legacy-import-locations: **config-dir-and-home**. The union above already
   reads both locations at runtime, so import naturally checks both too.
 - Fail direction on resolution failure: falls through to the raw `$HOME`
@@ -60,19 +64,22 @@ Column legend:
 - Call site: `_lib.sh`'s `_lib_autonomous_shipping_active` /
   `_lib_autonomous_shipping_sentinel_present` (delegated to by
   `autonomous-shipping-active.sh` and `advance-past-commit-stall.sh:67`'s
-  fast path).
-- Resolution: **config-dir-or-home**.
-  `_lib_autonomous_shipping_sentinel_present` checks `[ -f
-  "$config_dir/autonomous-shipping-required" ] || [ -f
-  "$HOME/.claude/autonomous-shipping-required" ]` — a union over both
-  locations once `config_dir` is already resolved.
-- Legacy-probe-on-resolution-failure: **false**. Unlike `worktree_required`,
-  `_lib_autonomous_shipping_active` does `config_dir=$(_lib_config_dir) ||
-  return 1` — it bails immediately on a resolution failure and never reaches
-  the raw `$HOME` probe. Granting autonomous shipping on a resolution
-  failure would be the wrong direction for a mechanism that removes a human
-  checkpoint, so this asymmetry with `worktree_required` is intentional, not
-  an oversight (see `_lib.sh`'s own comment on `_lib_autonomous_shipping_active`).
+  fast path). `_lib_autonomous_shipping_sentinel_present` is a thin
+  zero-arity wrapper over `_config_enabled autonomous_shipping`, with no
+  raw-path probe of its own.
+- Resolution: **config-dir-or-home**. `_config_enabled` reads this from
+  `autonomous_shipping`'s `resolution` column and unions the resolved
+  config dir with the literal `$HOME/.claude`, the same generic union
+  `_config_value` runs for any `config-dir-or-home` key.
+- Legacy-probe-on-resolution-failure: **false**. `autonomous_shipping`'s
+  schema row carries `false` here, so when the primary config-dir
+  resolution itself fails, `_config_value` returns exit 2 rather than
+  falling through to a raw `$HOME` probe — `_lib_autonomous_shipping_active`
+  then treats that nonzero exit as "not active" via `||`. Granting
+  autonomous shipping on a resolution failure would be the wrong direction
+  for a mechanism that removes a human checkpoint, so this asymmetry with
+  `worktree_required` is intentional, not an oversight (see `_lib.sh`'s own
+  comment on `_lib_autonomous_shipping_active`).
 - Legacy-import-locations: **config-dir-and-home**. Same reasoning as
   `worktree_required` — the runtime union already reads both locations.
 - Fail direction on resolution failure: hard-denies shipping (returns
@@ -97,11 +104,17 @@ Column legend:
 
 ### `commit_stall_block`
 
-- Call site: `advance-past-commit-stall.sh:52,56`.
-- Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || exit 0`,
-  then `[ -f "$CONFIG_DIR/.commit-stall-block-disabled" ] && exit 0` — no
-  `$HOME` fallback arm.
-- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists.
+- Call site: `advance-past-commit-stall.sh:52,60`. `CONFIG_DIR=$(_lib_config_dir)
+  || exit 0` resolves the config dir directly (needed later in the script
+  for its log/state paths), then `_config_enabled commit_stall_block ||
+  exit 0` gates the rest of the hook — no raw `[ -f ]` probe against
+  `$CONFIG_DIR` for this key at the call site itself.
+- Resolution: **config-dir**. `commit_stall_block`'s schema row carries
+  `config-dir`, so `_config_value` reads only the already-resolved
+  `CONFIG_DIR` — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  the call site's own `exit 0` on `_lib_config_dir` failure means
+  `_config_enabled` is never even reached on a resolution failure.
 - Legacy-import-locations: **config-dir**. Same reasoning as
   `round_consult_gate` — never auto-written by `install.sh`.
 - Fail direction on resolution failure: `exit 0` (allow the hook's own
@@ -111,11 +124,15 @@ Column legend:
 
 ### `authorization_boundary_restore`
 
-- Call site: `restore-authorization-boundary-on-compact.sh:39-40`.
-- Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || exit 0`,
-  then `[ -f "$CONFIG_DIR/.authorization-boundary-disabled" ] && exit 0` —
-  no `$HOME` fallback arm.
-- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists.
+- Call site: `restore-authorization-boundary-on-compact.sh:43`:
+  `_config_enabled authorization_boundary_restore || exit 0` — no raw
+  `[ -f ]` probe at the call site itself.
+- Resolution: **config-dir**. `authorization_boundary_restore`'s schema row
+  carries `config-dir`, so `_config_value` reads only the resolved config
+  dir — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  `_config_enabled`'s underlying `_lib_config_dir` failure propagates as
+  exit 2, which this hook's own `|| exit 0` treats as "not active."
 - Legacy-import-locations: **config-dir**. Never inventoried in
   `SENTINEL_INVENTORY` at all pre-migration (Context section: "missing from
   `SENTINEL_INVENTORY` today") — a user hand-toggles it directly, so there
@@ -144,11 +161,17 @@ Column legend:
 
 ### `error_mode_nudge`
 
-- Call site: `nudge-error-mode-analysis.sh:61,87`.
-- Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || exit 0`;
-  `[ ! -f "$CONFIG_DIR/.error-mode-nudge-enabled" ]` gates the rest of the
-  hook.
-- Legacy-probe-on-resolution-failure: **false**.
+- Call site: `nudge-error-mode-analysis.sh:61,88`. `CONFIG_DIR=$(_lib_config_dir)
+  || exit 0` resolves the config dir directly (needed later for its
+  marker/checkpoint/log paths), then `_config_enabled error_mode_nudge ||
+  exit 0` gates the rest of the hook — no raw `[ -f ]` probe against
+  `$CONFIG_DIR` for this key at the call site itself.
+- Resolution: **config-dir**. `error_mode_nudge`'s schema row carries
+  `config-dir`, so `_config_value` reads only the already-resolved
+  `CONFIG_DIR` — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  the call site's own `exit 0` on `_lib_config_dir` failure means
+  `_config_enabled` is never even reached on a resolution failure.
 - Legacy-import-locations: **config-dir-and-home**. Same
   machine-promptable-writer-bug reasoning as `permission_prompt_tracking`.
 - Fail direction on resolution failure: `exit 0` (nudge doesn't fire).
@@ -237,16 +260,19 @@ Column legend:
 
 ### `handoff_nudge`
 
-- Call site: `nudge-handoff-near-context-cap.sh:91,422,523` (two read
-  sites).
+- Call site: `nudge-handoff-near-context-cap.sh:91,392` (two read sites —
+  a script-level `CONFIG_DIR` resolution, and `_config_enabled
+  handoff_nudge` gating the nudge itself, both inside `run_check_mode`).
 - Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || CONFIG_DIR=""`
-  (empty-string fallback, not a raw-path probe); both kill-switch checks
-  read `$CONFIG_DIR/.handoff-nudge-disabled`, which is simply never present
-  when `CONFIG_DIR` is empty.
-- Legacy-probe-on-resolution-failure: **false**. The empty-`CONFIG_DIR`
-  fallback is not a `$HOME` probe — it makes the subsequent `[ -f
-  "$CONFIG_DIR/..." ]` checks structurally false, which is a fail-open
-  degrade, not a legacy-file probe.
+  resolves the config dir directly (needed later for its transcript/session
+  paths); `run_check_mode`'s own early `[ -n "$CONFIG_DIR" ] || check_refuse
+  "config-dir-unresolved"` (line 314) already refuses before `_config_enabled
+  handoff_nudge` (line 392, later in the same function) is ever reached, so
+  that call always sees an already-resolved config dir. `handoff_nudge`'s
+  schema row carries `config-dir` — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  moot in practice here since `run_check_mode`'s early refusal already
+  exits before `_config_enabled` runs on an unresolved config dir.
 - Legacy-import-locations: **config-dir**. Never machine-promptable.
 - Fail direction on resolution failure: the kill switch reads as absent
   (nudge behaves as enabled/undisabled) — an unresolvable config dir does
@@ -254,24 +280,39 @@ Column legend:
 
 ### `consume_durable_continuity`
 
-- Call site: `consume-durable-continuity-file-on-read.sh:93,95`.
-- Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || exit 0`;
-  `[ -f "$CONFIG_DIR/.consume-durable-continuity-disabled" ]`.
-- Legacy-probe-on-resolution-failure: **false**.
+- Call site: `consume-durable-continuity-file-on-read.sh:101,106`.
+  `CONFIG_DIR=$(_lib_config_dir) || exit 0` resolves the config dir
+  directly (needed later for its handoff/brief glob paths), then
+  `_config_enabled consume_durable_continuity || exit 0` gates the rest of
+  the hook — no raw `[ -f ]` probe against `$CONFIG_DIR` for this key at
+  the call site itself.
+- Resolution: **config-dir**. `consume_durable_continuity`'s schema row
+  carries `config-dir`, so `_config_value` reads only the already-resolved
+  `CONFIG_DIR` — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  the call site's own `exit 0` on `_lib_config_dir` failure means
+  `_config_enabled` is never even reached on a resolution failure.
 - Legacy-import-locations: **config-dir**. Never machine-promptable.
 - Fail direction on resolution failure: `exit 0` — the hook takes no
   action (does not consume/inject the continuity file) rather than guess.
 
 ### `session_title_from_branch`
 
-- Call site: `set-session-title-from-branch.sh:85-86` (machine check only —
-  the separate repo-scope check at `:151` reads
+- Call site: `set-session-title-from-branch.sh:86` (machine check only —
+  the separate repo-scope check at `:147` reads
   `$MAIN_WORKTREE_ROOT/.claude/session-title-disabled`, a committed repo
   marker, and is explicitly out of this migration's scope: the repo check
-  stays a file).
-- Resolution: **config-dir**. `CONFIG_DIR=$(_lib_config_dir) || exit 0`;
-  `[ -f "$CONFIG_DIR/.session-title-disabled" ] && exit 0`.
-- Legacy-probe-on-resolution-failure: **false**.
+  stays a file). The machine check is a single `_config_enabled
+  session_title_from_branch || exit 0` with no raw `[ -f ]` probe of its
+  own — no separate `CONFIG_DIR` resolution even runs at this call site,
+  since `_config_enabled` resolves it internally.
+- Resolution: **config-dir**. `session_title_from_branch`'s schema row
+  carries `config-dir`, so `_config_value` reads only the resolved config
+  dir — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  `_config_enabled`'s underlying `_lib_config_dir` failure propagates as
+  exit 2, which this hook's own `|| exit 0` treats as "run unchanged"
+  (today's auto-titler behavior).
 - Legacy-import-locations: **config-dir**. Never machine-promptable.
 - Fail direction on resolution failure: `exit 0` — "An unresolvable config
   dir leaves no kill-switch location to check, so this hook fails open

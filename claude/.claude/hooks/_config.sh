@@ -20,6 +20,17 @@
 # Expanding an unset array under `set -u` is an error on bash before 4.4
 # (macOS system bash is 3.2), and this file cannot assume its caller has
 # already turned `-u` off.
+#
+# Every call into this file's resolution chain (_config_value/_config_enabled/
+# _config_schema_field/_config_read_key_from_file/_config_file_lines) does
+# un-timeout-wrapped filesystem I/O -- reading config-keys.psv and/or
+# claude-config.toml directly, no _lib_capped wrapper -- on every single
+# call, from every one of this repo's 11+ hook/script call sites. Accepted
+# for this deployment shape (local disk, single machine per config dir), not
+# a silent gap: a stuck read here would block whichever hook or script made
+# the call, the same class of un-timeout-wrapped-I/O tradeoff
+# enforce-config-write-shape.sh and enforce-marker-script-shape.sh already
+# disclose for their own filesystem checks.
 _CONFIG_SCHEMA_FILE="$(dirname "${BASH_SOURCE[0]}")/config-keys.psv"
 _CONFIG_STATE_FILENAME="claude-config.toml"
 

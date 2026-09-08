@@ -1,17 +1,17 @@
-"""Tests for migrate-legacy-config.sh -- the Phase 3 script that imports
-every legacy sentinel file into claude-config.toml, then offers per-file
-interactive deletion. Drives the real script directly via subprocess.run
-(row 35's own test-seam rationale: a real call-sequence exercise, not
-install.sh's INSTALL_TEST_FIXTURE block-extraction harness, which exists
-only because install.sh itself isn't decomposable).
+"""Tests for migrate-legacy-config.sh -- the script that imports every
+legacy sentinel file into claude-config.toml, then offers per-file
+interactive deletion. Drives the real script directly via subprocess.run --
+a real call-sequence exercise, not install.sh's INSTALL_TEST_FIXTURE
+block-extraction harness, which exists only because install.sh itself
+isn't decomposable.
 
-The union-semantics and row-19 legacy-precedence *math* are not retested
-here (row 33) -- those live in test_config_lib.py as direct
-_config_enabled/_config_value fixtures. This file covers what's actually
-migration-script-specific: import-on-first-encounter, the
-import-before-scaffold ordering (row 34), the row-45/46 gating machinery,
-the interactive delete-confirmation phase (row 42), and the
-pr_cost_disclosure two-legacy-location precedence tiebreak (row 31/41).
+The union-semantics and legacy-precedence *math* are not retested here --
+those live in test_config_lib.py as direct _config_enabled/_config_value
+fixtures. This file covers what's actually migration-script-specific:
+import-on-first-encounter, the import-before-scaffold ordering, the
+enforcement-critical-key-import-gating and per-key-failure-isolation
+machinery, the interactive delete-confirmation phase, and the
+pr_cost_disclosure two-legacy-location precedence tiebreak.
 
 CONFIG_KEYS_PSV and MIGRATE_SCRIPT below are declared as module-level path
 constants (not inline strings) so TestCrossDomainReadCompleteness
@@ -20,6 +20,8 @@ constants (not inline strings) so TestCrossDomainReadCompleteness
 from __future__ import annotations
 
 import os
+import pty
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +42,20 @@ _ENFORCEMENT_CRITICAL_KEYS = frozenset({
     "commit_stall_block",
     "authorization_boundary_restore",
 })
+
+# Mirrors migrate-legacy-config.sh's own
+# _migrate_enforcement_critical_safe_value pair-list -- each value is that
+# key's enforcement-stays-on (or kill-switch-stays-off) direction, not
+# simply its schema default (see that function's own header for why it is
+# not derived from config-keys.psv's default or
+# legacy-probe-on-resolution-failure columns).
+_ENFORCEMENT_CRITICAL_SAFE_VALUES = {
+    "worktree_required": "true",
+    "autonomous_shipping": "false",
+    "round_consult_gate": "true",
+    "commit_stall_block": "true",
+    "authorization_boundary_restore": "true",
+}
 
 _SCHEMA = schema()
 _ALL_KEYS = sorted(_SCHEMA)
@@ -122,16 +138,15 @@ def _write_legacy_file(directory: Path, row: SchemaRow, present: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The 6-cell-per-key migration matrix (Phase 3 test-plan bullet 1)
+# The 6-cell-per-key migration matrix
 # ---------------------------------------------------------------------------
 
 
 class TestMigrationMatrixStateFileAbsent:
     """State file entirely absent, crossed with legacy-file-present. This is
-    the cell that would fail under a scaffold-before-import regression
-    (row 34): scaffold would populate every key's schema default before
-    import ever runs, so import's own "no existing row" trigger would
-    never fire."""
+    the cell that would fail under a scaffold-before-import regression:
+    scaffold would populate every key's schema default before import ever
+    runs, so import's own "no existing row" trigger would never fire."""
 
     @pytest.mark.parametrize("key", _ALL_KEYS)
     @pytest.mark.parametrize("legacy_present", [True, False], ids=["legacy-present", "legacy-absent"])
@@ -155,10 +170,15 @@ class TestMigrationMatrixStateFileAbsent:
             # pins scaffold's own exclusion logic.
             assert config_value(key, config_dir_override=config_dir) == row.default
         elif key in _ENFORCEMENT_CRITICAL_KEYS:
-            assert key not in state, (
-                "a non-TTY run must defer an enforcement-critical key's import (row 45), "
-                f"not silently import it: state={state!r}"
-            )
+            if _legacy_derived_value(row) == _ENFORCEMENT_CRITICAL_SAFE_VALUES[key]:
+                assert state.get(key) == _legacy_derived_value(row), (
+                    f"a legacy value matching {key!r}'s fail-closed direction must import with no gate: "
+                    f"state={state!r}"
+                )
+            else:
+                assert key not in state, (
+                    f"a permissive-direction legacy value for {key!r} must never be imported: state={state!r}"
+                )
         else:
             assert state.get(key) == _legacy_derived_value(row)
 
@@ -193,17 +213,20 @@ class TestMigrationMatrixStateFilePresentKeyRowAbsent:
             # pins scaffold's own exclusion logic.
             assert config_value(key, config_dir_override=config_dir) == row.default
         elif key in _ENFORCEMENT_CRITICAL_KEYS:
-            assert key not in state
+            if _legacy_derived_value(row) == _ENFORCEMENT_CRITICAL_SAFE_VALUES[key]:
+                assert state.get(key) == _legacy_derived_value(row)
+            else:
+                assert key not in state
         else:
             assert state.get(key) == _legacy_derived_value(row)
 
 
 class TestMigrationMatrixStateFilePresentKeyRowPresent:
-    """State file present with this key's own row already populated -- row
-    22: never touched via the legacy path again, whether that row came
-    from a hand-edit, a prior import, or predates any run of this script.
-    Asserted via the exact authored line surviving verbatim, not a value
-    comparison (see _distinguishing_existing_value)."""
+    """State file present with this key's own row already populated -- that
+    row is never touched via the legacy path again, whether it came from a
+    hand-edit, a prior import, or predates any run of this script. Asserted
+    via the exact authored line surviving verbatim, not a value comparison
+    (see _distinguishing_existing_value)."""
 
     @pytest.mark.parametrize("key", _ALL_KEYS)
     @pytest.mark.parametrize("legacy_present", [True, False], ids=["legacy-present", "legacy-absent"])
@@ -283,7 +306,7 @@ class TestMigrationMatrixStateFilePresentKeyRowPresent:
 
 
 # ---------------------------------------------------------------------------
-# Hand-edit survives a re-run (row 22)
+# Hand-edit survives a re-run
 # ---------------------------------------------------------------------------
 
 
@@ -311,10 +334,10 @@ class TestHandEditSurvivesRerun:
         )
 
     def test_pre_first_run_hand_authored_row_survives_first_run(self, tmp_path: Path) -> None:
-        """Row 22's guarantee is per-key-encounter, not per-run-number: a
-        row authored before this script has ever run once must still
-        survive that first run, and every other key must still import or
-        resolve to its default alongside it."""
+        """The hand-edit-survives guarantee is per-key-encounter, not
+        per-run-number: a row authored before this script has ever run once
+        must still survive that first run, and every other key must still
+        import or resolve to its default alongside it."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
@@ -335,7 +358,7 @@ class TestHandEditSurvivesRerun:
 
 
 # ---------------------------------------------------------------------------
-# pr_cost_disclosure's two-legacy-location precedence (row 31/41)
+# pr_cost_disclosure's two-legacy-location precedence
 # ---------------------------------------------------------------------------
 
 
@@ -355,7 +378,7 @@ class TestPrCostDisclosureTwoLocationPrecedence:
 
 
 # ---------------------------------------------------------------------------
-# Direct-invocation interactive tests (delete-confirmation, row 42) -- no
+# Direct-invocation interactive tests (delete-confirmation) -- no
 # pty/pexpect: source the script (its BASH_SOURCE guard skips main), then
 # call a helper function directly with piped stdin, bypassing its own
 # `[ -t 0 ]` gate the same way test_install_sh_stale_migration_copy_cleanup.py
@@ -372,6 +395,41 @@ def _run_sourced(script_body: str, stdin: str, env: dict) -> subprocess.Complete
         env=env,
         check=False,
     )
+
+
+def _run_main_with_real_pty_stdin(env: dict, stdin_response: str | None = None) -> subprocess.CompletedProcess:
+    """Runs migrate-legacy-config.sh's real main() with stdin connected to
+    an actual pseudo-terminal (pty.openpty()'s slave side), not a pipe --
+    the genuine `[ -t 0 ]`-satisfying shape a self-allocated pty
+    (`script -qc ... /dev/null`) produces, as opposed to every other test
+    in this file forcing $_MIGRATE_TTY as a plain variable. `stdin_response`
+    is written to the master side before main() runs, queued in the pty's
+    own input buffer for whatever `read -r -p` call consumes it -- omit it
+    (the default) only when the caller's own fixture produces zero
+    delete-confirmation prompts (only 'imported'/'lost-precedence' records
+    reach that phase), since main() otherwise blocks waiting for input that
+    never arrives. Writing a response rather than closing the master fd for
+    EOF: closing it can raise SIGHUP on the slave instead of a clean EOF."""
+    master_fd, slave_fd = pty.openpty()
+    try:
+        proc = subprocess.Popen(
+            [str(MIGRATE_SCRIPT)],
+            stdin=slave_fd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        if stdin_response is not None:
+            os.write(master_fd, stdin_response.encode())
+        stdout, stderr = proc.communicate(timeout=10)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+    finally:
+        if slave_fd != -1:
+            os.close(slave_fd)
+        os.close(master_fd)
 
 
 class TestDeleteConfirmationPrompt:
@@ -487,10 +545,13 @@ class TestDeleteConfirmationPrompt:
         records = records_file.read_text()
         assert "lost-precedence(dollars)" in records
 
-    def test_row_45_declined_import_reaches_delete_phase_as_deferred(self, tmp_path: Path) -> None:
-        """A TTY-present run that declines row 45's import prompt for an
-        enforcement-critical key must record deferred-pending-confirmation
-        for that file, and the delete phase must never offer it."""
+    def test_permissive_direction_enforcement_critical_import_reaches_delete_phase_as_deferred(
+        self, tmp_path: Path
+    ) -> None:
+        """A permissive-direction legacy value for an enforcement-critical
+        key must record deferred-pending-confirmation for that file, and the
+        delete phase must never offer it -- no TTY or answer of any kind
+        changes this outcome."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
@@ -511,17 +572,19 @@ class TestDeleteConfirmationPrompt:
             '_config_scaffold "$_MIGRATE_SCAFFOLD_EXCLUDE"\n'
             f'printf \'%s\\n\' "${{_MIGRATE_RECORDS[@]}}" > "{records_file}"\n'
         )
-        result = _run_sourced(script, "n\n", _env(home, config_dir=config_dir))
+        result = _run_sourced(script, "", _env(home, config_dir=config_dir))
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "round_consult_gate" not in _read_state(config_dir), (
-            "a declined enforcement-critical import must leave the key absent after scaffold, not just after import"
+            "a permissive-direction enforcement-critical import must leave the key absent after scaffold, "
+            "not just after import"
         )
         assert "deferred-pending-confirmation" in records_file.read_text()
 
-    def test_row_46_read_failure_reaches_delete_phase_as_deferred(self, tmp_path: Path) -> None:
-        """A TTY-present run that hits a row-46 read failure on a
-        non-enforcement-critical key's legacy file must also record
-        deferred-pending-confirmation, per round 6's widened scope."""
+    def test_legacy_file_read_failure_reaches_delete_phase_as_deferred(self, tmp_path: Path) -> None:
+        """A TTY-present run that hits a legacy-file read failure on a
+        non-enforcement-critical key must also record
+        deferred-pending-confirmation, the same as a declined
+        enforcement-critical import."""
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
@@ -538,101 +601,180 @@ class TestDeleteConfirmationPrompt:
 
 
 # ---------------------------------------------------------------------------
-# Row 45: enforcement-critical import gating, one direct-invocation case
-# per key
+# Enforcement-critical import gating: direction-aware, not TTY-gated
 # ---------------------------------------------------------------------------
 
 
-def _row_45_script(config_dir: Path, key: str, records_file: Path) -> str:
-    """KEY's own schema-declared legacy_import_locations, not a hardcoded
-    literal -- three of the five enforcement-critical keys
-    (commit_stall_block, round_consult_gate, authorization_boundary_restore)
-    are actually "config-dir" only, not "config-dir-and-home" like
-    worktree_required/autonomous_shipping, so a hardcoded value here would
-    silently test a call shape _migrate_process_key never actually receives
-    for those three keys in production."""
-    row = _SCHEMA[key]
-    return (
-        '_MIGRATE_TTY=1\n'
-        f'_MIGRATE_CONFIG_DIR="{config_dir}"\n'
-        f'_MIGRATE_HOME_DIR="{config_dir}"\n'
-        '_MIGRATE_STATE_FILE="$_MIGRATE_CONFIG_DIR/claude-config.toml"\n'
-        '_MIGRATE_SCAFFOLD_EXCLUDE=""\n'
-        '_MIGRATE_RECORDS=()\n'
-        f'_migrate_process_key {key} {row.type} {row.legacy_import_locations} '
-        f'{row.legacy_filename} {row.legacy_polarity} "{row.human_name}"\n'
-        '_config_scaffold "$_MIGRATE_SCAFFOLD_EXCLUDE"\n'
-        f'printf \'%s\\n\' "${{_MIGRATE_RECORDS[@]}}" > "{records_file}"\n'
-    )
+class TestTTYInvarianceOfEnforcementCriticalImport:
+    def test_migrate_process_key_body_has_no_migrate_tty_reference(self) -> None:
+        """Structural tripwire, not a behavioral proof: _migrate_process_key's
+        own header explains why it must never read $_MIGRATE_TTY -- the
+        enforcement-critical safe-value gate is TTY-blind by design, since
+        `[ -t 0 ]` is evaluated inside a process a caller fully controls and
+        can fabricate a pty for. This only pins that a future edit can't
+        silently reintroduce a TTY branch into this one function's body;
+        the test below drives main() end-to-end through a real pty to prove
+        the actual behavioral property."""
+        content = MIGRATE_SCRIPT.read_text()
+        match = re.search(r"^_migrate_process_key\(\) \{\n(.*?)\n^\}$", content, re.DOTALL | re.MULTILINE)
+        assert match, "could not locate _migrate_process_key's body in migrate-legacy-config.sh"
+        assert "_MIGRATE_TTY" not in match.group(1)
+
+    def test_real_pty_stdin_still_defers_a_permissive_direction_value(self, tmp_path: Path) -> None:
+        """The real attack shape this script's TTY-blind design defends
+        against: a caller self-allocates a real pseudo-terminal (e.g. via
+        `script -qc`) so `[ -t 0 ]` inside the script's own process reports
+        true. Unlike this file's other TTY
+        tests (which force $_MIGRATE_TTY as a plain variable to drive
+        _migrate_process_key directly), this runs the real main() through
+        an actual pty as stdin -- closing the gap between what a forced
+        variable proves and what an attacker actually controls. The
+        permissive-direction fixture below (round_consult_gate's own
+        presence-disables legacy file, reused from
+        TestDeleteConfirmationPrompt.test_permissive_direction_enforcement_critical_import_reaches_delete_phase_as_deferred)
+        produces zero 'imported'/'lost-precedence' records, so the delete
+        phase issues no prompts and main() completes without blocking on
+        stdin."""
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        (config_dir / ".round-consult-gate-disabled").touch()
+
+        result = _run_main_with_real_pty_stdin(_env(home, config_dir=config_dir))
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "round_consult_gate" not in _read_state(config_dir), (
+            "a real pty as stdin must not unlock a permissive-direction enforcement-critical "
+            "import any more than a non-tty run would"
+        )
+
+    def test_real_pty_stdin_still_imports_the_fail_closed_direction_value(self, tmp_path: Path) -> None:
+        """The fail-closed counterpart to the permissive-direction test
+        above: worktree_required is the sole enforcement-critical key whose
+        legacy_polarity column (config-keys.psv) lets mere legacy-file
+        presence derive the SAFE value -- the other four enforcement-
+        critical keys can only ever derive the permissive value from
+        presence, so only worktree_required can exercise this direction. A
+        real pty as stdin must still import it; no `[ -t 0 ]`-satisfying pty
+        defeats the fail-closed direction either. Unlike the permissive-
+        direction test above, this "imported" record is not load-bearing
+        here (the default $HOME/.claude has no distinct config-dir-and-home
+        split, so _migrate_add_record's load-bearing flag never applies to
+        it) -- it reaches phase 2's still-TTY-gated delete-confirmation
+        prompt, so this answers "n" through the pty rather than leaving
+        main() blocked on a prompt nothing ever responds to."""
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        legacy_file = config_dir / "worktree-required"
+        legacy_file.touch()
+
+        result = _run_main_with_real_pty_stdin(_env(home, config_dir=config_dir), stdin_response="n\n")
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert _read_state(config_dir)["worktree_required"] == "true"
+        assert legacy_file.exists(), "declining the delete-confirmation prompt must leave the legacy file in place"
 
 
-class TestEnforcementCriticalImportGating:
-    """Row 45: for each of the five enforcement-critical keys, the import
-    decision is `[ -t 0 ]`-gated and defaults to No -- exercised via direct
-    invocation (source the script, set the TTY flag manually, call the
-    processing function), not a pty, per this file's own header."""
+def _migrate_enforcement_critical_keys_from_script() -> set[str]:
+    """Sources migrate-legacy-config.sh and reads its own
+    $_MIGRATE_ENFORCEMENT_CRITICAL_KEYS directly -- the actual bash source
+    of truth -- rather than comparing against a third, independently
+    maintained Python copy of the same list."""
+    result = _run_sourced('printf \'%s\' "$_MIGRATE_ENFORCEMENT_CRITICAL_KEYS"\n', "", dict(os.environ))
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    return set(result.stdout.split())
 
-    @pytest.mark.parametrize("key", sorted(_ENFORCEMENT_CRITICAL_KEYS))
-    def test_non_tty_invocation_leaves_key_absent_after_full_run_including_scaffold(
-        self, key: str, tmp_path: Path
-    ) -> None:
+
+class TestEnforcementCriticalKeySet:
+    def test_matches_config_keys_psv_header_comment(self) -> None:
+        """config-keys.psv's own header comment is the second place (besides
+        migrate-legacy-config.sh's _MIGRATE_ENFORCEMENT_CRITICAL_KEYS and
+        _migrate_enforcement_critical_safe_value) that names the five
+        enforcement-critical keys -- checked against the real bash variable
+        itself, not a third, independently maintained Python copy, so a
+        future key addition/removal can't silently drift the two apart."""
+        text = CONFIG_KEYS_PSV.read_text()
+        match = re.search(r"The five enforcement-critical keys \(([^)]+)\)", text, re.DOTALL)
+        assert match, "config-keys.psv's header comment must name the five enforcement-critical keys"
+        # The parenthesized list wraps across a `#`-continued comment line,
+        # so each name is stripped of the leading `#` and whitespace a
+        # mid-list line break leaves behind, not just surrounding spaces.
+        named = {name.strip().lstrip("#").strip() for name in match.group(1).split(",")}
+        assert named == _migrate_enforcement_critical_keys_from_script()
+
+
+class TestEnforcementCriticalSafeValues:
+    @pytest.mark.parametrize(("key", "safe_value"), sorted(_ENFORCEMENT_CRITICAL_SAFE_VALUES.items()))
+    def test_pins_the_fail_closed_value(self, key: str, safe_value: str, tmp_path: Path) -> None:
+        """Pins _migrate_enforcement_critical_safe_value's own pair-list
+        content directly, independent of any legacy-file derivation."""
+        home = tmp_path / "home"
+        home.mkdir()
+        result = _run_sourced(
+            f'_migrate_enforcement_critical_safe_value {key} && printf \'%s\' "$_MIGRATE_SAFE_VALUE"\n',
+            "",
+            _env(home),
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == safe_value
+
+
+# Every enforcement-critical key except worktree_required pairs a
+# presence-only legacy polarity with a safe value on the opposite boolean --
+# so any legacy file for these four, merely by existing, always derives the
+# permissive value; there is no legacy-file content that could exercise
+# their own safe-import branch. worktree_required is the sole exception
+# (presence-enables, safe value "true"), covered by its own test below.
+_PERMISSIVE_VIA_LEGACY_FILE_KEYS = sorted(_ENFORCEMENT_CRITICAL_KEYS - {"worktree_required"})
+
+
+class TestEnforcementCriticalDirectionAwareImport:
+    """Import writes a legacy-derived value for one of the five
+    enforcement-critical keys only when it matches that key's own
+    fail-closed value; a permissive-direction value is never written -- it
+    is deferred and printed for a human to hand-paste into
+    claude-config.toml instead."""
+
+    def test_worktree_required_legacy_presence_imports_with_no_gate(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        (config_dir / "worktree-required").touch()
+
+        result = _run(_env(home, config_dir=config_dir))
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert _read_state(config_dir)["worktree_required"] == "true"
+
+    @pytest.mark.parametrize("key", _PERMISSIVE_VIA_LEGACY_FILE_KEYS)
+    def test_permissive_direction_legacy_value_is_never_imported(self, key: str, tmp_path: Path) -> None:
         home = tmp_path / "home"
         config_dir = home / ".claude"
         config_dir.mkdir(parents=True)
         row = _SCHEMA[key]
         (config_dir / row.legacy_filename).touch()
 
-        result = _run(_env(home, config_dir=config_dir), stdin=None)
+        result = _run(_env(home, config_dir=config_dir))
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         state = _read_state(config_dir)
-        assert key not in state, (
-            f"{key} must stay absent after the full run (import deferred, scaffold excluded it): {state!r}"
-        )
-
-    @pytest.mark.parametrize("key", sorted(_ENFORCEMENT_CRITICAL_KEYS))
-    def test_direct_invoked_y_writes_the_imported_value(self, key: str, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        config_dir = home / ".claude"
-        config_dir.mkdir(parents=True)
-        row = _SCHEMA[key]
-        (config_dir / row.legacy_filename).touch()
-        records_file = tmp_path / "records.psv"
-
-        result = _run_sourced(_row_45_script(config_dir, key, records_file), "y\n", _env(home, config_dir=config_dir))
-        assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert _read_state(config_dir)[key] == _legacy_derived_value(row)
-
-    @pytest.mark.parametrize("key", sorted(_ENFORCEMENT_CRITICAL_KEYS))
-    @pytest.mark.parametrize("answer", ["n\n", ""], ids=["declined", "eof"])
-    def test_direct_invoked_n_or_eof_leaves_key_absent_after_full_run(
-        self, key: str, answer: str, tmp_path: Path
-    ) -> None:
-        home = tmp_path / "home"
-        config_dir = home / ".claude"
-        config_dir.mkdir(parents=True)
-        row = _SCHEMA[key]
-        (config_dir / row.legacy_filename).touch()
-        records_file = tmp_path / "records.psv"
-
-        result = _run_sourced(_row_45_script(config_dir, key, records_file), answer, _env(home, config_dir=config_dir))
-        assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert key not in _read_state(config_dir), (
-            "scaffold must not backfill a default over a deferred enforcement-critical key"
+        assert key not in state, f"a permissive-direction legacy value for {key!r} must never be imported: {state!r}"
+        # The deferred key still resolves via its ordinary legacy fallback --
+        # deferring the import changes nothing about what the key means.
+        assert config_value(key, config_dir_override=config_dir) == _legacy_derived_value(row)
+        assert f"{key} = {_legacy_derived_value(row)}" in result.stderr, (
+            "the permissive value must be printed for a human to hand-paste"
         )
 
 
 # ---------------------------------------------------------------------------
-# Row 46: per-key legacy-file read-failure isolation, run twice
+# Per-key legacy-file read-failure isolation, run twice
 # ---------------------------------------------------------------------------
 
 
 class TestPerKeyFailureIsolation:
     """A single key's legacy-file read failure does not abort the script,
     and does not block any other key's own import/scaffold -- run once for
-    a non-enforcement-critical key (pr_cost_disclosure, row 46's own worked
-    example) and once for an enforcement-critical one, closing the
-    exclude-list generalization gap each of those two `/plan-review`
-    rounds independently found."""
+    a non-enforcement-critical key (pr_cost_disclosure) and once for an
+    enforcement-critical one, since the exclude-list logic must generalize
+    to both."""
 
     @pytest.mark.skipif(
         hasattr(os, "geteuid") and os.geteuid() == 0,

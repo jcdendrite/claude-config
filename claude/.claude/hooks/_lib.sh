@@ -150,11 +150,16 @@ _lib_advance_offset_past_complete_lines() {
 # pointer a reader searching this file for it would otherwise miss.
 
 # _lib_pattern_component_count PATTERN
-# Counts PATTERN's `/`-separated path segments (always >=1 for a non-empty
-# PATTERN). Shared by _lib_shape_match so a SUFFIX_PATTERN with a different
-# segment count than today's (one component for claude-config.toml, two for
-# the marker directories' `*-markers/*`/`.*-active.d/*`) is handled without a
-# hardcoded "one slash" assumption.
+# Sets _LIB_PATTERN_COMPONENT_COUNT (global) to PATTERN's `/`-separated path
+# segment count (always >=1 for a non-empty PATTERN). Shared by
+# _lib_shape_match so a SUFFIX_PATTERN with a different segment count than
+# today's (one component for claude-config.toml, two for the marker
+# directories' `*-markers/*`/`.*-active.d/*`) is handled without a hardcoded
+# "one slash" assumption. Sets a global rather than printing for a caller to
+# capture via $(...): _lib_shape_match calls this once per candidate per
+# suffix pattern, and a command-substitution fork there is pure overhead --
+# test_lib.py's test_lib_shape_match_helper_functions_run_without_forking_a_subshell
+# is the rerunnable check confirming this form doesn't fork.
 _lib_pattern_component_count() {
   # Three separate assignments, not one `local a=.. b=.. c="$a"` statement:
   # bash expands every word of a single `local` command before performing
@@ -167,22 +172,28 @@ _lib_pattern_component_count() {
     count=$((count + 1))
     rest="${rest#*/}"
   done
-  printf '%s' "$count"
+  _LIB_PATTERN_COMPONENT_COUNT="$count"
 }
 
 # _lib_strip_trailing_path_components PATH COUNT
-# Strips COUNT trailing `/`-separated components from PATH. Exit 1 (nothing
-# printed) if PATH has fewer than COUNT components to strip -- a caller that
+# Sets _LIB_STRIP_TRAILING_PATH_COMPONENTS_RESULT (global) to PATH with
+# COUNT trailing `/`-separated components stripped. Returns 1 (result left
+# unset) if PATH has fewer than COUNT components to strip -- a caller that
 # went on to -ef-compare the (wrongly shallow) result against a root would
-# otherwise silently accept too short a prefix as a match.
+# otherwise silently accept too short a prefix as a match. Sets a global
+# rather than printing for $(...) capture -- same fork-avoidance rationale
+# as _lib_pattern_component_count above.
 _lib_strip_trailing_path_components() {
   local path="$1" count="$2" i prev
   for ((i = 0; i < count; i++)); do
     prev="$path"
     path="${path%/*}"
-    [ "$path" = "$prev" ] && return 1
+    if [ "$path" = "$prev" ]; then
+      unset _LIB_STRIP_TRAILING_PATH_COMPONENTS_RESULT
+      return 1
+    fi
   done
-  printf '%s' "$path"
+  _LIB_STRIP_TRAILING_PATH_COMPONENTS_RESULT="$path"
 }
 
 # _lib_shape_match TARGET_PATH SUFFIX_PATTERN [SUFFIX_PATTERN...]
@@ -253,12 +264,10 @@ _lib_strip_trailing_path_components() {
 #       inode to stat yet -- `-ef` degrades the same way `[ -e ]` does.
 #       Narrow: in nearly every such case the write itself would ENOENT
 #       first.
-#   (b) `-ef` has no timeout backstop at all, unlike the prior
-#       `_lib_capped`-wrapped `realpath` design -- a real regression against
-#       a merely slow-but-responsive network stat, which the old design
-#       bounded. Against a fully-hung (D-state) mount this is unchanged from
-#       before: a `timeout`-wrapped external process cannot interrupt a
-#       kernel-blocked D-state process either.
+#   (b) `-ef` has no timeout backstop: a hung network mount can block the
+#       check indefinitely. A fully hung (D-state) mount is unaffected
+#       either way -- a `timeout`-wrapped external process cannot interrupt
+#       a kernel-blocked process.
 #   (c) _lib_strip_shell_quotes/_lib_split_fragments's sed/tr calls, on the
 #       unconditional hot path of every Bash tool call for both hooks, also
 #       have no _lib_capped wrapper -- a stuck subprocess there blocks the
@@ -266,15 +275,49 @@ _lib_strip_trailing_path_components() {
 #       terminates it. Total forks per ordinary Bash call across both hooks
 #       (jq, quote-strip, hook-specific sed/grep) is an unmeasured estimate,
 #       not verified against the harness's own hook-latency budget.
+#
+# This engine has no per-fire cap on `-ef` calls; the added cost is
+# accepted as low in practice for an ordinary Bash command's candidate
+# count. Two fork-avoidance measures back that acceptance: _lib_config_dir
+# resolves once per process rather than once per call (both consumer hooks
+# call this function once per extracted candidate), and
+# _lib_pattern_component_count/_lib_strip_trailing_path_components run in
+# the caller's own process instead of a $(...) subshell (see both
+# functions' own headers). test_lib.py's
+# test_lib_shape_match_memoizes_config_dir_resolution_per_process and
+# test_lib_shape_match_helper_functions_run_without_forking_a_subshell are
+# the rerunnable checks backing this, per this repo's own
+# re-measurable-not-assumed cost-claim standard (docs/design-decisions/
+# reviewer-persona-roster-operations.md §9).
+#
+# _lib_fragment_candidates's own widened-emission design (every word of a
+# write-gated fragment, not just an identified destination token) multiplies
+# this same per-fire cost by the fragment's argv length -- accepted for the
+# same reason: still cheap per candidate, and an ordinary Bash command's
+# argv length is small.
+_lib_shape_match_config_dir_resolved=""
+
 _lib_shape_match() {
   local target_path="$1"
   shift
   local -a suffix_patterns=("$@")
   local candidate suffix_pattern matched=1
   local resolved_root
-  if ! resolved_root=$(_lib_config_dir 2>/dev/null); then
-    return 2
+
+  # Resolved once per process, not once per call: _lib_config_dir reads
+  # only $HOME/$CLAUDE_CONFIG_DIR (no filesystem I/O), but a hook
+  # invocation calls this function once per extracted candidate, so
+  # re-resolving on every call was a redundant subshell fork per candidate.
+  if [ -z "$_lib_shape_match_config_dir_resolved" ]; then
+    _lib_shape_match_config_dir_resolved=1
+    if _lib_shape_match_config_dir=$(_lib_config_dir 2>/dev/null); then
+      _lib_shape_match_config_dir_status=0
+    else
+      _lib_shape_match_config_dir_status=1
+    fi
   fi
+  [ "$_lib_shape_match_config_dir_status" -eq 0 ] || return 2
+  resolved_root="$_lib_shape_match_config_dir"
 
   # $HOME/~ expansion (pre-existing), plus $HOME/$CLAUDE_CONFIG_DIR literal
   # shell-variable-reference expansion (new): a command that types the
@@ -289,6 +332,23 @@ _lib_shape_match() {
   candidate="${candidate//\$\{HOME\}/$HOME}"
   candidate="${candidate//\$CLAUDE_CONFIG_DIR/${CLAUDE_CONFIG_DIR:-}}"
   candidate="${candidate//\$\{CLAUDE_CONFIG_DIR\}/${CLAUDE_CONFIG_DIR:-}}"
+
+  # Glued short-option token (curl -so/path, wget -O/path, openssl -out/path):
+  # _lib_fragment_candidates emits the whole flag+value word verbatim, with
+  # no space or "=" for it to split on, so the true path component starts
+  # partway through the word rather than at position 0. Pass 1's exact-match
+  # branch below and passes 2-4's `-ef` calls all compare from position 0;
+  # only pass 1's wildcard branch (`*/.claude/...`) tolerates an arbitrary
+  # prefix, and only because its own leading `*` happens to absorb it. Strip
+  # a leading "-" + letters/digits run immediately followed by "/" or "~" so
+  # every pass compares the same true path regardless of whether
+  # $CLAUDE_CONFIG_DIR's own value contains a ".claude" segment -- keying
+  # this off the literal substring ".claude" would reproduce the same live
+  # bypass this closes for a config dir that doesn't contain one.
+  if [[ "$candidate" =~ ^-[A-Za-z][A-Za-z0-9]*(/.*|~.*)$ ]]; then
+    candidate="${BASH_REMATCH[1]}"
+    candidate="${candidate/#\~/$HOME}"
+  fi
 
   # nocasematch: macOS's default APFS volume is case-insensitive, so a
   # case-varied path (~/.Claude/...) resolves to the same on-disk target
@@ -315,9 +375,12 @@ _lib_shape_match() {
     # Pass 2: inode-identity directory-prefix match -- see strategy
     # comment above.
     local n_components prefix
-    n_components=$(_lib_pattern_component_count "$suffix_pattern")
-    if prefix=$(_lib_strip_trailing_path_components "$candidate" "$n_components" 2>/dev/null) \
-      && [ -n "$prefix" ] && [ "$prefix" -ef "$resolved_root" ] 2>/dev/null; then
+    _lib_pattern_component_count "$suffix_pattern"
+    n_components="$_LIB_PATTERN_COMPONENT_COUNT"
+    if _lib_strip_trailing_path_components "$candidate" "$n_components" \
+      && [ -n "$_LIB_STRIP_TRAILING_PATH_COMPONENTS_RESULT" ] \
+      && [ "$_LIB_STRIP_TRAILING_PATH_COMPONENTS_RESULT" -ef "$resolved_root" ] 2>/dev/null; then
+      prefix="$_LIB_STRIP_TRAILING_PATH_COMPONENTS_RESULT"
       local tail="${candidate#"$prefix"/}"
       # shellcheck disable=SC2254
       case "$tail" in
@@ -1203,12 +1266,22 @@ _lib_fragment_invokes_tool() {
   return "$matched"
 }
 
-# Every utility _lib_fragment_candidates recognizes as a last-argument/
-# glued-argument write-target extractor. Single source of truth for both
-# the extractor's own recognition loop below and
+# Every utility _lib_fragment_candidates recognizes as able to write a
+# file: tee (own non-flag-argument extraction below), or cp/mv/install/dd/
+# sed/curl/wget/rsync/scp/openssl (unconditional once the utility name
+# matches -- every word of the fragment is a candidate; see the extractor's
+# own recognition loop below). Single source of truth for both that loop and
 # _lib_command_has_write_construct's fast-reject -- no independent copy of
-# this name list that could silently drift out of sync with it.
-_LIB_WRITE_UTILITIES=(tee cp mv install dd sed)
+# this name list that could silently drift out of sync with it. Membership
+# criterion: a single-word command whose ordinary invocation writes a file
+# the caller names as an explicit token (cp/mv/install/dd/sed's positional or
+# of=-glued argument; curl -o/wget -O/--output-document/openssl -out/-keyout;
+# rsync/scp's destination argument). This excludes only URL/server-derived
+# filenames -- curl -O and bare wget, where the write target is derived from
+# the URL or a server response rather than named in the command -- disclosed
+# as an open residual in both consumer hooks' headers, not silently covered
+# by this scan.
+_LIB_WRITE_UTILITIES=(tee cp mv install dd sed curl wget rsync scp openssl)
 
 # Regex alternation of _LIB_WRITE_UTILITIES, built once at source time (not
 # per call) since _lib_command_has_write_construct runs on every Bash
@@ -1282,12 +1355,25 @@ _lib_command_word_matches() {
 }
 
 # _lib_fragment_candidates FRAGMENT
-# Emits, one per line, every write-target word in FRAGMENT worth
-# shape-testing against a protected path via _lib_shape_match: `>`/`>>`
-# operands (bare or glued, fd-prefixed), `tee` arguments, `cp`/`mv`/`install`
-# last arguments, `dd of=` glued arguments, and `sed -i` last arguments.
-# Over-emission is safe — each candidate is independently shape-tested by
-# the caller. Sole caller: _lib_redirect_candidates below.
+# Emits, one per line, every word in FRAGMENT worth shape-testing against a
+# protected path via _lib_shape_match: `>`/`>>` operands (bare or glued,
+# fd-prefixed), `tee`'s own non-flag arguments, and -- for cp/mv/install/dd/
+# sed -- every word of the fragment (verbatim, plus the substring after a
+# word's first `=`, for dd's of=-glued form).
+#
+# cp/mv/install/dd/sed are unconditional writers once the fragment invokes
+# one of them by name -- no per-utility "can this write" flag gate. This
+# function does not also try to identify which word IS the destination --
+# deliberately: a word-position assumption (last positional argument; a
+# fixed flag token) has its own bypass shape (a trailing flag after the true
+# destination; short-option clustering gluing the write flag to other
+# letters). Emitting every word instead trades false denies on a read
+# command that merely mentions a protected path as a non-destination
+# argument (e.g. `cp ~/.claude/claude-config.toml /tmp/backup.toml` denies,
+# even though this is a read of the protected file, not a write to it) for
+# closing that whole bypass class at once. Over-emission is safe — each
+# candidate is independently shape-tested by the caller. Sole caller:
+# _lib_redirect_candidates below.
 _lib_fragment_candidates() {
   local fragment="$1"
   local saved_opts=$-
@@ -1339,45 +1425,41 @@ _lib_fragment_candidates() {
   local utility
   for utility in "${_LIB_WRITE_UTILITIES[@]}"; do
     _lib_command_word_matches "$fragment_cmd" "$utility" || continue
-    case "$utility" in
-      tee)
-        local seen_tee=false
-        for word in "${Words[@]}"; do
-          if ! $seen_tee; then
-            # _lib_command_word_matches, not a raw basename compare, so this
-            # inner scan gets the same nocasematch case-folding the outer
-            # utility-name match above already relies on.
-            _lib_command_word_matches "$word" tee && seen_tee=true
-            continue
-          fi
-          case "$word" in
-            -*) ;;
-            *) printf '%s\n' "$word" ;;
-          esac
-        done
-        ;;
-      cp|mv|install)
-        printf '%s\n' "${Words[$((n - 1))]}"
-        ;;
-      dd)
-        for word in "${Words[@]}"; do
-          case "$word" in
-            # Substring offset, not a `#`-prefix strip: the latter's literal
-            # "of=" reads as a Slack-channel-shaped reference to this repo's
-            # own redaction detector. offset 3 skips exactly "of=", matched
-            # above.
-            of=*) printf '%s\n' "${word:3}" ;;
-          esac
-        done
-        ;;
-      sed)
-        for word in "${Words[@]}"; do
-          case "$word" in
-            -i*) printf '%s\n' "${Words[$((n - 1))]}"; break ;;
-          esac
-        done
-        ;;
-    esac
+
+    if [ "$utility" = tee ]; then
+      local seen_tee=false
+      for word in "${Words[@]}"; do
+        if ! $seen_tee; then
+          # _lib_command_word_matches, not a raw basename compare, so this
+          # inner scan gets the same nocasematch case-folding the outer
+          # utility-name match above already relies on.
+          _lib_command_word_matches "$word" tee && seen_tee=true
+          continue
+        fi
+        case "$word" in
+          -*) ;;
+          *) printf '%s\n' "$word" ;;
+        esac
+      done
+      continue
+    fi
+
+    # cp/mv/install/dd/sed are unconditional writers once the fragment
+    # invokes one of them -- no per-utility "can this write" flag gate. A
+    # gate keyed on which flags count as write-indicating has its own
+    # bypass shape (a write flag the gate doesn't recognize), so this
+    # utility class skips the question entirely rather than enumerating
+    # flags. This class also has no "which token is the destination" step:
+    # a last-positional-argument pick has its own bypass (a trailing flag
+    # after the true destination defeats picking the last word). Every word
+    # is a candidate instead -- the word verbatim, plus the substring after
+    # its first `=` (dd's of=-glued form).
+    for word in "${Words[@]}"; do
+      printf '%s\n' "$word"
+      case "$word" in
+        *=*) printf '%s\n' "${word#*=}" ;;
+      esac
+    done
   done
 }
 

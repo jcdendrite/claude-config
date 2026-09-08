@@ -243,13 +243,10 @@ class TestPromptSentinelOptIn:
 
 
 class TestPathConfinementGuardRemoved:
-    """install.sh:424-435's hard $HOME/.claude/-prefix confinement guard on
-    _prompt_sentinel_opt_in's first argument is gone (row 39): the argument
-    is now a config-keys.psv key name, not a caller-supplied path, so there
-    is nothing left to confine. A bare key like "permission_prompt_tracking"
-    never matched the old guard's `"$HOME/.claude/"*` prefix pattern and
-    would have been refused by it -- this pins the removal didn't leave
-    some other check silently refusing the same input."""
+    """_prompt_sentinel_opt_in's first argument is a config-keys.psv key
+    name, not a caller-supplied path, so there is nothing to confine -- a
+    bare key like "permission_prompt_tracking" must be accepted, not
+    refused by any $HOME/.claude/-prefix check."""
 
     def test_bare_key_argument_is_accepted_not_refused(self, tmp_path: Path) -> None:
         home = tmp_path / "home"

@@ -4999,7 +4999,7 @@ class TestListContains:
 # primitives directly.
 
 
-def test_lib_write_utilities_is_the_documented_six() -> None:
+def test_lib_write_utilities_is_the_documented_set() -> None:
     """Pins the shared list's exact membership -- both
     _lib_command_has_write_construct's fast-reject and
     _lib_fragment_candidates's own recognition loop read this one array, so
@@ -5007,7 +5007,19 @@ def test_lib_write_utilities_is_the_documented_six() -> None:
     drifting apart."""
     result = _run_lib_call('printf "%s\\n" "${_LIB_WRITE_UTILITIES[@]}"', env=dict(os.environ))
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == ["tee", "cp", "mv", "install", "dd", "sed"]
+    assert result.stdout.splitlines() == [
+        "tee",
+        "cp",
+        "mv",
+        "install",
+        "dd",
+        "sed",
+        "curl",
+        "wget",
+        "rsync",
+        "scp",
+        "openssl",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -5055,6 +5067,94 @@ def test_lib_command_has_write_construct_false_for_unrelated_commands(command: s
     assert result.returncode != 0, result.stderr
 
 
+# --- _lib_fragment_candidates: write-gate is position-blind ---------------
+#
+# A trailing flag placed after the true destination (cp/mv/install/rsync/
+# scp/sed -i/openssl -out/-keyout) and a bundled short-option flag (`-sSo`,
+# `-qO` for curl/wget) are both argument shapes the underlying utility's own
+# parser accepts and still performs the write against the true destination.
+# This function
+# answers only "could this invocation write a file", coarsely and
+# position-blind, then emits every word -- so this one parametrized
+# invariant covers both shapes generically, and any future shape of the
+# same kind, instead of enumerating each one as its own one-off regression
+# test.
+
+_WRITE_GATE_TARGET = "/home/x/.claude/claude-config.toml"
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        # cp/mv/install are unconditional writers -- the destination must be
+        # a candidate regardless of where an unrelated flag sits relative to
+        # it.
+        pytest.param(f"cp /tmp/src {_WRITE_GATE_TARGET} -v", id="cp-flag-after-target"),
+        pytest.param(f"cp -v /tmp/src {_WRITE_GATE_TARGET}", id="cp-flag-before"),
+        pytest.param(f"cp /tmp/src -v {_WRITE_GATE_TARGET}", id="cp-flag-interleaved"),
+        pytest.param(f"mv /tmp/src {_WRITE_GATE_TARGET} -v", id="mv-flag-after-target"),
+        pytest.param(f"install /tmp/src {_WRITE_GATE_TARGET} -v", id="install-flag-after-target"),
+        # tee needs no write-enabling flag at all.
+        pytest.param(f"tee {_WRITE_GATE_TARGET}", id="tee-bare"),
+        pytest.param(f"tee -a {_WRITE_GATE_TARGET}", id="tee-flag-before"),
+        # Flag after the target -- both cases above happen to place the
+        # target last, so neither would independently catch a tee-specific
+        # trailing-flag regression.
+        pytest.param(f"tee {_WRITE_GATE_TARGET} -a", id="tee-flag-after-target"),
+        # dd's write-enabling token (of=) is itself already glued -- must be
+        # recognized regardless of its position among other dd arguments.
+        pytest.param(f"dd of={_WRITE_GATE_TARGET} if=/tmp/src", id="dd-of-before"),
+        pytest.param(f"dd if=/tmp/src of={_WRITE_GATE_TARGET}", id="dd-of-after"),
+        pytest.param(f"dd if=/tmp/src of={_WRITE_GATE_TARGET} bs=4096", id="dd-of-interleaved"),
+        # sed: -i separate/trailing/clustered/glued-suffix, and --in-place.
+        pytest.param(f"sed -i s/a/b/ {_WRITE_GATE_TARGET}", id="sed-i-before"),
+        pytest.param(f"sed s/a/b/ {_WRITE_GATE_TARGET} -i", id="sed-i-after"),
+        pytest.param(f"sed -ni s/a/b/ {_WRITE_GATE_TARGET}", id="sed-i-clustered"),
+        pytest.param(f"sed -i.bak s/a/b/ {_WRITE_GATE_TARGET}", id="sed-i-glued-suffix"),
+        pytest.param(f"sed --in-place s/a/b/ {_WRITE_GATE_TARGET}", id="sed-in-place-long-form"),
+        # rsync/scp are unconditional writers, same as cp/mv/install.
+        pytest.param(f"rsync -a /tmp/src {_WRITE_GATE_TARGET} -v", id="rsync-flag-after-target"),
+        pytest.param(f"scp /tmp/src {_WRITE_GATE_TARGET} -v", id="scp-flag-after-target"),
+        # curl/wget's write-enabling flag takes a separate-token or
+        # bundled-short-option (glued) argument -- both must be recognized,
+        # since fragment_candidates emits every word regardless of which
+        # flag preceded it.
+        pytest.param(f"curl -o {_WRITE_GATE_TARGET} https://example.com/x", id="curl-o-separate"),
+        pytest.param(f"curl -sSo {_WRITE_GATE_TARGET} https://example.com/x", id="curl-o-bundled-short-flag"),
+        pytest.param(f"wget -O {_WRITE_GATE_TARGET} https://example.com/x", id="wget-O-separate"),
+        pytest.param(f"wget -qO {_WRITE_GATE_TARGET} https://example.com/x", id="wget-O-bundled-short-flag"),
+        pytest.param(
+            f"wget --output-document={_WRITE_GATE_TARGET} https://example.com/x",
+            id="wget-output-document-long-form",
+        ),
+        # openssl's write-enabling flags (-out, -keyout) take a separate-token
+        # argument, at either position among the command's other flags.
+        pytest.param(f"openssl req -new -out {_WRITE_GATE_TARGET} -keyout /tmp/key", id="openssl-out-flag"),
+        pytest.param(f"openssl req -keyout {_WRITE_GATE_TARGET} -out /tmp/other", id="openssl-keyout-flag"),
+    ],
+)
+def test_lib_fragment_candidates_emits_target_regardless_of_flag_position(fragment: str) -> None:
+    result = _run_lib_call(f'_lib_fragment_candidates "{fragment}"', env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert _WRITE_GATE_TARGET in result.stdout.splitlines(), (
+        f"{fragment!r} did not emit {_WRITE_GATE_TARGET!r} as a candidate:\n{result.stdout}"
+    )
+
+
+def test_lib_fragment_candidates_flags_a_protected_read_source_as_expected_false_deny() -> None:
+    """Documents the accepted tradeoff (see enforce-config-write-shape.sh's
+    and enforce-marker-script-shape.sh's own header comments): widened
+    emission tests every word, including a source argument that is never
+    actually written to. A `cp`/`rsync` command whose only path argument
+    naming a protected file is the SOURCE, not the destination, still
+    surfaces it as a candidate -- an intentional false-deny-over-bypass
+    choice, not a bug to fix."""
+    fragment = f"cp {_WRITE_GATE_TARGET} /tmp/backup.toml"
+    result = _run_lib_call(f'_lib_fragment_candidates "{fragment}"', env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert _WRITE_GATE_TARGET in result.stdout.splitlines()
+
+
 # --- _lib_shape_match: $HOME/$CLAUDE_CONFIG_DIR expansion and the
 # `-ef`-based inode-identity passes --------------------------------------
 #
@@ -5092,6 +5192,51 @@ def test_lib_shape_match_claude_config_dir_variable_reference_expanded(tmp_path:
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     result = _run_lib_call(
         "_lib_shape_match '$CLAUDE_CONFIG_DIR/claude-config.toml' 'claude-config.toml'", env=env
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_glued_short_flag_prefix_stripped_with_no_dotclaude_segment(
+    tmp_path: Path,
+) -> None:
+    """CRITICAL bypass (round 4 finding): a glued short-option token (e.g.
+    curl -so<path>, no space or '=') reaches this function as a single word
+    with the flag letters still attached to the front of the real path.
+    Pass 1's exact-match branch and passes 2-4's `-ef` calls all compare
+    from the candidate's own position 0, so the glued prefix defeated every
+    one of them whenever the resolved config dir has no literal '.claude'
+    segment -- only pass 1's wildcard branch tolerated it, and only because
+    of its own leading '*'. Uses a CLAUDE_CONFIG_DIR with no '.claude'
+    segment specifically, so the wildcard branch cannot incidentally cover
+    for a still-broken exact-match branch."""
+    config_dir = tmp_path / "profile"
+    config_dir.mkdir()
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    result = _run_lib_call(
+        f"_lib_shape_match '-so{config_dir}/claude-config.toml' 'claude-config.toml'", env=env
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_lib_shape_match_glued_short_flag_prefix_stripped_through_symlink(
+    tmp_path: Path,
+) -> None:
+    """The glued-prefix strip runs once, ahead of every pass, not just pass
+    1's textual match -- so a glued prefix combined with a symlinked alias
+    whose own path carries no '.claude' segment (pass 2's `-ef`
+    inode-identity check) must also resolve, not only the plain-textual
+    no-symlink case above."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "claude-config.toml").write_text("worktree_required = true\n")
+    alias_dir = tmp_path / "aliasdir"
+    alias_dir.symlink_to(home / ".claude")
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    result = _run_lib_call(
+        f"_lib_shape_match '-so{alias_dir}/claude-config.toml' 'claude-config.toml'", env=env
     )
     assert result.returncode == 0, result.stderr
 
@@ -5183,3 +5328,56 @@ def test_lib_shape_match_unresolvable_root_denies_via_status_2(tmp_path: Path) -
         f"_lib_shape_match '{tmp_path}/claude-config.toml' 'claude-config.toml'", env=env
     )
     assert result.returncode == 2, result.stderr
+
+
+# --- _lib_shape_match: fork-avoidance cost claims -------------------------
+#
+# Both consumer hooks call _lib_shape_match once per extracted candidate, so
+# a per-call subshell fork inside it is paid once per candidate, not once
+# per hook invocation. These are the rerunnable checks backing
+# _lib_shape_match's own header comment, per this repo's own
+# re-measurable-not-assumed cost-claim standard
+# (docs/design-decisions/reviewer-persona-roster-operations.md §9).
+
+
+def test_lib_shape_match_memoizes_config_dir_resolution_per_process(tmp_path: Path) -> None:
+    """_lib_config_dir used to be re-resolved on every _lib_shape_match
+    call. Stubs it with a call-counting shim and drives two separate
+    _lib_shape_match calls (mirroring two candidates in one hook
+    invocation) to confirm it now resolves at most once per process."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    counter_file = tmp_path / "config-dir-calls"
+    call = (
+        f'_lib_config_dir() {{ printf x >> "{counter_file}"; '
+        f'printf "%s\\n" "{home}/.claude"; }}; '
+        '_lib_shape_match "/unrelated/one" "claude-config.toml" >/dev/null; '
+        '_lib_shape_match "/unrelated/two" "claude-config.toml" ".*-active.d/*" >/dev/null; '
+        'true'
+    )
+    result = _run_lib_call(call, env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert counter_file.read_text() == "x", (
+        "_lib_config_dir was resolved more than once across two _lib_shape_match calls"
+    )
+
+
+def test_lib_shape_match_helper_functions_run_without_forking_a_subshell() -> None:
+    """_lib_pattern_component_count and _lib_strip_trailing_path_components
+    used to be invoked via $(...) command substitution, which bash always
+    forks a subshell for. Confirms the current direct-call-plus-global-
+    result-variable form runs in the caller's own process ($BASHPID
+    unchanged)."""
+    call = (
+        'caller_pid=$BASHPID; '
+        '_lib_pattern_component_count "*-markers/*"; '
+        'component_count_pid=$BASHPID; '
+        '_lib_strip_trailing_path_components "/a/b/c" "$_LIB_PATTERN_COMPONENT_COUNT"; '
+        'strip_pid=$BASHPID; '
+        'printf "%s %s %s\\n" "$caller_pid" "$component_count_pid" "$strip_pid"'
+    )
+    result = _run_lib_call(call, env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    caller_pid, component_count_pid, strip_pid = result.stdout.split()
+    assert component_count_pid == caller_pid, "_lib_pattern_component_count forked a subshell"
+    assert strip_pid == caller_pid, "_lib_strip_trailing_path_components forked a subshell"

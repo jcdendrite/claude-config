@@ -1,10 +1,9 @@
 """Differential test: _config.sh (bash) and _config.py (Python) must return
 byte-identical verdicts for every key, over a shared adversarial fixture
-corpus. This is the load-bearing test of the sentinel-config-migration
-plan's Phase 1 -- a shared schema data file makes the *schema* divergence
-structurally impossible, but bash and Python are still two independently
-maintained parsers of the same claude-config.toml grammar, and this suite
-is what catches them silently disagreeing (row 7 of that plan).
+corpus. A shared schema data file (config-keys.psv) makes the *schema*
+divergence structurally impossible, but bash and Python are still two
+independently maintained parsers of the same claude-config.toml grammar,
+and this suite is what catches them silently disagreeing.
 
 CONFIG_KEYS_PSV and CONFIG_SH below are declared as module-level path
 constants (not inline strings) so TestCrossDomainReadCompleteness
@@ -188,7 +187,7 @@ class TestSpecificFixtureExpectations:
 
 
 # ---------------------------------------------------------------------------
-# Row 7: the partial-file fixture -- N valid lines plus exactly one
+# The partial-file fixture -- N valid lines plus exactly one
 # subset-violating line, asserting the valid keys still resolve correctly in
 # BOTH readers (not just one -- test_config_lib.py's own partial-file test
 # covers bash alone and the warning-emission side; this is the cross-reader
@@ -209,6 +208,101 @@ class TestPartialFileFixtureParity:
         values = _assert_parity()
         assert values["handoff_nudge"] == "false"
         assert values["commit_stall_block"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# Legacy-file fixtures -- state file absent entirely (or, for the union
+# test, present at a different location), only a legacy sentinel file
+# present, run through the same byte-identical _assert_parity() check as the
+# state-file fixtures above. Union/legacy-probe/legacy-polarity logic is
+# independently implemented in each reader (_config.sh's
+# _config_location_value/_config_value, _config.py's _location_value/
+# config_value); test_config_lib.py (bash) and test_config_py.py (python)
+# each separately pin their own reader's expected value against a fixture
+# shape like this, but neither runs both readers against ONE shared fixture
+# the way this class does.
+# ---------------------------------------------------------------------------
+
+_SCHEMA = schema()
+
+
+def _write_legacy_file(directory: Path, key: str, content: str | None = None) -> None:
+    """Writes KEY's own config-keys.psv-declared legacy file at DIRECTORY --
+    content=None touches an empty file (presence-enables/presence-disables
+    polarity, where only presence matters); a content-matches key
+    (pr_cost_disclosure) passes its intended raw content instead."""
+    directory.mkdir(parents=True, exist_ok=True)
+    legacy_path = directory / _SCHEMA[key].legacy_filename
+    if content is None:
+        legacy_path.touch()
+    else:
+        legacy_path.write_text(content)
+
+
+class TestLegacyFileFixtureParity:
+    def test_presence_enables_legacy_file_present(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "worktree_required")
+        values = _assert_parity()
+        assert values["worktree_required"] == "true"
+
+    def test_presence_enables_legacy_file_absent(self, tmp_path, monkeypatch):
+        _make_home(tmp_path, monkeypatch)
+        values = _assert_parity()
+        assert values["worktree_required"] == "false"
+
+    def test_presence_disables_legacy_file_present(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "handoff_nudge")
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "false"
+
+    def test_presence_disables_legacy_file_absent(self, tmp_path, monkeypatch):
+        _make_home(tmp_path, monkeypatch)
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    @pytest.mark.parametrize(
+        "content,expected",
+        [
+            ("dollars\n", "dollars"),
+            ("DOLLARS\n", "dollars"),
+            ("garbled-not-dollars\n", "false"),
+        ],
+        ids=["valid", "case-folded", "invalid"],
+    )
+    def test_content_matches_legacy_file(self, tmp_path, monkeypatch, content, expected):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "pr_cost_disclosure", content=content)
+        values = _assert_parity()
+        assert values["pr_cost_disclosure"] == expected
+
+    def test_config_dir_or_home_union_disagreeing_locations(self, tmp_path, monkeypatch):
+        """A config-dir-or-home key's legacy file present ONLY at
+        $HOME/.claude, with an explicit `false` row at the (different)
+        resolved config dir's own state file, must still resolve true in
+        both readers -- the union is OR'd across both locations'
+        independently-resolved effective value, not first-location-wins."""
+        home = _make_home(tmp_path, monkeypatch)
+        config_dir = tmp_path / "altconfig"
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        (config_dir / "claude-config.toml").write_text("worktree_required = false\n")
+        _write_legacy_file(home / ".claude", "worktree_required")
+        values = _assert_parity()
+        assert values["worktree_required"] == "true"
+
+    def test_legacy_probe_on_resolution_failure(self, tmp_path, monkeypatch):
+        """worktree_required is the sole key whose schema row carries
+        legacy-probe-on-resolution-failure: true -- with an unresolvable
+        primary config dir (a relative CLAUDE_CONFIG_DIR) and its own legacy
+        file present at the literal $HOME/.claude, both readers must still
+        resolve true rather than propagating the resolution failure."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_legacy_file(home / ".claude", "worktree_required")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/not-absolute")
+        values = _assert_parity()
+        assert values["worktree_required"] == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -246,12 +340,12 @@ class TestConfigDirEnvironmentVariants:
 
 class TestConfigDirOverrideEmptyString:
     def test_empty_string_override_resolves_same_as_no_override(self, tmp_path, monkeypatch):
-        """config_dir_override="" must resolve identically to no override at
-        all, in both readers: bash's `[ -n "$config_dir_override" ]` already
-        treats "" as unprovided, falling through to normal resolution;
-        Python's `config_value`/`config_enabled` previously gated on
-        `override is not None`, so "" was treated as a real override
-        (Path("") -> the current working directory)."""
+        """config_dir_override="" must resolve identically to no override, in
+        both readers. Bash's `[ -n "$config_dir_override" ]` already treats ""
+        as unprovided, falling through to normal resolution. Python's
+        `config_value`/`config_enabled` must match that for a `str` argument
+        (a `Path("")` argument is a separate, untested case -- see the
+        docstring caveat on `config_value`)."""
         home = _make_home(tmp_path, monkeypatch)
         _write_state(home, b"handoff_nudge = false\n")
 
