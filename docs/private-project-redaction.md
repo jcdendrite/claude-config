@@ -107,10 +107,10 @@ extends by analogy:
 - *What may be counted:* this repo's own tooling in use — Claude Code
   tool calls, sessions, and agent dispatches. Nothing else.
 - *How it may be reported:* any statistic over those counts — a total,
-  a share, a median. Not cost, spend, duration, or cadence, even when
-  computed per tool call, session, or dispatch, and even when pooled: a
-  count describes how the tooling behaves, while cost, spend, duration,
-  and cadence describe how much work the engagements behind the corpus
+  a share, a median. Cost, spend, duration, and cadence are excluded,
+  even when computed per tool call, session, or dispatch, or pooled. A
+  count describes how the tooling behaves; cost, spend, duration, and
+  cadence describe how much work the engagements behind the corpus
   generated.
 
 **Before publishing, check two things:**
