@@ -682,21 +682,22 @@ class TestFaultInjection:
         assert "outside the expected closed set" in violations[0]
         assert "64" in violations[0]
 
-    def test_legacy_numbers_detects_malformed_formerly_clause(self, tmp_path: Path) -> None:
-        """A `Formerly` clause present but not matching the exact required
-        shape (e.g. a missing trailing period) is a genuine defect, unlike
-        a file carrying no clause at all -- must still be flagged. Checked
-        via _provenance_line_violations (the shape half): the malformed
-        clause means line 3 isn't a well-formed italic provenance line, so
-        it's caught there rather than by the closure check, which only
-        sees successfully-parsed §N numbers."""
+    def test_provenance_line_rejects_garbled_formerly_no_date(self, tmp_path: Path) -> None:
+        """has_formerly must come from an anchored _PROVENANCE_RE match, not
+        a loose 'Formerly' substring check -- this fixture is properly
+        italicized and contains the word 'Formerly', so a substring-based
+        has_formerly would wrongly treat it as well-formed. With no date
+        present either, an anchored match correctly falls through to the
+        'carries neither' branch. Distinct from
+        test_provenance_line_rejects_garbled_formerly_with_date, which
+        requires a co-occurring date to reach the `elif` branch instead."""
         (tmp_path / "malformed-decision.md").write_text(
-            "# Malformed Decision\n\nFormerly `docs/design-decisions.md` §1\n",
+            "# Malformed Decision\n\n*Formerly `docs/design-decisions.md` §1*\n",
             encoding="utf-8",
         )
         violations = _provenance_line_violations(_decision_files(tmp_path))
         assert len(violations) == 1
-        assert "malformed-decision.md" in violations[0]
+        assert "carries neither" in violations[0]
 
     def test_legacy_closure_accepts_full_default_closed_set(self, tmp_path: Path) -> None:
         """Exercises _legacy_number_range_violations against its actual
