@@ -200,6 +200,11 @@ class TestPerFileShape:
 
 
 def _legacy_number_range_violations(paths: list[Path]) -> list[str]:
+    """A file with no 'Formerly §N' clause is not itself a violation --
+    .claude/rules/design-decisions.md reserves that clause for content
+    migrated from the pre-split file, so a decision recorded after the
+    split legitimately carries none. Only the values that ARE recorded
+    must form a contiguous range."""
     numbers: list[int] = []
     malformed_provenance: list[str] = []
     for path in paths:
