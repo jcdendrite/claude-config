@@ -133,12 +133,13 @@ extends by analogy:
       drawn from a mixed corpus. Duration takes internal execution
       units only.
 
-    A raw total or a per-PR dollar amount can be converted to an
-    engagement-value estimate using public day-rate references (the
-    per-PR form needs only a PR count, which the engagement's own
-    stakeholders may already have). A dimensionless share of an
-    in-repo-scoped base cannot: multiplied out it yields dollars per
-    in-repo PR, since the mixed corpus contributed only the ratio.
+    A raw total or a per-PR dollar amount converts to an
+    engagement-value estimate using public day-rate references. The
+    per-PR form is easier to convert than the raw total: it needs only
+    a PR count, and the engagement's own stakeholders likely already
+    have one. A dimensionless share of an in-repo-scoped base cannot
+    convert this way: multiplied out it yields dollars per in-repo PR,
+    since the mixed corpus contributed only the ratio.
 
     Permitting a denominator does not make it countable. A completed
     PR stays off the *what may be counted* list above, so a pooled PR
@@ -146,11 +147,9 @@ extends by analogy:
     or in any artifact.
 
     Two further requirements bind the PR-denominator form specifically:
-    - The share must be computed inside the producing command or
-      script itself — an agent must never derive it by dividing two
-      raw mixed-corpus totals it has separately seen in its own
-      context. Doing so violates this section's own aggregation-
-      boundary rule even when the final published number looks clean.
+    - The share must be computed inside the producing script, per the
+      aggregation-boundary rule above — not derived by an agent
+      dividing two raw mixed-corpus totals it saw separately.
     - The $/PR base being referenced must be cited by exact file path
       and line number, so a reader can verify it is actually
       in-repo-scoped and not itself a mixed-corpus figure.
