@@ -12,8 +12,10 @@ import os
 import pty
 import re
 import shlex
+import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -1789,7 +1791,7 @@ class TestStaleNameNoOpenPR:
 
 
 class TestMultipleMergedRowsScanFullHistory:
-    """Guard 2's tip-vs-headRefOid match scans every MERGED row for a head
+    """The Tier-A tip-vs-headRefOid match scans every MERGED row for a head
     branch name, not just the first — a name can accumulate more than one
     merged PR over its history, and the matching row is not always first."""
 
@@ -2296,6 +2298,68 @@ class TestAncestorHitSkipsFetchWhenObjectAlreadyLocal:
         )
 
 
+class TestFetchLoopCapInterruptsHungRemote:
+    """The per-row fetch loop's `_lib_capped_for 15 git fetch ...` call
+    (cleanup-merged-branches.sh's ancestor-check fetch loop) must not hang
+    classify_branch indefinitely when the remote stalls mid-fetch, and a
+    killed fetch must still degrade to the correct stale-name fallback."""
+
+    @pytest.mark.timing
+    def test_hung_pr_ref_fetch_is_capped_and_falls_back_to_stale_name(self, tmp_path, fake_gh):
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/hung-fetch", 909)
+
+        # Sleeps only when the fetch targets this PR's refs/pull/*/head
+        # refspec, so the script's other, uncapped `git fetch` calls
+        # (default-branch sync, --prune) are unaffected.
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            '    refs/pull/*/head) sleep 30; break ;;\n'
+            '  esac\n'
+            'done\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        env = fake_gh({
+            "feat/hung-fetch": {"number": 909, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+
+        start = time.monotonic()
+        result = _run_script(local, env)
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0
+        assert elapsed >= 14.5, (
+            f"elapsed {elapsed:.1f}s is too fast for the stub to have actually stalled -- "
+            f"the fallback below would also pass on a fetch that merely failed instantly, "
+            f"which doesn't prove the cap interrupted anything"
+        )
+        assert elapsed < 19.5, (
+            f"expected the 15s _lib_capped_for cap on the refs/pull/909/head fetch to fire "
+            f"(stub sleeps 30s if it does not), took {elapsed:.1f}s"
+        )
+        assert "likely a reused branch name" in result.stdout, (
+            "a fetch killed by the cap must still degrade to the stale-name fallback, not hang or crash"
+        )
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/hung-fetch"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, (
+            "a capped, unresolved fetch must fall back to today's stale-name skip verdict, not delete"
+        )
+
+
 class TestClassifierValidatesMergedRowFields:
     """A merged row's number and headRefOid are validated with
     character-class membership before either can reach a git fetch or
@@ -2319,6 +2383,33 @@ class TestClassifierValidatesMergedRowFields:
             cwd=local, capture_output=True,
         )
         assert ref_check.returncode == 0, "a malformed PR number must fail closed, not crash or reach git"
+
+    def test_one_bad_row_fails_whole_branch_closed_despite_valid_sibling_row(self, tmp_path, fake_gh):
+        """A malformed `number` field on one row fails the whole branch
+        closed even when a second, fully-valid row in the same result
+        would otherwise ancestor-match and qualify for Tier A -- proving
+        sys.exit(1) fires on any one bad row, not only when every row in
+        the result is bad."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/mixed-rows", 910)
+
+        env = fake_gh({
+            "feat/mixed-rows": [
+                {"number": "5; touch pwned", "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": "e" * 40},
+                {"number": 910, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": merged_head},
+            ],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "gh lookup failed; skipping to fail closed" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/mixed-rows"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, (
+            "one malformed row must fail the branch closed even though the sibling row would ancestor-match"
+        )
 
     def test_malformed_head_ref_oid_falls_through_without_reaching_git(self, tmp_path, fake_gh):
         """GIT_TRACE catches the row-validation boundary directly, following
@@ -2356,12 +2447,12 @@ class TestClassifierValidatesMergedRowFields:
         )
 
     def test_malformed_merged_at_blanks_date_without_crashing(self, tmp_path, fake_gh):
-        """A stray space in mergedAt (which would otherwise split the
-        space-separated row table mid-row) degrades to a blank date rather
-        than sys.exit -- matching row_oid's degrade-not-abort treatment,
-        since a bad date should not fail the whole branch closed. Run with
-        --dry-run so the blanked date surfaces in the preview line rather
-        than needing to be inferred from branch survival alone."""
+        """A stray space in mergedAt would otherwise split the
+        space-separated row table mid-row.
+        It degrades to a blank date rather than sys.exit, matching
+        row_oid's degrade-not-abort treatment.
+        Uses --dry-run so the blanked date is visible in the preview line
+        instead of being inferred from branch survival alone."""
         local, remote = _make_repo_with_remote(tmp_path)
         merged_head = _make_ancestor_merged_branch(local, remote, "feat/bad-date", 808)
 
@@ -2374,6 +2465,27 @@ class TestClassifierValidatesMergedRowFields:
         assert "Would clean up (confirmed merged):" in result.stdout
         assert "PR #808, merged ; local tip is an ancestor" in result.stdout, (
             "a malformed mergedAt must degrade to a blank date, not corrupt or crash the row parse"
+        )
+
+    def test_comma_in_merged_at_blanks_date_without_corrupting_row(self, tmp_path, fake_gh):
+        """A stray comma in mergedAt is the other risk character named
+        alongside the space (test_malformed_merged_at_blanks_date_without_crashing
+        above) in the row_date validation comment -- left unvalidated it
+        would misparse as a field separator in the comma-delimited row
+        triple. Degrades to a blank date, same as the space case, without
+        corrupting this row's PR number or oid."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/comma-date", 811)
+
+        env = fake_gh({
+            "feat/comma-date": {"number": 811, "mergedAt": "2026,06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Would clean up (confirmed merged):" in result.stdout
+        assert "PR #811, merged ; local tip is an ancestor" in result.stdout, (
+            "a malformed mergedAt with a comma must degrade to a blank date, not corrupt the row"
         )
 
 

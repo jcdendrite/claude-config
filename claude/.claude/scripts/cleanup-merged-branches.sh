@@ -334,6 +334,10 @@ CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 # Prints the winning row's <pr>,<oid>,<merged-date> triple and returns 0
 # on a hit; prints nothing and returns 1 when no row's oid is both
 # present and an ancestor of TIP.
+# Precondition: TIP must not already equal a row's oid, since
+# `git merge-base --is-ancestor A B` is also true for A == B, and both
+# current callers only reach this scan after classify_branch's own
+# tip-match check (the `matched:` arm) has already ruled that case out.
 merged_row_containing_tip() {
   local tip="$1" rows="$2" row pr oid rest merged_date
   for row in $rows; do
@@ -447,11 +451,10 @@ elif merged_rows:
     # argument. This is character-class membership, not a regex, since
     # this source is a double-quoted shell string whose anchors would be
     # eaten by the shell before python runs.
-    # row_date never reaches a git argument, but a stray space or comma in
-    # it would misparse a downstream row in the same unquoted
-    # space-separated triple table. It degrades to blank rather than
-    # sys.exit, matching row_oid's treatment: a bad date shouldn't fail
-    # the whole branch closed.
+    # A stray space or comma in row_date would misparse a downstream row
+    # in the space-separated triple table.
+    # It degrades to blank instead of sys.exit, matching row_oid's
+    # treatment, since a bad date shouldn't fail the whole branch closed.
     DIGITS = '0123456789'
     HEX_LOWER_CHARS = '0123456789abcdef'
     DATE_CHARS = '0123456789-'
