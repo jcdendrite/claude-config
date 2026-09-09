@@ -52,7 +52,7 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
     needs only _config.sh's own functions, matching
     test_config_parser_parity.py's TestMissingSchemaFile isolation
     technique. Used for schema shapes (e.g. a key with no legacy-polarity
-    value) that none of today's real 14 keys carry."""
+    value) that none of today's real 15 keys carry."""
     return subprocess.run(
         ["bash", "-c", f'set -uo pipefail; . "{hooks_dir / "_config.sh"}"; {script}'],
         capture_output=True,
@@ -660,7 +660,7 @@ class TestConfigScaffold:
         assert state_file.read_text().splitlines() == ["handoff_nudge = false"]
 
     def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
-        """Every one of today's 14 keys carries a legacy-polarity value, so
+        """Every one of today's 15 keys carries a legacy-polarity value, so
         scaffold over an empty state file must leave the file with no rows
         at all -- backfilling any of them would permanently shadow that
         key's own legacy file with zero warning."""
@@ -689,7 +689,7 @@ class TestConfigScaffold:
     def test_plain_key_with_no_legacy_polarity_still_gets_its_default_row(self, isolated_home, tmp_path):
         """A key with an empty legacy-polarity column has no legacy file to
         protect, so scaffold's original additive-only default-fill contract
-        still applies to it -- a schema shape none of today's real 14 keys
+        still applies to it -- a schema shape none of today's real 15 keys
         carry, exercised via an isolated config-keys.psv fixture."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()

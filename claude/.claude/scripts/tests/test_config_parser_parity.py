@@ -81,7 +81,7 @@ def _make_home(tmp_path: Path, monkeypatch) -> Path:
 
 # ---------------------------------------------------------------------------
 # Adversarial state-file content fixtures -- each writes claude-config.toml,
-# then asserts every one of the 14 keys resolves identically in both readers.
+# then asserts every one of the 15 keys resolves identically in both readers.
 # ---------------------------------------------------------------------------
 
 ADVERSARIAL_FIXTURES: dict[str, bytes] = {
