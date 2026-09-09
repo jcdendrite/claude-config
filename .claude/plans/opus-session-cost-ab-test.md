@@ -376,6 +376,7 @@ The admissible-branch list is the classifier's own output, not raw scan noise: i
 - A payload D label appearing on two lines.
 - A Deny-rule violation.
 - The Payload B sub-floor-to-`other` merge: `branch_count` 9, excluded and folded into `other`, checked against an independently-computed expected residual total; `branch_count` 10, admitted as its own unmerged line, checked against that stratum-threshold-arm's own real totals rather than a residual.
+- Payload A's optional 11th `struggle` field: one branch line carrying it (11 fields, passes the Allow rule's field-count check) alongside one line without it (10 fields, passes the same check).
 - A go-list with a `go` flag and fingerprints (below).
 - A go-list with a `go` flag and zero fingerprints.
 - A go-list with a `no-go` flag and no fingerprints.
@@ -434,11 +435,11 @@ Emitted on the pooling machine at phase 2 and delivered to the machine it names,
 
 **Allow rules, all five artifacts.**
 - Every fingerprint field matches `^[0-9a-f]{12}$`.
-- Every local stratum label matches `^machine-[12]/stratum-[0-9]+$` and, on payloads A and B, agrees with that line's own `machine_label`.
+- Every local stratum label matches `^machine-[12]/stratum-[0-9]+$` and, on payloads A and B, agrees with that line's own `machine_label` — except payload B's sub-floor residual line, whose `local_stratum_label` is the literal `other` rather than the machine-scoped pattern.
 - Every vocabulary field is one of its literal values.
 - Every count field is a non-negative integer.
 - Field counts:
-  - Payload A: exactly 10.
+  - Payload A: exactly 10, or 11 if the optional `struggle` field is carried.
   - Payload B: exactly 8.
   - Payload C: exactly 10 fixed fields, plus one per-root `SKIP`-count field per declared root, that root count read from payload C's own 6th field (declared-root count).
   - Payload D: exactly 2.
