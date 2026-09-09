@@ -292,9 +292,8 @@ def test_no_two_rule_files_declare_the_same_full_paths_set():
     and `skill-and-agent-self-review.md` both match `SKILL.md`/agent-file
     edits with unrelated content). What this test catches is two files whose
     entire `paths` set is identical — a full redundant copy of a rule with no
-    way for a reader to tell which is canonical, the shape that project- and
-    user-scope copies of `settings-json-conventions.md` used to share before
-    being consolidated into one user-scope file.
+    way for a reader to tell which is canonical (e.g. two files both
+    declaring `paths: ["**/settings.json"]`).
     `test_rule_has_parseable_paths_frontmatter` checks frontmatter shape
     only — its own docstring disclaims verifying that any glob is
     well-formed or matches a real target — so it provides no coverage of

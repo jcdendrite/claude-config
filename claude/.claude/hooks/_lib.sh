@@ -1207,10 +1207,13 @@ _lib_staged_length_gate() {
 
   local fail=0 messages="" f new old limit new_content old_content
   while IFS= read -r f; do
-    # A trailing 'x' sentinel survives command substitution's trailing-newline
-    # stripping. Stripping it back off via "${var%x}" recovers the exact byte
-    # stream, so line and byte counts derived from $new_content/$old_content
-    # below match what a direct, unbuffered git show would give.
+    # The trailing 'x' sentinel, stripped back off via "${var%x}", preserves
+    # trailing blank lines that command substitution would otherwise strip,
+    # so the line count below doesn't undercount a file ending in blank
+    # lines. Byte counts do NOT go through this captured content — they use
+    # the separate `git cat-file -s` calls below, precisely to avoid this
+    # same command substitution's NUL-byte-dropping behavior (see the
+    # BYTE_LIMIT comment on _lib_staged_length_gate's header above).
     new_content=$(_lib_capped git show ":$f" 2>/dev/null; printf x)
     new_content="${new_content%x}"
     old_content=$(_lib_capped git show "HEAD:$f" 2>/dev/null; printf x)

@@ -319,7 +319,9 @@ class TestCheckClaudeMdLength:
         )
 
     def test_deny_message_includes_filename_and_counts(self, isolated_home, tmp_path):
-        """Deny reason must name the file, new line count, old line count, and limit."""
+        """Deny reason must name the file, new line count, old line count, and
+        limit — and must NOT carry the byte-violation fragment, since this
+        commit only crosses the line limit."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
@@ -333,6 +335,7 @@ class TestCheckClaudeMdLength:
         assert "201" in reason
         assert "190" in reason
         assert "200" in reason
+        assert "bytes (was" not in reason
 
     # --- Byte-cap logic matrix (mirrors the line-cap matrix above) ---
 
@@ -432,9 +435,9 @@ class TestCheckClaudeMdLength:
 
     def test_new_claude_md_over_byte_limit_denies(self, isolated_home, tmp_path):
         """New file with no HEAD version staged over BYTE_LIMIT — there is no
-        `HEAD:$f` for `git show` to read, so the file is new to this commit
-        and old_bytes is 0 → deny. Mirrors test_new_claude_md_over_limit_denies
-        for the byte dimension."""
+        `HEAD:$f` for `git cat-file -s` to read, so the file is new to this
+        commit and old_bytes is 0 → deny. Mirrors
+        test_new_claude_md_over_limit_denies for the byte dimension."""
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -459,7 +462,9 @@ class TestCheckClaudeMdLength:
     def test_byte_cap_deny_message_includes_both_byte_counts(
         self, isolated_home, tmp_path
     ):
-        """Deny reason must name both the new and old byte counts."""
+        """Deny reason must name both the new and old byte counts — and must
+        NOT carry the line-violation fragment, since this commit only
+        crosses the byte limit."""
         repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 1)
         new_bytes = BYTE_LIMIT + 10
         (repo / CLAUDE_MD_PATH).write_text(make_bytes(new_bytes))
@@ -473,6 +478,7 @@ class TestCheckClaudeMdLength:
         assert str(new_bytes) in reason
         assert str(BYTE_LIMIT + 1) in reason
         assert str(BYTE_LIMIT) in reason
+        assert "lines (was" not in reason
 
     def test_byte_cap_multibyte_utf8_content_denies_at_byte_threshold(
         self, isolated_home, tmp_path
