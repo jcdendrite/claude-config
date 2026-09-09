@@ -10,7 +10,7 @@ import contextlib
 import errno
 import fcntl
 import fnmatch
-import hashlib  # noqa: F401 -- read only via _mod.hashlib from test files
+import hashlib
 import json
 import math
 import os
@@ -30,7 +30,7 @@ from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
-from _config_dir import config_dir
+from _config_dir import config_dir, declared_roots_file_is_overridden
 
 # corpus/cost/pricing/redaction/render/reviewer_yield are read only via _mod.<module> from
 # test files (unit-testing a private helper, or patching module-owned state like
@@ -7645,7 +7645,7 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     return rows
 
 
-def _format_pr_cost_ledger_row(row: dict) -> str:
+def _format_pr_cost_ledger_row(row: dict, *, columns: Sequence[str] = _PR_COST_LEDGER_COLUMNS) -> str:
     """Render one row dict as its tab-separated line -- the exact inverse of
     _parse_pr_cost_ledger_row_cells. Refuses (raises _PrCostLedgerParseError)
     to render any cell containing a tab or newline, which would corrupt the
@@ -7653,9 +7653,11 @@ def _format_pr_cost_ledger_row(row: dict) -> str:
     program-generated (a redacted placeholder, or an ISO8601 timestamp this
     module itself formatted), never raw external text, so this should never
     fire in practice; it exists as a last-resort guard against writing a
-    corrupt row rather than as an expected code path."""
+    corrupt row rather than as an expected code path. `columns` defaults to
+    the ledger's own column tuple; pr-cost-export passes its own wider tuple
+    to reuse this same tab/newline guard and bool/float rendering."""
     cells: list[str] = []
-    for col in _PR_COST_LEDGER_COLUMNS:
+    for col in columns:
         value = row[col]
         if col in _PR_COST_BOOL_COLUMNS:
             cell = "true" if value else "false"
@@ -7694,7 +7696,8 @@ def _latest_pr_cost_row(
     ]
     if not matches:
         return None
-    return max(matches, key=lambda r: r["captured_at"])
+    # Last appended wins on an equal captured_at (the index tiebreaks max()).
+    return max(enumerate(matches), key=lambda p: (p[1]["captured_at"], p[0]))[1]
 
 
 def _append_pr_cost_ledger_row(existing_rows: list[dict], new_row: dict, already: dict | None, force: bool) -> list[dict]:
@@ -8640,6 +8643,305 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
             f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
         )
+
+
+# _PR_COST_LEDGER_COLUMNS with a leading account column.
+# head_branch is renamed head_branch_label: a stored label is per-run, not a
+# stable branch identity, so re-tokenizing it needs a name that makes that
+# visible.
+# supersedes is replaced by correction_count: supersedes is a dangling
+# pointer into a row the export no longer carries, so a derived count stands
+# in for it instead.
+_PR_COST_EXPORT_COLUMNS: tuple[str, ...] = ("account", *(
+    {"head_branch": "head_branch_label", "supersedes": "correction_count"}.get(col, col)
+    for col in _PR_COST_LEDGER_COLUMNS
+))
+_PR_COST_EXPORT_HEADER_LINE = "\t".join(_PR_COST_EXPORT_COLUMNS)
+
+
+def _pr_cost_export_date_only(value: str) -> str:
+    """Date portion of an already-validated ISO8601 timestamp
+    (YYYY-MM-DDTHH:MM:SS[Z|+HH:MM], per _parse_pr_cost_ledger_row_cells) --
+    merged_at/captured_at only; rate_stamp is already date-only and never
+    passed through this."""
+    return value.split("T", 1)[0]
+
+
+def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, int]]:
+    """One (row, correction_count) pair per distinct (host, repo, pr_number,
+    machine) key in `rows`, keeping only the current (latest by
+    captured_at) row for each key -- the append-only ledger's full history
+    collapsed to current state. Must run on raw, untokenized, untruncated
+    rows: _latest_pr_cost_row compares pr_number as a typed int. A same-day
+    tie must also resolve on full-precision captured_at, not a date already
+    truncated to lose the second-level distinction.
+    correction_count is the number of other rows sharing that key (total
+    captures minus one) -- 0 means this is the only capture ever recorded
+    under that key.
+    """
+    groups: dict[tuple[str, str, int, str], list[dict]] = {}
+    for row in rows:
+        key = (row["host"], row["repo"], row["pr_number"], row["machine"])
+        groups.setdefault(key, []).append(row)
+    collapsed: list[tuple[dict, int]] = []
+    for (host, repo, pr_number, machine), group in groups.items():
+        latest = _latest_pr_cost_row(group, host, repo, pr_number, machine)
+        collapsed.append((latest, len(group) - 1))
+    return collapsed
+
+
+def _redact_pr_cost_row_for_export(
+    row: dict, ordinal: int, correction_count: int,
+    host_map: dict, repo_map: dict, pr_map: dict, branch_map: dict,
+) -> dict:
+    """One collapsed ledger row rendered into _PR_COST_EXPORT_COLUMNS' own
+    shape:
+
+    - host/repo/pr_number/head_branch are tokenized through four separate
+      per-kind maps.
+    - merged_at/captured_at are truncated to a date.
+    - supersedes is replaced by the caller-computed correction_count.
+
+    `row["head_branch"]` is re-tokenized here even though it already holds
+    a redacted placeholder from the write path -- that placeholder was
+    assigned under whichever run's own ordinal scheme recorded it, so
+    passing it through as-is would put two disagreeing account-K numberings
+    in one row.
+    """
+    exported = dict(row)
+    exported["account"] = f"account-{ordinal}"
+    exported["host"] = _assign_root_scoped_redact_label("host", ordinal, row["host"], host_map)
+    exported["repo"] = _assign_root_scoped_redact_label("repo", ordinal, row["repo"], repo_map)
+    exported["pr_number"] = _assign_root_scoped_redact_label("pr", ordinal, str(row["pr_number"]), pr_map)
+    exported["head_branch_label"] = _assign_root_scoped_redact_label(
+        "branch", ordinal, row["head_branch"], branch_map
+    )
+    exported["merged_at"] = _pr_cost_export_date_only(row["merged_at"])
+    exported["captured_at"] = _pr_cost_export_date_only(row["captured_at"])
+    exported["correction_count"] = correction_count
+    return exported
+
+
+def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, list[str]]:
+    """Read every resolved root's own pr-cost ledger and return
+    (formatted_rows, declared, opted_in, skipped_no_sentinel,
+    legacy_header_accounts, corpus_identities) -- fully materialized (never
+    a generator) and with no filesystem writes of its own, so a mid-loop
+    malformed ledger exits before --out is ever created and no partial
+    file can exist.
+
+    Accounts are visited in _redaction_ordinals order, not `roots`' own
+    order, so two exports of the same declared-roots file under different
+    active profiles produce byte-identical row order. Each account's rows
+    are collapsed to current state, then redacted, then date-truncated,
+    then formatted, in that order -- reusing the same
+    four redact maps across every account, since _assign_root_scoped_redact_label's
+    own key already namespaces by ordinal.
+
+    corpus_identities carries one `captured_at|machine` string per
+    participating account. An account participates if it's opted in and its
+    ledger holds at least one row. The string is taken from that ledger's
+    own first data row. That row is stable under append-only writes, since
+    the first row never moves. _pr_cost_export_provenance_line hashes the
+    full corpus_identities set into its corpus= digest. It's threaded back
+    through this same per-account loop rather than read a second time from
+    each ledger, since a second read pass would double the I/O and risk a
+    result that disagrees with the rows actually exported.
+    """
+    ordinals = _redaction_ordinals(roots)
+    root_by_resolved = {root.resolve(): root for root in roots}
+    declared = len(roots)
+    opted_in = skipped_no_sentinel = legacy_header_accounts = 0
+    formatted_rows: list[str] = []
+    corpus_identities: list[str] = []
+    host_map: dict[tuple[int, str], str] = {}
+    repo_map: dict[tuple[int, str], str] = {}
+    pr_map: dict[tuple[int, str], str] = {}
+    branch_map: dict[tuple[int, str], str] = {}
+
+    for resolved_root in sorted(ordinals):
+        ordinal = ordinals[resolved_root]
+        account_config_dir = root_by_resolved[resolved_root].parent
+
+        sentinel_path = account_config_dir / ".pr-cost-enabled"
+        if not sentinel_path.exists():
+            # account-N, not sentinel_path, to avoid a resolved home-rooted
+            # path in output -- same discipline as pr-cost's own --all-accounts
+            # skip message.
+            print(
+                f"pr-cost-export: account-{ordinal} has no opt-in sentinel (.pr-cost-enabled) --"
+                " skipped, see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            skipped_no_sentinel += 1
+            continue
+        opted_in += 1
+
+        try:
+            ledger_path = _pr_cost_ledger_path(config_dir_override=account_config_dir)
+        except ValueError as exc:
+            print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not ledger_path.exists():
+            continue
+
+        try:
+            ledger_text = ledger_path.read_text()
+        except OSError:
+            print(f"pr-cost-export: account-{ordinal}: ledger file could not be read", file=sys.stderr)
+            sys.exit(1)
+        if ledger_text.split("\n", 1)[0] == _PR_COST_LEDGER_LEGACY_HEADER_LINE:
+            legacy_header_accounts += 1
+        try:
+            raw_rows = _parse_pr_cost_ledger_file_text(ledger_text)
+        except _PrCostLedgerParseError as exc:
+            print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not raw_rows:
+            continue
+
+        corpus_identities.append(f"{raw_rows[0]['captured_at']}|{raw_rows[0]['machine']}")
+        for row, correction_count in _collapse_pr_cost_rows_to_current(raw_rows):
+            exported = _redact_pr_cost_row_for_export(
+                row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map
+            )
+            formatted_rows.append(_format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
+
+    return formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts, corpus_identities
+
+
+def _pr_cost_export_provenance_line(
+    *, exported_at: datetime, declared: int, opted_in: int, skipped_no_sentinel: int,
+    legacy_header_accounts: int, corpus_identities: Sequence[str], corpus_override: bool,
+) -> str:
+    """The single provenance line, marked with a leading "#", written above the TSV header.
+    corpus= is a short sha256 prefix of the sorted corpus_identities set,
+    mirroring _corpus_fingerprint's own construction. Two exports share it
+    only when their participating account sets match, which is what
+    licenses comparing their account-K ordinals against each other. It is a
+    same-corpus indicator only, never a security boundary. Unlike
+    scope._DO_NOT_PUBLISH_BANNER, nothing enforces this marker at runtime,
+    which is why it states that fact inline rather than reusing that
+    banner's text. corpus_override=1 flags a run against an overridden
+    (synthetic) root set rather than this machine's real declared accounts
+    -- see declared_roots_file_is_overridden()'s own docstring (_config_dir.py)
+    for which env vars this checks, and docs/transcript-analysis.md's
+    "Corpus scope: the declared-roots file" section for what corpus_override=1
+    means for publication.
+    """
+    digest = hashlib.sha256("\n".join(sorted(corpus_identities)).encode()).hexdigest()[:12]
+    exported_at_str = exported_at.isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        "# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this"
+        f" exported_at={exported_at_str} declared={declared} opted_in={opted_in}"
+        f" skipped_no_sentinel={skipped_no_sentinel} legacy_header_accounts={legacy_header_accounts}"
+        f" corpus={digest} corpus_override={int(corpus_override)}"
+    )
+
+
+def cmd_pr_cost_export(args: argparse.Namespace) -> None:
+    """CLI entry point for the pr-cost-export subcommand -- a pure local
+    file transform over every declared account's own pr-cost ledger, making
+    no `gh` call and scanning no transcript corpus of its own. See
+    docs/pr-cost.md's "Redacted cross-account export" section for the full
+    grain and redaction contract.
+    """
+    out = getattr(args, "out", None)
+    if not out:
+        print(
+            "pr-cost-export: --out PATH is required -- this subcommand never writes to stdout,"
+            " since stdout inside a Claude Code session is captured into that session's own"
+            " transcript",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Resolved (following any symlink at --out itself) so the early
+    # existence check and the git-tree check both see where the path really
+    # points.
+    # For a dangling symlink, resolve() still reports that the target
+    # doesn't exist.
+    # This resolved path is never echoed to a diagnostic, since it can embed
+    # a home-rooted engagement directory -- see _config_dir.py's own "the
+    # path identifies an engagement" discipline.
+    # Only the operator's own literal `out` string is echoed below.
+    resolved_out = Path(out).resolve()
+    if os.path.lexists(str(resolved_out)):
+        print(
+            f"pr-cost-export: --out {out!r} already exists -- refusing to overwrite; pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if _ledger_path_is_git_tracked(resolved_out, "pr-cost-export"):
+        print(
+            f"pr-cost-export: --out {out!r} is inside a git working tree -- this repo (and every"
+            " repo this subcommand might be run from) is potentially public; write outside any"
+            " git working tree",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    roots = _resolve_cost_roots(args, "pr-cost-export")
+    if len(roots) > 1 and os.environ.get("PR_COST_LEDGER_PATH"):
+        # Mirrors pr-cost's own --all-accounts + PR_COST_LEDGER_PATH refusal:
+        # with it set, every account would resolve to the same forced file,
+        # exporting one ledger's rows once per account under a different
+        # account token.
+        print(
+            "pr-cost-export: PR_COST_LEDGER_PATH is refused when more than one root resolves --"
+            " unset PR_COST_LEDGER_PATH (each account then defaults to its own ledger path), or"
+            " scope to a single profile (drop --config-dir)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # No _resolve_project_scope call here to derive a scope_label from -- this
+    # subcommand has no --this-repo/--projects flags, so "*" (the same
+    # literal every other subcommand's scope_label defaults to absent those
+    # flags) is the accurate, unscoped label for every declared account's
+    # ledger.
+    _print_resolved_scope("pr-cost-export", "*", roots, file=sys.stderr)
+
+    (
+        formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts, corpus_identities,
+    ) = _pr_cost_export_rows(roots)
+
+    provenance_line = _pr_cost_export_provenance_line(
+        exported_at=datetime.now(UTC), declared=declared, opted_in=opted_in,
+        skipped_no_sentinel=skipped_no_sentinel, legacy_header_accounts=legacy_header_accounts,
+        corpus_identities=corpus_identities, corpus_override=declared_roots_file_is_overridden(),
+    )
+    file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
+
+    # Re-derived from the operator's own --out, not from resolved_out above:
+    # the parent chain is resolved (so a symlinked parent directory still
+    # lands inside the git-tree check's target), but the final component is
+    # left exactly as named, so O_EXCL's own symlink refusal actually fires
+    # instead of silently following the link to wherever it points.
+    open_path = Path(out).parent.resolve() / Path(out).name
+    try:
+        fd = os.open(str(open_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        print(
+            f"pr-cost-export: --out {out!r} could not be created (already exists -- possibly a"
+            " symlink -- or its parent directory is missing/unwritable); pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    with os.fdopen(fd, "w") as f:
+        f.write(file_text)
+
+    print(
+        f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"
+        f" account(s) to {out}"
+    )
+    print(
+        "pr-cost-export: inspect this file outside a Claude Code session (e.g. in a separate"
+        " terminal) -- reading it back with the Read tool, or catting it in-session, copies its"
+        " rows into that session's own transcript. See CLAUDE.md and docs/pr-cost.md before"
+        " publishing anything derived from it.",
+        file=sys.stderr,
+    )
 
 
 def _print_workstream_session_stats(workstream: dict[str, dict]) -> None:
@@ -11828,6 +12130,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_pr_cost.set_defaults(func=cmd_pr_cost)
+
+    p_pr_cost_export = sub.add_parser(
+        "pr-cost-export",
+        help=(
+            "Export every declared account's current pr-cost ledger rows -- redacted,"
+            " collapsed to one row per PR -- to a single operator-named TSV. Never writes to"
+            " stdout. Makes no gh call and scans no transcript corpus. See docs/pr-cost.md."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--out", metavar="PATH",
+        help=(
+            "Required: destination TSV path, refused if it already exists (O_EXCL, never"
+            " overwritten). No stdout fallback -- stdout inside a Claude Code session is"
+            " captured into that session's own transcript."
+        ),
+    )
+    p_pr_cost_export.add_argument(
+        "--config-dir", action="append", dest="extra_config_dirs", metavar="DIR",
+        help="Additional Claude Code config directory to scan (repeatable).",
+    )
+    p_pr_cost_export.set_defaults(func=cmd_pr_cost_export)
 
     p_spend_over_threshold = sub.add_parser(
         "spend-over-threshold",

@@ -11,6 +11,7 @@ from _config_dir import (  # noqa: E402
     TRANSCRIPT_CONFIG_DIRS_LABEL,
     config_dir,
     declared_roots_file,
+    declared_roots_file_is_overridden,
     declared_roots_file_state,
     declared_transcript_roots,
 )
@@ -293,3 +294,66 @@ def test_file_state_is_present_regardless_of_content(monkeypatch, tmp_path, cont
     roots_file.write_text(content)
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
     assert declared_roots_file_state() == "present"
+
+
+# ---------------------------------------------------------------------------
+# declared_roots_file_is_overridden()
+# ---------------------------------------------------------------------------
+
+
+def test_is_overridden_true_when_seam_env_var_is_set(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(tmp_path / "roots"))
+    assert declared_roots_file_is_overridden() is True
+
+
+def test_is_overridden_false_when_seam_env_var_is_unset(monkeypatch):
+    """Unlike every test above, this one must undo the suite-wide autouse
+    fixture's own TRANSCRIPT_CONFIG_DIRS_FILE and CLAUDE_CONFIG_DIR pins (see
+    test_reads_default_path_derived_from_home_when_env_var_unset above for
+    the same pattern) to exercise the real both-unset state."""
+    monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert declared_roots_file_is_overridden() is False
+
+
+def test_is_overridden_true_when_claude_config_dir_is_set_and_roots_file_absent(monkeypatch, tmp_path):
+    """A CLAUDE_CONFIG_DIR-only isolation with no real
+    ~/.claude/transcript-config-dirs to isolate from (declared_roots_file()
+    resolves against $HOME, not CLAUDE_CONFIG_DIR) is just as synthetic as a
+    TRANSCRIPT_CONFIG_DIRS_FILE override, so this predicate must catch it too
+    rather than reporting a false-negative corpus_override."""
+    monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home-with-no-roots-file"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "acct"))
+    assert declared_roots_file_state() == "absent"
+    assert declared_roots_file_is_overridden() is True
+
+
+def test_is_overridden_false_when_claude_config_dir_is_set_and_roots_file_present(monkeypatch, tmp_path):
+    """The real multi-account scenario this predicate must not regress: a
+    real non-personal-account run legitimately sets CLAUDE_CONFIG_DIR while
+    ~/.claude/transcript-config-dirs (account-independent, resolved against
+    $HOME) exists and declares the account roster -- that must stay
+    corpus_override=0, not be flagged as a synthetic-corpus test."""
+    monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
+    home = tmp_path / "home-with-real-roots-file"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "transcript-config-dirs").write_text("acct-a\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "acct"))
+    assert declared_roots_file_state() == "present"
+    assert declared_roots_file_is_overridden() is False
+
+
+def test_is_overridden_false_when_claude_config_dir_is_set_and_roots_file_unreadable(monkeypatch, tmp_path):
+    """A present-but-unreadable roots file (e.g. a permissions problem) is a
+    real config-file problem an operator must fix, not a synthetic fixture --
+    it does not combine with CLAUDE_CONFIG_DIR to flag corpus_override."""
+    monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
+    home = tmp_path / "home-with-unreadable-roots-file"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "transcript-config-dirs").mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "acct"))
+    assert declared_roots_file_state() == "unreadable"
+    assert declared_roots_file_is_overridden() is False
