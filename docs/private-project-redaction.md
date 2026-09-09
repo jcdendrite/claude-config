@@ -113,33 +113,19 @@ extends by analogy:
     dispatch, or pooled. A count carries no external reference point
     that converts it into an engagement-value estimate on its own.
   - Cost is dollar or token spend on running the tooling. Duration is
-    wall-clock time spent running it. Neither may be reported as a
-    client-billed, engagement-revenue, or billable-hours figure.
-    Report each only as a rate per tool call, session, or dispatch
-    (e.g., median cost per session) — never as a raw pooled total. A
-    raw total scales with pool volume and, unlike a per-unit rate, can
-    be converted to an engagement-value estimate using public day-rate
-    references.
+    wall-clock time spent running the tooling. Cost and Duration may
+    never be reported as a client-billed, engagement-revenue, or
+    billable-hours figure. Report each only as a rate per tool call,
+    session, or dispatch (e.g., median cost per session), never as a
+    raw pooled total. A raw total scales with pool volume and, unlike
+    a per-unit rate, can be converted to an engagement-value estimate
+    using public day-rate references.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
 
 **Before publishing, check four things.** "Already-published" and
-"prior publication" mean the full repo history — commits, PR and
-issue text, decision entries, and docs — not only the current
-working tree.
-
-Search git-tracked content with `git log -p --all`. Search PR and
-issue text separately with `gh pr list --search <term> --state all`
-and `gh issue list --search <term> --state all` — `git log` cannot
-reach GitHub-hosted PR or issue bodies, since they are metadata, not
-git objects. A negative result from any of these commands is only as
-trustworthy as that command's own depth, limit, or pagination bound:
-
-- `git log`: confirm the clone isn't shallow and has every branch
-  fetched.
-- `gh`: raise `--limit` (default 30) past the search's plausible hit
-  count.
+"prior publication" below mean the full repo history.
 
 - **A correlated proxy.** Does any axis of the figure track project,
   account, or engagement without naming one?
@@ -160,6 +146,21 @@ trustworthy as that command's own depth, limit, or pagination bound:
   reveal an engagement's schedule as directly as cadence would? Check
   every prior publication of that statistic, not only the most recent
   one.
+
+The full repo history includes commits, PR and issue text, decision
+entries, and docs — not just files in the working tree.
+
+Search git-tracked content with `git log -p --all`. Search PR and
+issue text separately with `gh pr list --search <term> --state all`
+and `gh issue list --search <term> --state all` — `git log` cannot
+reach GitHub-hosted PR or issue bodies, since they are metadata, not
+git objects. A negative result from any of these commands is only as
+trustworthy as that command's own depth, limit, or pagination bound:
+
+- `git log`: confirm the clone isn't shallow and has every branch
+  fetched.
+- `gh`: raise `--limit` (default 30) past the search's plausible hit
+  count.
 
 A share or a median reconstructs more readily than a raw total does
 under both the cross-artifact and arithmetic-reconstruction checks —
