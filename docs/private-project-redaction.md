@@ -123,58 +123,43 @@ extends by analogy:
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
+  - A pooled figure may be reported for the whole period covered only,
+    never as a time series. A series re-exposes the cadence the
+    excluded bullet above already closed off.
+  - These limits bind what published figures compose to, not only what
+    each one states on its own. A permitted rate times a permitted
+    pool-size count is the raw pooled total the Cost/Duration bullet
+    bars, whether both land in one artifact or in separate
+    publications months apart. Whole-period figures published across
+    successive artifacts are the time series the bullet above bars.
+    The figure that completes the reconstruction is the one that
+    crosses the line.
 
-**Before publishing, check four things.** "Already-published" and
-"prior publication" below mean the full repo history.
+**Approval gate.** An agent never publishes a figure under this
+carve-out on its own judgment. It proposes the figure, the exact
+command or script that produced it, and the artifact the figure would
+land in; the owner approves that figure for that artifact before it
+ships. Approval for one artifact does not cover a different one — a
+changed destination needs a fresh proposal. Cite the approval as a
+durable, independently-checkable record — a link to the approving
+comment or message — tied to the exact figure and artifact. A
+narrative claim that approval occurred is not a citation. Absent that
+citation, don't publish.
 
-- **A correlated proxy.** Does any axis of the figure track project,
-  account, or engagement without naming one?
-- **Cross-artifact reconstruction.** Does combining this figure with
-  another already-published one reconstruct a per-project,
-  per-account, or per-engagement number?
-- **Arithmetic reconstruction of a barred total.** Does any chain of
-  permitted count and rate figures — this figure plus any number of
-  already-published ones — multiply out to a total the "how it may be
-  reported" list bars? For example, a per-session tool-call median
-  times a session total yields a tool-call total, which times a
-  per-tool-call cost rate reconstructs a barred cost total, even
-  though no single step in the chain published a total and a rate on
-  the same unit. A share can occupy any position in that chain the
-  same way the median does here.
-- **Repeated-publication trend.** Does a trend across repeated
-  publications of the same statistic — cost, duration, or count —
-  reveal an engagement's schedule as directly as cadence would? Check
-  every prior publication of that statistic, not only the most recent
-  one.
-
-The full repo history includes commits, PR and issue text, decision
-entries, and docs — not just files in the working tree.
-
-Search git-tracked content with `git log -p --all`. Search PR and
-issue text separately with `gh pr list --search <term> --state all`
-and `gh issue list --search <term> --state all` — `git log` cannot
-reach GitHub-hosted PR or issue bodies, since they are metadata, not
-git objects. A negative result from any of these commands is only as
-trustworthy as that command's own depth, limit, or pagination bound:
-
-- `git log`: confirm the clone isn't shallow and has every branch
-  fetched.
-- `gh`: raise `--limit` (default 30) past the search's plausible hit
-  count.
-
-A share or a median reconstructs more readily than a raw total does
-under both the cross-artifact and arithmetic-reconstruction checks —
-apply extra scrutiny there before publishing either.
-
-If any check fires, don't publish. If you doubt the pool is diverse
-enough to keep the figure from being attributed to a single project,
-account, or engagement, don't publish either — closed by default, same
-as the blocklist tier's "if in doubt, strip it."
+Doubt about pool diversity goes to the owner as part of the proposal,
+not a reason to publish anyway. The proposal also names any prior
+publication of the same or a composing statistic that the agent found,
+and where it looked. That is input to the owner's decision, not a
+clearance — finding nothing is not approval to publish, and the
+composition bar above holds regardless of what the search surfaced.
+Closed by default, same as the blocklist tier's "if in doubt, strip
+it."
 
 **Remediation.** A wrongly-scoped figure discovered already published
 is the owner's call, not the agent's. Stop and report what was
-published and where — a rewrite is not a retraction once a public
-repo's history can be cloned, forked, or cached.
+published and where — do not rewrite history yourself, even if told
+to. Both stay the owner's to run: a rewrite is not a retraction once a
+public repo's history can be cloned, forked, or cached.
 
 ## Why the blocklist can't be armed by default
 

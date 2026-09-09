@@ -337,3 +337,95 @@ into this PR rather than deferring it. This supersedes Out of scope's
 "the secrets subsection are untouched" for that one sentence only — the
 rest of the subsection, and the structural-fingerprints paragraph,
 remain untouched as originally scoped.
+
+## Amendment: approval gate replaces the four-check gauntlet (PR #928 review, round 3)
+
+A further cumulative-review round on PR #928 found the "Before
+publishing, check four things" enumeration in
+`docs/private-project-redaction.md` § "Publishing a pooled tooling
+measurement" was itself the source of repeated `ciso-reviewer`
+findings: each round's fix to one check opened a new attack surface
+the next round's review caught, a compounding-defensive-layers pattern
+CLAUDE.md's own "wrong-foundation tell" names directly. A
+`plan-architect` consult, dispatched per the engineer's explicit
+request rather than a routine code-review trigger, confirmed the
+enumeration itself as the wrong foundation — scoped specifically to
+the four checks, not to the two closed scope lists ("what may be
+counted" and "how it may be reported"), which the consult found sound
+as written.
+
+The engineer adopted the consult's recommended fix: replace the
+four-check gauntlet with a human-approval gate. An agent proposes a
+figure, the exact command or script that produced it, and the
+destination artifact; the owner approves that specific figure before
+it ships; absent approval, don't publish. The gate is figure-scoped
+rather than artifact-scoped, so it binds every artifact a figure could
+land in without needing its own enumeration. Two of the four retired
+checks — the correlated-proxy check and the repeated-publication-trend
+check — had assigned evaluation to the agent despite requiring
+knowledge of the real-world engagement calendar the agent structurally
+does not have; the approval gate moves that judgment to the owner, who
+does.
+
+This supersedes the "Amendment: length reduction" section's
+characterization of what the pooled-measurement section in
+`docs/private-project-redaction.md` contains: that amendment moved the
+four-check procedure, the citation requirement, and the remediation
+path into the new doc section; this amendment replaces most of what
+was moved with the approval-gate paragraph above. The scope list and
+the remediation paragraph (adjusted only for the same secrets-subsection
+actor-clause fix as the prior amendment) remain as that amendment left
+them.
+
+## Amendment: composition closure and citation form (PR #928 review, round 4)
+
+A `/code-review` round on the round-3 rewrite spawned `ciso-reviewer`
+against the approval-gate implementation. It returned three findings.
+Two — the approval sentence's grammatical binding to the figure alone
+rather than the (figure, artifact) pair, and "cited owner approval"
+having no defined evidentiary form — were straightforward wording
+fixes applied directly to the Approval gate paragraph: approval now
+scopes to a specific artifact and needs a fresh proposal for a
+different one, and a citation must be a durable, independently-checkable
+record, not a narrative claim.
+
+The third — that round 3's deletion removed the retired four checks'
+search methodology along with the checks themselves, leaving
+cross-artifact and arithmetic-reconstruction risk uncovered even
+though (unlike the two checks round 3's own rationale addressed) those
+two need no real-world engagement-calendar knowledge to catch — went
+to a second `plan-architect` consult rather than a direct fix, since
+reinstating search machinery risked recreating the mechanism round 3
+deliberately cut. The consult's verdict: round 3 over-executed its own
+rationale by two checks, but the gap isn't a missing search — it's a
+missing closure property. The "how it may be reported" scope list
+stated per-figure limits with nothing binding what two permitted
+figures compose to, which fails within a single proposal, not only
+across sessions. The fix adopted is a composition-closure bullet
+appended to that list (published figures are bound by what they
+compose to, not only what each states alone) plus a disclosure
+sentence in the Approval gate paragraph (the proposal names any prior
+publication of the same or a composing statistic found, and where the
+agent looked — input to the owner's decision, not a clearance).
+
+The consult explicitly rejected two alternatives: a published-figures
+ledger (this repo's `design-decisions.md` already rules out a
+hand-maintained index, citing `docs/case-studies.md`'s index as a
+precedent for going stale), and barring raw count totals outright
+(guts the carve-out for two of its three motivating withholding
+sites, both of which withhold counts specifically).
+
+**Forward tripwire, recorded per the consult's own request:** if a
+future round attacks the composition clause's own boundary — what
+exactly counts as "composing" — that is the compounding-layers pattern
+recurring, not a new gap. The response is to stop reviewing this
+section, not add a third clause.
+
+The consult separately flagged, as a question only the engineer can
+settle and explicitly out of scope for this PR: whether
+`docs/cost-levers-considered.md:509-512`'s published "Mean $/PR fell
+47.5% ($49.55→$26.01, pooled n=19 before / n=49 after)" is itself an
+instance of the reconstruction shape the composition clause now bars.
+Not evaluated or edited here — Axis 3 (preserved record) and this
+plan's Out of scope both apply regardless of the answer; raised to the
+engineer directly, not resolved in this PR.
