@@ -109,7 +109,9 @@ After the collapse a shipped row's `supersedes` points at a row the file no long
 
 **Format is pinned, because the corpus digest is meant to be compared programmatically rather than read.** A single space-delimited `key=value` token sequence, not prose:
 
-`# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this exported_at=<ISO8601 UTC> declared=<N> opted_in=<N> skipped_no_sentinel=<N> legacy_header_accounts=<N> corpus=<12 hex chars>`
+`# pr-cost-export DO-NOT-PUBLISH-no-tooling-enforces-this exported_at=<ISO8601 UTC> declared=<N> opted_in=<N> skipped_no_sentinel=<N> legacy_header_accounts=<N> corpus=<12 hex chars> corpus_override=<0|1>`
+
+`corpus_override` was added during the testability-fixes pass: `1` flags a run against a `TRANSCRIPT_CONFIG_DIRS_FILE`-overridden (synthetic) root set rather than this machine's real declared accounts — see `docs/transcript-analysis.md`'s "Testing against a synthetic corpus" section. `0` and `1` are both real, expected values, not an error state.
 
 **The digest is over corpus-derived values, not filesystem paths.** `hashlib.sha256("\n".join(sorted(<per-account identities>)).encode()).hexdigest()[:12]`, mirroring `_corpus_fingerprint`'s own construction (`redaction.py:167-176`) — naming the primitive explicitly because Python's built-in `hash()` is per-process salted, which would emit a different value on every real invocation while passing an in-process test vacuously. Each account contributes the `(captured_at, machine)` pair of its ledger's **first data row**, which `row34` establishes never changes or moves under append-only writes. This identifies the participating account set exactly as well as the paths would, discloses nothing the export does not already contain, and — unlike a digest over a small, structurally guessable set of config-dir paths — is not enumerable, since second-precision timestamps over a multi-year span carry real entropy. Hashing the resolved root paths was the first design and was rejected on that ground.
 
@@ -236,7 +238,7 @@ From inside the worktree, per README.md:516's worktree-relative substitution:
 
 `select-tests.py` needs no new rule-table entry for this diff (`row28`). Per CLAUDE.md's Commands section, agents run `select-tests.py`, not the full suite; CI runs the full suite on push.
 
-One manual smoke check, run in a separate terminal rather than in-session (`row31`), against a `--out` path under the session scratchpad and outside any git working tree: confirm the provenance line and header are present, the metric columns match the source ledger's cells, one row per PR survives, and no raw repo, host, or branch string appears. Do not read the resulting file back with the `Read` tool.
+An automated subprocess test (`test_transcript_analysis_pr_cost_export_subprocess_writes_synthetic_two_account_rows` in `claude/.claude/scripts/tests/test_transcript_cli_bootstrap.py`) covers what the plan originally scoped as a manual smoke check: it seeds two synthetic accounts (an opt-in sentinel plus a one-row ledger each) under `tmp_path`, points `CLAUDE_CONFIG_DIR`/`TRANSCRIPT_CONFIG_DIRS_FILE` at them, invokes `pr-cost-export --out PATH` as a real subprocess, and asserts exit code 0, `corpus_override=1` in the provenance line, and both accounts' rows in the output file. Unlike a manual check run in a separate terminal, this leaves no ambiguity about whether the run actually scanned synthetic roots rather than this workstation's real accounts, and the file is never read back by hand.
 
 ## Out of scope
 
@@ -248,7 +250,7 @@ One manual smoke check, run in a separate terminal rather than in-session (`row3
 - **A keyed or salted provenance digest.** `row34`'s corpus-derived input removes the enumeration risk that motivated one, and introducing a machine-local secret would add provisioning, storage, and rotation surface to a tool that has none — a layer closing a gap the previous layer opened.
 - **Migrating `cmd_pr_cost` or the export into `transcript_analysis/` package modules** (`M11`).
 - **A `--no-redact` or disclose mode**, on the same grounds `_pr_cost_report` refuses one (:8337-8338).
-- **A `pr-cost-export` CLI bootstrap test** — no package re-export exists for it to prove.
+- **A `pr-cost-export` CLI bootstrap test proving *package re-export* wiring** — no package re-export exists for it to prove; see Verification above for the subprocess test that exists instead, which proves the synthetic-corpus test recipe end-to-end rather than package-import wiring.
 - **A `deny-private-project-refs.sh` detector for the export's token or header shape** (`M15`) — rejected on the merits, not deferred.
 - **Runtime re-checking of the created file's mode** against a non-POSIX mount (`row25`).
 - **Refactoring `_pr_cost_report`'s preamble** to make an in-`pr-cost` export mode viable (`row7`). Evaluated as lighter primitive A under `M1` and set aside; nothing here should touch that function.

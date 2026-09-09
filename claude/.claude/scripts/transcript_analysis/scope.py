@@ -522,6 +522,7 @@ _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
     "instrument-authoring", "pr-cost", "cost-counts", "rearm-backtest",
+    "pr-cost-export",
 )
 
 
