@@ -517,6 +517,26 @@ def test_home_claude_dir_absent_silent(tmp_path, dirty_repo, monkeypatch):
     assert result is None
 
 
+def test_relative_config_dir_fails_open(isolated_home, dirty_repo):
+    """config-schema-audit.md's commit_stall_block fail-direction claim: a
+    resolution failure (relative CLAUDE_CONFIG_DIR, unresolvable per
+    _lib_config_dir) must not block a Stop turn, matching the other four
+    enforcement-critical keys' equivalent tests (e.g.
+    test_restore_authorization_boundary_on_compact.py's
+    test_unresolvable_config_dir_exits_0_with_no_output). Hits the hook's
+    own `CONFIG_DIR=$(_lib_config_dir) || exit 0` short-circuit before
+    commit_stall_block's own schema row is ever read."""
+    result = _fire(
+        stop_input(
+            ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)
+        ),
+        cwd=dirty_repo,
+        home=isolated_home,
+        extra_env={"CLAUDE_CONFIG_DIR": "relative/path"},
+    )
+    assert result is None
+
+
 def test_kill_switch_disables(armed_home, dirty_repo):
     (armed_home / ".claude" / ".commit-stall-block-disabled").write_text("")
     result = _fire(

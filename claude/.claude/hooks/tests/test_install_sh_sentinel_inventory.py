@@ -185,9 +185,8 @@ class TestSentinelInventoryArray:
         """The schema comment requires no whitespace around any `|` --
         IFS='|' read -r bakes leading/trailing spaces into a field
         otherwise. REPO_MARKER_INVENTORY carries only the four repo-scope
-        committed markers now, each a fixed path-template|human-name|
-        docs-anchor row -- unlike the pre-migration array, no row here
-        carries an optional trailing field."""
+        committed markers, each a fixed path-template|human-name|docs-anchor
+        row with no optional trailing field."""
         install_text = _INSTALL_SH.read_text()
         start = install_text.find(_INVENTORY_START)
         end = install_text.find(_INVENTORY_END, start)

@@ -22,6 +22,7 @@ from _config import config_enabled, config_value, schema  # noqa: E402
 
 _CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
+_CONFIG_SH = HOOKS_DIR / "_config.sh"
 
 
 def _count_config_keys_psv_rows() -> int:
@@ -72,6 +73,16 @@ class TestSchema:
         row = schema()["pr_cost_disclosure"]
         assert row.type == "enum:dollars"
         assert row.legacy_polarity == "content-matches"
+
+    def test_every_config_dir_or_home_row_is_bool_typed(self):
+        """config_value()'s union branch (and _config.sh's own _config_value
+        copy) compares a location's resolved value against the literal
+        "true" -- an enum-typed config-dir-or-home row would silently defeat
+        that comparison. Structural guard for the precondition both
+        functions' comments already state rather than enforce."""
+        for key, row in schema().items():
+            if row.resolution == "config-dir-or-home":
+                assert row.type == "bool", f"{key} is config-dir-or-home but type={row.type!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +314,34 @@ class TestConfigGetShExitCodes:
             ["round_consult_gate"], env={"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/not-absolute"},
         )
         assert result.returncode == 3
+
+    def test_missing_schema_file_exits_3_not_2(self, tmp_path, monkeypatch):
+        """config-keys.psv itself missing (a partial stow-relink, an
+        interrupted `git pull`) must not be misreported as an unknown key --
+        both currently return 1 from _config_schema_field, but only the
+        schema-unreadable case is an environment failure, matching exit 3's
+        other cause (config dir unresolvable). Mirrors
+        test_config_parser_parity.py's TestMissingSchemaFile isolation
+        technique: config-get.sh's own `$(dirname "$0")/../hooks/_config.sh`
+        source path resolves relative to wherever it's invoked from, and
+        _config.sh's own BASH_SOURCE-relative schema path resolves the same
+        way -- both symlinked into an isolated tree that mirrors the real
+        scripts/../hooks layout, with no config-keys.psv alongside them."""
+        home = _make_home(tmp_path, monkeypatch)
+        isolated_root = tmp_path / "isolated-root"
+        (isolated_root / "scripts").mkdir(parents=True)
+        (isolated_root / "hooks").mkdir()
+        (isolated_root / "scripts" / "config-get.sh").symlink_to(_CONFIG_GET_SH)
+        (isolated_root / "hooks" / "_config.sh").symlink_to(_CONFIG_SH)
+        result = subprocess.run(
+            [str(isolated_root / "scripts" / "config-get.sh"), "worktree_required"],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home)},
+        )
+        assert result.returncode == 3
+        assert "schema file not found or unreadable" in result.stderr
+        assert "unknown key" not in result.stderr
 
     def test_unknown_key_takes_precedence_over_unresolvable_config_dir(self, tmp_path, monkeypatch):
         """Unknown-key detection always runs first, independent of

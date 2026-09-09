@@ -69,14 +69,14 @@ _lib_config_dir() {
 
 # _config_trim STRING
 # Sets _CONFIG_TRIM_RESULT (global) to STRING with leading/trailing ASCII
-# whitespace stripped only (space, tab, CR, LF, VT, FF) -- deliberately NOT
-# a Unicode-aware trim. A value with a trailing NBSP (U+00A0) or ideographic
-# space (U+3000) is left untouched by this trim and correctly fails the
-# value-subset check in _config_line_key_value below, matching _config.py's
-# explicit _ASCII_WHITESPACE-based trim (never Python's bare .strip(),
-# which would additionally eat those two characters and silently accept a
-# value a stricter trim would reject) -- the same divergence-avoidance
-# _config_dir.py already documents one level over.
+# whitespace stripped only (space, tab, CR, LF, VT, FF); deliberately not
+# Unicode-aware.
+# A trailing NBSP (U+00A0) or ideographic space (U+3000) survives the trim
+# and correctly fails the value-subset check in _config_line_key_value below.
+# Matches _config.py's explicit _ASCII_WHITESPACE trim rather than Python's
+# bare .strip(), which would eat those two characters and silently accept a
+# value this trim rejects -- the same divergence-avoidance _config_dir.py
+# documents for a different check.
 #
 # `local LC_ALL=C` is load-bearing, not decorative: outside the C locale,
 # glibc's iswspace() admits NBSP (U+00A0) and ideographic space (U+3000)
