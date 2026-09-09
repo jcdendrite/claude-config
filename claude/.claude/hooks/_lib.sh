@@ -2519,6 +2519,28 @@ _lib_is_reviewer_persona() {
 # (docs/case-studies/opus-frontload-review-rounds.md:260-263) -- so the cap
 # is 2 recorded rounds, with the 3rd distinct state tripping the gate.
 _LIB_REVIEWER_ROUND_STATE_CAP=2
+# Pilot override: see _lib_reviewer_round_state_cap below and
+# docs/design-decisions/round2-consult-trigger-pilot.md.
+
+# _lib_reviewer_round_state_cap
+# Prints the round-state cap shared by require-architect-consult.sh
+# (read side) and log-reviewer-round.sh (write side).
+# Returns 1 if <config-dir>/.round-consult-round2-pilot exists, else
+# $_LIB_REVIEWER_ROUND_STATE_CAP.
+# Contract: always echoes a valid integer to stdout, including on an
+# unresolvable config dir -- both call sites consume this via `$(...)` into
+# an integer comparison that would error ("integer expression expected") on
+# empty stdout. Unlike _lib_round_consult_gate_disabled's boolean-exit-code
+# shape below. Zero-arity, same machine-global scope as the kill switch
+# below.
+_lib_reviewer_round_state_cap() {
+  local config_dir
+  if config_dir=$(_lib_config_dir) && [ -f "$config_dir/.round-consult-round2-pilot" ]; then
+    printf '1\n'
+  else
+    printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"
+  fi
+}
 
 # _lib_reviewer_round_state_key REPO_ROOT
 # Prints "<repo-hash>.<branch-hash>" for require-architect-consult.sh's and

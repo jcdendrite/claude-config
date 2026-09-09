@@ -545,6 +545,114 @@ class TestCheckSkillLength:
             == "allow"
         )
 
+    # --- Repo-root plugin layout (`skills/<name>/SKILL.md`) ---
+
+    def test_repo_root_skill_growing_to_201_denies(self, isolated_home, tmp_path):
+        """Repo-root layout (`skills/<name>/SKILL.md`, used when a
+        marketplace declares "source": "./"): HEAD at 190, staged at 201 →
+        deny. Regression test for the third staged-path alternative."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        repo_root_path = "skills/my-skill/SKILL.md"
+        (repo / "skills" / "my-skill").mkdir(parents=True)
+        (repo / repo_root_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / repo_root_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_repo_root_skill_at_exactly_200_allows(self, isolated_home, tmp_path):
+        """Repo-root layout at exactly the 200-line default: allow. There is
+        no per-skill override path for a repo-root skill, so it always
+        resolves to the 200-line default."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        repo_root_path = "skills/my-skill/SKILL.md"
+        (repo / "skills" / "my-skill").mkdir(parents=True)
+        (repo / repo_root_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / repo_root_path).write_text(make_skill_content(200))
+        subprocess.run(["git", "add", repo_root_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_vendored_skills_dir_not_anchored_at_repo_root_allows(
+        self, isolated_home, tmp_path
+    ):
+        """`vendor/thing/skills/x/SKILL.md` staged at 201 lines must allow:
+        the new repo-root alternative (`^skills/.+/SKILL\\.md$`) is anchored
+        at the start of the path, so it must not also match a `skills/`
+        directory nested under an unrelated prefix. The only test in this
+        set that fails if the new alternative were written unanchored —
+        every other test here passes whether or not anchoring is correct."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        vendor_path = "vendor/thing/skills/x/SKILL.md"
+        (repo / "vendor" / "thing" / "skills" / "x").mkdir(parents=True)
+        (repo / vendor_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", vendor_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_plugin_path_skill_growing_to_201_denies(self, isolated_home, tmp_path):
+        """`plugins/some-plugin/skills/x/SKILL.md`: HEAD at 190, staged at
+        201 → deny. Pins the pre-existing `plugins/[^/]+/skills/`
+        alternative, which had no test coverage before this change — adding
+        a third `|`-joined alternative to the same combined pattern is
+        exactly the edit class that can silently corrupt a sibling
+        alternative (misplaced pipe, unbalanced paren, changed precedence)
+        with nothing else in this suite to catch it."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        plugin_path = "plugins/some-plugin/skills/x/SKILL.md"
+        (repo / "plugins" / "some-plugin" / "skills" / "x").mkdir(parents=True)
+        (repo / plugin_path).write_text(make_skill_content(190))
+        subprocess.run(["git", "add", plugin_path], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        (repo / plugin_path).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", plugin_path], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
     # --- Newly-capped `git diff --cached --name-only` and `git rev-parse
     # --is-inside-work-tree` (_lib_staged_length_gate) ---
 

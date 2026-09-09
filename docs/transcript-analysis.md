@@ -6,6 +6,15 @@ All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pa
 
 For question-driven routing ("which subcommand answers X?"), use the `/transcript-analysis` skill. This page is the per-subcommand reference: flags, output shape, and when to reach for each one.
 
+## Terms
+
+- **transcript** — one session log file under `<config-dir>/projects/<project-dir>/*.jsonl`. A session's subagent records are merged into their parent's file by `read_session_file`, never counted as their own transcript.
+- **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
+- **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
+- **turn** — one assistant reply record.
+- **priced turn** — a turn whose `message.model` has a pricing-table rate and survives the run's record filters.
+- **priced session** — a transcript with at least one priced turn. Always ≤ transcripts scanned.
+
 ---
 
 ## Scoping to this repo: `--this-repo`
@@ -70,7 +79,17 @@ add-actionlint-pr-gate                      2     5     444      0     444      
 HEAD                                        6   401    3664   1261    2278    120      5  2026-04-23..2026-05-28
 ```
 
-`Proj` is the count of distinct project directories contributing to that row — a pooled row (several repos sharing a branch name, `main` being the usual case) shows `Proj > 1`; scope with `--this-repo` or a narrower `--projects` glob to collapse it back to `1`.
+`Proj` is the count of distinct project directories contributing to that row.
+
+- A repo's linked-worktree directories collapse into its main checkout's slug first, so a
+  branch worked in both still shows `Proj == 1`.
+- A session started in a repo subdirectory gets its own project-dir slug that does not
+  collapse into the main repo's slug, so it counts as a second project even though it's the
+  same repo.
+- A pooled row (several repos sharing a branch name, `main` being the usual case) shows
+  `Proj > 1`; scoping with `--this-repo` or a narrower `--projects` glob collapses it back to
+  `1`. For a pooled row, the Total/Opus/Sonnet/Haiku/Other numbers sum across unrelated repos
+  with no way to decompose them from the table, so only the `Proj` count is meaningful.
 
 **When to reach for it.** Survey all branches and spot which ones used which models. Usually the first command to run on any transcript analysis session.
 
@@ -598,7 +617,7 @@ Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift`
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`). When given, each scanned root's actual earliest in-scope turn is tracked (regardless of the filter) and compared against the requested window start: a root whose earliest turn is more than a day newer prints its own `WARNING: cost: <root>: earliest turn found is …` line, naming that date and the requested window start, so a corpus that starts partway through the requested window is visible instead of silently under-reporting. One warning per short root — a well-covered root never suppresses a sibling root's own warning.
 - `--top N` — maximum per-session rows in the top-N-by-dollars section (default: 20)
 - `--no-redact` — emit real project names and session IDs instead of anonymized labels. `cost` is **redacted by default** (the opposite default from `audit-routing`) since its documented purpose includes producing text for public issues; never publish `--no-redact` output. Refused when `--config-dir` puts more than one root in scope, and refused together with `--summary`.
-- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's PR body cost block). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It folds the transcript-scanned count, and — only when nonzero — the unreadable-transcript count, into its own `Scope:` line instead of the full report's per-root `cost: account-N: scanned …` diagnostic, and still prints the zero-scope `WARNING`, since both are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Prints a loud `EXCLUDED SPEND` banner, counting (never naming) every unrecognized model ID, only when there is real excluded spend to report — silent on an all-priced corpus, unlike the full report's own unconditional per-model unpriced breakdown. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report. The list-price caveat leads this block as a GFM `> [!IMPORTANT]` alert, unlike the full report's plain sentence. It renders correctly only when the consumer embeds the stdout unfenced — see `` `claude/.claude/skills/pr-description/SKILL.md` § "Cost section" `` for that rule.
+- `--summary` — a distinct, aggregate-only rendering mode meant to be embedded directly in a PR body (see the `pr-description` skill's PR body cost block). Requires `--this-repo` and refuses any other scope flag, including a non-default `--projects` glob — every project-directory slug is absolute-path-derived and therefore starts with `-`, so a glob like `-*` would otherwise be machine-wide despite not being the literal default `*`. Resolves to the active config dir only, skipping the declared-roots union entirely — see "Corpus scope: the declared-roots file" above. Also refuses `--by-project`, `--no-redact`, and `--config-dir` in combination — each drives an identity-bearing code path (`## Cost by project`, raw labels, multi-root scan-summary lines) `--summary` structurally never reaches. Separately, it refuses outright (exit 2) if more than one root is ever in scope when `--summary` is set — this guard is load-bearing for `--summary`'s scope guarantee, not incidental dead-code protection: root resolution is enforced at the CLI boundary, but any direct caller of the report function (this module's own tests included) bypasses that boundary, so the multi-root guard is what actually keeps a direct call's aggregate scoped to one account. It never builds or reads the redact map, never prints the `DO NOT PUBLISH` banner, and never emits a per-root raw-path label — nothing it prints is keyed by project or session identity. It prints, in order, a one-line `Scope:` caption and a small scan-coverage GFM table (see "Terms" above for what each column counts). The table replaces the full report's per-root `cost: account-N: scanned …` diagnostic. An `Of those, unreadable` column appears only when nonzero. It still prints the zero-scope `WARNING`, since both are identity-free under single-root `--this-repo` scope and are what makes an empty or under-scanned corpus visible instead of a silent `$0.00`. Prints a loud `EXCLUDED SPEND` banner, counting (never naming) every unrecognized model ID, only when there is real excluded spend to report — silent on an all-priced corpus, unlike the full report's own unconditional per-model unpriced breakdown. Carries the `STALE PRICING` banner in the same block as the dollar tables, same as the full report. The list-price caveat leads this block as a GFM `> [!IMPORTANT]` alert, unlike the full report's plain sentence. It renders correctly only when the consumer embeds the stdout unfenced — see `` `claude/.claude/skills/pr-description/SKILL.md` § "Cost section" `` for that rule.
 
 **Per-account breakdown.** When `--config-dir` puts more than one root in scope, the full report (not `--summary`, which refuses `--config-dir` outright) also prints a `## Cost by account` section: one `### account-N` block per scanned root, each carrying its own token-class and model-ID tables scoped to that account's own spend. No separate flag — it auto-appears whenever more than one root is in scope, the same way `edit-format`'s own per-account breakdown does. Each account's own token-class and model-ID tables let a reader see e.g. "account-2 is 100% Sonnet, never Opus" that a combined total alone would hide. It is designed to be shareable under the same multi-root contract as `--by-project`'s own redacted `account-N` labeling — no raw project name or config-dir path is ever printed in this section.
 
@@ -615,7 +634,11 @@ The branch itself is never echoed in `--summary`'s text — it only narrows whic
 > [!IMPORTANT]
 > Computed locally at API list price — this is a compute estimate, not an invoice, and may not match what your plan or contract actually bills.
 
-Scope: this account only, all time (2 transcripts scanned, 1 unreadable, 1 priced sessions, 2 priced turns) — dropping --summary reports every declared account too
+Scope: this account only, all time.
+
+| Transcript files scanned | Of those, unreadable | Sessions with priced turns | Priced turns |
+|---|---|---|---|
+| 2 | 1 | 1 | 2 |
 
 EXCLUDED SPEND — the dollar figures below leave out 2,440,000 tokens across 2 unrecognized model IDs. Ask the PR author to run the full report locally to name them, add each base rate, and re-run.
 
@@ -644,7 +667,7 @@ EXCLUDED SPEND — the dollar figures below leave out 2,440,000 tokens across 2 
 | main | 27.00 | 100.0% |
 | subagent | 0.00 | 0.0% |
 ```
-The unreadable-transcript clause (`, 1 unreadable`) only appears when the count is nonzero; a fully-readable scan omits it entirely rather than printing a zero.
+The `Of those, unreadable` column only appears when the count is nonzero; a fully-readable scan omits the column entirely rather than printing a zero.
 
 **Sample output (full report).**
 ```
