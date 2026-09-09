@@ -75,9 +75,12 @@ limit_for() {
   esac
 }
 
-# Path prefixes are repo-root-relative for this repo's layout. Covers both
-# stowed skills (claude-skills/skills/) and project-scoped plugins
-# (plugins/*/skills/), plus the single hardcoded plan-review/ROUTING.md
-# exception (see limit_for() above). In other repos this pattern matches
-# nothing and the gate exits 0 silently.
-_lib_staged_length_gate '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^claude-skills/skills/plan-review/ROUTING\.md$' "one or more SKILL.md files grew past their per-skill limit."
+# Path prefixes are repo-root-relative:
+# - stowed skills: claude-skills/skills/
+# - project-scoped plugins: plugins/*/skills/
+# - repo-root plugin layouts: skills/*/SKILL.md (marketplace declares "source": "./")
+# - the single hardcoded plan-review/ROUTING.md exception (see limit_for() above)
+#
+# A repo-root skill has no override path in limit_for() and resolves to the
+# 200-line default, same as plugins/*/skills/.
+_lib_staged_length_gate '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$' "one or more SKILL.md files grew past their per-skill limit."

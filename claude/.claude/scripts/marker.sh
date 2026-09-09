@@ -20,6 +20,11 @@ PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 # scans for.
 REVIEW_PR_SCAN_SCRIPT="$(dirname "$0")/review-pr-scan-findings-body.sh"
 
+# The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
+# plugin, and plugin-root-equals-repo-root locations) plus plan-review/ROUTING.md,
+# matching what require-skill-review.sh checks at commit time.
+SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
+
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
@@ -283,7 +288,7 @@ _marker_mtime_epoch() {
 # _resolve_code_review_check_max_age_seconds
 # Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
 # deliberately conservative, ungrounded choice (docs/design-decisions.md
-# §60). Malformed override (empty, zero, non-digit, zero-padded, or 9+
+# §62). Malformed override (empty, zero, non-digit, zero-padded, or 9+
 # digits) falls back to the default -- same guard shape as
 # nudge-long-turn-subagent.sh's resolve_threshold.
 _resolve_code_review_check_max_age_seconds() {
@@ -459,11 +464,8 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md'
-        # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (both stowed
-        # and plugin locations) plus plan-review/ROUTING.md, matching what
-        # require-skill-review.sh checks at commit time.
-        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" 'claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md') || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
+        _guard_staged_vs_unstaged "$REPO_ROOT" skill-review "${SKILL_REVIEW_PATHSPECS[@]}"
+        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}") || { printf 'marker.sh: could not hash the staged SKILL.md diff. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/skill-review-markers"
         printf '%s\n' "$MARKER_VALUE" | _write_marker_no_follow "$CONFIG_DIR/skill-review-markers/$REPO_HASH.$SESSION_ID" \
           || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
@@ -884,7 +886,6 @@ print(digest.hexdigest())
 
     # skill-review: same recipe as the `write skill-review` arm above,
     # scoped to the SKILL.md/ROUTING.md pathspecs.
-    SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
     SKILL_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"

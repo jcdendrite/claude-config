@@ -99,6 +99,7 @@ from transcript_analysis.redaction import (
     _build_redact_map,
     _corpus_fingerprint,
     _derive_proj_label,
+    _project_family,
     _redact_proj_label,
     _redact_session_id,
     _RedactMapKey,
@@ -287,7 +288,7 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         for branch, fb in file_branches.items():
             d = branch_data[branch]
             d["sessions"] += 1
-            d["projects"].add(jsonl.parent.name)
+            d["projects"].add(_project_family(jsonl.parent.name))
             for fam in ("opus", "sonnet", "haiku", "other"):
                 d[fam] += fb[fam]
             if fb["ts_min"] < float("inf"):
@@ -568,7 +569,7 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 
     for jsonl, records in iter_sessions(scope.PROJECTS_DIR, projects_glob):
         proj_label = _derive_proj_label(jsonl)
-        total_projects_seen.add(proj_label)
+        total_projects_seen.add(_project_family(jsonl.parent.name))
 
         # Count unrecognized shapes regardless of other filters.
         for rec in records:
@@ -1168,6 +1169,7 @@ _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     "worktree-enforcement",  # require-worktree-for-file-writes.sh, require-worktree-for-git-writes.sh
     "architect-consult",  # require-architect-consult.sh
     "invisible-commit-content",  # deny-invisible-commit-content.sh
+    "no-op-dispatch",  # deny-no-op-dispatch.sh
     # Legacy-only: no active hook emits this wording. Each member is kept
     # permanently so an older recorded transcript still classifies.
     "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts
@@ -5888,6 +5890,21 @@ _CACHE_REBUILD_ATTRIBUTIONS: tuple[str, ...] = (
 _BACKGROUND_TASK_MARKER_PREFIX = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
 _COORDINATOR_MESSAGE_MARKER_PREFIX = "The coordinator sent a message while you were working"
 
+_BASH_WAIT_SLEEP_POLL = "sleep-poll wait"
+_BASH_WAIT_OTHER = "other Bash wait"
+_BASH_WAIT_NO_COMMAND = "no command recorded"
+
+# The own-Bash wait-shape table's printed row order follows this tuple's
+# definition order.
+_OWN_BASH_WAIT_SHAPES: tuple[str, ...] = (
+    _BASH_WAIT_SLEEP_POLL, _BASH_WAIT_OTHER, _BASH_WAIT_NO_COMMAND,
+)
+
+# Matches `sleep <number>` at string start, after `;`/`&`/`|`/newline, or
+# after `do`/`then`/`else` (word-boundary-guarded so it doesn't fire inside
+# `sudo`/`docker`).
+_SLEEP_POLL_COMMAND_RE = re.compile(r"(?:\A|[;&|\n]|\b(?:do|then|else))[ \t]*sleep[ \t]+[0-9]")
+
 
 def _cache_rebuild_gap_seconds(prev_ts: float | None, cur_ts: float | None) -> float | None:
     """Seconds since the previous call in this transcript's own turn
@@ -5925,9 +5942,24 @@ def _classify_cache_rebuild_cause(
     return _CAUSE_UNEXPLAINED
 
 
+def _classify_bash_wait_shape(command: str | None) -> str:
+    """Sub-classify the winning Bash marker's own recorded command text.
+
+    Textual, no shell parsing. A quoted or heredoc-embedded `sleep` counts
+    as a match, over-counting sleep-poll waits for text that only mentions
+    `sleep` without waiting on it. `sleep $VAR` (no literal leading digit)
+    does not match, under-counting sleep-poll waits by missing a real one.
+    """
+    if not isinstance(command, str):
+        return _BASH_WAIT_NO_COMMAND
+    if _SLEEP_POLL_COMMAND_RE.search(command):
+        return _BASH_WAIT_SLEEP_POLL
+    return _BASH_WAIT_OTHER
+
+
 def _attribute_idle_gap_cause(
     prior_turn: dict, window: list[dict], *, gap_start_ts: float, gap_seconds: float
-) -> tuple[str, float | None]:
+) -> tuple[str, float | None, str | None]:
     """Sub-classify one subagent-origin idle-gap candidate by the last
     marker record found in `window` (the records strictly between
     `prior_turn` and the rebuild call that closed the gap).
@@ -5944,28 +5976,34 @@ def _attribute_idle_gap_cause(
     - Meta legs (background-task, coordinator): require both `isMeta` and
       `isSidechain` True on the record carrying them.
 
-    Returns (cause, covered_share). The winning marker's own cause always
-    wins, even when that marker's timestamp is missing or unparseable --
-    treating a bad timestamp as "no marker at all" would let precedence
-    silently fall back to an earlier, unrelated marker's cause instead of
-    disclosing the gap via `covered_share`. covered_share is
+    Returns (cause, covered_share, bash_shape). The winning marker's own
+    cause always wins, even when that marker's timestamp is missing or
+    unparseable -- treating a bad timestamp as "no marker at all" would let
+    precedence silently fall back to an earlier, unrelated marker's cause
+    instead of disclosing the gap via `covered_share`. covered_share is
     (marker_ts - gap_start_ts) / gap_seconds when the winning marker's own
     timestamp parses, None for _ATTR_UNATTRIBUTED or for an attributed
     cause whose winning marker has no parseable timestamp. Not clamped to
     [0, 1] -- a stray clock-skew marker timestamp outside the gap window
     still yields a finite share rather than a silently clamped one.
+    bash_shape is `_classify_bash_wait_shape`'s label for the winning
+    marker's own recorded command when cause is _ATTR_OWN_BASH, None
+    otherwise.
     """
-    bash_tool_use_ids = {
-        block.get("id")
-        for block in (prior_turn.get("message") or {}).get("content") or []
-        if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"
-    }
+    bash_tool_use_ids: dict[str, str | None] = {}
+    for block in (prior_turn.get("message") or {}).get("content") or []:
+        if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash"):
+            continue
+        command = (block.get("input") or {}).get("command")
+        bash_tool_use_ids[block.get("id")] = command if isinstance(command, str) else None
 
     last_cause: str | None = None
     last_marker_ts: float | None = None
+    last_command: str | None = None
     for rec in window:
         content = (rec.get("message") or {}).get("content")
         marker_cause: str | None = None
+        marker_command: str | None = None
         if isinstance(content, list):
             for block in content:
                 if (
@@ -5974,6 +6012,7 @@ def _attribute_idle_gap_cause(
                     and block.get("tool_use_id") in bash_tool_use_ids
                 ):
                     marker_cause = _ATTR_OWN_BASH
+                    marker_command = bash_tool_use_ids[block.get("tool_use_id")]
         elif isinstance(content, str) and rec.get("isMeta") and rec.get("isSidechain"):
             if content.startswith(_BACKGROUND_TASK_MARKER_PREFIX):
                 marker_cause = _ATTR_BACKGROUND_TASK
@@ -5981,13 +6020,14 @@ def _attribute_idle_gap_cause(
                 marker_cause = _ATTR_COORDINATOR
         if marker_cause is None:
             continue
-        last_cause, last_marker_ts = marker_cause, _parse_ts(rec.get("timestamp"))
+        last_cause, last_marker_ts, last_command = marker_cause, _parse_ts(rec.get("timestamp")), marker_command
 
     if last_cause is None:
-        return _ATTR_UNATTRIBUTED, None
+        return _ATTR_UNATTRIBUTED, None, None
+    bash_shape = _classify_bash_wait_shape(last_command) if last_cause == _ATTR_OWN_BASH else None
     if last_marker_ts is None:
-        return last_cause, None
-    return last_cause, (last_marker_ts - gap_start_ts) / gap_seconds
+        return last_cause, None, bash_shape
+    return last_cause, (last_marker_ts - gap_start_ts) / gap_seconds, bash_shape
 
 
 def _cache_rebuild_excess_dollars(model: str, usage: dict) -> tuple[float | None, int]:
@@ -6179,6 +6219,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     attribution_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
     attribution_band_excess: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ATTRIBUTIONS, 0.0)
     attribution_shares: dict[str, list[float]] = {attribution: [] for attribution in _CACHE_REBUILD_ATTRIBUTIONS}
+    # Own-Bash wait-shape sub-split. Zero-seeded for the same zero-state-row
+    # reason as attribution_* above. Populated only for candidates whose
+    # bash_shape is not None -- the subset of the "waiting on own Bash call" row.
+    bash_shape_rebuilds: dict[str, int] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0)
+    bash_shape_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
+    bash_shape_band_excess: dict[str, float] = dict.fromkeys(_OWN_BASH_WAIT_SHAPES, 0.0)
+    bash_shape_shares: dict[str, list[float]] = {shape: [] for shape in _OWN_BASH_WAIT_SHAPES}
     # W5m/X/switch-delta (Approach section) -- accumulated threshold-
     # independently (every in-scope 5m-tier write, not only tail calls),
     # since the 2x uplift a cacheTtl switch would charge applies to warm
@@ -6324,9 +6371,10 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         else:
                             attribution: str | None = None
                             covered_share: float | None = None
+                            bash_shape: str | None = None
                             if origin == "subagent":
                                 window = group_records[chain["prev_index"] + 1 : idx]
-                                attribution, covered_share = _attribute_idle_gap_cause(
+                                attribution, covered_share, bash_shape = _attribute_idle_gap_cause(
                                     group_records[chain["prev_index"]], window,
                                     gap_start_ts=chain["prev_ts"], gap_seconds=gap_seconds,
                                 )
@@ -6340,6 +6388,7 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                                 "cause": cause,
                                 "attribution": attribution,
                                 "covered_share": covered_share,
+                                "bash_shape": bash_shape,
                             })
 
                 chain["prev_ts"] = cur_ts if cur_ts is not None else chain["prev_ts"]
@@ -6400,6 +6449,14 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 attribution_band_excess[attribution] += cand["excess_dollars"]
             if cand["covered_share"] is not None:
                 attribution_shares[attribution].append(cand["covered_share"])
+        bash_shape = cand["bash_shape"]
+        if bash_shape is not None:
+            bash_shape_rebuilds[bash_shape] += 1
+            bash_shape_excess[bash_shape] += cand["excess_dollars"]
+            if cand["cause"] == _CAUSE_IDLE_5M_1H:
+                bash_shape_band_excess[bash_shape] += cand["excess_dollars"]
+            if cand["covered_share"] is not None:
+                bash_shape_shares[bash_shape].append(cand["covered_share"])
 
     title_since = f"last {since_label}" if since_label else "all time"
     print(f"\n## Cache-rebuild report ({title_since}, threshold >= {threshold:,} cache-write tokens)\n")
@@ -6488,6 +6545,34 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             f"{attribution:<32} {attribution_rebuilds[attribution]:>9,}"
             f" {attribution_excess[attribution]:>12,.2f} {attribution_band_excess[attribution]:>12,.2f}"
             f" {median_cov:>12}"
+        )
+
+    print(
+        "\n## Own-Bash wait shape [unverified]\n\n"
+        "Sub-splits the 'waiting on own Bash call' row above (the three rows\n"
+        "below sum exactly to it) by the shape of the winning Bash tool_use's\n"
+        "own recorded command:\n"
+        "  - a sleep <number> in shell command position -> sleep-poll wait\n"
+        "  - any other recorded command -> other Bash wait\n"
+        "  - no command recorded (a Bash block with no input) -> no command recorded\n"
+        "Only the gap-closing call's own winning command is classified, so a\n"
+        "repeated 'sleep N; check' loop is classified once per gap it closed,\n"
+        "not once per sleep. The match is textual, with no shell parsing.\n"
+        "A quoted or heredoc-embedded sleep counts as a match, over-counting\n"
+        "the row below for text that only mentions sleep without waiting on\n"
+        "it. sleep $VAR (no literal leading digit) does not match,\n"
+        "under-counting the row below by missing a real sleep-poll wait. A\n"
+        "high share there points at no lever: see docs/cost-levers-considered.md's\n"
+        "'From background-slow-bash-calls.md' section. [unverified]\n"
+    )
+    print(f"{'Shape':<32} {'Rebuilds':>9} {'Excess $':>12} {'5m-1h $':>12} {'Median cov.':>12}")
+    for shape in _OWN_BASH_WAIT_SHAPES:
+        shape_shares = bash_shape_shares[shape]
+        shape_median_cov = _pct_of(statistics.median(shape_shares), 1.0) if shape_shares else "n/a"
+        print(
+            f"{shape:<32} {bash_shape_rebuilds[shape]:>9,}"
+            f" {bash_shape_excess[shape]:>12,.2f} {bash_shape_band_excess[shape]:>12,.2f}"
+            f" {shape_median_cov:>12}"
         )
 
     print(

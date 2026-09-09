@@ -590,6 +590,7 @@ def agent_input(
     prompt: str | None = None,
     tool_name: str = "Agent",
     cwd: str | None = None,
+    description: str = "test",
 ) -> dict:
     """Build an Agent (or Task) dispatch payload.
 
@@ -599,9 +600,12 @@ def agent_input(
     `subagent_type` is omitted from tool_input when None, matching a
     dispatch with no reviewer-persona target. `prompt` defaults to the
     literal string "test" when None, preserving every pre-existing caller's
-    payload shape.
+    payload shape. `description` defaults to `"test"` when not provided,
+    preserving existing callers' payload shape. It is threaded through as a
+    parameter so a `deny-no-op-dispatch.sh` fixture can construct a payload
+    with a distinct description without a separate builder.
     """
-    tool_input: dict = {"description": "test", "prompt": prompt if prompt is not None else "test"}
+    tool_input: dict = {"description": description, "prompt": prompt if prompt is not None else "test"}
     if subagent_type is not None:
         tool_input["subagent_type"] = subagent_type
     payload: dict = {"tool_name": tool_name, "tool_input": tool_input}
@@ -885,6 +889,7 @@ def write_skill_review_marker(
             "--",
             "claude-skills/skills/**/SKILL.md",
             "plugins/*/skills/**/SKILL.md",
+            "skills/**/SKILL.md",
             "claude-skills/skills/plan-review/ROUTING.md",
         ],
         capture_output=True,

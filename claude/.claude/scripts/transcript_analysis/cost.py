@@ -36,7 +36,6 @@ _LIST_PRICE_CAVEAT = (
 # alerts render, and a GFM alert cannot nest inside another element.
 _LIST_PRICE_CAVEAT_ALERT = f"> [!IMPORTANT]\n> {_LIST_PRICE_CAVEAT}"
 
-
 def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
     """Build one session's sorted (timestamp, gitBranch) index from its own
     main-thread (non-sidechain) records — the carry-forward source
@@ -307,6 +306,23 @@ def _accumulate_per_account_turn(
     account_totals["model_totals"][model] += turn_total
 
 
+def _print_scan_coverage_table(
+    transcripts_scanned: int, transcripts_unreadable: int, priced_sessions: int, priced_turns: int,
+) -> None:
+    """--summary's scan-coverage table, printed under the Scope: caption.
+
+    No markdown parameter: the full report already discloses these facts
+    per-root via `_cost_report`'s `cost: account-N: scanned …` line, so a
+    plain-text branch here would be dead code.
+    """
+    unreadable_header = " Of those, unreadable |" if transcripts_unreadable else ""
+    unreadable_delimiter = "---|" if transcripts_unreadable else ""
+    unreadable_cell = f" {transcripts_unreadable:,} |" if transcripts_unreadable else ""
+    print(f"| Transcript files scanned |{unreadable_header} Sessions with priced turns | Priced turns |")
+    print(f"|---|{unreadable_delimiter}---|---|")
+    print(f"| {transcripts_scanned:,} |{unreadable_cell} {priced_sessions:,} | {priced_turns:,} |")
+
+
 def _print_token_class_table(
     class_totals: dict[str, float], class_token_totals: dict[str, int], grand_total: float,
     *, markdown: bool = False,
@@ -529,8 +545,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     )
 
     total_transcripts_scanned = 0
-    # Folded into --summary's scope line as a conditional clause, printed
-    # only when nonzero -- not disclosed per-root the way the
+    # Folded into --summary's scan-coverage table as a conditional column,
+    # printed only when nonzero -- not disclosed per-root the way the
     # (summary-mode-pruned) scan line below discloses it.
     total_transcripts_skipped = 0
     if roots is not None:
@@ -567,7 +583,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # header ("this repo (N project dirs)") -- that count comes from `git
     # worktree list` (this repo's own local worktrees), not account
     # identity; the input that IS identity-keyed under --summary, a raw
-    # --projects value, is already refused above. Its own scope line below
+    # --projects value, is already refused above. Its own scope block below
     # reports total_transcripts_scanned instead.
     redact_map: dict[redaction._RedactMapKey, str] = {}
     if not summary_mode:
@@ -807,17 +823,19 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # tables) needs the total computed before that print.
     total_unpriced_tokens = sum(unpriced_tokens.values())
     if summary_mode:
-        # No leading blank line: pr-cost-section.sh prints this stdout directly under
-        # its own heading, which already supplies the separating blank line.
-        # The Scope: print's blank line terminates the GFM alert; omitting it lets
-        # lazy continuation fold Scope: into the blockquote.
+        # GFM requires a blank line on both sides of a table to render it as one.
+        # - No leading blank line: pr-cost-section.sh's own heading already supplies it.
+        # - Scope: print's blank line terminates the GFM alert and opens the table.
+        #   Omitting it lets lazy continuation fold Scope: into the blockquote.
+        # - The trailing print()'s blank line closes the table -- without it, a
+        #   no-op EXCLUDED SPEND banner and no stale/drift warning would leave the
+        #   table's last row directly adjacent to the next section's heading.
         print(_LIST_PRICE_CAVEAT_ALERT)
-        unreadable_clause = f", {total_transcripts_skipped:,} unreadable" if total_transcripts_skipped else ""
-        print(
-            f"\nScope: this account only, {title_since} ({total_transcripts_scanned:,} transcripts scanned"
-            f"{unreadable_clause}, {priced_session_count:,} priced sessions, {priced_turn_count:,} priced turns)"
-            " — dropping --summary reports every declared account too"
+        print(f"\nScope: this account only, {title_since}.\n")
+        _print_scan_coverage_table(
+            total_transcripts_scanned, total_transcripts_skipped, priced_session_count, priced_turn_count,
         )
+        print()
     else:
         print(f"\n## Cost report ({title_since})\n")
         print(_LIST_PRICE_CAVEAT)

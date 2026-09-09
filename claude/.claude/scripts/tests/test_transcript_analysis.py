@@ -683,6 +683,102 @@ class TestBuckets:
         assert cols["Proj"] == "2"
         assert cols["Sess"] == "2"
 
+    def test_proj_column_collapses_a_worktree_dir_into_its_main_repo(self, tmp_path, monkeypatch, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        Proj must collapse the worktree-suffixed slug back to the main slug before counting."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_three_worktree_dirs_into_one_main_repo(self, tmp_path, monkeypatch, capsys):
+        """Cardinality beyond a single worktree pair: a main checkout plus two
+        differently-suffixed worktree dirs off the same repo all collapse to
+        Proj == 1."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree_x = projects / "-home-u-repo-a--claude-worktrees-feat-x"
+        proj_worktree_y = projects / "-home-u-repo-a--claude-worktrees-feat-y"
+        proj_main.mkdir(parents=True)
+        proj_worktree_x.mkdir(parents=True)
+        proj_worktree_y.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_x / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree_y / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "1"
+        assert cols["Sess"] == "3"
+
+    def test_proj_column_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, tmp_path, monkeypatch, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount Proj."""
+        projects = tmp_path / "projects"
+        proj_alice = projects / "-home-alice-repo"
+        proj_bob = projects / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_bob / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "2"
+
+    def test_proj_column_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family."""
+        projects = tmp_path / "projects"
+        proj_main = projects / "-home-u-repo-a"
+        proj_worktree = projects / "-home-u-repo-a--claude-worktrees-feat"
+        proj_sibling = projects / "-home-v-repo-a"
+        proj_main.mkdir(parents=True)
+        proj_worktree.mkdir(parents=True)
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_main / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_worktree / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        _write_jsonl(proj_sibling / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="feat")])
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_buckets(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feat", max_labels=8)
+        assert cols["Proj"] == "2"
+        assert cols["Sess"] == "3"
+
+
+class TestProjectFamily:
+    def test_raw_slug_with_worktree_suffix_collapses_to_base_slug(self):
+        assert _mod._project_family("-home-u-repo-a--claude-worktrees-branch-x") == "-home-u-repo-a"
+
+    def test_raw_slug_without_worktree_suffix_returns_unchanged(self):
+        assert _mod._project_family("-home-u-repo-a") == "-home-u-repo-a"
+
 
 # ---------------------------------------------------------------------------
 # fail-seq end-to-end (core parsing logic, via shared helper)
@@ -7926,13 +8022,15 @@ class TestAttributeIdleGapCause:
     _cache_rebuild_report run, so a marker-shape bug is pinned without
     needing a full transcript fixture. Covers
     .claude/plans/subagent-idle-gap-cause-attribution.md's Verification
-    section's precedence, self-scoping, and clock-skew cases."""
+    section's precedence, self-scoping, and clock-skew cases, plus the
+    bash_shape/no-command/other-command split. Sleep-poll wait follows the
+    winning Bash marker, not window order."""
 
     def test_bash_tool_result_at_gap_end_attributes_to_own_bash_call_with_high_covered_share(self):
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest -k foo")])
         window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z")]
         gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
         )
         assert cause == _mod._ATTR_OWN_BASH
@@ -7945,7 +8043,7 @@ class TestAttributeIdleGapCause:
             ts="2026-08-01T10:05:55.000Z",
         )]
         gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
         )
         assert cause == _mod._ATTR_BACKGROUND_TASK
@@ -7958,7 +8056,7 @@ class TestAttributeIdleGapCause:
             ts="2026-08-01T10:05:55.000Z",
         )]
         gap_start_ts = _mod._parse_ts("2026-08-01T10:00:00.000Z")
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=gap_start_ts, gap_seconds=360.0
         )
         assert cause == _mod._ATTR_COORDINATOR
@@ -7966,7 +8064,7 @@ class TestAttributeIdleGapCause:
 
     def test_empty_window_is_unattributed_with_no_covered_share(self):
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, [], gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_UNATTRIBUTED
@@ -7980,7 +8078,7 @@ class TestAttributeIdleGapCause:
                 f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:05:00.000Z",
             ),
         ]
-        cause, _covered_share = _mod._attribute_idle_gap_cause(
+        cause, _covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_COORDINATOR
@@ -7996,7 +8094,7 @@ class TestAttributeIdleGapCause:
             ),
             _tool_result_record("tool-1", ts="2026-08-01T10:05:00.000Z"),
         ]
-        cause, _covered_share = _mod._attribute_idle_gap_cause(
+        cause, _covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_OWN_BASH
@@ -8007,7 +8105,7 @@ class TestAttributeIdleGapCause:
         though it's the only marker-shaped record in the window."""
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
         window = [_tool_result_record("tool-999", ts="2026-08-01T10:05:00.000Z")]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_UNATTRIBUTED
@@ -8020,7 +8118,7 @@ class TestAttributeIdleGapCause:
         matching id set."""
         prior_turn = _asst("claude-sonnet-5", content=[_edit_use("tool-1")])
         window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:00.000Z")]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_UNATTRIBUTED
@@ -8032,7 +8130,7 @@ class TestAttributeIdleGapCause:
             f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} a backgrounded task finished",
             ts="2026-08-01T10:05:00.000Z",
         )]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_UNATTRIBUTED
@@ -8045,7 +8143,7 @@ class TestAttributeIdleGapCause:
         window = [_meta_marker_record(
             f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:05:00.000Z", is_sidechain=False,
         )]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_UNATTRIBUTED
@@ -8059,7 +8157,7 @@ class TestAttributeIdleGapCause:
         window = [_meta_marker_record(
             f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: x", ts="2026-08-01T10:05:00.000Z", is_meta=False,
         )]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_UNATTRIBUTED
@@ -8077,11 +8175,72 @@ class TestAttributeIdleGapCause:
             _tool_result_record("tool-1", ts="2026-08-01T10:00:30.000Z"),
             _tool_result_record("tool-2", ts="2026-08-01T10:05:50.000Z"),
         ]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_OWN_BASH
         assert covered_share == pytest.approx(350 / 360)
+
+    def test_two_bash_pairs_differing_shape_the_later_sleep_poll_wins_the_shape(self):
+        """Two Bash tool_use/tool_result pairs where only the later result's
+        own command is a sleep-poll -- the shape must follow the winning
+        (later) marker, not the other pair's non-matching command."""
+        prior_turn = _asst(
+            "claude-sonnet-5", content=[_bash_use("tool-1", "pytest"), _bash_use("tool-2", "sleep 30")]
+        )
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:00:30.000Z"),
+            _tool_result_record("tool-2", ts="2026-08-01T10:05:50.000Z"),
+        ]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_two_bash_pairs_differing_shape_the_later_other_command_wins_the_shape(self):
+        """Same two pairs as the previous test, reversed window order -- the
+        shape must flip with them, proving it follows window-order
+        precedence, not a fixed per-command priority."""
+        prior_turn = _asst(
+            "claude-sonnet-5", content=[_bash_use("tool-1", "pytest"), _bash_use("tool-2", "sleep 30")]
+        )
+        window = [
+            _tool_result_record("tool-2", ts="2026-08-01T10:00:30.000Z"),
+            _tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z"),
+        ]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape == _mod._BASH_WAIT_OTHER
+
+    def test_coordinator_marker_win_carries_no_bash_shape(self):
+        """A coordinator-marker win (last-marker-wins over an earlier Bash
+        result) must carry no shape at all -- shape is only ever set when
+        the winning cause is _ATTR_OWN_BASH."""
+        prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "sleep 30")])
+        window = [
+            _tool_result_record("tool-1", ts="2026-08-01T10:01:00.000Z"),
+            _meta_marker_record(
+                f"{_mod._COORDINATOR_MESSAGE_MARKER_PREFIX}: hello", ts="2026-08-01T10:05:00.000Z",
+            ),
+        ]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape is None
+
+    def test_bash_tool_use_with_no_input_yields_no_command_recorded_shape(self):
+        """A Bash tool_use block with no `input` key at all must still win
+        the cause via its matching tool_use_id. The shape degrades to 'no
+        command recorded' rather than raising on the missing key. This is
+        distinct from TestClassifyBashWaitShape's present-but-non-string
+        case."""
+        prior_turn = _asst("claude-sonnet-5", content=[{"type": "tool_use", "id": "tool-1", "name": "Bash"}])
+        window = [_tool_result_record("tool-1", ts="2026-08-01T10:05:50.000Z")]
+        _cause, _covered_share, bash_shape = _mod._attribute_idle_gap_cause(
+            prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
+        )
+        assert bash_shape == _mod._BASH_WAIT_NO_COMMAND
 
     def test_clock_skew_marker_outside_gap_window_yields_finite_unclamped_covered_share(self):
         """A marker timestamp before gap_start_ts (clock skew) must still
@@ -8089,7 +8248,7 @@ class TestAttributeIdleGapCause:
         crashing or silently clamping to 0."""
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
         window = [_tool_result_record("tool-1", ts="2026-08-01T09:59:00.000Z")]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_OWN_BASH
@@ -8102,7 +8261,7 @@ class TestAttributeIdleGapCause:
         marker."""
         prior_turn = _asst("claude-sonnet-5", content=[_bash_use("tool-1", "pytest")])
         window = [{"type": "user", "message": {"content": [_tool_result("tool-1", "ok")]}}]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_OWN_BASH
@@ -8123,11 +8282,88 @@ class TestAttributeIdleGapCause:
                 "isSidechain": True,
             },
         ]
-        cause, covered_share = _mod._attribute_idle_gap_cause(
+        cause, covered_share, _bash_shape = _mod._attribute_idle_gap_cause(
             prior_turn, window, gap_start_ts=_mod._parse_ts("2026-08-01T10:00:00.000Z"), gap_seconds=360.0
         )
         assert cause == _mod._ATTR_COORDINATOR
         assert covered_share is None
+
+
+class TestClassifyBashWaitShape:
+    """Direct unit tests for _classify_bash_wait_shape -- a pure string
+    classifier, so its whole test surface is literal command strings. Covers
+    the sleep-poll match shape, including the quoted/heredoc and `$VAR`
+    edge cases."""
+
+    def test_do_sleep_shape_classifies_as_sleep_poll(self):
+        """The `until ... kill -0 $PID ...; do sleep N; done` shape -- one
+        of the two Bash sleep-poll idioms this classifier exists to catch,
+        a `kill -0 $PID`-style wait loop."""
+        command = "until ! kill -0 $PID 2>/dev/null; do sleep 5; done"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_leading_sleep_shape_classifies_as_sleep_poll(self):
+        """The `sleep N; <check>` shape -- the other of the two Bash
+        sleep-poll idioms this classifier exists to catch, a leading sleep
+        before a check command."""
+        command = "sleep 30; kill -0 $PID || break"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_ampersand_separated_sleep_classifies_as_sleep_poll(self):
+        command = "make build && sleep 10 && make test"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_sleep_with_variable_argument_classifies_as_other(self):
+        """No literal leading digit -- the documented under-count bias."""
+        command = "sleep $INTERVAL"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_OTHER
+
+    def test_sleep_flag_name_not_in_command_position_classifies_as_other(self):
+        """`sleep` appearing inside a longer flag name, not preceded by a
+        separator or reserved word -- no per-tool poll idiom matching."""
+        command = "gh run watch --sleep-interval 5"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_OTHER
+
+    def test_quoted_sleep_inside_echo_classifies_as_sleep_poll(self):
+        """Textual match with no shell parsing: a `sleep 5` inside a quoted
+        echo argument counts, documenting the accepted false positive so a
+        later widening to shell-aware parsing is a deliberate change."""
+        command = 'echo "done; sleep 5"'
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_newline_separated_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` on its own line inside a multi-line Bash script --
+        the newline-separator branch of the sleep-poll regex."""
+        command = "set -e\nsleep 5\necho done"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_then_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` guarded by an `if`/`then` conditional -- the
+        `then` reserved-word branch of the sleep-poll regex."""
+        command = "if x; then sleep 5; fi"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_else_sleep_classifies_as_sleep_poll(self):
+        """A `sleep N` guarded by an `if`/`else` conditional -- the
+        `else` reserved-word branch of the sleep-poll regex."""
+        command = "if x; then true; else sleep 5; fi"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_heredoc_body_sleep_classifies_as_sleep_poll(self):
+        """Heredoc bodies match via the same newline-separator branch as a
+        multi-line script."""
+        command = "cat <<'EOF'\nsleep 5\nEOF"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_pipe_separated_sleep_classifies_as_sleep_poll(self):
+        command = "some-command | sleep 5"
+        assert _mod._classify_bash_wait_shape(command) == _mod._BASH_WAIT_SLEEP_POLL
+
+    def test_none_command_classifies_as_no_command_recorded(self):
+        assert _mod._classify_bash_wait_shape(None) == _mod._BASH_WAIT_NO_COMMAND
+
+    def test_non_string_command_classifies_as_no_command_recorded(self):
+        assert _mod._classify_bash_wait_shape(12345) == _mod._BASH_WAIT_NO_COMMAND
 
 
 class TestCacheRebuildExcessPricing:
@@ -8501,7 +8737,9 @@ class TestCacheRebuildIdleGapAttribution:
     style. Precedence/self-scoping/clock-skew are covered directly against
     _attribute_idle_gap_cause in TestAttributeIdleGapCause above; these
     tests exercise the report's own wiring of that function into the scan
-    loop and the printed table."""
+    loop and the printed table. Also covers the report-level own-Bash
+    wait-shape rows: the sleep-poll/other/no-command split sums exactly to
+    the 'waiting on own Bash call' row it sub-splits."""
 
     def test_bash_tool_result_at_gap_end_populates_own_bash_row_leaving_others_zero_seeded(
         self, fake_projects, capsys
@@ -8824,6 +9062,172 @@ class TestCacheRebuildIdleGapAttribution:
         assert _extract_cache_rebuild_row(out, "subagent") == (0, "0.00")
         for attribution in _mod._CACHE_REBUILD_ATTRIBUTIONS:
             assert _extract_cache_rebuild_attribution_row(out, attribution) == (0, "0.00", "0.00", "n/a")
+
+    def test_sleep_poll_bash_command_populates_sleep_poll_wait_row(self, fake_projects, capsys):
+        """Mirrors
+        test_bash_tool_result_at_gap_end_populates_own_bash_row_leaving_others_zero_seeded
+        with a sleep-poll command instead of a plain one -- pins that the
+        sleep-poll wait row, not just the parent own-Bash row, gets
+        populated, leaving the other two shape rows zero-seeded."""
+        session_id = "sess-sleep-poll"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        subagent_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "sleep 30")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        subagent_records[0]["isSidechain"] = True
+        subagent_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_SLEEP_POLL) == (
+            1, "0.46", "0.46", "97.2%",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_OTHER) == (
+            0, "0.00", "0.00", "n/a",
+        )
+        assert _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_NO_COMMAND) == (
+            0, "0.00", "0.00", "n/a",
+        )
+
+    def test_own_bash_wait_shape_rows_sum_exactly_to_the_own_bash_attribution_row(
+        self, fake_projects, capsys
+    ):
+        """Three own-Bash-attributed subagent rebuilds, one per shape
+        (sleep-poll, other, no command recorded), plus one background-task-
+        attributed rebuild that must not leak into the shape sum -- the
+        three shape rows' Rebuilds/Excess $/5m-1h $ must sum exactly to the
+        'waiting on own Bash call' row above them, modeled on
+        test_main_origin_rebuild_enters_no_attribution_row_and_totals_reconcile_with_subagent_row."""
+        shape_fixtures = [
+            ("sess-shape-sleep", [_bash_use("tool-1", "sleep 30")]),
+            ("sess-shape-other", [_bash_use("tool-1", "pytest")]),
+            ("sess-shape-nocommand", [{"type": "tool_use", "id": "tool-1", "name": "Bash"}]),
+        ]
+        for session_id, first_content in shape_fixtures:
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+            subagent_records = [
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                    request_id="sub-1", content=first_content,
+                ),
+                _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+                _priced(
+                    "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+                ),
+            ]
+            subagent_records[0]["isSidechain"] = True
+            subagent_records[2]["isSidechain"] = True
+            _write_subagent_jsonl(fake_projects, session_id, "agent-1", subagent_records)
+
+        session_id = "sess-shape-bgtask"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [])
+        bgtask_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _user_msg(f"{_mod._BACKGROUND_TASK_MARKER_PREFIX} x", ts="2026-08-01T10:05:55.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        bgtask_records[0]["isSidechain"] = True
+        bgtask_records[1]["isMeta"] = True
+        bgtask_records[1]["isSidechain"] = True
+        bgtask_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", bgtask_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        own_bash_rebuilds, own_bash_excess, own_bash_band_excess, _median = (
+            _extract_cache_rebuild_attribution_row(out, _mod._ATTR_OWN_BASH)
+        )
+        assert (own_bash_rebuilds, own_bash_excess, own_bash_band_excess) == (3, "1.38", "1.38")
+        assert _extract_cache_rebuild_attribution_row(out, _mod._ATTR_BACKGROUND_TASK)[0] == 1
+
+        shape_rows = [_extract_cache_rebuild_attribution_row(out, shape) for shape in _mod._OWN_BASH_WAIT_SHAPES]
+        assert sum(row[0] for row in shape_rows) == own_bash_rebuilds
+        assert sum(float(row[1]) for row in shape_rows) == pytest.approx(float(own_bash_excess))
+        assert sum(float(row[2]) for row in shape_rows) == pytest.approx(float(own_bash_band_excess))
+
+    def test_no_subagent_idle_gap_rebuilds_renders_all_three_shape_rows_zero_seeded(
+        self, fake_projects, capsys
+    ):
+        """Same all-main-origin corpus shape as the four-row zero-seeding
+        test above, pinning that statistics.median doesn't raise on the new
+        block's own empty lists either."""
+        main_records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:06:00.000Z", request_id="main-2",
+            ),
+        ]
+        _write_jsonl(fake_projects / "sess-mainonly-shape.jsonl", main_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for shape in _mod._OWN_BASH_WAIT_SHAPES:
+            assert _extract_cache_rebuild_attribution_row(out, shape) == (0, "0.00", "0.00", "n/a")
+
+    def test_bash_shape_row_5m_1h_excess_excludes_idle_over_1h_candidate_but_excess_includes_it(
+        self, fake_projects, capsys
+    ):
+        """Mirrors test_idle_over_1h_subagent_rebuild_counts_in_excess_but_not_5m_1h_band_excess
+        at the shape-row level: bash_shape_band_excess's own idle-5m-1h-band
+        guard sits unexercised whenever every own-Bash fixture lands in the
+        same band, as every other shape-row test above does. Pairing an
+        in-band sleep-poll candidate against an idle->1h sleep-poll
+        candidate makes 5m-1h $ and Excess $ diverge on the shape row."""
+        session_band = "sess-shape-band"
+        _write_jsonl(fake_projects / f"{session_band}.jsonl", [])
+        band_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "sleep 30")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:05:50.000Z"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        band_records[0]["isSidechain"] = True
+        band_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_band, "agent-1", band_records)
+
+        session_over1h = "sess-shape-over1h"
+        _write_jsonl(fake_projects / f"{session_over1h}.jsonl", [])
+        over1h_records = [
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z",
+                request_id="sub-1", content=[_bash_use("tool-1", "sleep 30")],
+            ),
+            _user_msg([_tool_result("tool-1", "ok")], ts="2026-08-01T10:30:00.000Z"),
+            # Exactly 3600s after sub-1 -- idle >1h, not idle 5m-1h.
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000, ts="2026-08-01T11:00:00.000Z", request_id="sub-2",
+            ),
+        ]
+        over1h_records[0]["isSidechain"] = True
+        over1h_records[2]["isSidechain"] = True
+        _write_subagent_jsonl(fake_projects, session_over1h, "agent-1", over1h_records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        sleep_poll_rebuilds, sleep_poll_excess, sleep_poll_band_excess, _median = (
+            _extract_cache_rebuild_attribution_row(out, _mod._BASH_WAIT_SLEEP_POLL)
+        )
+        assert sleep_poll_rebuilds == 2
+        assert sleep_poll_excess == "0.92"
+        assert sleep_poll_band_excess == "0.46"
 
 
 class TestCacheRebuildSwitchDeltaThresholdIndependence:
@@ -12895,6 +13299,67 @@ class TestCmdUserInput:
         assert "### claude-config ·" in out
         assert "### private-project-1 ·" in out
 
+    def test_scope_project_count_collapses_worktree_dir_into_main_repo(self, fake_projects, capsys):
+        """A repo's main checkout and its own linked worktree are one repo, not two --
+        the Scope line's project count must collapse the worktree-suffixed slug back
+        to the main slug before counting. Same as cmd_buckets's Proj column."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 1 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_counts_same_repo_name_under_two_home_dirs_as_two_projects(self, fake_projects, capsys):
+        """Regression guard: routing the raw slug through _derive_proj_label first
+        would discard the home/user prefix. That would falsely merge these two
+        distinct repos into one family and undercount the Scope line's project
+        count. Same invariant as TestBuckets's Proj-column sibling guard for
+        cmd_buckets — see that test for the mirrored intent, not identical setup
+        mechanics."""
+        proj_alice = fake_projects.parent / "-home-alice-repo"
+        proj_bob = fake_projects.parent / "-home-bob-repo"
+        proj_alice.mkdir(parents=True)
+        proj_bob.mkdir(parents=True)
+        _write_jsonl(proj_alice / "sess.jsonl", [
+            _ui_user("prompt from alice's repo", branch="feat"),
+        ])
+        _write_jsonl(proj_bob / "sess.jsonl", [
+            _ui_user("prompt from bob's repo", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 2 sessions, 2 fresh prompts" in out
+
+    def test_scope_project_count_collapses_worktree_while_counting_same_basename_sibling_separately(
+        self, fake_projects, capsys
+    ):
+        """The collapse fix and the over-collapse guard rail both hold in the same
+        counting pass: a worktree checkout collapses into its own main repo, while
+        a same-repo-name checkout under a different home directory stays a
+        distinct family. Same invariant as TestBuckets's combined sibling test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prompt in main checkout", branch="feat"),
+        ])
+        proj_worktree = fake_projects.parent / f"{fake_projects.name}--claude-worktrees-feat"
+        proj_worktree.mkdir(parents=True)
+        _write_jsonl(proj_worktree / "sess.jsonl", [
+            _ui_user("prompt in linked worktree", branch="feat"),
+        ])
+        proj_sibling = fake_projects.parent / "-home-otheruser-testrepo"
+        proj_sibling.mkdir(parents=True)
+        _write_jsonl(proj_sibling / "sess.jsonl", [
+            _ui_user("prompt from a same-named repo under a different home dir", branch="feat"),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "Scope: 2 projects, 3 sessions, 3 fresh prompts" in out
+
     def test_out_write_failure_exits_1(self, fake_projects, capsys, tmp_path):
         """A write failure to --out's target (parent directory missing) exits 1
         with the user-input-specific stderr message; nothing is printed to stdout."""
@@ -15751,6 +16216,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-worktree-for-git-writes.sh", "worktree-enforcement"),
     ("require-architect-consult.sh", "architect-consult"),
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
+    ("deny-no-op-dispatch.sh", "no-op-dispatch"),
 )
 
 
