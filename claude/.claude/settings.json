@@ -391,6 +391,11 @@
             "type": "command",
             "command": "~/.claude/hooks/require-architect-consult.sh",
             "statusMessage": "Checking architect-consult gate..."
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/deny-no-op-dispatch.sh",
+            "statusMessage": "Checking no-op-dispatch gate..."
           }
         ]
       },

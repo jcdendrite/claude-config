@@ -172,6 +172,7 @@ flowchart LR
 | `redact-credential-values.sh` | — (PostToolUse `Bash`/`Read`/`WebFetch`/`Grep`/`Task`, informational) | Redacts a credential-shaped value in the tool result via `updatedToolOutput`; see [`docs/hooks.md`](docs/hooks.md) |
 | `deny-reviewer-tree-mutation.sh` | `Bash`/`Write`/`Edit`/`MultiEdit` from a review-only agent (`ciso-reviewer`, `staff-*`, `Explore`, `Plan`) that would mutate the tree under review | No clear — copy the file to `/tmp` and mutate the copy there |
 | `require-architect-consult.sh` | Reviewer-persona `Agent`/`Task` spawn when a branch is entering its third distinct reviewed state | A `plan-architect MODE=consult` dispatch (self-initiated or gate-prescribed), which `log-reviewer-round.sh` records as a per-branch latch; or `<config-dir>/.round-consult-gate-disabled` |
+| `deny-no-op-dispatch.sh` | `Agent`/`Task` spawn whose prompt is under 600 characters and matches a closed no-work idiom list | No clear — state the dispatch's actual work in the prompt, or end the turn without a tool call |
 | `require-ready-for-review.sh` | `git push`, `gh pr ready`, `gh pr create` | `/ready-for-review` run since last commit |
 | `require-respond-pr.sh` | `gh api` PR comment reads/posts | `/respond-pr` active bypass marker |
 | `advance-past-commit-stall.sh` | — (Stop, `turn-gate`, opt-in) | Forces the turn to continue past a commit/push/PR-open permission question when autonomous shipping is active; see [Autonomous shipping](#autonomous-shipping) |
