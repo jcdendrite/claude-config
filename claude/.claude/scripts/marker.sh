@@ -14,6 +14,11 @@ set -u
 # reads a recorded subject instead of calling this script directly.
 PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 
+# The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
+# plugin, and plugin-root-equals-repo-root locations) plus plan-review/ROUTING.md,
+# matching what require-skill-review.sh checks at commit time.
+SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
+
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
@@ -445,8 +450,8 @@ case "$SUBCOMMAND" in
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (both stowed
         # and plugin locations) plus plan-review/ROUTING.md, matching what
-        # require-skill-review.sh checks at commit time.
-        SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
+        # require-skill-review.sh checks at commit time. SKILL_REVIEW_PATHSPECS is
+        # the module-level constant defined near the top of this file.
         _guard_staged_vs_unstaged "$REPO_ROOT" skill-review "${SKILL_REVIEW_PATHSPECS[@]}"
         RC=0
         MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}") || RC=$?
@@ -747,7 +752,6 @@ case "$SUBCOMMAND" in
 
     # skill-review: same recipe as the `write skill-review` arm above,
     # scoped to the SKILL.md/ROUTING.md pathspecs and gated the same way.
-    SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
     SKILL_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}")
     if _status_report_completion_marker skill-review "$CONFIG_DIR/skill-review-markers" "$REPO_HASH_PREFIX" "$SKILL_REVIEW_VALUE"; then
       _status_reconciliation_flag skill-review "$REPO_ROOT" "${SKILL_REVIEW_PATHSPECS[@]}"

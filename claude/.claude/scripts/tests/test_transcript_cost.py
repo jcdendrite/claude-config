@@ -454,7 +454,8 @@ class TestCost:
         # not $6.00 for pricing the group's usage three times over.
         assert _extract_md_grand_total(out) == pytest.approx(2.00)
         # Three content-block records collapse into one priced turn, not three.
-        assert "1 priced turns" in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
+        assert coverage_cols["Priced turns"] == "1"
 
     def test_sidechain_multi_record_request_id_group_composes_with_sidechain_dedup(
         self, fake_projects, capsys
@@ -1705,11 +1706,43 @@ class TestCostThreadSplit:
 
 
 class TestCostMarkdownTablePrinters:
-    """Direct unit coverage of _print_token_class_table's and
-    _print_model_id_table's markdown branches, mirroring
-    TestCostThreadSplit's _print_thread_table unit test -- pins each
-    function's own formatting invariants without paying --summary's full
-    _cost_report fixture cost."""
+    """Direct unit coverage of _print_scan_coverage_table,
+    _print_token_class_table's, and _print_model_id_table's markdown
+    branches, mirroring TestCostThreadSplit's _print_thread_table unit
+    test -- pins each function's own formatting invariants without paying
+    --summary's full _cost_report fixture cost."""
+
+    def test_print_scan_coverage_table_omits_unreadable_column_when_zero(self, capsys):
+        _mod.cost._print_scan_coverage_table(3, 0, 2, 5)
+        out = capsys.readouterr().out
+        assert "Of those, unreadable" not in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned"] == "3"
+        assert coverage_cols["Sessions with priced turns"] == "2"
+        assert coverage_cols["Priced turns"] == "5"
+
+    def test_print_scan_coverage_table_includes_unreadable_column_when_nonzero(self, capsys):
+        _mod.cost._print_scan_coverage_table(3, 1, 2, 5)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="3")
+        assert coverage_cols["Transcript files scanned"] == "3"
+        assert coverage_cols["Of those, unreadable"] == "1"
+        assert coverage_cols["Sessions with priced turns"] == "2"
+        assert coverage_cols["Priced turns"] == "5"
+
+    def test_print_scan_coverage_table_formats_large_counts_with_commas(self, capsys):
+        _mod.cost._print_scan_coverage_table(1_500_000, 0, 2, 5)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1,500,000")
+        assert coverage_cols["Transcript files scanned"] == "1,500,000"
+
+    def test_print_scan_coverage_table_renders_zero_for_all_zero_counts(self, capsys):
+        _mod.cost._print_scan_coverage_table(0, 0, 0, 0)
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="0")
+        assert coverage_cols["Transcript files scanned"] == "0"
+        assert coverage_cols["Sessions with priced turns"] == "0"
+        assert coverage_cols["Priced turns"] == "0"
 
     def test_print_token_class_table_markdown_branch_renders_exact_gfm_lines(self, capsys):
         class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
@@ -2193,8 +2226,9 @@ class TestCostSummary:
         assert "## Cost by project" not in out
         assert "## Cost by context-at-turn bucket" not in out
         assert "## Cost by account" not in out
-        assert "1 priced sessions" in out
-        assert "1 priced turns" in out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
 
     def test_summary_excluded_spend_banner_counts_and_tokens_column_exclusion(self, tmp_path, monkeypatch, capsys):
         """A nonzero-token <synthetic> turn fires the EXCLUDED SPEND banner
@@ -2295,12 +2329,14 @@ class TestCostSummary:
         out = capsys.readouterr().out
         assert _extract_grand_total(out) == pytest.approx(12.00)
 
-    def test_summary_scope_line_states_single_account_and_that_dropping_flag_widens_it(
+    def test_summary_scope_caption_discloses_single_account_scope(
         self, tmp_path, monkeypatch, capsys
     ):
-        """1c: the Scope: line must make it legible to a reader that dropping
-        --summary from the printed command returns a different, larger
-        total, not just state a transcript count."""
+        """The Scope: caption alone must make single-account scope legible
+        to a reader unfamiliar with this toolkit. No separate disclosure
+        sentence follows the scan-coverage table. See
+        docs/transcript-analysis.md's --summary flag entry for the full
+        narrowing contract."""
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
@@ -2317,10 +2353,119 @@ class TestCostSummary:
 
         _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
         out = capsys.readouterr().out
-        assert (
-            "Scope: this account only, all time (1 transcripts scanned, 1 priced sessions, 1 priced turns)"
-            " — dropping --summary reports every declared account too"
-        ) in out
+        assert "\nScope: this account only, all time.\n" in out
+        assert "different Claude account" not in out
+        # Structural guard: catches any prose reintroduced between the table and the
+        # next heading, regardless of its wording -- not just the phrase above.
+        before_heading = out[: out.index("### Cost by token class")]
+        assert before_heading.endswith("|\n\n")
+
+    def test_summary_scan_coverage_table_distinguishes_sessions_from_turns(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """This fixture's one session contributes two priced turns, so
+        Sessions with priced turns must read 1 and Priced turns must read
+        2. Every other --summary fixture has exactly one of each, so a
+        positional-argument swap at _print_scan_coverage_table's call site
+        would otherwise pass every existing test undetected."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000),
+            _priced("claude-sonnet-5", input=1_000_000),
+        ])
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="1")
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "2"
+
+    def test_summary_scan_coverage_table_includes_unreadable_column_when_nonzero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Present arm: a nonzero skipped-file count from the scan-root
+        helper reaches the table's Of those, unreadable cell. Monkeypatches
+        scope._scan_root_transcripts directly rather than chmod'ing a real
+        file -- that helper's own permission-probe behavior is already
+        unit-tested (test_transcript_analysis.py's
+        test_skipped_counts_unreadable_file_separately_from_scanned), so
+        this test only needs to prove cost.py's accumulator threads the
+        scanned/skipped counts through to the table."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        _write_jsonl(mine / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.scope, "_scan_root_transcripts", lambda *a, **k: (2, 1))
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True), date(2026, 8, 2), roots=[projects])
+
+        out = capsys.readouterr().out
+        coverage_cols = _md_table_cols(out, header_contains="Transcript files scanned", row_contains="2")
+        assert coverage_cols["Transcript files scanned"] == "2"
+        assert coverage_cols["Of those, unreadable"] == "1"
+        assert coverage_cols["Sessions with priced turns"] == "1"
+        assert coverage_cols["Priced turns"] == "1"
+
+    def test_summary_scope_block_is_identical_regardless_of_declared_root_count(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The Scope: caption and scan-coverage table's wording do not vary
+        with declared-root count: pins that with a byte-identical comparison
+        of the caption-through-table span between a single-root and a
+        two-root fixture, rather than leaving it unverified."""
+        default_dir = tmp_path / "single"
+        (default_dir / "projects" / "-repo-main").mkdir(parents=True)
+        _write_jsonl(
+            default_dir / "projects" / "-repo-main" / "sess.jsonl",
+            [_priced("claude-sonnet-5", input=1_000_000)],
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(default_dir))
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/main\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        single_root_out = capsys.readouterr().out
+
+        _two_declared_roots_with_this_repo_sessions(tmp_path, monkeypatch)
+        _mod.cmd_cost(_cost_args(summary=True, this_repo=True, branches="main"))
+        two_roots_out = capsys.readouterr().out
+
+        def _scope_span(out: str) -> str:
+            start = out.index("\nScope: this account only,")
+            # Bounded by the next heading rather than the note's own wording.
+            # A wording-anchored bound would miss a regression that appends
+            # content between the note and that heading.
+            end = out.index("\n#", start)
+            return out[start:end]
+
+        assert _scope_span(single_root_out) == _scope_span(two_roots_out)
 
     def test_direct_cost_report_call_refuses_more_than_one_root_under_summary(
         self, tmp_path, capsys
