@@ -2,8 +2,11 @@
 # cleanup-merged-branches.sh — discover and clean up merged branches.
 #
 # Uses two signals to detect merged branches:
-#   Tier A — gh pr list confirms a merged PR for this branch name, and the
-#             branch's current tip matches that merged PR's headRefOid.
+#   Tier A — gh pr list confirms a merged PR for this branch name, and
+#             either the branch's current tip matches that merged PR's
+#             headRefOid (tip-match), or the tip is a strict ancestor of
+#             it (pr-head-ancestor) — fetching the PR's refs/pull/<n>/head
+#             on demand when its objects aren't local yet.
 #   Tier B — the branch tip is reachable from origin/<default> but no
 #             merged PR was found for this name (branch renamed before
 #             merge, worktree-prefixed name, etc.).
@@ -20,9 +23,10 @@
 # Skip lines are reported once per distinct reason, with a count and the
 # branch names, rather than one line per branch.
 #
-# Tier A branches are deleted without prompting. Tier B branches prompt
-# interactively; when stdin is not a TTY, Tier B branches are skipped with
-# a warning.
+# Tier A branches are deleted without prompting; --dry-run's preview names
+# which basis (tip-match or pr-head-ancestor) qualified a Tier A branch.
+# Tier B branches prompt interactively; when stdin is not a TTY, Tier B
+# branches are skipped with a warning.
 #
 # No user-controlled branch-name argument means no argument-injection
 # attack surface against the destructive git ops. The exact-string
@@ -319,17 +323,50 @@ CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 # message so all three agree and none re-issues its own `gh` call.
 # ---------------------------------------------------------------------------
 
+# merged_row_containing_tip TIP ROWS
+# ROWS is classify_branch's validated stale-row table: space-separated
+# <pr>,<oid>,<merged-date> triples in gh's own row order, one per merged
+# PR sharing this branch name. Scans every row, first hit wins, for one
+# whose oid TIP is an ancestor of — proving every commit on the local
+# branch is contained in a commit GitHub says it merged. Tests only
+# objects already present locally; classify_branch's own fetch loop is
+# what makes a missing object visible to a second call of this scan.
+# Prints the winning row's <pr>,<oid>,<merged-date> triple and returns 0
+# on a hit; prints nothing and returns 1 when no row's oid is both
+# present and an ancestor of TIP.
+merged_row_containing_tip() {
+  local tip="$1" rows="$2" row pr oid rest merged_date
+  for row in $rows; do
+    pr="${row%%,*}"
+    rest="${row#*,}"
+    oid="${rest%%,*}"
+    merged_date="${rest#*,}"
+    [ -n "$oid" ] || continue
+    if git merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then
+      printf '%s,%s,%s\n' "$pr" "$oid" "$merged_date"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # classify_branch <branch>
 #
 # Prints a verdict to stdout and always returns 0 — a return-nonzero here
 # would abort the whole sweep under `set -e`, which is why every lookup
-# below is captured rather than allowed to propagate. Pure: makes exactly
-# one `gh pr list` call and one read-only git reachability check, with no
-# destructive side effects, so it is safe to call from message-only sites.
+# below is captured rather than allowed to propagate. No destructive side
+# effects, so it is safe to call from message-only sites. Beyond the
+# `gh pr list` call and the read-only git reachability check, it may also
+# trigger network I/O: a tip that matches no headRefOid and isn't
+# reachable from origin/<default> can trigger one `git fetch` per merged
+# row whose object isn't local yet, to test ancestry against that PR's
+# actual merged head (merged_row_containing_tip above).
 #
 # Verdicts:
-#   tier-a:<pr>:<merged-date>  confirmed merged; branch tip matches the
-#                              merged PR's headRefOid
+#   tier-a:<pr>:<merged-date>:<basis>  confirmed merged; basis is
+#                              tip-match (branch tip equals the merged
+#                              PR's headRefOid) or pr-head-ancestor (tip
+#                              is a strict ancestor of it)
 #   tier-b:[<stale-pr>]       reachable from origin/<default>; no PR
 #                              matched this name — <stale-pr> is set when a
 #                              same-named merged PR exists but this tip isn't
@@ -341,12 +378,13 @@ CURRENT_HEAD=$(git rev-parse --abbrev-ref HEAD)
 #   skip-error                the `gh` lookup failed; fail closed
 #   none                      no signal either way (Tier C — untouched)
 #
-# Guard 1 (open-PR check) and Guard 2 (Tier-A tip verification) both live
-# here: an open PR always wins over a same-named merged PR, and a
-# merged-by-name match only qualifies for Tier A if the current tip is
-# part of that merge — otherwise it is a reused branch name.
+# The open-PR check and the Tier-A tip-verification check both live here:
+# an open PR always wins over a same-named merged PR, and a
+# merged-by-name match only qualifies for Tier A if the current tip
+# matches or is an ancestor of that merge — otherwise it is a reused
+# branch name.
 classify_branch() {
-  local branch="$1" pr_json tip classification stale_pr rest pr_number merged_date
+  local branch="$1" pr_json tip classification stale_pr stale_rows rest pr_number merged_date ancestor_row row oid
 
   # Fail closed on a `gh` error: capture output before parsing (rather than
   # piping straight into python3, which would lose gh's exit code) so a
@@ -404,7 +442,32 @@ matched = next((r for r in merged_rows if r.get('headRefOid') == tip), None)
 if matched is not None:
     print(f\"matched:{matched['number']}:{(matched.get('mergedAt') or '')[:10]}\")
 elif merged_rows:
-    print(f\"stale:{merged_rows[0]['number']}\")
+    # number must be all-digit and headRefOid must be exactly 40 lowercase
+    # hex characters before either reaches a git fetch or merge-base
+    # argument. This is character-class membership, not a regex, since
+    # this source is a double-quoted shell string whose anchors would be
+    # eaten by the shell before python runs.
+    # row_date never reaches a git argument, but a stray space or comma in
+    # it would misparse a downstream row in the same unquoted
+    # space-separated triple table. It degrades to blank rather than
+    # sys.exit, matching row_oid's treatment: a bad date shouldn't fail
+    # the whole branch closed.
+    DIGITS = '0123456789'
+    HEX_LOWER_CHARS = '0123456789abcdef'
+    DATE_CHARS = '0123456789-'
+    triples = []
+    for row in merged_rows:
+        row_number = str(row['number'])
+        if not row_number or any(c not in DIGITS for c in row_number):
+            sys.exit(1)
+        row_oid = row.get('headRefOid') or ''
+        if len(row_oid) != 40 or any(c not in HEX_LOWER_CHARS for c in row_oid):
+            row_oid = ''
+        row_date = (row.get('mergedAt') or '')[:10]
+        if any(c not in DATE_CHARS for c in row_date):
+            row_date = ''
+        triples.append(f\"{row_number},{row_oid},{row_date}\")
+    print(f\"stale:{' '.join(triples)}\")
 else:
     print('none')
 " "$tip"); then
@@ -421,11 +484,12 @@ else:
       rest="${classification#matched:}"
       pr_number="${rest%%:*}"
       merged_date="${rest#*:}"
-      printf 'tier-a:%s:%s\n' "$pr_number" "$merged_date"
+      printf 'tier-a:%s:%s:tip-match\n' "$pr_number" "$merged_date"
       return 0
       ;;
     stale:*)
-      stale_pr="${classification#stale:}"
+      stale_rows="${classification#stale:}"
+      stale_pr="${stale_rows%%,*}"
       ;;
   esac
 
@@ -436,6 +500,42 @@ else:
     # exists, just not the one that produced this tip.
     printf 'tier-b:%s\n' "${stale_pr:-}"
     return 0
+  fi
+
+  if [ -n "$tip" ] && [ -n "${stale_rows:-}" ]; then
+    if ancestor_row=$(merged_row_containing_tip "$tip" "$stale_rows"); then
+      pr_number="${ancestor_row%%,*}"
+      rest="${ancestor_row#*,}"
+      merged_date="${rest#*,}"
+      printf 'tier-a:%s:%s:pr-head-ancestor\n' "$pr_number" "$merged_date"
+      return 0
+    fi
+
+    # Local objects don't contain the merged head.
+    # Fetch each missing row's PR ref independently rather than in one
+    # batched multi-refspec call -- a single fetch spanning several
+    # refspecs aborts the whole transfer the moment any one of them is
+    # unresolvable on the remote, which would silently defeat the
+    # multi-row scan for exactly the case this loop exists to handle.
+    # `|| true` forces the fetch attempt to a 0 exit regardless of
+    # outcome, so a missing or unresolvable ref is silently skipped
+    # rather than surfaced as a shell error.
+    for row in $stale_rows; do
+      pr_number="${row%%,*}"
+      rest="${row#*,}"
+      oid="${rest%%,*}"
+      [ -n "$oid" ] || continue
+      git cat-file -e "${oid}^{commit}" 2>/dev/null && continue
+      _lib_capped_for 15 git fetch --quiet origin "refs/pull/${pr_number}/head" 2>/dev/null || true
+    done
+
+    if ancestor_row=$(merged_row_containing_tip "$tip" "$stale_rows"); then
+      pr_number="${ancestor_row%%,*}"
+      rest="${ancestor_row#*,}"
+      merged_date="${rest#*,}"
+      printf 'tier-a:%s:%s:pr-head-ancestor\n' "$pr_number" "$merged_date"
+      return 0
+    fi
   fi
 
   if [ -n "${stale_pr:-}" ]; then
@@ -545,9 +645,15 @@ for BRANCH in "${ALL_BRANCHES[@]}"; do
     tier-a:*)
       _rest="${VERDICT#tier-a:}"
       _pr_number="${_rest%%:*}"
-      _merged_date="${_rest#*:}"
+      _rest="${_rest#*:}"
+      _merged_date="${_rest%%:*}"
+      _basis="${_rest#*:}"
       MERGED_BRANCHES+=("$BRANCH")
-      MERGED_PR_INFO_VALUES+=("PR #${_pr_number}, merged ${_merged_date}")
+      if [ "$_basis" = "pr-head-ancestor" ]; then
+        MERGED_PR_INFO_VALUES+=("PR #${_pr_number}, merged ${_merged_date}; local tip is an ancestor of that PR's merged head")
+      else
+        MERGED_PR_INFO_VALUES+=("PR #${_pr_number}, merged ${_merged_date}")
+      fi
       TIER_VALUES+=("A")
       ;;
     tier-b:*)

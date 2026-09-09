@@ -6,9 +6,9 @@
 fails to recognize a branch as safe to delete when its local tip is behind
 the commit that GitHub actually merged for that PR — for example, extra
 commits landed on the PR's head branch after the local checkout last
-fetched it, or the merge was a squash/rebase that produces a merge commit
-with no ancestry link back to the feature branch's own commits. Today the
-function only confirms Tier A ("confirmed merged, delete without
+fetched it, or GitHub's "Update branch" button adding a merge from the
+base branch onto the head branch. Today the function only confirms Tier A
+("confirmed merged, delete without
 prompting") when the local tip equals the merged PR's `headRefOid` exactly,
 and falls back to Tier B only when the local tip is directly reachable from
 `origin/<default>` — neither test passes when the tip is a strict, proper
