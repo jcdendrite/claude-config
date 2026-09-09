@@ -8826,8 +8826,9 @@ def _pr_cost_export_provenance_line(
     (synthetic) root set rather than this machine's real declared accounts
     -- see declared_roots_file_is_overridden()'s own docstring (_config_dir.py)
     for which env vars this checks, and docs/transcript-analysis.md's
-    "Corpus scope: the declared-roots file" section for what corpus_override=1
-    means for publication.
+    "Corpus scope: the declared-roots file" section's "Testing against a
+    synthetic corpus" subsection for what corpus_override=1 means for
+    publication.
     """
     digest = hashlib.sha256("\n".join(sorted(corpus_identities)).encode()).hexdigest()[:12]
     exported_at_str = exported_at.isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -8913,11 +8914,12 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     )
     file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
 
-    # Re-derived from the operator's own --out, not from resolved_out above:
-    # the parent chain is resolved (so a symlinked parent directory still
-    # lands inside the git-tree check's target), but the final component is
-    # left exactly as named, so O_EXCL's own symlink refusal actually fires
-    # instead of silently following the link to wherever it points.
+    # Re-derived from the operator's own --out, not from resolved_out above.
+    # The parent chain is resolved, so a symlinked parent directory still
+    # lands inside the git-tree check's target.
+    # The final component is left exactly as named, so O_EXCL's own symlink
+    # refusal actually fires instead of silently following the link to
+    # wherever it points.
     open_path = Path(out).parent.resolve() / Path(out).name
     try:
         fd = os.open(str(open_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

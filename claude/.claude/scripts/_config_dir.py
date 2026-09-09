@@ -40,23 +40,13 @@ def declared_roots_file() -> Path:
 
 
 def declared_roots_file_is_overridden() -> bool:
-    """Return whether the run is a synthetic-corpus test rather than a real
-    multi-account run: TRANSCRIPT_CONFIG_DIRS_FILE (declared_roots_file()
-    above) is set, or CLAUDE_CONFIG_DIR (config_dir() above) is set AND
-    declared_roots_file_state() is "absent".
-
-    declared_roots_file() always resolves relative to Path.home(), never to
-    CLAUDE_CONFIG_DIR -- it is a deliberately shared, account-independent
-    registry. So CLAUDE_CONFIG_DIR alone is not sufficient: on a real
-    machine with declared accounts, ~/.claude/transcript-config-dirs exists
-    (state "present") for every real non-personal-account run, where
-    CLAUDE_CONFIG_DIR is legitimately set to a real profile -- that must
-    stay corpus_override=0. Only "absent" combines with CLAUDE_CONFIG_DIR:
-    a run that isolates CLAUDE_CONFIG_DIR with no real declared-roots file
-    anywhere is exactly as synthetic as one that also overrides
-    TRANSCRIPT_CONFIG_DIRS_FILE. "unreadable" (present but permission-
-    denied, e.g.) is a real file an operator must fix, not a synthetic
-    fixture, so it does NOT combine -- only "absent" does.
+    """Return whether this run is a synthetic-corpus test: TRANSCRIPT_CONFIG_DIRS_FILE
+    is set, or CLAUDE_CONFIG_DIR is set with no real declared-roots file present.
+    declared_roots_file() resolves relative to Path.home(), never CLAUDE_CONFIG_DIR,
+    so a real declared-roots file existing alongside a real CLAUDE_CONFIG_DIR profile
+    must stay corpus_override=0 -- only declared_roots_file_state() == "absent" combines
+    with CLAUDE_CONFIG_DIR; "unreadable" is a real file an operator must fix, not a
+    synthetic fixture.
     """
     if os.environ.get("TRANSCRIPT_CONFIG_DIRS_FILE"):
         return True
