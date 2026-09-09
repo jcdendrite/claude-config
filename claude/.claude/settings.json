@@ -169,7 +169,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/record-session-end.sh"
+            "command": "~/.claude/hooks/record-session-end.sh",
+            "timeout": 10
           }
         ]
       }
