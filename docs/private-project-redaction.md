@@ -118,11 +118,45 @@ extends by analogy:
   - Cost is dollar or token spend on running the tooling. Duration is
     wall-clock time spent running the tooling. Cost and Duration may
     never be reported as a client-billed, engagement-revenue, or
-    billable-hours figure. Report each only as a rate per tool call,
-    session, or dispatch (e.g., median cost per session), never as a
-    raw pooled total. A raw total scales with pool volume and, unlike
-    a per-unit rate, can be converted to an engagement-value estimate
-    using public day-rate references.
+    billable-hours figure. Report each as a rate, never as a raw
+    pooled total. Two permitted denominator classes, closed:
+    - *An internal execution unit* — a tool call, session, or
+      dispatch. Cost may be a dollar or token amount per unit (e.g.,
+      median cost per session).
+    - *A completed PR.* Cost under this denominator must be a
+      dimensionless share (spend of one kind over total spend)
+      computed entirely inside the pooled corpus. Report it
+      re-expressed against a $/PR figure this repo has already
+      published from an in-repo-scoped corpus (e.g. "X% of the mean
+      $/PR at `docs/cost-levers-considered.md:510`"). Never a dollar
+      or token amount per PR. Never a share whose base was itself
+      drawn from a mixed corpus. Duration takes internal execution
+      units only.
+
+    A raw total or a per-PR dollar amount can be converted to an
+    engagement-value estimate using public day-rate references (the
+    per-PR form needs only a PR count, which the engagement's own
+    stakeholders may already have). A dimensionless share of an
+    in-repo-scoped base cannot: multiplied out it yields dollars per
+    in-repo PR, since the mixed corpus contributed only the ratio.
+
+    Permitting a denominator does not make it countable. A completed
+    PR stays off the *what may be counted* list above, so a pooled PR
+    count is not publishable under this carve-out at any granularity
+    or in any artifact.
+
+    Two further requirements bind the PR-denominator form specifically:
+    - The share must be computed inside the producing command or
+      script itself — an agent must never derive it by dividing two
+      raw mixed-corpus totals it has separately seen in its own
+      context. Doing so violates this section's own aggregation-
+      boundary rule even when the final published number looks clean.
+    - The $/PR base being referenced must be cited by exact file path
+      and line number, so a reader can verify it is actually
+      in-repo-scoped and not itself a mixed-corpus figure.
+
+    A prior publication does not establish precedent for this
+    denominator.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
