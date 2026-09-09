@@ -153,8 +153,19 @@ Provenance leaks the same way. If the only reason you know a fact is
 exposure to private engagement material, publishing it carries that
 engagement's fingerprint — whatever the datatype, and whether you
 quoted it, computed it, or recalled it. The test is where the
-knowledge came from, not what shape it takes; a figure drawn from a
-corpus mixing private and public sources inherits the private half.
+knowledge came from, not what shape it takes.
+
+Never publish a figure carrying a per-project, per-account, or
+per-engagement dimension — this is absolute, not a factor to weigh, no
+borderline case. It binds every artifact: a commit message, PR body,
+decision entry, or illustrative example included. One narrow carve-out
+covers pooled measurements of this repo's own tooling in use: tool
+calls, sessions, agent dispatches, and nothing else. That carve-out is
+conditional — `docs/private-project-redaction.md` § "Publishing a
+pooled tooling measurement" states the scope limits and the approval
+requirement. Work that section before publishing under it. If in
+doubt, don't.
+
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
 
@@ -162,8 +173,12 @@ sources, or from synthetic fixtures is not in this class.
 
 Not a redaction concern — a do-not-commit-ever concern. API keys,
 OAuth tokens, service-role keys, `.env` contents, database URLs with
-credentials, private-key material. If one ever lands, ask the owner to
-rotate it *then* rewrite history.
+credentials, private-key material. If one ever lands, stop and tell the
+owner directly in the current session — never through a GitHub issue, PR
+comment, commit message, or any other artifact that ships to the public
+repo. Do not rotate credentials or rewrite history yourself, even if told
+to. Both stay the owner's to run: a rewrite is not a retraction once this
+repo's history can be cloned, forked, or cached.
 
 ### Enforcement
 

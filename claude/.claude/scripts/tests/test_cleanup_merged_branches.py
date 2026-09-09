@@ -12,8 +12,10 @@ import os
 import pty
 import re
 import shlex
+import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -1055,6 +1057,69 @@ def _make_tier_b_branch(repo: Path, remote: Path, branch_name: str) -> None:
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=repo, check=True)
 
 
+def _make_ancestor_merged_branch(repo: Path, remote: Path, branch_name: str, pr_number: int) -> str:
+    """Feature branch whose local tip is a strict ancestor of its PR's
+    actual merged head, modeling extra commits landed on the PR's head
+    branch (or a rewrite) after the local checkout last fetched it.
+
+    The descendant commit is built directly on the bare remote with
+    plumbing -- rev-parse the pushed tip's tree, commit-tree a child of it,
+    update-ref refs/pull/<pr_number>/head to point at it -- so it never
+    reaches the local clone's object database except through an explicit
+    fetch of that ref. _init_repo only configures user.email/user.name on
+    the local clone, so the bare remote needs its own identity before
+    commit-tree can write an object there. The branch is then force-deleted
+    on the remote, modeling GitHub's post-merge source-branch deletion:
+    the merged head survives only via the PR ref, not via a branch ref.
+
+    Returns the descendant commit's SHA (the PR's actual merged head).
+    """
+    _make_feature_branch(repo, branch_name)
+    local_tip = _rev_parse(repo, branch_name)
+
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=remote, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=remote, check=True)
+    tree = subprocess.run(
+        ["git", "rev-parse", f"{local_tip}^{{tree}}"],
+        cwd=remote, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    merged_head = subprocess.run(
+        ["git", "commit-tree", tree, "-p", local_tip, "-m", f"extra commit merged on {branch_name}"],
+        cwd=remote, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-ref", f"refs/pull/{pr_number}/head", merged_head], cwd=remote, check=True,
+    )
+    subprocess.run(["git", "branch", "-D", branch_name], cwd=remote, check=True)
+    return merged_head
+
+
+def _make_descendant_of_merged_head_branch(repo: Path, remote: Path, branch_name: str, pr_number: int) -> str:
+    """Feature branch whose local tip is a strict descendant of its PR's
+    actual merged head -- real, unmerged commits sitting on top of what
+    GitHub actually merged. The inverse fixture shape from
+    _make_ancestor_merged_branch: here the merged head is the older
+    commit and the local tip is the newer one.
+
+    refs/pull/<pr_number>/head is pushed to point at the older commit
+    before the extra commit is added, so it is real and fetchable exactly
+    like a genuine GitHub PR ref. The extra commit is never pushed
+    anywhere, modeling real work that has not been merged yet.
+
+    Returns the older commit's SHA (the PR's actual merged head).
+    """
+    _make_feature_branch(repo, branch_name)
+    merged_head = _rev_parse(repo, branch_name)
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"{branch_name}:refs/pull/{pr_number}/head"],
+        cwd=repo, check=True,
+    )
+    subprocess.run(["git", "checkout", "-q", branch_name], cwd=repo, check=True)
+    _commit(repo, f"unmerged follow-up work on {branch_name}")
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+    return merged_head
+
+
 class TestTierBReachableNoMergedPR:
     """Branches reachable from origin/main but with no merged PR for this name."""
 
@@ -1726,7 +1791,7 @@ class TestStaleNameNoOpenPR:
 
 
 class TestMultipleMergedRowsScanFullHistory:
-    """Guard 2's tip-vs-headRefOid match scans every MERGED row for a head
+    """The Tier-A tip-vs-headRefOid match scans every MERGED row for a head
     branch name, not just the first — a name can accumulate more than one
     merged PR over its history, and the matching row is not always first."""
 
@@ -1986,6 +2051,441 @@ class TestClassifierEmitsNoShellDiagnostics:
         assert result.returncode == 0
         assert result.stderr == "", (
             f"classification must not emit shell diagnostics; got: {result.stderr!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ancestor-of-merged-head detection (classify_branch's third signal): a tip
+# behind the PR's actual merged head is still confirmed merged, via a fetch
+# of refs/pull/<n>/head and a git merge-base --is-ancestor test.
+# ---------------------------------------------------------------------------
+
+class TestAncestorOfMergedHeadCleaned:
+    """The local tip is a strict ancestor of the PR's actual merged head,
+    which exists only via refs/pull/<n>/head on the remote (extra commits
+    landed on the PR's head branch after the local checkout last fetched
+    it). classify_branch fetches that ref, confirms containment, and
+    classifies Tier A instead of falling to the stale-name skip."""
+
+    def test_strict_ancestor_of_fetchable_merged_head_is_cleaned(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/ancestor-of-merge", 101)
+
+        env = fake_gh({
+            "feat/ancestor-of-merge": {"number": 101, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/ancestor-of-merge"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, "a tip that is an ancestor of the merged head must still be Tier A"
+
+    def test_dry_run_names_ancestor_basis_not_stale_name(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/ancestor-of-merge", 101)
+
+        env = fake_gh({
+            "feat/ancestor-of-merge": {"number": 101, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Would clean up (confirmed merged):" in result.stdout
+        assert "local tip is an ancestor of that PR's merged head" in result.stdout
+        assert "likely a reused branch name" not in result.stdout
+
+
+class TestAncestorCheckFallsBackWhenRefUnfetchable:
+    """A merged row's headRefOid names a commit that was never fetched and
+    whose refs/pull/<n>/head does not exist on the remote either -- an
+    aged-out PR ref. The fetch attempt fails and classify_branch falls
+    back to today's stale-name skip rather than crashing or misreporting."""
+
+    def test_missing_pr_head_ref_falls_back_to_stale_name_skip(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/aged-out-ref")
+
+        env = fake_gh({
+            "feat/aged-out-ref": {"number": 202, "mergedAt": "2026-06-01", "headRefOid": "c" * 40},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "likely a reused branch name" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/aged-out-ref"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "an unfetchable PR ref must fall back to today's skip verdict"
+
+
+class TestGenuineReuseNotAncestorStaysStale:
+    """A merged row's headRefOid is a real, already-present commit that the
+    local tip shares no ancestry with -- a genuine name reuse, not a
+    merged-but-behind branch. The ancestor check must not misclassify it."""
+
+    def test_unrelated_merged_head_stays_stale(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/reused-name")
+
+        # A sibling commit off the same base as feat/reused-name's tip --
+        # present locally, but neither an ancestor nor a descendant of it.
+        subprocess.run(["git", "checkout", "-q", "-b", "unrelated-work", "main"], cwd=local, check=True)
+        _commit(local, "unrelated work")
+        unrelated_tip = _rev_parse(local, "unrelated-work")
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=local, check=True)
+        subprocess.run(["git", "branch", "-D", "unrelated-work"], cwd=local, check=True)
+
+        env = fake_gh({
+            "feat/reused-name": {"number": 303, "mergedAt": "2026-06-01", "headRefOid": unrelated_tip},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "likely a reused branch name" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/reused-name"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "a fetchable but non-ancestor merged head must not be Tier A"
+
+
+class TestDescendantOfMergedHeadStaysStale:
+    """The local tip is a strict descendant of the PR's actual merged head
+    -- real, unmerged commits on top of what GitHub actually merged. This
+    is the direction where misclassification would delete real work, so
+    the ancestor check must not fire for it: the branch must fall through
+    to skip-stale-name exactly as it does today."""
+
+    def test_descendant_tip_not_deleted(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_descendant_of_merged_head_branch(local, remote, "feat/ahead-of-merge", 801)
+
+        env = fake_gh({
+            "feat/ahead-of-merge": {"number": 801, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "likely a reused branch name" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/ahead-of-merge"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "a tip ahead of the merged head must not be deleted as Tier A"
+
+
+class TestPerRowFetchLoopSurvivesOneUnresolvableRef:
+    """The per-row fetch loop retrieves a later row's object independently
+    of an earlier row's unresolvable PR ref. A single batched multi-refspec
+    fetch would abort the whole transfer the moment one refspec is
+    unresolvable, silently losing the second row's object too -- this
+    fixture only passes against the per-row loop."""
+
+    def test_second_rows_merged_head_recovered_despite_first_rows_unresolvable_ref(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/two-merged-rows", 402)
+
+        env = fake_gh({
+            "feat/two-merged-rows": [
+                # The refs/pull/401/head ref for PR #401 was never created
+                # on the remote -- row order matters, since 401 is scanned
+                # first.
+                {"number": 401, "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": "d" * 40},
+                {"number": 402, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": merged_head},
+            ],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/two-merged-rows"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, (
+            "the second row's fetchable merged head must still be found even though "
+            "the first row's PR ref is genuinely unresolvable"
+        )
+
+    def test_both_rows_unresolvable_falls_through_cleanly(self, tmp_path, fake_gh):
+        """Neither of two rows' refs/pull/<n>/head refs exist on the
+        remote: both fetch attempts fail independently, the re-scan finds
+        nothing, and classification falls through to skip-stale-name --
+        no crash, no stderr, and the second row's attempt is not skipped
+        or short-circuited by the first row's failure."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/both-rows-unresolvable")
+
+        env = fake_gh({
+            "feat/both-rows-unresolvable": [
+                {"number": 501, "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": "d" * 40},
+                {"number": 502, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": "e" * 40},
+            ],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert result.stderr == "", (
+            f"a fully-failed fetch loop must not emit shell diagnostics; got: {result.stderr!r}"
+        )
+        assert "likely a reused branch name" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/both-rows-unresolvable"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "two unresolvable refs must fall through cleanly, not crash"
+
+
+class TestAncestorPathEmitsNoShellDiagnostics:
+    """Extends TestClassifierEmitsNoShellDiagnostics's empty-stderr
+    guarantee to the arm that now shells out to git fetch: fetch progress
+    goes to stderr, so a missing --quiet/2>/dev/null on the new code path
+    would regress this silently."""
+
+    def test_ancestor_fetch_path_writes_nothing_to_stderr(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/ancestor-quiet", 601)
+
+        env = fake_gh({
+            "feat/ancestor-quiet": {"number": 601, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert result.stderr == "", (
+            f"the ancestor-fetch path must not emit shell diagnostics; got: {result.stderr!r}"
+        )
+
+
+class TestAncestorHitSkipsFetchWhenObjectAlreadyLocal:
+    """When the merged PR's headRefOid is already present locally (e.g.
+    fetched incidentally for another branch earlier in the same sweep),
+    the ancestor hit fires with zero git fetch calls against refs/pull/*
+    -- the direct test of the "zero network calls when objects are
+    already local" claim, which the fetch-required cases above don't
+    exercise. GIT_TRACE is pointed at a file rather than left to write to
+    stderr, since the fetch this test must prove never happens would
+    otherwise be indistinguishable from one silenced by the script's own
+    `2>/dev/null`."""
+
+    def test_ancestor_hit_skips_fetch_when_object_already_local(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/already-local", 701)
+        subprocess.run(["git", "fetch", "origin", "refs/pull/701/head"], cwd=local, check=True)
+
+        trace_log = tmp_path / "git-trace.log"
+        env = fake_gh({
+            "feat/already-local": {"number": 701, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        env["GIT_TRACE"] = str(trace_log)
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/already-local"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode != 0, "the ancestor hit must still fire when the object is already local"
+        trace_text = trace_log.read_text() if trace_log.exists() else ""
+        assert "fetch" in trace_text, (
+            "GIT_TRACE produced no output at all -- the negative assertion below would pass vacuously"
+        )
+        assert "refs/pull" not in trace_text, (
+            "no git fetch against refs/pull/* is needed once the object is already present locally"
+        )
+
+
+class TestFetchLoopCapInterruptsHungRemote:
+    """The per-row fetch loop's `_lib_capped_for 15 git fetch ...` call
+    (cleanup-merged-branches.sh's ancestor-check fetch loop) must not hang
+    classify_branch indefinitely when the remote stalls mid-fetch, and a
+    killed fetch must still degrade to the correct stale-name fallback."""
+
+    @pytest.mark.timing
+    def test_hung_pr_ref_fetch_is_capped_and_falls_back_to_stale_name(self, tmp_path, fake_gh):
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/hung-fetch", 909)
+
+        # Sleeps only when the fetch targets this PR's refs/pull/*/head
+        # refspec, so the script's other, uncapped `git fetch` calls
+        # (default-branch sync, --prune) are unaffected.
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            '    refs/pull/*/head) sleep 30; break ;;\n'
+            '  esac\n'
+            'done\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        env = fake_gh({
+            "feat/hung-fetch": {"number": 909, "mergedAt": "2026-06-01", "headRefOid": merged_head},
+        })
+        env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+
+        start = time.monotonic()
+        result = _run_script(local, env)
+        elapsed = time.monotonic() - start
+
+        assert result.returncode == 0
+        assert elapsed >= 14.5, (
+            f"elapsed {elapsed:.1f}s is too fast for the stub to have actually stalled -- "
+            f"the fallback below would also pass on a fetch that merely failed instantly, "
+            f"which doesn't prove the cap interrupted anything"
+        )
+        assert elapsed < 19.5, (
+            f"expected the 15s _lib_capped_for cap on the refs/pull/909/head fetch to fire "
+            f"(stub sleeps 30s if it does not), took {elapsed:.1f}s"
+        )
+        assert "likely a reused branch name" in result.stdout, (
+            "a fetch killed by the cap must still degrade to the stale-name fallback, not hang or crash"
+        )
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/hung-fetch"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, (
+            "a capped, unresolved fetch must fall back to today's stale-name skip verdict, not delete"
+        )
+
+
+class TestClassifierValidatesMergedRowFields:
+    """A merged row's number and headRefOid are validated with
+    character-class membership before either can reach a git fetch or
+    merge-base argument."""
+
+    def test_non_digit_pr_number_fails_closed(self, tmp_path, fake_gh):
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/bad-pr-number")
+
+        env = fake_gh({
+            "feat/bad-pr-number": [
+                {"number": "5; touch pwned", "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": "e" * 40},
+            ],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "gh lookup failed; skipping to fail closed" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/bad-pr-number"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "a malformed PR number must fail closed, not crash or reach git"
+
+    def test_one_bad_row_fails_whole_branch_closed_despite_valid_sibling_row(self, tmp_path, fake_gh):
+        """A malformed `number` field on one row fails the whole branch
+        closed even when a second, fully-valid row in the same result
+        would otherwise ancestor-match and qualify for Tier A -- proving
+        sys.exit(1) fires on any one bad row, not only when every row in
+        the result is bad."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/mixed-rows", 910)
+
+        env = fake_gh({
+            "feat/mixed-rows": [
+                {"number": "5; touch pwned", "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": "e" * 40},
+                {"number": 910, "state": "MERGED", "mergedAt": "2026-06-01", "headRefOid": merged_head},
+            ],
+        })
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "gh lookup failed; skipping to fail closed" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/mixed-rows"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, (
+            "one malformed row must fail the branch closed even though the sibling row would ancestor-match"
+        )
+
+    def test_malformed_head_ref_oid_falls_through_without_reaching_git(self, tmp_path, fake_gh):
+        """GIT_TRACE catches the row-validation boundary directly, following
+        TestAncestorHitSkipsFetchWhenObjectAlreadyLocal's pattern: the
+        fallback message and branch survival alone are also reachable via
+        git's own rejection of a malformed 40-char operand, so without
+        this the test would pass just as well with the row-validation
+        character-class check deleted."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/bad-oid")
+
+        malformed_oid = "A" * 40
+        trace_log = tmp_path / "git-trace.log"
+        env = fake_gh({
+            "feat/bad-oid": [
+                {"number": 707, "state": "MERGED", "mergedAt": "2026-05-01", "headRefOid": malformed_oid},
+            ],
+        })
+        env["GIT_TRACE"] = str(trace_log)
+        result = _run_script(local, env)
+
+        assert result.returncode == 0
+        assert "likely a reused branch name" in result.stdout
+        ref_check = subprocess.run(
+            ["git", "rev-parse", "--verify", "refs/heads/feat/bad-oid"],
+            cwd=local, capture_output=True,
+        )
+        assert ref_check.returncode == 0, "a malformed headRefOid must not reach git merge-base as an operand"
+        trace_text = trace_log.read_text() if trace_log.exists() else ""
+        assert "fetch" in trace_text, (
+            "GIT_TRACE produced no output at all -- the argument-boundary assertion below would pass vacuously"
+        )
+        assert malformed_oid not in trace_text, (
+            "the malformed headRefOid must never appear as a merge-base, cat-file, or fetch argument"
+        )
+
+    def test_malformed_merged_at_blanks_date_without_crashing(self, tmp_path, fake_gh):
+        """A stray space in mergedAt would otherwise split the
+        space-separated row table mid-row.
+        It degrades to a blank date rather than sys.exit, matching
+        row_oid's degrade-not-abort treatment.
+        Uses --dry-run so the blanked date is visible in the preview line
+        instead of being inferred from branch survival alone."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/bad-date", 808)
+
+        env = fake_gh({
+            "feat/bad-date": {"number": 808, "mergedAt": "2026 06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Would clean up (confirmed merged):" in result.stdout
+        assert "PR #808, merged ; local tip is an ancestor" in result.stdout, (
+            "a malformed mergedAt must degrade to a blank date, not corrupt or crash the row parse"
+        )
+
+    def test_comma_in_merged_at_blanks_date_without_corrupting_row(self, tmp_path, fake_gh):
+        """A stray comma in mergedAt is the other risk character named
+        alongside the space (test_malformed_merged_at_blanks_date_without_crashing
+        above) in the row_date validation comment -- left unvalidated it
+        would misparse as a field separator in the comma-delimited row
+        triple. Degrades to a blank date, same as the space case, without
+        corrupting this row's PR number or oid."""
+        local, remote = _make_repo_with_remote(tmp_path)
+        merged_head = _make_ancestor_merged_branch(local, remote, "feat/comma-date", 811)
+
+        env = fake_gh({
+            "feat/comma-date": {"number": 811, "mergedAt": "2026,06-01", "headRefOid": merged_head},
+        })
+        result = _run_script(local, env, args=["--dry-run"])
+
+        assert result.returncode == 0
+        assert "Would clean up (confirmed merged):" in result.stdout
+        assert "PR #811, merged ; local tip is an ancestor" in result.stdout, (
+            "a malformed mergedAt with a comma must degrade to a blank date, not corrupt the row"
         )
 
 
