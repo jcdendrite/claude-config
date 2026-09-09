@@ -2196,16 +2196,12 @@ class TestGateReleaseAuthorityUnderCustomConfigDir:
         )
 
 
-class TestGateReleaseAuthorityBashArmConfigDirNoLongerHasSubstringGap:
-    """The Bash redirect/utility arm used to share `_marker_shape_match` with
-    the Write/Edit/MultiEdit arm above only after passing two `.claude`-
-    substring pre-filters (Stage 0 and `_marker_write_candidate_mentions_claude`),
-    so a config-dir-resolved marker write with no literal `.claude` substring
-    anywhere in the command was never scanned. Both pre-filters are gone —
-    replaced by a fork-free write-construct fast-reject that doesn't require
-    the `.claude` literal — so this now denies. Pinned here so a future
-    change doesn't silently reopen the gap this class used to document as
-    accepted."""
+class TestGateReleaseAuthorityBashArmConfigDirSubstringGapClosed:
+    """A config-dir-resolved marker write with no literal `.claude`
+    substring in the command is scanned via the fork-free write-construct
+    fast-reject, independent of the `.claude`-substring pre-filters used
+    elsewhere in this file. Pinned here so a future change to those
+    pre-filters doesn't silently reopen this gap."""
 
     def test_redirect_to_config_dir_marker_path_denied(self, tmp_path):
         home = tmp_path / "home"

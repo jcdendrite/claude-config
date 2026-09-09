@@ -522,11 +522,10 @@ class TestUnionBranchLocationValueFailure:
         silently disarm write-safety enforcement instead of merely
         withholding a permission grant.
 
-        The _config_value assertion below is what actually discriminates
-        this fix: pre-fix, the union branch's empty-stdout fallthrough also
-        happens to print a value that resolves as "enabled" for this key, so
-        the trailing _config_enabled assertion documents the contract but
-        does not by itself catch a regression here."""
+        The _config_value assertion below is the one that actually
+        discriminates a regression here: the trailing _config_enabled
+        assertion alone would not catch a union-branch fallthrough that
+        resolves to an "enabled" value for this key."""
         config_dir = isolated_home / "altconfig"
         config_dir.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))

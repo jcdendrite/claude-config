@@ -237,6 +237,19 @@ _lib_strip_trailing_path_components() {
 #      literal shapes but resolves, via any number of hops, into the real
 #      root — and needs only the ROOT directory to already exist, not the
 #      not-yet-created leaf target.
+#   2b. Directory-destination match for a 1-component SUFFIX_PATTERN (a bare
+#      filename sitting directly in the config root, e.g.
+#      claude-config.toml): a write-utility destination that is itself the
+#      config root directory (a trailing-slash form, or a bare `-t DIR`/
+#      `--target-directory=DIR` value with no trailing slash) has no leaf
+#      component for (2)'s tail-glob-match to compare against, so it falls
+#      through (1) and (2) even though cp/mv/install/rsync/scp's own
+#      basename-preservation semantics still land the write on the
+#      protected file when DEST is a directory. `-ef`-compares the
+#      candidate directly against the resolved root, independent of
+#      SUFFIX_PATTERN's own text. Brings this shape to parity with a
+#      2+-component SUFFIX_PATTERN, whose trailing glob segment already
+#      absorbs an empty leaf via (2)'s own tail-glob match.
 #   3. A bare `candidate -ef ROOT/SUFFIX_PATTERN` comparison, gated to a
 #      SUFFIX_PATTERN with no glob metacharacter (true for the config
 #      hook's literal filename claude-config.toml, never true for the
@@ -386,6 +399,13 @@ _lib_shape_match() {
       case "$tail" in
         $suffix_pattern) matched=0 ;;
       esac
+    fi
+    if [ "$matched" -eq 0 ]; then break; fi
+
+    # Pass 2b: directory-destination match for a 1-component SUFFIX_PATTERN
+    # -- see strategy comment above.
+    if [ "$n_components" -eq 1 ] && [ "$candidate" -ef "$resolved_root" ] 2>/dev/null; then
+      matched=0
     fi
     if [ "$matched" -eq 0 ]; then break; fi
 

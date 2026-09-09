@@ -35,13 +35,18 @@ class TestWriteEditMultiEditArm:
             == "deny"
         )
 
-    def test_write_to_unrelated_file_allowed(self, tmp_path):
+    @pytest.mark.parametrize("tool_input_builder", [write_input, edit_input, multiedit_input])
+    def test_write_to_unrelated_file_allowed(self, tmp_path, tool_input_builder):
+        """Mirrors test_every_file_write_tool_is_covered's parametrization --
+        the allow path is tool-type-agnostic the same way the deny path is,
+        so an Edit/MultiEdit-specific allow-path regression is caught here
+        too, not just Write's."""
         home = tmp_path / "home"
         home.mkdir()
         assert (
             run_hook(
                 ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
-                write_input(str(home / ".claude" / "some-other-file.md")),
+                tool_input_builder(str(home / ".claude" / "some-other-file.md")),
                 home=home,
             )
             == "allow"
@@ -585,6 +590,135 @@ class TestReAddedWriteUtilitiesAllowUnrelatedDestinations:
             run_hook(
                 ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
                 bash_input(command_template.format(target=target)),
+                home=home,
+            )
+            == "allow"
+        )
+
+
+class TestDirectoryDestinationVectorClosed:
+    """A write-utility destination that IS the config root directory (a
+    trailing-slash form, or a bare `-t DIR`/`--target-directory=DIR` value)
+    has no leaf component naming `claude-config.toml` for `_lib_shape_match`'s
+    other passes to compare against. cp/mv/install/rsync/scp's own
+    basename-preservation semantics (writing DEST/basename(source)) would
+    otherwise land the write on the protected file with zero gate output.
+    Pass 2b (see `_lib.sh`) closes this by comparing the candidate directly
+    against the resolved root, with no visibility into the source file's
+    own name. This hook's own calling code additionally requires the
+    command to name claude-config.toml before honoring a Pass 2b match:
+    each deny-path command's source below is itself named claude-config.toml,
+    matching the reviewer's own reproduction, while the allow-path test
+    below writes an unrelated source into the same directory shape.
+    CLAUDE_CONFIG_DIR is cleared for the same reason as the existing
+    symlink/hardlink tests above: the `-ef` match depends on the config
+    root resolving to this test's own $HOME/.claude."""
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "cp {source} {target_dir}/",
+            "mv {source} {target_dir}/",
+            "install -m 644 {source} {target_dir}/",
+            "rsync {source} {target_dir}/",
+            "scp {source} {target_dir}/",
+        ],
+        ids=["cp", "mv", "install", "rsync", "scp"],
+    )
+    def test_trailing_slash_directory_destination_denied(self, command_template, tmp_path, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        source = tmp_path / "staging" / "claude-config.toml"
+        source.parent.mkdir()
+        source.write_text("worktree_required = true\n")
+        target_dir = home / ".claude"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(command_template.format(source=source, target_dir=target_dir)),
+                home=home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "cp -t {target_dir} {source}",
+            "cp --target-directory={target_dir} {source}",
+            "mv -t {target_dir} {source}",
+            "install -m 644 -t {target_dir} {source}",
+        ],
+        ids=["cp-t", "cp-target-directory-eq", "mv-t", "install-t"],
+    )
+    def test_target_directory_flag_destination_denied(self, command_template, tmp_path, monkeypatch):
+        """-t/--target-directory is a genuine cp/mv/install option -- rsync
+        and scp have no equivalent flag (rsync's own -t means "preserve
+        modification times"), so this vector is parametrized across only
+        the three utilities that actually support it, unlike the
+        trailing-slash vector above."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        source = tmp_path / "staging" / "claude-config.toml"
+        source.parent.mkdir()
+        source.write_text("worktree_required = true\n")
+        target_dir = home / ".claude"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(command_template.format(source=source, target_dir=target_dir)),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_trailing_slash_directory_destination_to_unrelated_directory_allowed(self, tmp_path, monkeypatch):
+        """Pass 2b's `-ef` comparison is scoped to the resolved config root
+        specifically, not to "any directory destination" -- a trailing-slash
+        write into a genuinely unrelated directory must stay allowed, or a
+        future edit that loosens the new pass's own root comparison would
+        over-deny with no test to catch it."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        unrelated_dir = tmp_path / "unrelated"
+        unrelated_dir.mkdir()
+        source = tmp_path / "staging" / "claude-config.toml"
+        source.parent.mkdir()
+        source.write_text("worktree_required = true\n")
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(f"cp {source} {unrelated_dir}/"),
+                home=home,
+            )
+            == "allow"
+        )
+
+    def test_trailing_slash_directory_destination_of_unrelated_file_allowed(self, tmp_path, monkeypatch):
+        """ciso-reviewer over-match finding: Pass 2b matches on the
+        destination directory alone, so a write of a file NOT named
+        claude-config.toml into the actual config root must stay allowed --
+        denying it would widen this hook's blast radius from "one protected
+        file" to "the entire config root directory," contradicting the
+        hook's own single-file-scoped contract."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        source = tmp_path / "staging" / "some-other-file.md"
+        source.parent.mkdir()
+        source.write_text("unrelated content\n")
+        target_dir = home / ".claude"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(f"cp {source} {target_dir}/"),
                 home=home,
             )
             == "allow"

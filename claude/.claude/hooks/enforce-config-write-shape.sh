@@ -35,16 +35,23 @@
 #   - This hook's suffix pattern is a bare filename (`claude-config.toml`),
 #     not a glob ending in a trailing segment like the marker patterns'
 #     `*-markers/*` — narrower matching than the marker hook's own glob
-#     shape.
-#   - Because of that narrower pattern, a directory-destination write
-#     (`cp`/`mv`/`install`/`rsync`/`scp` with a trailing-slash directory
-#     target, or `-t DIR`/`--target-directory=DIR`) is never caught here,
-#     not just the flag-argument forms — unlike the marker hook, whose glob
-#     pattern does catch it.
+#     shape. `_lib_shape_match`'s own dedicated pass for a 1-component
+#     pattern (see that function's header) closes the resulting
+#     directory-destination gap (`cp`/`mv`/`install`/`rsync`/`scp` with a
+#     trailing-slash directory target, or `-t DIR`/`--target-directory=DIR`)
+#     for a candidate `-ef`-comparable to the resolved config root; a
+#     remote-host-prefixed destination (`scp file host:~/.claude/`) is not
+#     `-ef`-comparable to a local path and stays open. That pass matches on
+#     the destination alone, with no visibility into the write's source
+#     file name. This hook's own calling code additionally requires the
+#     command text to name `claude-config.toml` before honoring a
+#     directory-root match, so a write of an unrelated file into the config
+#     root via one of these utilities is allowed, not denied.
 #   - A URL/server-derived destination basename (`curl -O URL`, bare
-#     `wget URL`) and a relative destination when the process cwd sits
-#     inside the config directory are open the same way as in the marker
-#     hook — see that file's header for why.
+#     `wget URL`) is open the same way as in the marker hook — see that
+#     file's header for why.
+#   - A relative destination when the process cwd sits inside the config
+#     directory is open the same way as in the marker hook.
 #   - The Bash arm's redirect/utility-write scan emits every word of a
 #     write-gated fragment as a candidate (see _lib.sh's
 #     _lib_fragment_candidates for why), not only the true destination. A
@@ -164,8 +171,36 @@ while IFS= read -r CONFIG_WRITE_CANDIDATE; do
     exit 0
   fi
   if [ "$CONFIG_WRITE_SHAPE_STATUS" -eq 0 ]; then
+    # A destination that IS the config root directory itself (Pass 2b in
+    # _lib.sh's _lib_shape_match) matches independent of the write's source
+    # file name, unlike every other pass, which requires the candidate's
+    # own text to name claude-config.toml. Re-derive that same directory-
+    # root identity here, via the same $HOME/$CLAUDE_CONFIG_DIR expansion
+    # Pass 2b compares against. Honor a directory-root match only when the
+    # full command also names claude-config.toml, its likely source
+    # argument — otherwise the write is of an unrelated file and stays
+    # allowed.
+    CONFIG_WRITE_CANDIDATE_EXPANDED="${CONFIG_WRITE_CANDIDATE/#\~/$HOME}"
+    CONFIG_WRITE_CANDIDATE_EXPANDED="${CONFIG_WRITE_CANDIDATE_EXPANDED//\$HOME/$HOME}"
+    CONFIG_WRITE_CANDIDATE_EXPANDED="${CONFIG_WRITE_CANDIDATE_EXPANDED//\$\{HOME\}/$HOME}"
+    CONFIG_WRITE_CANDIDATE_EXPANDED="${CONFIG_WRITE_CANDIDATE_EXPANDED//\$CLAUDE_CONFIG_DIR/${CLAUDE_CONFIG_DIR:-}}"
+    CONFIG_WRITE_CANDIDATE_EXPANDED="${CONFIG_WRITE_CANDIDATE_EXPANDED//\$\{CLAUDE_CONFIG_DIR\}/${CLAUDE_CONFIG_DIR:-}}"
+    CONFIG_WRITE_RESOLVED_ROOT=$(_lib_config_dir 2>/dev/null)
+    CONFIG_WRITE_IS_ROOT_DIR_MATCH=1
+    if [ -n "$CONFIG_WRITE_RESOLVED_ROOT" ] \
+      && [ "$CONFIG_WRITE_CANDIDATE_EXPANDED" -ef "$CONFIG_WRITE_RESOLVED_ROOT" ] 2>/dev/null; then
+      CONFIG_WRITE_IS_ROOT_DIR_MATCH=0
+    fi
+    if [ "$CONFIG_WRITE_IS_ROOT_DIR_MATCH" -eq 0 ] \
+      && ! printf '%s' "$COMMAND_UNQUOTED" | grep -qFi 'claude-config.toml'; then
+      continue
+    fi
     CONFIG_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$CONFIG_WRITE_CANDIDATE" | cut -c1-80)
-    emit_deny "Config-file write — '$CONFIG_WRITE_CANDIDATE_TRUNCATED' is (or resolves to) this machine's claude-config.toml. Agent-mediated writes to the consolidated config-key state file are denied; a human editing it directly, outside Claude Code, is unaffected. If you only meant to read the file, use cat/grep/less instead — this gate scans for write utilities, not reads."
+    if [ "$CONFIG_WRITE_IS_ROOT_DIR_MATCH" -eq 0 ]; then
+      emit_deny "Config-file write — '$CONFIG_WRITE_CANDIDATE_TRUNCATED' is (or resolves to) this machine's Claude Code config root directory, and the command also names claude-config.toml. A cp/mv/install/rsync/scp write into this directory lands on whatever the source's own basename is, so this could overwrite the config-key state file. Agent-mediated writes into the config root that also name claude-config.toml are denied; a human editing the state file directly, outside Claude Code, is unaffected. Use install.sh's interactive opt-in prompt or migrate-legacy-config.sh instead."
+    else
+      emit_deny "Config-file write — '$CONFIG_WRITE_CANDIDATE_TRUNCATED' is (or resolves to) this machine's claude-config.toml. Agent-mediated writes to the consolidated config-key state file are denied; a human editing it directly, outside Claude Code, is unaffected. If you only meant to read the file, use cat/grep/less instead — this gate scans for write utilities, not reads."
+    fi
     exit 0
   fi
 # Here-string over the already-captured CONFIG_WRITE_REDIRECT_CANDIDATES,
