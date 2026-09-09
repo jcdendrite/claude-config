@@ -32,10 +32,9 @@ set -uo pipefail
 # code.claude.com/docs/en/hooks, "Common fields"/SessionEnd section). A
 # per-hook `timeout` field raises that budget, up to a 60s ceiling.
 # settings.json sets `"timeout": 10` on this hook's registration for that
-# reason. The self-sweep below is capped at 2s. The rest of the hook's
-# work (jq calls, one conditional `ps`, a file write) is comfortably
-# sub-second, so 10 gives several times headroom over the realistic ~2-3s
-# worst case without approaching the 60s ceiling.
+# reason. The self-sweep below is capped at 2s. The per-fire cost above
+# is comfortably sub-second, so 10 gives several times headroom over the
+# realistic ~2-3s worst case without approaching the 60s ceiling.
 #
 # Self-sweep: after a successful write, deletes any file in its own records
 # directory older than 30 days. That's this repo's established idiom for
