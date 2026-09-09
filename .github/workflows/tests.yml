@@ -41,7 +41,7 @@ jobs:
     # cache). 10 minutes gives headroom above the two-pass total so
     # continued organic test-suite growth doesn't require another bump on
     # every PR that happens to add the next test.
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       # Dial CI parallelism from the repo Variables settings page (e.g.
       # during a flake incident) without a PR. Unset/empty falls through to
