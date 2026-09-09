@@ -12,7 +12,7 @@ hook that gates it — both files present, and the hook still wired into a
 PreToolUse matcher group — asserts that same PreToolUse wiring for every
 hook-class: gate hook regardless of skill pairing, and pins standalone
 config-value invariants in settings.json unrelated to gate/skill pairing
-(e.g. the plan-mode-entry deny/defaultMode declarations). Three further
+(e.g. the plan-mode-entry deny/defaultMode declarations). Four further
 static shape checks:
 - Every `jq` invocation in claude/.claude/hooks/*.sh goes through a
   `_lib_*` wrapper (bare `jq` outside one reintroduces the per-hook
@@ -26,6 +26,15 @@ static shape checks:
 - No hook regex in claude/.claude/hooks/*.sh, plugins/*/hooks/*.sh, or
   either directory's _lib.sh uses GNU grep's `\\s` extension, which a
   POSIX-strict grep reads as a literal `s`.
+- Every hook entry object inside `hooks.<Event>[].hooks[]` in
+  claude/.claude/settings.json carries non-empty `type` and `command`
+  fields — catches an entry left with only a `timeout` key and no `type`
+  or `command`, the shape a scripted edit produces when it writes to the
+  wrong object.
+- record-session-end.sh's SessionEnd registration in
+  claude/.claude/settings.json carries an integer `timeout` between 10 and
+  60 — catches a deleted or corrupted `timeout` field silently
+  reintroducing the "Hook cancelled" regression it exists to fix.
 
 The first two carry a small, named exemption dict for a structural holdout
 that resisted conversion. The `\\s` check has none: no live `\\s`
@@ -225,6 +234,72 @@ def _pretooluse_command_for(hook: Path) -> list[str]:
     """Every PreToolUse command string wired to `hook` — see
     _pretooluse_entries_for for the matching rules."""
     return [entry.get("command", "") for entry in _pretooluse_entries_for(hook)]
+
+
+def test_every_registered_hook_entry_has_type_and_command() -> None:
+    """Every hook entry under `hooks.<Event>[].hooks[]` must carry
+    non-empty `type` and `command` — see the module docstring's static
+    checks list for what this guards against."""
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    for event_name, groups in settings.get("hooks", {}).items():
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("hooks", []):
+                assert isinstance(entry, dict), (
+                    f"{event_name}: hook entry is not an object: {entry!r}"
+                )
+                assert entry.get("type"), (
+                    f"{event_name}: hook entry missing non-empty 'type': {entry!r}"
+                )
+                assert entry.get("command"), (
+                    f"{event_name}: hook entry missing non-empty 'command': {entry!r}"
+                )
+
+
+def test_record_session_end_timeout_stays_within_ceiling() -> None:
+    """The declared config-value backing record-session-end.sh's raised
+    SessionEnd execution budget.
+
+    This proves the *declared* config state — the SessionEnd hook entry
+    whose command ends in `record-session-end.sh` carries an integer
+    `timeout` between 10 and 60 — not that the harness actually honors it
+    at runtime. That live-session verification is unavailable outside a
+    real SessionEnd fire; this test only pins the declaration so a future
+    edit can't silently drop the `timeout` field and reintroduce the
+    "Hook cancelled" regression record-session-end.sh's own header
+    documents.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    session_end_entries = [
+        entry
+        for group in settings.get("hooks", {}).get("SessionEnd", [])
+        if isinstance(group, dict)
+        for entry in group.get("hooks", [])
+        if isinstance(entry, dict)
+    ]
+    matching_entries = [
+        entry
+        for entry in session_end_entries
+        if entry.get("command", "").endswith("record-session-end.sh")
+    ]
+    assert matching_entries, (
+        "no SessionEnd hook entry with a command ending in "
+        f"'record-session-end.sh' found in {_SETTINGS_PATH.relative_to(_REPO_ROOT)}"
+    )
+    timeout = matching_entries[0].get("timeout")
+    # bool is an int subclass in Python, so a corrupted "timeout": true would
+    # otherwise pass a bare isinstance(x, int) check.
+    assert isinstance(timeout, int) and not isinstance(timeout, bool), (
+        f"record-session-end.sh's SessionEnd 'timeout' is not an int: {timeout!r}"
+    )
+    # Floor-and-ceiling range, not an exact `== 10` match, so a legitimate
+    # future retune isn't a test edit.
+    assert 10 <= timeout <= 60, (
+        f"record-session-end.sh's SessionEnd 'timeout' {timeout} is outside "
+        f"the [10, 60] range -- 60 is the documented per-hook ceiling "
+        f"(code.claude.com/docs/en/hooks)"
+    )
 
 
 # Review skills whose descriptions advertise a gate, paired with the hook that

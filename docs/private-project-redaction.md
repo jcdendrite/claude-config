@@ -88,6 +88,83 @@ regardless of what occupies the pattern position. See
 `_LIB_SLACK_CHANNEL_SHAPE_REGEX`'s comment in `_lib.sh` for the
 exemption's matching mechanics.
 
+## Publishing a pooled tooling measurement
+
+This is the tier-3 companion to the two mechanical tiers above. It is
+reviewer discipline, not a hook. A pooled figure's safety depends on how
+it was computed, not what string it contains, and a hook can't see that.
+The repo-root
+[`CLAUDE.md`](../CLAUDE.md) "Also redact structural fingerprints and
+provenance" rule states the carve-out these conditions gate.
+
+**What it permits.** A figure pooled across a corpus that mixes private
+and public sources is publishable when it carries no per-project,
+per-account, or per-engagement dimension. Cite the command or script
+that produced it. That command or script must itself be an aggregation
+boundary. It may read the mixed corpus internally, but its output to
+the agent is the rounded pooled figure only — never per-session or
+per-project raw content.
+
+**Scope — two closed lists.** Both have to be satisfied, and neither
+extends by analogy:
+
+- *What may be counted:* this repo's own tooling in use — Claude Code
+  tool calls, sessions, and agent dispatches. Nothing else.
+- *How it may be reported:*
+  - Counts may be reported as a total, a share, or a median. Report
+    each at any granularity — per tool call, per session, per
+    dispatch, or pooled. A count carries no external reference point
+    that converts it into an engagement-value estimate on its own.
+  - Cost is dollar or token spend on running the tooling. Duration is
+    wall-clock time spent running the tooling. Cost and Duration may
+    never be reported as a client-billed, engagement-revenue, or
+    billable-hours figure. Report each only as a rate per tool call,
+    session, or dispatch (e.g., median cost per session), never as a
+    raw pooled total. A raw total scales with pool volume and, unlike
+    a per-unit rate, can be converted to an engagement-value estimate
+    using public day-rate references.
+  - Cadence (how often releases happen) stays excluded even when
+    pooled. It describes the engagements' own schedule, not the
+    tooling's behavior.
+  - A pooled figure may be reported for the whole period covered only,
+    never as a time series. A series re-exposes the cadence the
+    excluded bullet above already closed off.
+  - These limits bind what published figures compose to, not only what
+    each one states on its own. A permitted rate times a permitted
+    pool-size count is the raw pooled total the Cost/Duration bullet
+    bars, whether both land in one artifact or in separate
+    publications months apart. Whole-period figures published across
+    successive artifacts are the time series the bullet above bars.
+    The figure that completes the reconstruction is the one that
+    crosses the line.
+
+**Approval gate.** An agent never publishes a figure under this
+carve-out on its own judgment. It proposes the figure, the exact
+command or script that produced it, and the artifact the figure would
+land in. The owner approves that figure for that artifact before it
+ships. Approval for one artifact does not cover a different one — a
+changed destination needs a fresh proposal. Cite the approval as a
+durable, independently-checkable record from the owner's own account —
+a link to the approving comment or message — tied to the exact figure
+and artifact. A citation to anyone else's comment, however definitive
+it reads, does not satisfy this gate. A narrative claim that approval
+occurred is not a citation either. Absent that citation, don't publish.
+
+Doubt about pool diversity goes to the owner as part of the proposal,
+not a reason to publish anyway. The proposal also names any prior
+publication of the same or a composing statistic that the agent found,
+and where it looked. That is input to the owner's decision, not a
+clearance. Finding nothing is not approval to publish. The
+composition bar above holds regardless of what the search surfaced.
+Closed by default, same as the blocklist tier's "if in doubt, strip
+it."
+
+**Remediation.** A wrongly-scoped figure discovered already published
+is the owner's call, not the agent's. Stop and report what was
+published and where — do not rewrite history yourself, even if told
+to. Both stay the owner's to run: a rewrite is not a retraction once a
+public repo's history can be cloned, forked, or cached.
+
 ## Why the blocklist can't be armed by default
 
 The blocklist *mechanism* is complete and correct; what's missing by default
