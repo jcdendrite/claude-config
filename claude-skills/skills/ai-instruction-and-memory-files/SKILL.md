@@ -46,23 +46,21 @@ those files is open. Read it directly when reviewing a diff with neither open.
 Official threshold: **under 200 lines per CLAUDE.md file** — longer files
 consume more context and reduce adherence. The unit is **lines** — no
 Anthropic source attaches a word-count threshold. Within that cap, line
-count undercounts density (long-paragraph lines bury rules). See
-`docs/instruction-file-sizing-evidence.md` §3-4 before citing "lost in the
-middle" for rule placement — the placement literature supports less than
-that phrase implies. Place critical rules near the start or end of the
-file; see `docs/instruction-file-sizing-evidence.md` §1 for OpenAI's
-GPT-4.1 guidance on beginning-and-end placement. Apply the
-**behavior test** below per line. CLAUDE.md is **advisory** while
-hooks are **deterministic**; they guarantee the action happens — prefer a
-hook or structural test when a rule can be encoded as one. The 200-line cap is hook-enforced at commit time by `check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
+count undercounts density (long-paragraph lines bury rules). Place critical
+rules near the start or end of the file. **Don't cite "lost in the middle"
+as the reason** — that literature measures retrieval position in
+multi-document question answering, not rule adherence, and no source shows
+the two equivalent. Apply the **behavior test** below per line. CLAUDE.md is
+**advisory** while hooks are **deterministic**; they guarantee the action
+happens — prefer a hook or structural test when a rule can be encoded as
+one. The 200-line cap is hook-enforced at commit time by
+`check-claude-md-length.sh` for CLAUDE.md and AGENTS.md.
 
 Byte size is a distinct dimension from line count — a single long-wrapped
 line costs more context than its line count implies. `check-claude-md-length.sh`
-also enforces a byte-size ratchet alongside the 200-line cap; see
-`docs/instruction-file-sizing-evidence.md` §1 for the vendor-sourced figure
-it's grounded in. No source surveyed supports a rule-count threshold for an
-instruction file; gating on rule count was considered and declined for
-that reason — see `docs/instruction-file-sizing-evidence.md` §5.
+also enforces a byte-size ratchet alongside the 200-line cap. No source
+supports a rule-count threshold for an instruction file; don't propose
+rule-count gating.
 
 ### The behavior test
 

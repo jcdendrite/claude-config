@@ -37,9 +37,9 @@ DENY_GATE_LABEL="CLAUDE.md length"
 
 # Byte limit: 25,600 bytes = 25 KiB (binary reading), the nearest in-family
 # precedent — MEMORY.md's documented "200 lines or 25KB" threshold
-# (docs/instruction-file-sizing-evidence.md §1). Applies to every stow
-# consumer's CLAUDE.md/AGENTS.md, the same scope the 200-line check above
-# already has.
+# (claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md's
+# "Cross-vendor size table" section). Applies to every stow consumer's
+# CLAUDE.md/AGENTS.md, the same scope the 200-line check above already has.
 #
 # Dated log of prior values (one line per raise: date, old value, new value,
 # one-line reason) — empty today; append here on every future change.
