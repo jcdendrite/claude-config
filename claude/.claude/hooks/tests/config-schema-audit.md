@@ -253,10 +253,10 @@ Column legend:
   wherever this resolution already reads, with no install.sh writer ever
   touching it.
 - Fail direction on resolution failure: not explicitly specced in prose
-  today; `config-get.sh`'s exit 3 (unresolvable) is documented in
-  `pr-description/SKILL.md:103`'s edit to skip the pass — failing toward
-  off, the same direction every other config-dir-only key takes on
-  resolution failure.
+  today; `config-get.sh`'s exit 3 (see that script's own header for the
+  full exit-code table) is documented in `pr-description/SKILL.md:103`'s
+  edit to skip the pass — failing toward off, the same direction every
+  other config-dir-only key takes on resolution failure.
 
 ### `handoff_nudge`
 

@@ -248,8 +248,15 @@ _lib_strip_trailing_path_components() {
 #      protected file when DEST is a directory. `-ef`-compares the
 #      candidate directly against the resolved root, independent of
 #      SUFFIX_PATTERN's own text. Brings this shape to parity with a
-#      2+-component SUFFIX_PATTERN, whose trailing glob segment already
-#      absorbs an empty leaf via (2)'s own tail-glob match.
+#      2+-component SUFFIX_PATTERN's trailing-slash directory-destination
+#      form only, where the trailing slash produces an empty tail that (2)'s
+#      own tail-glob match already absorbs. A flag-based (`-t DIR`/
+#      `--target-directory=DIR`) or bare (`cp file DIR`) directory
+#      destination has no trailing slash to produce that empty tail, so this
+#      pass alone does not reach a 2+-component SUFFIX_PATTERN's version of
+#      that shape -- (4) below closes it by also comparing the candidate
+#      itself, not just its parent, against the marker directory's own glob
+#      expansion.
 #   3. A bare `candidate -ef ROOT/SUFFIX_PATTERN` comparison, gated to a
 #      SUFFIX_PATTERN with no glob metacharacter (true for the config
 #      hook's literal filename claude-config.toml, never true for the
@@ -264,12 +271,17 @@ _lib_strip_trailing_path_components() {
 #   4. For a SUFFIX_PATTERN with 2+ components, a directory-symlink check:
 #      glob-expands ROOT/<SUFFIX_PATTERN-minus-its-last-component> (cheap —
 #      a handful of marker-kind directories, not their contents) and
-#      `-ef`-compares the candidate's own parent directory against each
-#      expansion. Catches a symlink pointing AT a marker directory itself
-#      (`ln -s ~/.claude/code-review-markers /tmp/m`), which neither (2)
-#      nor (3) reaches since the symlink hop happens one level above the
-#      leaf. A 1-component SUFFIX_PATTERN's "directory" is the root itself,
-#      already covered by (2), so this pass no-ops for one.
+#      `-ef`-compares each expansion against two things: the candidate's own
+#      parent directory, and the candidate itself. The parent comparison
+#      catches a symlink pointing AT a marker directory itself (`ln -s
+#      ~/.claude/code-review-markers /tmp/m`), which neither (2) nor (3)
+#      reaches since the symlink hop happens one level above the leaf. The
+#      candidate-itself comparison catches a flag-based (`-t DIR`/
+#      `--target-directory=DIR`) or bare (`cp file DIR`) directory
+#      destination that IS the marker directory, the 2+-component sibling of
+#      (2b)'s 1-component directory-destination case. A 1-component
+#      SUFFIX_PATTERN's "directory" is the root itself, already covered by
+#      (2) and (2b), so this pass no-ops for one.
 #
 # Residuals this detection strategy does NOT close (see the two gate hooks'
 # own header comments for the caller-facing disclosure):
@@ -439,7 +451,8 @@ _lib_shape_match() {
       local -a dir_expansions=("$resolved_root"/$dir_shape)
       if [ "$nullglob_was_set" -eq 0 ]; then shopt -u nullglob; fi
       for dirmatch in "${dir_expansions[@]}"; do
-        if [ "$candidate_dir" -ef "$dirmatch" ] 2>/dev/null; then
+        if [ "$candidate_dir" -ef "$dirmatch" ] 2>/dev/null \
+          || [ "$candidate" -ef "$dirmatch" ] 2>/dev/null; then
           matched=0
           break
         fi

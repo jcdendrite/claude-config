@@ -1482,16 +1482,76 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
         ],
     )
-    def test_target_directory_form_allowed_residual(self, command):
-        """Accepted residual: `-t DIR`/`--target-directory=DIR` writes to
-        DIR/basename(source), a path no single token in the command spells
-        out literally -- DIR alone, with no trailing marker-suffix path
-        component, does not shape-match a marker path even though every
-        word of the fragment is now a candidate."""
+    def test_target_directory_form_denied(self, command, marker_home):
+        """`-t DIR`/`--target-directory=DIR` writes to DIR/basename(source),
+        a path no single token in the command spells out literally -- but
+        DIR alone still `-ef`-matches the marker directory itself via
+        _lib_shape_match's Pass 4, so this is caught even though the joined
+        DIR/basename path is never a literal token in the command. Pass 4's
+        `-ef` comparison only fires against a marker directory that actually
+        exists on disk, hence marker_home."""
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    def test_bare_positional_directory_destination_denied(self, marker_home):
+        """Same DIR-alone shape as the `-t DIR` form above, reached through
+        cp's bare trailing-positional-argument form instead of the `-t`/
+        `--target-directory` flag -- no trailing slash on DIR."""
+        cmd = "cp /tmp/attacker-plan.md ~/.claude/code-review-markers"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "cp -t {target_dir} /tmp/attacker-plan.md",
+            "cp --target-directory={target_dir} /tmp/attacker-plan.md",
+            "mv -t {target_dir} /tmp/attacker-plan.md",
+            "install -t {target_dir} /tmp/attacker-plan.md",
+        ],
+    )
+    def test_target_directory_form_to_unrelated_directory_allowed(self, command_template, marker_home):
+        """Pass 4's candidate-itself `-ef` comparison is scoped to the
+        marker-kind directories `dir_expansions` glob-expands, not to "any
+        directory destination" -- a directory-form write into a genuinely
+        unrelated directory must stay allowed, or a future widening of Pass
+        4's own glob-expansion set would over-deny with no test to catch
+        it."""
+        unrelated_dir = marker_home / "unrelated"
+        unrelated_dir.mkdir()
+        command = command_template.format(target_dir=unrelated_dir)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+                home=marker_home,
+            )
+            == "allow"
+        )
+
+    def test_bare_positional_directory_destination_to_unrelated_directory_allowed(self, marker_home):
+        """Bare-positional counterpart of the flag-based allow test above --
+        `cp file DIR` with no trailing slash, into an unrelated directory."""
+        unrelated_dir = marker_home / "unrelated"
+        unrelated_dir.mkdir()
+        cmd = f"cp /tmp/attacker-plan.md {unrelated_dir}"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+                home=marker_home,
             )
             == "allow"
         )

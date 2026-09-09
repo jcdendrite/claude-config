@@ -91,6 +91,12 @@
 #     unbounded — see `_lib.sh`'s own disclosure on `_lib_shape_match` for
 #     why this is deliberate.
 #
+# Posture: raises the cost of a naive/cooperative write to claude-config.toml,
+# not a hard boundary — every gap above traces to this being a fixed
+# name-list text scan rather than a syscall trace, so an interpreter write,
+# here-doc, `$(...)`-computed path, or unlisted write utility passes through
+# untouched.
+#
 # WARNING: Do NOT remove the internal _config_set/redirect-candidate checks
 # below. The "if" field in settings.json is unreliable — see
 # enforce-marker-script-shape.sh's identical warning for the observed
