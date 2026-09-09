@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 14 keys in `config-keys.psv`, this table traces the
+For every one of the 15 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -141,7 +141,7 @@ Column legend:
   unresolvable config dir leaves nothing to restate, so it no-ops rather
   than guessing).
 
-## Remaining nine keys
+## Remaining ten keys
 
 ### `permission_prompt_tracking`
 
@@ -318,3 +318,26 @@ Column legend:
   dir leaves no kill-switch location to check, so this hook fails open
   (today's auto-titler behavior) rather than guess" (the hook's own
   comment).
+
+### `round_consult_round2_pilot`
+
+- Call site: `_lib.sh`'s `_lib_reviewer_round_state_cap` (delegated to by
+  `require-architect-consult.sh` and `log-reviewer-round.sh`, both reading
+  the cap it returns). `config_dir=$(_lib_config_dir) && [ -f
+  "$config_dir/.round-consult-round2-pilot" ]` — a single presence check, no
+  `_config_enabled`/`_config_value` call at all. The schema row exists only
+  for `install.sh`'s schema-driven reporter, not for this function's own
+  enforcement.
+- Resolution: **config-dir**. No `$HOME` union arm — `_lib_config_dir`
+  alone.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path fallback probe
+  exists; a `_lib_config_dir` failure short-circuits the `&&` and the
+  function falls through to `printf '%s\n' "$_LIB_REVIEWER_ROUND_STATE_CAP"`
+  (the default cap of 2).
+- Legacy-import-locations: **config-dir**. Never machine-promptable. Not
+  part of pre-migration `SENTINEL_INVENTORY` — this key postdates the
+  sentinel-file migration. A user hand-toggles it via `touch`.
+- Fail direction on resolution failure: falls through to the default cap
+  (`$_LIB_REVIEWER_ROUND_STATE_CAP`, currently 2) rather than the pilot's
+  lowered cap of 1. This is the safe direction — an unresolvable config dir
+  allows more review rounds before the gate fires, never fewer.

@@ -134,7 +134,7 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 14 keys, it checks for a legacy value at the location(s)
+   the 15 keys, it checks for a legacy value at the location(s)
    `legacy-import-locations` names — the resolved config dir alone, or
    (for the six keys `install.sh`'s pre-migration writer always wrote to
    `$HOME/.claude` regardless of `CLAUDE_CONFIG_DIR`, plus `pr_cost_disclosure`,
@@ -144,7 +144,7 @@ It runs two phases, always in this order:
    copy, with the resolved-config-dir value winning on disagreement.
    Import writes a key's legacy-derived value only the first time that key
    has no existing state-file row — a hand-edit or an earlier import is
-   never overwritten by a later run. For the nine non-enforcement-critical
+   never overwritten by a later run. For the ten non-enforcement-critical
    keys this happens fully non-interactively. For the five
    enforcement-critical keys, import is direction-aware rather than
    TTY-gated: it compares the legacy-derived value against that key's
@@ -162,7 +162,7 @@ It runs two phases, always in this order:
    `content-matches` grammar) does not abort the run; the remaining keys
    still import normally. After every key has been processed, a
    schema-default scaffold fills in a default row only for a key with no
-   legacy fallback mechanism at all — none exist among today's 14 keys, so
+   legacy fallback mechanism at all — none exist among today's 15 keys, so
    scaffold currently writes nothing. A key with a legacy-polarity
    (`presence-enables`/`presence-disables`/`content-matches`) stays absent
    from the state file unless this run's import path already gave it an
@@ -227,7 +227,7 @@ internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 ## Per-account isolation
 
 Because every key now lives in one file, symlinking `claude-config.toml`
-itself from one Claude account's config dir to another's merges *all 14
+itself from one Claude account's config dir to another's merges *all 15
 keys* between the two accounts at once — a wider blast radius than the
 single-sentinel symlink risk this repo already warned about for
 `pr-cost.md`'s `.pr-cost-enabled` file. A symlinked `claude-config.toml`

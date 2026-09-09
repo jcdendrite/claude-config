@@ -609,7 +609,7 @@ _config_key_source() {
 
 # Schema-driven, replacing the old scope=machine-promptable/machine/account
 # reporters: every key's effective value now resolves through
-# _config_value, so one function reports all fourteen. For a
+# _config_value, so one function reports all fifteen. For a
 # config-dir-or-home key (worktree_required, autonomous_shipping), also
 # prints $HOME/.claude's own value/source alongside the resolved config
 # dir's when the two differ -- the union means either can be the reason a

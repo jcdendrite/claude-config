@@ -10,7 +10,7 @@
 # claude/.claude/** goes live on `git pull` with no install.sh re-run.
 #
 # Two phases, always in this order: (1) non-interactive import for all
-# fourteen keys, then schema-default scaffold; (2) an interactive per-file
+# fifteen keys, then schema-default scaffold; (2) an interactive per-file
 # delete offer, `[ -t 0 ]`-gated once for the whole phase -- hang-prevention
 # only, not a security control, since nothing here stops an agent from
 # running `rm` on a legacy sentinel directly. See docs/config-file.md's

@@ -27,15 +27,19 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-from helpers import CLAUDE_DIR
+from helpers import CLAUDE_DIR, SCRIPTS_DIR
 
 from .test_agent_roster import REVIEWER_AGENTS
+
+sys.path.insert(0, str(SCRIPTS_DIR))
+from _config import schema  # noqa: E402
 
 # CLAUDE_DIR is defined in helpers.py as Path(__file__).resolve().parent.parent,
 # anchored to the stow-source path, not the symlink target (~/.claude/).
@@ -355,6 +359,17 @@ def _count_handoff_nudge_block_at_default() -> int:
     return int(match.group(1))
 
 
+def _count_config_keys_psv_rows() -> int:
+    """Return config-keys.psv's row count via the production parser.
+
+    Counts via `_config.py`'s `schema()`, imported the same way
+    `claude/.claude/scripts/tests/test_config_py.py` imports it. This ties
+    the doc-count claim to the actual production parser output rather than a
+    second hand-rolled line scan.
+    """
+    return len(schema())
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -487,6 +502,22 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/handoff-nudge.md",
                 pattern=r"`HANDOFF_NUDGE_BLOCK_AT` \(default (\d+)\)",
                 description="docs/handoff-nudge.md: HANDOFF_NUDGE_BLOCK_AT (default N)",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_config_keys_psv_rows,
+        label="config-keys.psv row count",
+        occurrences=[
+            Occurrence(
+                rel_path="install.sh",
+                pattern=r"so one function reports all (\w+)\.",
+                description="install.sh: _report_config_key reports all N keys",
+            ),
+            Occurrence(
+                rel_path="claude/.claude/scripts/migrate-legacy-config.sh",
+                pattern=r"non-interactive import for all\W+(\w+)\W+keys, then schema-default scaffold",
+                description="migrate-legacy-config.sh: non-interactive import for all N keys",
             ),
         ],
     ),
