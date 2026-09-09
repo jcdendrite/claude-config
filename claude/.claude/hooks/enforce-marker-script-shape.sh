@@ -31,21 +31,23 @@
 #     no-gate-release agent, even though it is not a write -- a `cat`,
 #     `grep`, or `less` read of the same path is unaffected (it invokes none
 #     of the recognized write utilities), so a denied read has an
-#     actionable alternative. Three residuals remain open, none closed by
+#     actionable alternative. Two residuals remain open, neither closed by
 #     the addition of curl/wget/rsync/scp/openssl to the recognized set:
 #     (a) a URL/server-derived destination basename (`curl -O URL`, bare
 #     `wget URL`) -- the write target is never a literal token in the
-#     command; (b) a directory destination via `-t DIR`/`--target-directory=
-#     DIR` when the destination directory's own token carries no trailing
-#     path component matching a marker suffix pattern (the joined
-#     DIR/basename path this actually writes to is never a single literal
-#     token in the command) -- a plain trailing-slash directory form (`cp
-#     file ~/.claude/code-review-markers/`) is already caught here
-#     incidentally, since the marker suffix patterns (`*-markers/*`,
-#     `.*-active.d/*`) end in a glob segment that also matches an empty
-#     trailing component; (c) a relative destination token when the
-#     process's cwd (from the tool-call payload) sits inside a marker
-#     directory -- candidate extraction never joins a candidate to that cwd.
+#     command; (b) a relative destination token when the process's cwd
+#     (from the tool-call payload) sits inside a marker directory --
+#     candidate extraction never joins a candidate to that cwd. A directory
+#     destination via `-t DIR`/`--target-directory=DIR`, a bare `cp file
+#     DIR` with no trailing slash, and a plain trailing-slash form (`cp
+#     file ~/.claude/code-review-markers/`) are all caught even though the
+#     joined DIR/basename path this actually writes to is never a single
+#     literal token in the command: cp/mv/install/rsync/scp's own
+#     basename-preservation semantics land the write inside the marker
+#     directory regardless of trailing slash, and `_lib_shape_match`
+#     `-ef`-compares the DIR token itself against the marker directory
+#     (Pass 4) alongside the trailing-slash form's own tail-glob match
+#     (Pass 2's tail-glob absorbing the trailing slash's empty leaf).
 #     Still open beyond the utility-recognition class: `>|`
 #     (clobber-override -- its literal `|` gets severed from the operator by
 #     the fragment splitter this scan reuses, before extraction ever sees a
@@ -59,9 +61,9 @@
 #     a general write-syscall trace, so a program not on the list is
 #     entirely unscanned.
 #   - `_lib_shape_match`'s `-ef`-based inode-identity checks (shared with
-#     enforce-config-write-shape.sh) have two residuals: a `..` path segment
-#     through a not-yet-created directory has no inode to stat yet — narrow,
-#     since in nearly every such case the write itself would ENOENT first.
+#     enforce-config-write-shape.sh): a `..` path segment through a
+#     not-yet-created directory has no inode to stat yet — narrow, since in
+#     nearly every such case the write itself would ENOENT first.
 #   - `-ef` has no timeout backstop, so a hung network mount can block the
 #     check indefinitely — a fully hung D-state mount was never
 #     interruptible either.
@@ -94,6 +96,12 @@
 #     own _lib_split_fragments call both check their exit status and fail
 #     closed, matching deny-network-installs.sh's
 #     COMMAND_UNQUOTED_EXIT/FRAGMENTS_SPLIT_EXIT pattern.
+#
+# Posture: raises the cost of a naive/cooperative write to a marker path,
+# not a hard boundary — every gap above traces to this being a fixed
+# name-list text scan rather than a syscall trace, so an interpreter write,
+# here-doc, `$(...)`-computed path, or unlisted write utility passes through
+# untouched.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed

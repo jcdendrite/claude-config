@@ -218,9 +218,9 @@ instead once you know it's there.
 ~/.claude/scripts/config-get.sh <key>
 ```
 
-Exit 0 = enabled, exit 1 = disabled, exit 2 = unknown key, exit 3 = config
-dir unresolvable. The exit code is the sole authority — the effective
-value is also printed to stdout for a human, but never trust stdout alone.
+See `config-get.sh`'s own header for the exit-code table — the exit code
+is the sole authority, and the effective value is also printed to stdout
+for a human, but never trust stdout alone.
 This is the query surface skill prose uses instead of learning the file's
 internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 
