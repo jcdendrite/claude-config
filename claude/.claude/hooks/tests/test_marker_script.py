@@ -934,7 +934,7 @@ class TestHashStagedDiff:
         assert result.returncode == 0, result.stderr
         assert result.stdout != ""
 
-    def test_git_external_diff_noop_still_classifies_as_content(self, tmp_path) -> None:
+    def test_git_external_diff_noop_misclassifies_staged_content_as_empty_rc(self, tmp_path) -> None:
         """A GIT_EXTERNAL_DIFF tool that exits 0 without writing to stdout
         would make `git diff --cached` (no `--quiet`) itself hash empty
         bytes for a genuinely staged change -- unlike _lib_staged_diff_state's
@@ -1022,14 +1022,14 @@ class TestMarkerScriptStagedDiffStateClassification:
         self, isolated_home, git_repo, tmp_path
     ):
         """Same as the code-review case above, retargeted at the
-        skill-review arm's pathspec-scoped (8-arg) hash call."""
+        skill-review arm's pathspec-scoped (9-arg, 4 pathspecs) hash call."""
         real_git = shutil.which("git")
         stub_dir = tmp_path / "stub-bin"
         stub_dir.mkdir()
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 8 ]; then\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 9 ]; then\n'
             '  exit 1\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
@@ -1097,7 +1097,7 @@ class TestMarkerScriptStagedDiffStateClassification:
         self, isolated_home, git_repo, tmp_path, gh_timeout_shim
     ):
         """Same as the code-review case above, but matches the
-        skill-review line's 3-pathspec (8-arg) hash call shape
+        skill-review line's 4-pathspec (9-arg) hash call shape
         specifically, so it doesn't also fail the code-review line's own
         hash call.
 
@@ -1111,7 +1111,7 @@ class TestMarkerScriptStagedDiffStateClassification:
         stub = stub_dir / "git"
         stub.write_text(
             '#!/bin/bash\n'
-            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 8 ]; then\n'
+            'if [ "$3" = "diff" ] && [ "$4" = "--cached" ] && [ "$#" -eq 9 ]; then\n'
             '  exit 1\n'
             'fi\n'
             f'exec {real_git} "$@"\n'
