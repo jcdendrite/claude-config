@@ -1674,24 +1674,83 @@ class TestSubagentMixPerDispatch:
         assert cols["Status"] == "dangling"
         assert cols["Actual$"] == "$0.00"
 
+    def test_per_dispatch_with_reprice_as_renders_counterfactual_and_delta(self, fake_projects, capsys):
+        """--per-dispatch combined with --reprice-as renders the same
+        Counterfactual$/Delta columns per row as the aggregated table's own
+        reprice_as coverage (see test_reprice_as_delta_arithmetic in
+        TestSubagentMixDollars) -- 1,000,000 input tokens at
+        claude-sonnet-4-6's $3.00/MTok actual rate versus
+        claude-haiku-4-5-20251001's $1.00/MTok counterfactual rate."""
+        session_id = "sess-per-dispatch-reprice"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True, reprice_as="claude-haiku-4-5-20251001"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
+        assert cols["Actual$"] == "$3.00"
+        assert cols["Counterfactual$"] == "$1.00"
+        assert cols["Delta"] == "$2.00"
+
+    def test_per_dispatch_dangling_dispatch_with_reprice_as_renders_zero_counterfactual(self, fake_projects, capsys):
+        """A dangling dispatch (meta.json, no sibling .jsonl) under
+        --per-dispatch --reprice-as must not crash formatting a None
+        counterfactual_dollars -- _dispatch_usage_summary returns
+        counterfactual_dollars=None for a dangling dispatch, and the
+        `counterfactual = drow["counterfactual_dollars"] or 0.0` guard
+        renders $0.00 instead of _fmt_usd raising TypeError on None."""
+        session_id = "sess-per-dispatch-dangling-reprice"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        meta = {"agentType": "staff-sdet", "description": "d", "toolUseId": "a1", "spawnDepth": 1}
+        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
+        # Deliberately no agent-1.jsonl written -- the dangling case.
+        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True, reprice_as="claude-haiku-4-5-20251001"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="agent-1", max_labels=7)
+        assert cols["Status"] == "dangling"
+        assert cols["Actual$"] == "$0.00"
+        assert cols["Counterfactual$"] == "$0.00"
+
+    def test_per_dispatch_with_no_agent_spawns_in_scope_prints_no_extra_table(self, fake_projects, capsys):
+        """--per-dispatch against a session carrying a review-skill
+        invocation but no Agent/Task spawn leaves dispatch_rows empty -- the
+        summary table still prints (Spawns=0), the per-dispatch table's own
+        header never appears, and cmd_subagent_mix does not crash on the
+        empty dispatch_rows list."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_subagent_mix(_subagent_mix_args(per_dispatch=True))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Spawns", row_contains="feat", max_labels=6)
+        assert cols["Spawns"] == "0"
+        assert "Dispatch" not in out
+
 
 class TestDispatchUsageSummaryDedupBeforePricing:
-    """_dispatch_usage_summary used to price every raw assistant record in a
-    dispatch's own transcript individually, instead of collapsing a
-    same-requestId run into one turn first (dedup_turns_by_request_id) --
-    this over-counted every input/cache token class once per content block
-    instead of once per API call. These regression tests hand-roll their
-    fixtures via _asst (not _priced_sidechain_asst, which takes no
-    request_id)."""
+    """_dispatch_usage_summary dedups a same-requestId run into one turn
+    before pricing it (dedup_turns_by_request_id), so a multi-block API
+    response is priced once, not once per block. These regression tests
+    hand-roll their fixtures via _asst, since _priced_sidechain_asst takes
+    no request_id."""
 
     def _two_block_run(self, model: str, *, request_id: str = "req-1") -> list[dict]:
-        """One API call's two content-block records sharing one requestId,
-        ascending non-identical output_tokens (matches
-        TestPrCostDedupBeforePricing's 3-then-50 pattern) -- input_tokens
-        identical across both (the measured invariant _merge_assistant_run
-        relies on), so a pre-fix, per-record pricing pass double-counts the
-        1,000,000 input tokens while a post-fix, deduped pass prices only
-        the last record's usage."""
+        """One API call's two content-block records sharing one requestId.
+        output_tokens ascends non-identically across the two records,
+        matching TestPrCostDedupBeforePricing's 3-then-50 pattern.
+        input_tokens is identical across both records, the invariant
+        _merge_assistant_run relies on to merge them. A correct pricing
+        pass must price the merged turn's last-record usage once, not sum
+        both blocks."""
         rec1 = _asst(
             model, branch="feature-a", sidechain=True, request_id=request_id,
             content=[{"type": "thinking", "thinking": "..."}],
@@ -1740,9 +1799,10 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         """Two dispatches, each carrying the same two-content-block run:
         summed actual_dollars across both must equal the hand-computed
         figure derived from pricing only each run's final (billed) usage --
-        an equality assertion, not an inequality against cost's ceiling,
-        since a per-dispatch sum undercuts that ceiling even pre-fix and
-        would pass regardless of whether dedup ran."""
+        an equality assertion, not an inequality against `cost`'s ceiling,
+        since a per-dispatch sum undercuts `cost`'s ceiling regardless of
+        whether dedup runs, so an inequality assertion here would pass even
+        with a reverted dedup step."""
         jsonl_1 = tmp_path / "dispatch-1.jsonl"
         jsonl_2 = tmp_path / "dispatch-2.jsonl"
         _write_jsonl(jsonl_1, self._two_block_run("claude-sonnet-4-6", request_id="req-1"))
@@ -1836,6 +1896,44 @@ class TestDispatchUsageSummaryDedupBeforePricing:
             jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
         )
         assert actual_dollars == 0.0
+
+    def test_run_included_when_last_block_timestamp_outside_window_even_if_first_inside(self, tmp_path):
+        """Mirror of the lower-edge test above: a same-requestId run whose
+        first record's timestamp sits inside [since_ts, until_ts) while its
+        last record's timestamp sits at or after until_ts is counted as
+        fully in-window spend, not excluded or partially priced -- inclusion
+        is decided by the merged turn's first-block timestamp
+        (_merge_assistant_run takes run[0]'s timestamp), so a run straddling
+        the window's upper edge this way has its full billed (last-block)
+        usage counted in actual_dollars. This documents the over-inclusion
+        this convention produces at the upper edge."""
+        rec1 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle-upper",
+            ts="2026-07-01T23:59:59.000Z", content=[{"type": "thinking", "thinking": "..."}],
+        )
+        rec1["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 3,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        rec2 = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle-upper",
+            ts="2026-07-02T00:00:01.000Z", content=[{"type": "text", "text": "done"}],
+        )
+        rec2["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, [rec1, rec2])
+        since_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
+        until_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
+        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
+        )
+        # Merged usage is the run's last record (1,000,000 input + 50
+        # output), priced in full despite that record's own timestamp
+        # falling after until_ts.
+        assert actual_dollars == pytest.approx(3.00075)
 
 
 class TestDeclaredPinPathSafety:
@@ -2093,6 +2191,43 @@ class TestRepoTrackedAgentTypeNames:
         and its failure message unreadable, so the name is hardcoded; the
         unit tests above already carry the "real derivation works" fact."""
         assert "code-writer" in _mod._repo_tracked_agent_type_names()
+
+    # Generic reviewer/agent naming convention this repo's own agents/
+    # directory follows, plus a small explicit set of known built-ins that
+    # don't follow it but are equally non-project-identifying.
+    _GENERIC_AGENT_STEM_PATTERN = re.compile(r"^(staff|code|ciso|plan)-[a-z-]+$")
+    _GENERIC_AGENT_STEM_EXCEPTIONS = frozenset({
+        "Explore", "comment-discipline-reviewer", "skill-fidelity-reviewer",
+    })
+
+    def test_real_agents_directory_stems_match_generic_naming_shape(self):
+        """Coarse shape-only pin: every git-tracked stem here starts with
+        an allowed prefix (staff/code/ciso/plan) and is otherwise
+        lowercase-hyphenated, or is in the small explicit exceptions set.
+        This checks prefix-and-hyphenation shape only -- it cannot verify
+        that a stem's tail is semantically non-project-identifying (a
+        stem like "staff-acmecorp-reviewer" would still pass). That
+        property is a reviewer-discipline-only precondition per this
+        repo's CLAUDE.md "Redact private-project-identifying content"
+        section's third tier, not something a regex can close. Runs
+        against the real _REPO_AGENT_DEFINITIONS_DIR rather than an
+        isolated fixture, since the property under test belongs to this
+        actual repo's actual tracked files."""
+        proc = subprocess.run(
+            ["git", "-C", str(_mod._REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
+            capture_output=True, text=True, check=True,
+        )
+        stems = {
+            entry[: -len(".md")]
+            for entry in proc.stdout.split("\0")
+            if entry and "/" not in entry and entry.endswith(".md")
+        }
+        assert stems
+        for stem in stems:
+            assert (
+                self._GENERIC_AGENT_STEM_PATTERN.match(stem)
+                or stem in self._GENERIC_AGENT_STEM_EXCEPTIONS
+            ), stem
 
 
 class TestSubagentMixMultiRoot:
@@ -5009,13 +5144,76 @@ def _extract_sonnet_tier_dollar_estimate(out: str) -> float:
     return float(match.group(1).replace(",", ""))
 
 
+def _review_trace_all_kinds_records() -> tuple[list[dict], dict[str, str]]:
+    """One session's records covering all five review-trace event kinds
+    (skill, denial, friction, reviewer-spawn, architect-consult), each
+    carrying its own distinct sentinel value.
+
+    Shared by the multi-root redaction test (every sentinel must vanish)
+    and its single-root counterpart (every sentinel but the unenumerated
+    hookName must survive raw) -- one fixture instead of two kept in sync
+    by hand.
+    """
+    sentinels = {
+        "branch": "secret-project-branch-x7f2",
+        "denial_path": "secret-project/denial-file.txt",
+        "friction_path": "secret-project/friction-file.txt",
+        "unenumerated_hook_name": "totally-unenumerated-hook-shape-9f3",
+        "foreign_reviewer_type": "staff-secret-project-custom-reviewer",
+    }
+    records = [
+        _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch=sentinels["branch"]),
+        _hook_deny_current(
+            f"Blocked by worktree-enforcement hook: {sentinels['denial_path']} is outside the linked worktree.",
+            tool_id="toolu_denial1", branch=sentinels["branch"], ts="2026-05-20T10:01:00.000Z",
+        ),
+        _hook_deny_current(
+            f"Request interrupted by user for tool use touching {sentinels['friction_path']}",
+            tool_id="toolu_friction1", branch=sentinels["branch"], ts="2026-05-20T10:02:00.000Z",
+            tool_denial_kind="interrupted",
+        ),
+        _hook_deny(sentinels["unenumerated_hook_name"], branch=sentinels["branch"], ts="2026-05-20T10:03:00.000Z"),
+        _asst("claude-opus-4-7", branch=sentinels["branch"], ts="2026-05-20T10:04:00.000Z",
+              content=[_agent_use("a1", sentinels["foreign_reviewer_type"])]),
+        _asst("claude-opus-4-7", branch=sentinels["branch"], ts="2026-05-20T10:05:00.000Z",
+              content=[_agent_use("a2", "staff-sdet")]),
+        _asst("claude-opus-4-7", branch=sentinels["branch"], ts="2026-05-20T10:06:00.000Z",
+              content=[_agent_use("a3", "plan-architect", prompt="MODE=consult\nquestion")]),
+    ]
+    return records, sentinels
+
+
 class TestReviewTraceMultiRoot:
-    """review-trace's multi-root disclosure guard -- every other multi-root
-    capable subcommand in this file already stamps _DO_NOT_PUBLISH_BANNER and
-    redacts identity-bearing labels above one root; this class covers the
-    same guard on review-trace's default timeline.
+    """review-trace's multi-root disclosure guard. Every other
+    multi-root-capable subcommand in this file already stamps
+    _DO_NOT_PUBLISH_BANNER and redacts identity-bearing labels above one
+    root. This class covers the same guard on review-trace's default
+    timeline.
     Uses _two_declared_roots (defined further below in this file, but a
-    plain module-level function so call order here doesn't matter)."""
+    plain module-level function so call order here doesn't matter).
+    Every leak-surface assertion in the tests below checks a sentinel's
+    absence, not just the replacement label's presence, since a session
+    could carry the intended redacted label AND a raw leaked value side by
+    side. The `staff-sdet` positive control in that same test proves the
+    repo-tracked-name disclosure carve-out doesn't over-redact into
+    uselessness."""
+
+    @pytest.fixture
+    def _isolated_staff_sdet_allowlist(self, tmp_path, monkeypatch):
+        """Points _REPO_AGENT_DEFINITIONS_DIR at a throwaway git-tracked
+        agents/ directory tracking staff-sdet.md, decoupling this class's
+        subagent_type disclosure tests from this repo's own real agents/
+        tree. Same isolation as TestSubagentMixMultiRoot's own fixture of
+        the same name."""
+        agents_dir = tmp_path / "isolated-agents"
+        agents_dir.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
+        (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
+        subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
+        monkeypatch.setattr(_mod, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        _mod._repo_tracked_agent_type_names.cache_clear()
+        yield
+        _mod._repo_tracked_agent_type_names.cache_clear()
 
     def test_default_timeline_stamps_banner_and_redacts_session_header_under_multi_root(
         self, tmp_path, monkeypatch, capsys
@@ -5035,6 +5233,153 @@ class TestReviewTraceMultiRoot:
         assert "-home-user-testrepo" not in captured.out
         assert "account-1/session-1" in captured.out
 
+    def test_default_timeline_redacts_every_leak_surface_under_multi_root(
+        self, tmp_path, monkeypatch, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """Under multi-root scope, every sentinel across all five event
+        kinds (branch, denial message, friction message, legacy hookName,
+        reviewer subagent_type) must vanish from the printed timeline."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        records, sentinels = _review_trace_all_kinds_records()
+        _write_jsonl(proj / "multiroot-all-kinds-session.jsonl", records)
+
+        events, _tool_use_commands, _pre_regime = _mod._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert {e["kind"] for e in events} == set(_mod._REVIEW_TRACE_EVENT_KINDS)
+
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert sentinels["branch"] not in out
+        assert sentinels["denial_path"] not in out
+        assert sentinels["friction_path"] not in out
+        assert sentinels["unenumerated_hook_name"] not in out
+        assert sentinels["foreign_reviewer_type"] not in out
+        assert "msg=" not in out
+        assert "hook=unmatched" in out
+        assert "account-1/branch-1" in out
+        assert "staff-sdet" in out
+
+    def test_reviewer_spawn_discloses_raw_tracked_subagent_type_under_multi_root(
+        self, tmp_path, monkeypatch, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """Pins the design decision in _redact_subagent_type's own
+        docstring: a subagent_type tracked in the invoking checkout's
+        agents/ directory discloses raw under multi-root scope with no
+        --this-repo flag passed at all. A later edit gating this carve-out
+        on --this-repo (matching subagent-mix's own _stype_label) must fail
+        this test."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "tracked-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-20T10:00:00.000Z",
+                  content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert re.search(r"reviewer\s+account-\d+/staff-sdet\b", out)
+
+    def test_reviewer_spawn_redacts_untracked_subagent_type_under_multi_root(
+        self, tmp_path, monkeypatch, _isolated_staff_sdet_allowlist, capsys
+    ):
+        """The actual disclosure control: a subagent_type NOT tracked in
+        the allowlisted agents/ directory must still render as the opaque
+        account-<K>/agent-type-<N> label. This must fail the moment
+        _repo_tracked_agent_type_names starts over-matching."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        untracked_type = "staff-secret-project-custom-reviewer"
+        _write_jsonl(proj / "untracked-session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-20T10:00:00.000Z",
+                  content=[_agent_use("a1", untracked_type)]),
+        ])
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert untracked_type not in out
+        assert re.search(r"account-\d+/agent-type-1\b", out)
+
+    @pytest.mark.parametrize("stype", ["staff-sdet", "staff-secret-project-custom-reviewer"])
+    def test_subagent_type_disclosure_is_independent_of_this_repo(
+        self, tmp_path, monkeypatch, _isolated_staff_sdet_allowlist, capsys, stype
+    ):
+        """Load-bearing pin: _redact_subagent_type's disclose= condition
+        deliberately excludes --this-repo, unlike subagent-mix's own
+        _stype_label (see _redact_subagent_type's docstring for why), so a
+        tracked or untracked subagent_type must print the identical
+        reviewer-spawn line whether or not --this-repo is passed. A future
+        edit conjoining this_repo into disclose= fails this test the
+        moment it lands."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "session.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", ts="2026-05-20T10:00:00.000Z",
+                  content=[_agent_use("a1", stype)]),
+        ])
+
+        _mod.cmd_review_trace(_review_trace_args())
+        without_this_repo = re.search(r"reviewer\s+\S+", capsys.readouterr().out).group()
+
+        args = _review_trace_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_review_trace(args)
+        with_this_repo = re.search(r"reviewer\s+\S+", capsys.readouterr().out).group()
+
+        assert without_this_repo == with_this_repo
+
+    def test_this_repo_does_not_carve_out_branch_disclosure(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Deny-path pin for _redact_branch's own "no --this-repo carve-out,
+        ever" divergence from cmd_subagents/_branch_label's
+        main_thread_branches-gated disclosure. A future edit conjoining
+        this_repo into _redact_branch's disclose= condition fails this test
+        the moment it lands."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        target_branch = "genuine-main-thread-branch"
+        _write_jsonl(proj / "session.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch=target_branch),
+        ])
+
+        args = _review_trace_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.cmd_review_trace(args)
+        out = capsys.readouterr().out
+        assert target_branch not in out
+        assert re.search(r"account-\d+/branch-\d+", out)
+
+    def test_branches_filter_matches_raw_branch_while_printed_branch_stays_redacted(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--branches filters by each event's raw branch field inside
+        _review_trace_session_events, before _redact_branch ever runs at
+        print time in cmd_review_trace. Under multi-root scope --branches
+        must still select the right session even though the branch it
+        prints is the opaque account-<K>/branch-<N> label, not the raw name
+        passed to --branches."""
+        expected_roots = _two_declared_roots(tmp_path, monkeypatch)
+        proj = expected_roots[0] / "-home-user-testrepo"
+        proj.mkdir(parents=True)
+        target_branch = "secret-target-branch"
+        _write_jsonl(proj / "target-session.jsonl", [
+            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch=target_branch),
+        ])
+        _write_jsonl(proj / "other-session.jsonl", [
+            _skill_use_rec("plan-review", "2026-05-20T10:00:00.000Z", branch="other-branch"),
+        ])
+        _mod.cmd_review_trace(_review_trace_args(branches=target_branch))
+        out = capsys.readouterr().out
+        assert "code-review" in out
+        assert "plan-review" not in out
+        assert target_branch not in out
+        assert re.search(r"account-\d+/branch-\d+", out)
+
     def test_single_root_omits_banner_and_shows_the_raw_session_path(self, fake_projects, capsys):
         """The allow-path counterpart -- mirrors subagent-mix's own
         test_single_root_omits_do_not_publish_banner. Without this, a
@@ -5049,6 +5394,31 @@ class TestReviewTraceMultiRoot:
         assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
         assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
         assert session_id in captured.out
+
+    def test_single_root_shows_raw_branch_and_denial_message(self, fake_projects, capsys):
+        """The allow-path counterpart to
+        test_default_timeline_redacts_every_leak_surface_under_multi_root, so
+        a guard that always redacts/suppresses regardless of multi_root has
+        a test signal too. Under single-root scope:
+        - Raw branch names still print.
+        - Denial/friction msg=... text still prints.
+        - A raw (non-repo-tracked) subagent_type still prints.
+        The unenumerated legacy hookName is the one exception. The `hook=`
+        field itself renders `hook=unmatched` even under single-root,
+        since `_denial_hook_label`'s allowlist fallback applies regardless
+        of scope. The sentinel still appears in the raw `msg=...` text,
+        though, since that text is untouched by the classifier."""
+        records, sentinels = _review_trace_all_kinds_records()
+        _write_jsonl(fake_projects / "single-root-all-kinds-session.jsonl", records)
+        _mod.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+        assert f"branch={sentinels['branch']}" in out
+        assert sentinels["denial_path"] in out
+        assert sentinels["friction_path"] in out
+        assert sentinels["foreign_reviewer_type"] in out
+        assert "msg=" in out
+        assert f"hook={sentinels['unenumerated_hook_name']}" not in out
+        assert "hook=unmatched" in out
 
 
 class TestAuditRouting:

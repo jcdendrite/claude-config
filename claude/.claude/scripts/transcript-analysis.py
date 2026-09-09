@@ -1021,6 +1021,14 @@ REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
 )
 
+# cmd_review_trace's five event["kind"] values, in the order documented in
+# its own docstring — a completeness reference for tests, not consulted by
+# _review_trace_session_events or cmd_review_trace themselves, which still
+# dispatch on the literal per event.
+_REVIEW_TRACE_EVENT_KINDS: tuple[str, ...] = (
+    "skill", "denial", "friction", "reviewer-spawn", "architect-consult",
+)
+
 # A plan-architect Agent/Task dispatch whose prompt's first line is anything
 # other than this literal is a consult. This re-expresses
 # log-reviewer-round.sh's _maybe_write_consult_latch in a second runtime —
@@ -1989,30 +1997,52 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     surfaces report — only the default timeline and --deny-summary's own
     friction breakout render friction events.
 
-    Branch and model are resolved per event from the record that produced it,
-    not from the session's first record: each is the last non-empty value
-    carried forward up to that point, so a session that moves from one branch
-    (or model) to another attributes each event correctly instead of labelling
-    every event with whatever the session started on. An event whose branch or
-    model cannot be resolved renders '?'. --branches filters the emitted event
-    list by this per-event value, not by a single session-wide branch. A
-    sidechain event's thread field prints as `thread=sidechain` in the
-    timeline; a main-thread event's `thread=main` is the default and stays
-    unprinted. A sidechain event's line_no is a merged-stream offset, not a
-    real file line (see _review_trace_session_events's docstring), so it
-    prints as `line   n/a` instead of a numeral.
+    Per event:
+    - Branch and model are resolved from the record that produced it, not
+      from the session's first record: each is the last non-empty value
+      carried forward up to that point, so a session that moves from one
+      branch (or model) to another attributes each event correctly instead
+      of labelling every event with whatever the session started on.
+    - An event whose branch or model cannot be resolved renders '?'.
+    - --branches filters the emitted event list by this per-event value,
+      not by a single session-wide branch.
+    - A sidechain event's thread field prints as `thread=sidechain` in the
+      timeline; a main-thread event's `thread=main` is the default and
+      stays unprinted.
+    - A sidechain event's line_no is a merged-stream offset, not a real
+      file line (see _review_trace_session_events's docstring), so it
+      prints as `line   n/a` instead of a numeral.
 
     --deny-summary delegates its entire accumulation to
     _compute_deny_summary_data instead of running its own pass over
     session_iter, so the corpus-wide grouped-count report and cost-ledger's
     per-week denial count can never drift apart.
 
-    Under more than one root, _DO_NOT_PUBLISH_BANNER prints on stdout and
-    stderr, and each session's own "### <path>" header is redacted to an
-    opaque account-<K>/session-<N> label via _root_scoped_display_label
-    instead of the real per-session file path, since that path embeds the
-    real project directory name. Unlike this file's branch/subagent_type
-    redaction, there is no --this-repo disclosure carve-out here.
+    Under more than one root scope:
+    - _DO_NOT_PUBLISH_BANNER prints on stdout and stderr.
+    - Each session's own "### <path>" header is redacted to an opaque
+      account-<K>/session-<N> label via _root_scoped_display_label instead
+      of the real per-session file path, since that path embeds the real
+      project directory name.
+    - Every branch name printed — in the per-session branches=... summary
+      line and in each event's own (branch=...) suffix — is redacted the
+      same way, to an opaque account-<K>/branch-<N> label. See
+      _redact_branch for why there is no --this-repo disclosure carve-out
+      for this redaction.
+    - model= stays raw regardless of scope, since a model ID is a closed,
+      public, Anthropic-published vocabulary carrying no account, project,
+      or branch identity.
+    - Every denial and friction event's msg=... field is omitted entirely,
+      since this repo's own hook denials routinely embed absolute
+      filesystem paths that would disclose the same project directory name.
+    - hook= is classified through _denial_hook_label, the same classifier
+      --deny-summary uses, rather than printing a legacy denial's raw
+      hookName — unvalidated transcript text. Applied regardless of scope,
+      since this is a correctness fix (the canonical classifier in place of
+      a second, worse, ad-hoc one), not a redaction.
+    - A reviewer-spawn event's subagent_type follows the same closed-
+      vocabulary policy as model= above. See _redact_subagent_type for the
+      membership test and why --this-repo isn't part of it.
     """
     branch_filter = _branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
@@ -2036,20 +2066,75 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     # account-N regardless of which profile is currently active.
     redact_ordinals: dict[Path, int] = _redaction_ordinals(roots) if multi_root else {}
     session_redact_map: dict[tuple[int, str], str] = {}
+    branch_redact_map: dict[tuple[int, str], str] = {}
+    subagent_type_redact_map: dict[tuple[int, str], str] = {}
 
     def _session_label(jsonl: Path) -> str:
-        """Text for one session's own "### <path>" header — the real path
-        under single-root scope, or an opaque account-<K>/session-<N> label
-        under multi-root, since the real path embeds the real project
-        directory name. No --this-repo disclosure carve-out, unlike this
-        file's branch/subagent_type redaction: this label prints
-        unconditionally whenever more than one root is in scope.
+        """Text for one session's own "### <path>" header.
+
+        The real path under single-root scope. An opaque
+        account-<K>/session-<N> label under multi-root, since the real path
+        embeds the real project directory name. This label prints
+        unconditionally whenever more than one root is in scope — see
+        _redact_branch for why there is no --this-repo disclosure carve-out
+        here. This closure only redacts the session header. See
+        _redact_branch, below, for this same guard's branch-name redaction,
+        and the denial/friction print sites for this same guard's msg
+        suppression.
         """
         if not multi_root:
             return str(jsonl)
         root_idx = _root_index_for_path(jsonl, resolved_roots)
         ordinal = redact_ordinals[resolved_roots[root_idx]]
         return _root_scoped_display_label("session", ordinal, jsonl.stem, session_redact_map, disclose=False)
+
+    def _redact_branch(jsonl: Path, branch: str) -> str:
+        """Redact a branch name under multi-root scope, mirroring subagent-mix's
+        own branch redaction (_mix_branch_label).
+
+        No --this-repo disclosure carve-out: --this-repo here is a scoping
+        flag (which project dirs to scan), not a disclosure assertion, so a
+        "this repo" branch from a foreign account under multi-root is still a
+        foreign account's branch. Also, review-trace's carry-forward
+        deliberately attributes a sidechain event the main-thread branch,
+        over a merged main+sidechain stream, which would need subagents' own
+        main_thread_branches attestation machinery to disclose safely — real
+        machinery for marginal gain, so this closure never discloses
+        regardless of --this-repo.
+        """
+        if not multi_root:
+            return _sanitize_table_cell(branch)
+        root_idx = _root_index_for_path(jsonl, resolved_roots)
+        ordinal = redact_ordinals[resolved_roots[root_idx]]
+        return _root_scoped_display_label("branch", ordinal, branch, branch_redact_map, disclose=False)
+
+    def _redact_subagent_type(jsonl: Path, stype: str) -> str:
+        """Redact a reviewer-spawn's subagent_type under multi-root scope,
+        mirroring subagent-mix's own subagent_type redaction (_stype_label).
+
+        Follows the same closed-vocabulary disclosure policy
+        cmd_review_trace's own model= bullet states above.
+        _repo_tracked_agent_type_names is the membership test that decides
+        which side of that policy a given subagent_type falls on, matching
+        names tracked in the invoking checkout's index. --this-repo is
+        deliberately excluded from this carve-out's disclose= condition
+        too, for the same scoping-flag-vs-disclosure-assertion reason
+        _redact_branch's docstring states above. An independently-named
+        foreign account's agent sharing a tracked name (e.g. an unrelated
+        third party's own "staff-sdet") is an attribution ambiguity for the
+        reader, not a disclosure. The printed string is public either way
+        regardless of which account actually dispatched it.
+        See _repo_tracked_agent_type_names's docstring for the naming-
+        convention precondition this carve-out's safety depends on.
+        """
+        if not multi_root:
+            return _sanitize_table_cell(stype)
+        root_idx = _root_index_for_path(jsonl, resolved_roots)
+        ordinal = redact_ordinals[resolved_roots[root_idx]]
+        return _root_scoped_display_label(
+            "agent-type", ordinal, stype, subagent_type_redact_map,
+            disclose=stype in _repo_tracked_agent_type_names(),
+        )
 
     if deny_summary:
         # Ahead of the scan, matching the default arm below: a crash partway
@@ -2101,7 +2186,7 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         denial_count = sum(1 for e in events if e["kind"] == "denial")
         spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
         consult_count = sum(1 for e in events if e["kind"] == "architect-consult")
-        branches_seen = ",".join(sorted({e["branch"] for e in events}))
+        branches_seen = ",".join(sorted({_redact_branch(jsonl, e["branch"]) for e in events}))
         models_seen = ",".join(sorted({e["model"] for e in events}))
 
         emitted_any_session = True
@@ -2122,25 +2207,35 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             lno = "n/a" if evt["thread"] == "sidechain" else evt["line_no"]
             kind = evt["kind"]
             thread_suffix = "" if evt["thread"] == "main" else f" thread={evt['thread']}"
-            suffix = f"  (branch={evt['branch']} model={evt['model']}{thread_suffix})"
+            suffix = f"  (branch={_redact_branch(jsonl, evt['branch'])} model={evt['model']}{thread_suffix})"
             if kind == "skill":
                 print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
             elif kind == "denial":
-                hook = evt['hook_name']
+                hook = _denial_hook_label(evt['hook_name'], evt['message'])
                 uid = evt['tool_use_id']
                 msg = evt['message']
                 cause = _denial_cause_kind(msg)
+                # msg is raw free text from a foreign account's transcript.
+                # This repo's own hook denials routinely embed absolute
+                # filesystem paths (e.g. worktree-enforcement denials name
+                # .claude/worktrees/<branch>/...). That's the same
+                # project-directory disclosure _session_label exists to
+                # prevent, so msg is omitted entirely under multi-root
+                # rather than redacted.
+                msg_field = "" if multi_root else f"  msg={msg!r}"
                 print(
                     f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
-                    f"  id={uid}  msg={msg!r}{suffix}"
+                    f"  id={uid}{msg_field}{suffix}"
                 )
             elif kind == "friction":
                 fkind = _friction_kind_label(evt['friction_kind'])
                 uid = evt['tool_use_id']
                 msg = evt['message']
-                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
+                msg_field = "" if multi_root else f"  msg={msg!r}"
+                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}{msg_field}{suffix}")
             elif kind == "reviewer-spawn":
-                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
+                stype = _redact_subagent_type(jsonl, evt['subagent_type'])
+                print(f"  [{ts_label}] line {lno:>5}  reviewer     {stype}{suffix}")
             elif kind == "architect-consult":
                 print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
 
@@ -3009,6 +3104,10 @@ def _repo_tracked_agent_type_names() -> frozenset[str]:
       here returns the built-ins alone rather than exiting, since failing
       closed means more redaction, and an operator's report should not die
       because git is unavailable.
+    - Safe reuse of this disclosure carve-out requires every git-tracked
+      stem under the invoking checkout's agents/ directory to stay generic
+      and non-project-identifying -- a maintainer convention this code does
+      not check.
     """
     try:
         proc = subprocess.run(

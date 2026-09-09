@@ -450,7 +450,15 @@ Branch and model are resolved *per event*, from the record that produced it — 
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
 
-Multi-root scope — the default once `~/.claude/transcript-config-dirs` declares another account, since `review-trace` has no repeatable `--config-dir` of its own — prints `DO NOT PUBLISH` on stdout and stderr. Each session's own `### <path>` header is redacted to an opaque `account-<K>/session-<N>` label instead of the real per-session file path. That path embeds the real project directory name. Unlike `subagent-mix`'s branch/`subagent_type` redaction, there is no `--this-repo` disclosure carve-out here.
+Multi-root scope — the default once `~/.claude/transcript-config-dirs` declares another account, since `review-trace` has no repeatable `--config-dir` of its own:
+
+- `DO NOT PUBLISH` prints on stdout and stderr.
+- Each session's own `### <path>` header is redacted to an opaque `account-<K>/session-<N>` label instead of the real per-session file path, since that path embeds the real project directory name.
+- Every branch name printed — in the per-session `branches=...` summary line and in each event's own `(branch=...)` suffix — is redacted the same way, to an opaque `account-<K>/branch-<N>` label. See `_redact_branch`'s docstring in `transcript-analysis.py` for why there is no `--this-repo` disclosure carve-out for this redaction.
+- `model=` stays raw regardless of scope, since a model ID carries no account or project identity.
+- Every denial and friction event's `msg=...` field is omitted entirely, since this repo's own hook denials routinely embed absolute filesystem paths that would disclose the same project directory name.
+- `hook=` is classified through the same `_denial_hook_label` classifier `--deny-summary` uses, rather than printing a legacy denial's raw `hookName`, regardless of scope — a correctness fix, not a redaction.
+- A reviewer-spawn event's `subagent_type` is redacted the same way as branch, except a `subagent_type` tracked in the invoking checkout's own `agents/` directory (or a Claude Code built-in) discloses raw. See `_redact_subagent_type`'s docstring in `transcript-analysis.py` for the membership test and why there is no `--this-repo` disclosure carve-out for this redaction either, and `_repo_tracked_agent_type_names`'s docstring for the naming-convention precondition this disclosure depends on.
 
 **Sample output.**
 ```
@@ -463,7 +471,7 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
-  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
+  [2026-05-20T10:45:00.000Z] line  120  denial       hook=marker.sh  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
