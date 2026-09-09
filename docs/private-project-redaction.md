@@ -100,7 +100,10 @@ provenance" rule states the carve-out these conditions gate.
 **What it permits.** A figure pooled across a corpus that mixes private
 and public sources is publishable when it carries no per-project,
 per-account, or per-engagement dimension. Cite the command or script
-that produced it.
+that produced it. That command or script must itself be an aggregation
+boundary. It may read the mixed corpus internally, but its output to
+the agent is the rounded pooled figure only — never per-session or
+per-project raw content.
 
 **Scope — two closed lists.** Both have to be satisfied, and neither
 extends by analogy:
@@ -138,19 +141,20 @@ extends by analogy:
 **Approval gate.** An agent never publishes a figure under this
 carve-out on its own judgment. It proposes the figure, the exact
 command or script that produced it, and the artifact the figure would
-land in; the owner approves that figure for that artifact before it
+land in. The owner approves that figure for that artifact before it
 ships. Approval for one artifact does not cover a different one — a
 changed destination needs a fresh proposal. Cite the approval as a
-durable, independently-checkable record — a link to the approving
-comment or message — tied to the exact figure and artifact. A
-narrative claim that approval occurred is not a citation. Absent that
-citation, don't publish.
+durable, independently-checkable record from the owner's own account —
+a link to the approving comment or message — tied to the exact figure
+and artifact. A citation to anyone else's comment, however definitive
+it reads, does not satisfy this gate. A narrative claim that approval
+occurred is not a citation either. Absent that citation, don't publish.
 
 Doubt about pool diversity goes to the owner as part of the proposal,
 not a reason to publish anyway. The proposal also names any prior
 publication of the same or a composing statistic that the agent found,
 and where it looked. That is input to the owner's decision, not a
-clearance — finding nothing is not approval to publish, and the
+clearance. Finding nothing is not approval to publish. The
 composition bar above holds regardless of what the search surfaced.
 Closed by default, same as the blocklist tier's "if in doubt, strip
 it."

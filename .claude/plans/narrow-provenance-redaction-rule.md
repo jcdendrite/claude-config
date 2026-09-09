@@ -415,11 +415,17 @@ precedent for going stale), and barring raw count totals outright
 (guts the carve-out for two of its three motivating withholding
 sites, both of which withhold counts specifically).
 
-**Forward tripwire, recorded per the consult's own request:** if a
-future round attacks the composition clause's own boundary — what
-exactly counts as "composing" — that is the compounding-layers pattern
-recurring, not a new gap. The response is to stop reviewing this
-section, not add a third clause.
+**Forward tripwire, recorded per the consult's own request, narrowed in
+round 5 below and again in round 6:** the two composing shapes above —
+rate × count, and successive whole-period figures — are settled as rule
+text. A future round proposing to reword either shape's rule text is
+the compounding-layers pattern recurring, not a new gap. A report that
+a specific already-published figure actually violates one of the two
+settled shapes is not rule-patch churn — it is a compliance finding and
+is always evaluated on its own facts, never dismissed by this tripwire.
+A structurally different composing shape neither example covers is
+likewise a new finding, not a recurrence, and gets evaluated on its own
+merits.
 
 The consult separately flagged, as a question only the engineer can
 settle and explicitly out of scope for this PR: whether
@@ -429,3 +435,122 @@ instance of the reconstruction shape the composition clause now bars.
 Not evaluated or edited here — Axis 3 (preserved record) and this
 plan's Out of scope both apply regardless of the answer; raised to the
 engineer directly, not resolved in this PR.
+
+## Amendment: computation-boundary, checklist-completeness, and approval-identity gaps (PR #928 review, round 5)
+
+A fresh, unnarrowed cumulative `/code-review` pass — reading the whole
+PR diff as one artifact rather than any single round's delta —
+spawned `ciso-reviewer` against the full four-round result. It
+returned a Foundation concern plus three findings, all on axes none of
+the prior four rounds had touched:
+
+- **Computation-boundary gap.** All four prior rounds hardened what
+  gets *published*; none constrained what the agent may *read* to
+  compute the figure in the first place. As written, "cite the command
+  or script that produced it" was satisfiable by a direct read over raw
+  private-project transcript content, which is a materially larger
+  exposure (raw private content sitting in the computing agent's own
+  context) than anything the publication-side rules address. Fixed by
+  requiring the cited command or script to itself be an aggregation
+  boundary — it may read the mixed corpus internally, but its output to
+  the agent is the rounded pooled figure only, never per-session or
+  per-project raw content.
+- **Checklist-completeness gap.** The `code-review-claude-config`
+  P1 item — the sole per-commit review trigger for this reviewer-
+  discipline-only tier — named only two of the doc's roughly six
+  disqualifying shapes (decomposition, raw total) explicitly, leaving
+  the composition-closure, cadence, and time-series bars reachable only
+  by a reviewer who re-reads the full doc from memory. Fixed by naming
+  all the disqualifying shapes explicitly in the checklist item.
+- **Approval-identity gap.** The approval gate's citation requirement
+  never bound the citation to the owner's own identity — "a durable,
+  checkable link" was satisfiable by a link to any commenter on this
+  public repo, including an external contributor citing their own
+  comment. Fixed by requiring the citation to come from the owner's own
+  account, in both the doc and the SKILL.md checklist item.
+- **Tripwire overreach.** The round-4 forward tripwire, as worded,
+  pre-labeled *any* future finding touching the composition clause's
+  boundary as compounding-layers noise, regardless of the finding's
+  actual content — collapsing "another patch to an already-settled
+  shape" (correctly dismissible) with "a structurally new composing
+  shape neither existing example covers" (a genuine finding). Narrowed
+  above to dismiss only re-patches of the two settled shapes.
+
+**On the reviewer's own meta-observation** (that the four-round trail's
+shape — retire an enumeration, re-add an enumerated bullet to cover
+what the retirement opened, then a tripwire trying to foreclose a fifth
+round — is itself the compounding-layers pattern recurring at the meta
+level): evaluated and rejected as the frame for this round's fixes. The
+four findings above name four axes none of the prior rounds
+touched — input-side computation, checklist citation completeness,
+approver identity, and process-instruction scope — rather than a fifth
+iteration on the same output-composition axis rounds 3 and 4 already
+settled. None reinstates machinery a prior round deliberately removed,
+and none adds a mechanism heavier, more privileged, or wider in scope
+than what the diff already carries; each is a bounded textual addition
+or narrowing within an already-in-scope sentence. Per `code-review`'s
+own new-primitive-route gate, none of the four fixes qualifies for a
+`plan-architect` consult on that basis. The genuinely closest call is
+the computation-boundary fix, since it touches a dimension no prior
+round named at all — resolved as in-scope because the doc already
+states a citation requirement ("cite the command or script") that this
+round tightens, not a new implementation task; the actual measurement
+tooling remains deferred to the `standardize-background-wait-mechanism`
+sibling branch, unchanged from this plan's original Out of scope.
+
+## Amendment: fix-verification pass and a deliberate stop (PR #928 review, round 6)
+
+A fix-verification `ciso-reviewer` pass, checking whether round 5's four
+fixes actually closed the gaps they targeted, returned `[BLOCKER] None`
+and four `[CONCERN]`-level findings: (1) the computation-boundary
+sentence sets no minimum cohort size, so a query narrowed to exactly
+one private-engagement session could pass through an "aggregation"
+function and remain per-project in substance; (2) "the owner's own
+account" names a requirement with no stated, reviewer-resolvable
+reference value to check a citation against; (3) the round-5 tripwire's
+"another patch to either shape" phrasing could be read to dismiss a
+genuine compliance finding, not only a proposed rule-text reword; (4)
+the checklist's citation check confirms a source is cited, not that
+the cited script actually satisfies the new aggregation-boundary
+property. The reviewer's own report names (3) and (4) as the same
+enforceability-gap pattern its prior round already found, reappearing
+one layer down.
+
+Two of the four are fixed here: (3) is a wording ambiguity in text this
+same session wrote in round 5, costs nothing to disambiguate, and
+introduces no new mechanism — fixed above by separating "reword the
+settled rule text" (dismissible) from "a compliance finding against the
+settled rule" (never dismissible). (4) is folded into acknowledging the
+same limit that findings (1) and (2) hit directly: this control is
+documented as reviewer discipline, not a hook, from its very first
+sentence, and a checklist line cannot make "open the script and verify
+its behavior" mechanically checkable any more than "cite the command"
+already was — both rest on the same good-faith reviewer act, so adding
+a second instruction to perform it is not a new safeguard, only a
+repetition of the existing one.
+
+(1) and (2) are deliberately not fixed, for a reason distinct from (4):
+each names a genuine gap, but closing it requires something a wording
+change cannot supply. A cohort-size floor needs an actual number, and
+no source — vendor doc, protocol spec, or this repo's own established
+convention — grounds what that number should be; inventing one is a
+policy judgment about how much anonymity a given pool size buys, not a
+textual precision fix, and is the engineer's call, not this session's.
+A resolvable identity reference for "the owner's own account" means
+recording a specific person's account identity in a public security
+policy document, which is a content decision about what to publish
+about a real person, not a wording tightening — also the engineer's
+call.
+
+Stopping here, rather than continuing to a seventh round, is itself the
+decision this amendment records: the reviewer's own verdict carries no
+blocker, two of its four findings are explicitly the same
+enforceability-gap shape recurring, and the control being hardened has
+been reviewer-discipline-only since its first sentence — no round of
+this policy's prose can convert it into a mechanically-enforced gate.
+Continuing to iterate wording against an adversarial security review
+that will, by construction, always be able to name one more residual
+enforceability gap in an advisory control is the compounding-layers
+pattern this whole plan file's round-3 amendment already diagnosed,
+recurring at a third level. Findings (1) and (2) are left open for the
+engineer to resolve directly, not silently dropped.
