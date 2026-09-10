@@ -39,6 +39,9 @@ LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
 LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
+# Doubles as its own domain: unlike the source-tree/test-dir pairs above, any
+# path under it maps to itself rather than to a separate test directory.
+CLAUDE_TESTS_DIR = "claude/.claude/tests"
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,
 # mirroring PLUGINS_DIR's role for the plugin-generic predicates.
@@ -64,9 +67,10 @@ TICKET_REFERENCE_DISCIPLINE_TEST_PATH = "claude/.claude/hooks/tests/test_ticket_
 SELECT_TESTS_SCRIPT = "claude/.claude/scripts/select-tests.py"
 
 # test_select_tests.py's own TestCrossDomainReadCompleteness parses every
-# test_*.py under HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR, and
-# plugins/*/tests/ for module-level repo-path constants, so a change to any
-# of those files can introduce a read this table hasn't declared yet.
+# test_*.py under HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR,
+# CLAUDE_TESTS_DIR, and plugins/*/tests/ for module-level repo-path
+# constants, so a change to any of those files can introduce a read this
+# table hasn't declared yet.
 SELECT_TESTS_TEST_PATH = "claude/.claude/scripts/tests/test_select_tests.py"
 
 # test_plugin_manifests.py globs every plugin's .claude-plugin/plugin.json
@@ -187,33 +191,32 @@ ROOT_SKILLS_DIR = ".claude/skills"
 # claudeMdExcludes entry by path.
 ROOT_SETTINGS_JSON = ".claude/settings.json"
 
+# claude/.claude/tests/test_statusline_command.py (CLAUDE_TESTS_DIR) reads
+# this exact file by path. test_shellcheck.py (HOOKS_TESTS_DIR) lints every
+# tracked shell script, and test_no_bash4_constructs.py and
+# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
+# recursively glob claude/.claude/ for *.sh files -- all three pick it up.
+STATUSLINE_COMMAND_SH = "claude/.claude/statusline-command.sh"
+
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference. Backs
 # TestRuleTablePathFidelity's exhaustiveness check: a real top-level
-# directory absent from both this set and DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
-# means some test's cross-domain file-path or subprocess read into it was
-# never audited into this table. SKILLS_DIR has no member here: it points
-# at claude-skills/skills, outside claude/.claude/.
+# directory absent from this set means some test's cross-domain file-path or
+# subprocess read into it was never audited into this table. SKILLS_DIR has
+# no member here: it points at claude-skills/skills, outside
+# claude/.claude/.
 MAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({
     Path(HOOKS_DIR).name,
     Path(SCRIPTS_DIR).name,
     Path(AGENTS_DIR).name,
     Path(RULES_DIR).name,
+    Path(CLAUDE_TESTS_DIR).name,
 })
-
-# claude/.claude/tests/test_statusline_command.py reads
-# claude/.claude/statusline-command.sh by path, and its sibling helpers.py
-# reads .github/workflows/tests.yml by path. Both paths deliberately fall
-# open to the full suite instead of getting a CROSS_DOMAIN_EXCEPTIONS entry,
-# because claude/.claude/tests/ itself has no selectable pytest target.
-DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS: frozenset[str] = frozenset({"tests"})
 
 # Directory names directly under root .claude/ that DOMAIN_RULES or
 # CROSS_DOMAIN_EXCEPTIONS predicates reference by path (PLANS_DIR,
 # ROOT_RULES_DIR, ROOT_SKILLS_DIR). Mirrors MAPPED_TOP_LEVEL_DIRS's role for
-# claude/.claude/, but for the separate root .claude/ tree. Unlike that
-# sibling, root .claude/ has no directory-with-no-selectable-pytest-target
-# case, so it needs no DELIBERATELY_UNMAPPED counterpart.
+# claude/.claude/, but for the separate root .claude/ tree.
 MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
     Path(PLANS_DIR).name,
     Path(ROOT_RULES_DIR).name,
@@ -227,7 +230,10 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
 FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
 
 # Each path below forces a full-suite run rather than a domain selection:
-# - claude/.claude/tests/helpers.py is imported by every domain's own test dir
+# - claude/.claude/tests/helpers.py is imported by every domain's own test dir.
+#   It also matches CLAUDE_TESTS_DIR's own domain rule, so without this entry
+#   a helpers.py change would select only claude/.claude/tests instead of
+#   every importing domain.
 # - pyproject.toml governs collection for all of them
 # - this script's own table can't be trusted to correctly select tests for
 #   itself once changed
@@ -305,23 +311,12 @@ def _is_hooks_dir_shell_script_change(path: str) -> bool:
     return _is_under(path, HOOKS_DIR) and path.endswith(".sh")
 
 
-def _is_under_deliberately_unmapped_claude_dir(path: str) -> bool:
-    return any(
-        _is_under(path, f"{CLAUDE_TOP_LEVEL_DIR}/.claude/{name}")
-        for name in DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS
-    )
-
-
 # See TICKET_REFERENCE_DISCIPLINE_TEST_PATH's own comment above for what
 # that test scans. This predicate is deliberately .py-only. That test's .sh
 # coverage is achieved today only incidentally, through the existing
 # hooks/scripts shell-script domain rules.
 # Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly rather than the
-# HOOKS_TESTS_DIR domain it lives in. Excludes
-# DELIBERATELY_UNMAPPED_TOP_LEVEL_DIRS (claude/.claude/tests/):
-# - test_statusline_command.py and test_pytest_collection_config.py live there
-# - excluding them keeps those two files falling open to the full suite via
-#   unmatched-path, instead of narrowing to a domain that doesn't contain them
+# HOOKS_TESTS_DIR domain it lives in.
 def _is_py_source_under_claude_or_plugins(path: str) -> bool:
     return (
         path.endswith(".py")
@@ -330,7 +325,6 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
             or _is_under(path, CLAUDE_SKILLS_TOP_LEVEL_DIR)
             or _is_under(path, PLUGINS_DIR)
         )
-        and not _is_under_deliberately_unmapped_claude_dir(path)
     )
 
 
@@ -357,6 +351,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, LOVABLE_CLOUD_DIR), (LOVABLE_CLOUD_TESTS_DIR,)),
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
+    (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -439,12 +434,15 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
+# STATUSLINE_COMMAND_SH: see its own comment above for citation.
 # _is_py_source_under_claude_or_plugins: see its own comment above for
-# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly, not a
-# domain directory.
+# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly.
+# test_pytest_collection_config.py (CLAUDE_TESTS_DIR) collects the whole
+# claude/.claude/ tree in a subprocess and AST-parses every tracked test
+# module under the three roots this predicate covers, so it's selected too.
 # _is_test_source_change: see SELECT_TESTS_TEST_PATH's own comment above for
 # citation. A strict subset of _is_py_source_under_claude_or_plugins, since
-# only a test file under one of the four selectable test directories can
+# only a test file under one of the five selectable test directories can
 # introduce a constant TestCrossDomainReadCompleteness's own scan would need
 # to see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
@@ -474,7 +472,8 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
     (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
-    (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),
+    (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
+    (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH, CLAUDE_TESTS_DIR)),
     (_is_test_source_change, (SELECT_TESTS_TEST_PATH,)),
 )
 
