@@ -21,12 +21,20 @@
 # Input (environment):
 #   CI_CHECKS_GH_TOKEN  -- optional; used only for the two `gh pr checks`
 #                           calls, since fine-grained PATs 403 on the Checks
-#                           API. Unset leaves behavior unchanged. See
-#                           docs/scripts.md for provisioning guidance.
+#                           API. Resolved automatically via direnv for the
+#                           current directory before first use (see
+#                           resolve_ci_checks_gh_token below) — an ambient
+#                           value survives untouched when direnv is absent
+#                           or its resolution fails. See docs/scripts.md for
+#                           provisioning guidance.
 #
 # Usage: ci-watch.sh <pr-number>
 
 set -euo pipefail
+
+# direnv_export_bash is shared with cleanup-merged-branches.sh.
+# shellcheck source=_direnv-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/_direnv-lib.sh"
 
 # fd 3 preserves the script's real stderr, independent of the 2>&1 /
 # 2>"$STDERR_FILE" redirects applied around each `gh pr checks` call below —
@@ -50,6 +58,39 @@ if ! command -v gh &>/dev/null; then
   echo "CI_RESULT: error gh not installed"
   exit 1
 fi
+
+# resolve_ci_checks_gh_token — apply this directory's direnv resolution of
+# CI_CHECKS_GH_TOKEN over whatever ambient value this process inherited,
+# before gh_with_checks_token's first call. This script is launched via
+# `Bash` `run_in_background` (ready-for-review's "CI watch (out-of-band)"
+# step), a non-interactive, tool-spawned shell that never fires direnv's
+# PROMPT_COMMAND hook, so an ambient CI_CHECKS_GH_TOKEN reflects whatever
+# container the invoking shell last had it exported for, not necessarily
+# this one. See docs/scripts.md's CI_CHECKS_GH_TOKEN entry for the
+# subshell-containment mechanism and the empty-wins/fallback semantics.
+#
+# The notice fires only when direnv's answer actually differs from the
+# ambient value (set, cleared, or changed) — not on every run where direnv
+# happens to be installed but this directory's .envrc has nothing to say
+# about CI_CHECKS_GH_TOKEN, which would otherwise spam this line on every
+# invocation on any contributor machine with direnv present.
+resolve_ci_checks_gh_token() {
+  command -v direnv >/dev/null 2>&1 || return 0
+  local ambient="${CI_CHECKS_GH_TOKEN:-}" resolved
+  if resolved=$(
+        eval "$(direnv_export_bash)"
+        status=$?
+        [[ $status -eq 0 ]] || exit "$status"
+        printf '%s' "${CI_CHECKS_GH_TOKEN:-}"
+      ); then
+    CI_CHECKS_GH_TOKEN="$resolved"
+    if [[ "$resolved" != "$ambient" ]]; then
+      echo "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv for $(pwd)" >&3
+    fi
+  fi
+  return 0
+}
+resolve_ci_checks_gh_token
 
 # GH_TOKEN alone covers both github.com and *.ghe.com subdomains (gh help
 # environment, gh v2.97.0).
@@ -92,7 +133,7 @@ if ! SNAPSHOT_JSON=$(gh_with_checks_token pr checks "$PR_NUMBER" \
   REASON=$(tr '\n' ' ' < "$STDERR_FILE")
   HINT=""
   if [[ -z "${CI_CHECKS_GH_TOKEN:-}" ]]; then
-    HINT=" (if this is a 403: fine-grained PATs cannot reach the Checks API at all, and no CI_CHECKS_GH_TOKEN override was set for this call; see docs/scripts.md for how to provision one)"
+    HINT=" (if this is a 403: fine-grained PATs cannot reach the Checks API at all, and no usable CI_CHECKS_GH_TOKEN was found in this process's ambient environment or via direnv's resolution for the current directory; see docs/scripts.md for how to provision one)"
   fi
   echo "CI_RESULT: error gh pr checks --json failed after --watch resolved: ${REASON:-unknown gh failure}${HINT}"
   exit 1

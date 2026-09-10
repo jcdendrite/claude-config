@@ -19,7 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import _base_test_env
+from .conftest import (
+    _base_test_env,
+    _direnv_shim_source_exits_nonzero_with_unset_payload,
+    _direnv_shim_source_reads_stdin,
+    _direnv_shim_source_static_export,
+    _direnv_shim_source_unconditional_unset,
+    _shimmed_env,
+)
 
 # Path to the script under test (resolved relative to this file)
 _SCRIPT = Path(__file__).parent.parent / "ci-watch.sh"
@@ -120,23 +127,39 @@ def _gh_shim_source(
 
 @pytest.fixture()
 def fake_gh(tmp_path):
-    """Yield a factory that installs a gh shim and returns the env dict.
+    """Yield a factory that installs a gh shim (and, via _shimmed_env, a
+    default no-op direnv shim) and returns the env dict.
 
     extra_env layers CI_CHECKS_GH_TOKEN/GH_TOKEN fixtures on top of the
     credential-scrubbed base env, modeling a container that has (or hasn't)
     exported the classic-PAT override — never sourced from the calling
     test process's own os.environ, which _base_test_env() has already
     stripped of every _SENSITIVE_ENV_VARS entry.
-    """
-    shim_dir = tmp_path / "gh_shim"
-    shim_dir.mkdir()
 
-    def _make_env(*, extra_env=None, token_log=None, **kwargs) -> dict:
-        shim_py = shim_dir / "gh"
-        shim_py.write_text(_gh_shim_source(token_log=token_log, **kwargs))
-        shim_py.chmod(0o755)
-        new_path = str(shim_dir) + ":" + os.environ.get("PATH", "")
-        env = {**_base_test_env(), "PATH": new_path}
+    direnv_source/direnv_present pass straight through to _shimmed_env, for
+    tests exercising resolve_ci_checks_gh_token's direnv resolution path
+    instead of the plain ambient-env case every other test here covers.
+    Routing ci-watch.sh's own gh shim through the same _shimmed_env seam
+    cleanup-merged-branches.sh's tests use (rather than building PATH
+    directly from the real os.environ["PATH"]) matters now that
+    resolve_ci_checks_gh_token calls real direnv in a subshell: without
+    this, every test here would invoke whatever direnv is actually
+    installed on the machine running the suite, against this repo's own
+    real .envrc.
+    """
+    def _make_env(
+        *,
+        extra_env=None,
+        token_log=None,
+        direnv_source=None,
+        direnv_present=True,
+        **kwargs,
+    ) -> dict:
+        gh_shim_source_text = _gh_shim_source(token_log=token_log, **kwargs)
+        env = _shimmed_env(
+            tmp_path, gh_shim_source_text,
+            direnv_source=direnv_source, direnv_present=direnv_present,
+        )
         if extra_env:
             env.update(extra_env)
         return env
@@ -252,12 +275,14 @@ def test_head_sha_lookup_failure_reports_error_before_watch(fake_gh):
 
 
 def test_missing_gh_reports_error(tmp_path):
-    # PATH must keep bash (needed for the shebang) but exclude gh; an
-    # allowlist works because the "gh missing" check runs before any other
-    # external command.
+    # PATH must keep bash (needed for the shebang) and dirname (needed to
+    # resolve _direnv-lib.sh's own source path, ahead of the "gh missing"
+    # check) but exclude gh; an allowlist works because nothing else runs
+    # before that check.
     bash_only_dir = tmp_path / "bash_only"
     bash_only_dir.mkdir()
     (bash_only_dir / "bash").symlink_to(shutil.which("bash"))
+    (bash_only_dir / "dirname").symlink_to(shutil.which("dirname"))
     env = {**_base_test_env(), "PATH": str(bash_only_dir)}
     result = _run(env, _PR_NUMBER)
     assert result.returncode == 1
@@ -440,3 +465,279 @@ def test_ambient_gh_token_untouched_on_view_but_overridden_on_watch_and_json(fak
     assert calls["view"] == ("ambient-finegrained-token", "")
     assert calls["watch"] == ("override-broader-checks-token", "")
     assert calls["json"] == ("override-broader-checks-token", "")
+
+
+# ---------------------------------------------------------------------------
+# resolve_ci_checks_gh_token — direnv resolution of CI_CHECKS_GH_TOKEN
+#
+# ci-watch.sh is launched via `Bash` `run_in_background`, a non-interactive
+# shell that never fires direnv's PROMPT_COMMAND hook — resolve_ci_checks_gh_token
+# resyncs CI_CHECKS_GH_TOKEN against this directory's own direnv-sourced
+# identity before gh_with_checks_token's first call, the same problem shape
+# cleanup-merged-branches.sh's load_repo_environment already solves.
+# ---------------------------------------------------------------------------
+
+def _direnv_shim_source_multi_export(exports: dict) -> str:
+    """direnv shim exporting more than one NAME=VALUE pair unconditionally on
+    `export bash`, regardless of cwd — models a single .envrc setting several
+    vars at once (a real .envrc's typical shape), for the subshell-containment
+    test below."""
+    payload = json.dumps(exports)
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json, shlex, sys
+
+        EXPORTS = json.loads({payload!r})
+
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            for name, value in EXPORTS.items():
+                print(f"export {{name}}={{shlex.quote(value)}}")
+        sys.exit(0)
+    """)
+
+
+def test_direnv_absent_leaves_ambient_token_intact(fake_gh, tmp_path):
+    # direnv_present=False curates a PATH with no direnv binary at all —
+    # resolve_ci_checks_gh_token's own `command -v direnv` guard must return
+    # immediately, leaving the fixture's ambient CI_CHECKS_GH_TOKEN as the
+    # only value the wrapped calls ever see.
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-only-token"},
+        direnv_present=False,
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("ambient-only-token", "")
+    assert calls["json"] == ("ambient-only-token", "")
+    assert "resolved via direnv" not in result.stderr
+
+
+def test_direnv_supplies_token_when_ambient_unset(fake_gh, tmp_path):
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        direnv_source=_direnv_shim_source_static_export(
+            "CI_CHECKS_GH_TOKEN", "direnv-supplied-token",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("direnv-supplied-token", "")
+    assert calls["json"] == ("direnv-supplied-token", "")
+    assert "direnv-supplied-token" not in result.stdout
+    assert "direnv-supplied-token" not in result.stderr
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+
+
+def test_direnv_answer_overrides_different_ambient_value(fake_gh, tmp_path):
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "stale-ambient-token"},
+        direnv_source=_direnv_shim_source_static_export(
+            "CI_CHECKS_GH_TOKEN", "fresh-direnv-token",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("fresh-direnv-token", "")
+    assert calls["json"] == ("fresh-direnv-token", "")
+    assert "stale-ambient-token" not in result.stdout
+    assert "stale-ambient-token" not in result.stderr
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+
+
+def test_direnv_resolving_to_same_ambient_value_suppresses_notice(fake_gh, tmp_path):
+    # The notice exists to flag a change from ambient — direnv confirming
+    # the same value this process already inherited must not fire it, or
+    # every run on a contributor machine with direnv installed and a
+    # matching .envrc would spam this line even though nothing changed.
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "stable-token"},
+        direnv_source=_direnv_shim_source_static_export(
+            "CI_CHECKS_GH_TOKEN", "stable-token",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("stable-token", "")
+    assert calls["json"] == ("stable-token", "")
+    assert "resolved via direnv" not in result.stderr
+
+
+def test_direnv_unset_export_clears_stale_ambient_value(fake_gh, tmp_path):
+    # Models a container sibling with no matching .envrc for this
+    # directory: direnv's own diff mechanism unsets whatever a prior
+    # interactive session loaded, matching what a real `cd` would do.
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "stale-container-token"},
+        direnv_source=_direnv_shim_source_unconditional_unset("CI_CHECKS_GH_TOKEN"),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    # The override cleared, so watch/json fall back to the unwrapped path —
+    # same as an ambient CI_CHECKS_GH_TOKEN that was never set.
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
+    assert "stale-container-token" not in result.stdout
+    assert "stale-container-token" not in result.stderr
+    assert "using CI_CHECKS_GH_TOKEN override" not in result.stderr
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+
+
+def test_direnv_exiting_nonzero_leaves_ambient_untouched_and_does_not_abort(fake_gh, tmp_path):
+    # Models a non-`allow`ed .envrc: `export bash` exits 1 but still writes
+    # an unset payload to stdout — resolve_ci_checks_gh_token's guard must
+    # discard this cleanly rather than aborting the script under
+    # set -euo pipefail (this script runs for potentially hours in the
+    # background; an .envrc misbehaving must never kill the watch).
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-survives-token"},
+        direnv_source=_direnv_shim_source_exits_nonzero_with_unset_payload(
+            name="CI_CHECKS_GH_TOKEN",
+        ),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("ambient-survives-token", "")
+    assert calls["json"] == ("ambient-survives-token", "")
+    # A discarded direnv failure is indistinguishable from direnv having
+    # nothing to say: the resolved value never differs from ambient, so
+    # the notice (gated on an actual diff) must not fire either.
+    assert "resolved via direnv" not in result.stderr
+
+
+def test_direnv_export_containing_other_vars_does_not_perturb_running_script(fake_gh, tmp_path):
+    # Subshell-containment guarantee: an .envrc exporting GH_TOKEN, PATH, and
+    # STDERR_FILE alongside CI_CHECKS_GH_TOKEN must not let any of the first
+    # three cross into the running script's own environment — only
+    # CI_CHECKS_GH_TOKEN's resolved value may. The unwrapped `gh pr view`
+    # call is the tell for a GH_TOKEN leak: it never receives the
+    # CI_CHECKS_GH_TOKEN override, so it only ever sees a leaked GH_TOKEN if
+    # containment failed. STDERR_FILE is the tell for the EXIT trap: if
+    # containment failed and STDERR_FILE were hijacked to this decoy path,
+    # the trap's `rm -f "$STDERR_FILE"` would delete it.
+    token_log = tmp_path / "token.log"
+    decoy_stderr_file = tmp_path / "decoy-stderr-file"
+    decoy_stderr_file.write_text("decoy-content-must-survive")
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"GH_TOKEN": "original-ambient-gh-token"},
+        direnv_source=_direnv_shim_source_multi_export({
+            "CI_CHECKS_GH_TOKEN": "direnv-resolved-checks-token",
+            "GH_TOKEN": "leaked-from-envrc-gh-token",
+            "PATH": "/nonexistent-path-from-envrc",
+            "STDERR_FILE": str(decoy_stderr_file),
+        }),
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    # The unwrapped view call must see the original ambient GH_TOKEN, never
+    # the .envrc's — proving GH_TOKEN did not cross the subshell boundary.
+    assert calls["view"] == ("original-ambient-gh-token", "")
+    # CI_CHECKS_GH_TOKEN is the one var meant to cross: the wrapped calls
+    # must use the direnv-resolved value.
+    assert calls["watch"] == ("direnv-resolved-checks-token", "")
+    assert calls["json"] == ("direnv-resolved-checks-token", "")
+    assert "leaked-from-envrc-gh-token" not in result.stdout
+    assert "leaked-from-envrc-gh-token" not in result.stderr
+    assert "ci-watch: CI_CHECKS_GH_TOKEN resolved via direnv" in result.stderr
+    # The decoy file, never the script's own real STDERR_FILE, must survive
+    # untouched — proving the trap's target was never hijacked.
+    assert decoy_stderr_file.read_text() == "decoy-content-must-survive"
+
+
+def test_stdin_reading_envrc_does_not_hang(fake_gh):
+    # resolve_ci_checks_gh_token wraps direnv_export_bash's eval inside an
+    # extra nested subshell/command-substitution layer that
+    # cleanup-merged-branches.sh's own call site doesn't have — a
+    # regression dropping or reordering direnv_export_bash's </dev/null
+    # redirect at this specific call site would hang the script rather
+    # than fail an assertion, so this needs a held-open pipe rather than
+    # the default DEVNULL stdin every other test here relies on.
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        direnv_source=_direnv_shim_source_reads_stdin(),
+    )
+    read_fd, write_fd = os.pipe()
+    proc = subprocess.Popen(
+        [str(_SCRIPT), _PR_NUMBER], env=env, stdin=read_fd,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    os.close(read_fd)
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        pytest.fail(
+            "script hung on a stdin-reading .envrc — "
+            "direnv_export_bash's </dev/null guard regressed at "
+            "resolve_ci_checks_gh_token's nested subshell call site"
+        )
+    finally:
+        os.close(write_fd)
+    assert proc.returncode == 0

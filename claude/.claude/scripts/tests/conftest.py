@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -75,12 +76,17 @@ def _base_test_env() -> dict:
     }
 
 
-# Tools the script and _worktree-lib.sh need on a normal (non-lsof,
-# non-usage-error) run — mirrors TestGhMissing's min_bin list. Symlinking
-# only these into a curated directory keeps the absent-direnv PATH free of
-# a real direnv without also losing any other tool that happens to share
-# direnv's install directory (e.g. git, via the same package-manager prefix).
-_TOOLS_NEEDED_WITHOUT_DIRENV = ("git", "python3", "bash", "grep", "awk", "sed", "dirname")
+# Tools the scripts under test (cleanup-merged-branches.sh, ci-watch.sh) and
+# _worktree-lib.sh need on a normal (non-lsof, non-usage-error) run — mirrors
+# TestGhMissing's min_bin list. mktemp and rm are ci-watch.sh's own additions
+# (its STDERR_FILE capture and matching EXIT trap, both unconditional on
+# every run). Symlinking only these into a curated directory keeps the
+# absent-direnv PATH free of a real direnv without also losing any other
+# tool that happens to share direnv's install directory (e.g. git, via the
+# same package-manager prefix).
+_TOOLS_NEEDED_WITHOUT_DIRENV = (
+    "git", "python3", "bash", "grep", "awk", "sed", "dirname", "mktemp", "rm",
+)
 
 
 def _curated_path_without_direnv(tmp_path: Path) -> str:
@@ -140,6 +146,75 @@ def _shimmed_env(
 
     new_path = os.pathsep.join([str(shim_dir), base_path])
     return {**_base_test_env(), "PATH": new_path}
+
+
+def _direnv_shim_source_static_export(name: str, value: str) -> str:
+    """direnv shim that unconditionally exports one NAME=VALUE on `export
+    bash`, regardless of cwd — for tests that only need one export to
+    reach (or be safely rejected by) the calling shell. Promoted from
+    test_cleanup_merged_branches.py so test_ci_watch.py's own direnv-
+    resolution tests share it instead of a second, possibly-drifting copy."""
+    quoted_value = shlex.quote(value)
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            print("export {name}={quoted_value}")
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_unconditional_unset(name: str) -> str:
+    """direnv shim that unconditionally emits `unset NAME` on `export
+    bash`, regardless of cwd — models direnv leaving a container's
+    identity behind when the current directory has no matching .envrc.
+    Promoted from test_cleanup_merged_branches.py; see
+    _direnv_shim_source_static_export above for why."""
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            print("unset {name}")
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_exits_nonzero_with_unset_payload(name: str = "GH_TOKEN") -> str:
+    """direnv shim modeling a non-`allow`ed .envrc: `export bash` exits 1
+    but still writes an unset payload to stdout — the exit-status guard
+    load_repo_environment (cleanup-merged-branches.sh) and
+    resolve_ci_checks_gh_token (ci-watch.sh) both apply must discard this
+    cleanly. Promoted from test_cleanup_merged_branches.py; see
+    _direnv_shim_source_static_export above for why. name defaults to
+    GH_TOKEN, matching every pre-existing call site's fixed payload;
+    ci-watch.sh's own tests pass name="CI_CHECKS_GH_TOKEN"."""
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            print("unset {name}")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+
+
+def _direnv_shim_source_reads_stdin() -> str:
+    """direnv shim modeling an .envrc that reads stdin — if a caller's
+    `</dev/null` guard on its `export bash` eval regressed, this call would
+    hang waiting for input that never comes. Promoted from
+    test_cleanup_merged_branches.py so test_ci_watch.py's own stdin-hang
+    regression test shares it instead of a second, possibly-drifting copy."""
+    return textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys
+        args = sys.argv[1:]
+        if args[:2] == ["export", "bash"]:
+            sys.stdin.read()
+        sys.exit(0)
+    """)
 
 
 def _write_subagent_jsonl(
