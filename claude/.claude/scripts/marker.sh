@@ -167,7 +167,8 @@ readonly _HASH_STAGED_DIFF_RC_EMPTY=3
 # docs/private-project-redaction.md). Computed once at script load, not per
 # call, since the digest is algorithm-fixed and _hash_staged_diff must not
 # pay a second sha256sum call per invocation.
-readonly _HASH_STAGED_DIFF_EMPTY_DIGEST="$(printf '' | sha256sum | awk '{print $1}')"
+_HASH_STAGED_DIFF_EMPTY_DIGEST="$(printf '' | sha256sum | awk '{print $1}')"
+readonly _HASH_STAGED_DIFF_EMPTY_DIGEST
 
 # _hash_staged_diff CAP_MODE REPO_ROOT [PATHSPEC...]
 # Hashes the staged diff (optionally scoped to PATHSPEC) via
