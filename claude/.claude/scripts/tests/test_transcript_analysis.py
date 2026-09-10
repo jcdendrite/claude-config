@@ -1700,9 +1700,9 @@ class TestSubagentMixPerDispatch:
     def test_per_dispatch_dangling_dispatch_with_reprice_as_renders_zero_counterfactual(self, fake_projects, capsys):
         """A dangling dispatch (meta.json, no sibling .jsonl) under
         --per-dispatch --reprice-as must not crash formatting a None
-        counterfactual_dollars -- _dispatch_usage_summary returns
-        counterfactual_dollars=None for a dangling dispatch, and the
-        `counterfactual = drow["counterfactual_dollars"] or 0.0` guard
+        counterfactual_dollars, since _dispatch_usage_summary returns
+        counterfactual_dollars=None for a dangling dispatch.
+        The `counterfactual = drow["counterfactual_dollars"] or 0.0` guard
         renders $0.00 instead of _fmt_usd raising TypeError on None."""
         session_id = "sess-per-dispatch-dangling-reprice"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
@@ -1798,11 +1798,11 @@ class TestDispatchUsageSummaryDedupBeforePricing:
     def test_summed_per_dispatch_dollars_equal_hand_computed_figure(self, tmp_path):
         """Two dispatches, each carrying the same two-content-block run:
         summed actual_dollars across both must equal the hand-computed
-        figure derived from pricing only each run's final (billed) usage --
-        an equality assertion, not an inequality against `cost`'s ceiling,
-        since a per-dispatch sum undercuts `cost`'s ceiling regardless of
-        whether dedup runs, so an inequality assertion here would pass even
-        with a reverted dedup step."""
+        figure derived from pricing only each run's final (billed) usage.
+        This is an equality assertion, not an inequality against `cost`'s
+        ceiling. A per-dispatch sum always undercuts `cost`'s ceiling
+        regardless of whether dedup runs, so an inequality assertion here
+        would pass even with a reverted dedup step."""
         jsonl_1 = tmp_path / "dispatch-1.jsonl"
         jsonl_2 = tmp_path / "dispatch-2.jsonl"
         _write_jsonl(jsonl_1, self._two_block_run("claude-sonnet-4-6", request_id="req-1"))
@@ -2213,15 +2213,7 @@ class TestRepoTrackedAgentTypeNames:
         against the real _REPO_AGENT_DEFINITIONS_DIR rather than an
         isolated fixture, since the property under test belongs to this
         actual repo's actual tracked files."""
-        proc = subprocess.run(
-            ["git", "-C", str(_mod._REPO_AGENT_DEFINITIONS_DIR), "ls-files", "-z", "--", "."],
-            capture_output=True, text=True, check=True,
-        )
-        stems = {
-            entry[: -len(".md")]
-            for entry in proc.stdout.split("\0")
-            if entry and "/" not in entry and entry.endswith(".md")
-        }
+        stems = _mod._repo_tracked_agent_type_names() - _mod._BUILT_IN_AGENT_TYPES
         assert stems
         for stem in stems:
             assert (
@@ -5189,12 +5181,16 @@ class TestReviewTraceMultiRoot:
     _DO_NOT_PUBLISH_BANNER and redacts identity-bearing labels above one
     root. This class covers the same guard on review-trace's default
     timeline.
-    Uses _two_declared_roots (defined further below in this file, but a
-    plain module-level function so call order here doesn't matter).
+
+    Uses _two_declared_roots, defined further below in this file. It is a
+    plain module-level function, so call order here doesn't matter.
+
     Every leak-surface assertion in the tests below checks a sentinel's
     absence, not just the replacement label's presence, since a session
     could carry the intended redacted label AND a raw leaked value side by
-    side. The `staff-sdet` positive control in that same test proves the
+    side.
+
+    The `staff-sdet` positive control in that same test proves the
     repo-tracked-name disclosure carve-out doesn't over-redact into
     uselessness."""
 

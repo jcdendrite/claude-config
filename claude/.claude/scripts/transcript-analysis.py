@@ -795,10 +795,10 @@ def cmd_duration(args: argparse.Namespace) -> None:
         idle_gaps = [tss[i + 1] - tss[i] for i in range(len(tss) - 1) if tss[i + 1] - tss[i] > gap_secs]
         idle_secs = sum(idle_gaps)
         active_secs = span_secs - idle_secs
-        session_count = len(idle_gaps) + 1
+        burst_count = len(idle_gaps) + 1
         print(
             f"{branch:<40} {span_secs / 60:>10.0f} {active_secs / 60:>11.0f} "
-            f"{idle_secs / 60:>10.0f} {session_count:>9} {gap_secs / 60:>7.0f}"
+            f"{idle_secs / 60:>10.0f} {burst_count:>9} {gap_secs / 60:>7.0f}"
         )
 
 
@@ -2035,11 +2035,10 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     - Every denial and friction event's msg=... field is omitted entirely,
       since this repo's own hook denials routinely embed absolute
       filesystem paths that would disclose the same project directory name.
-    - hook= is classified through _denial_hook_label, the same classifier
-      --deny-summary uses, rather than printing a legacy denial's raw
-      hookName — unvalidated transcript text. Applied regardless of scope,
-      since this is a correctness fix (the canonical classifier in place of
-      a second, worse, ad-hoc one), not a redaction.
+    - hook= is classified through the same _denial_hook_label classifier
+      --deny-summary uses, instead of a legacy denial's raw hookName. This
+      applies regardless of scope — it is a correctness fix, not a
+      redaction.
     - A reviewer-spawn event's subagent_type follows the same closed-
       vocabulary policy as model= above. See _redact_subagent_type for the
       membership test and why --this-repo isn't part of it.
@@ -2092,13 +2091,15 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         """Redact a branch name under multi-root scope, mirroring subagent-mix's
         own branch redaction (_mix_branch_label).
 
-        No --this-repo disclosure carve-out: --this-repo here is a scoping
+        No `--this-repo` disclosure carve-out. `--this-repo` is a scoping
         flag (which project dirs to scan), not a disclosure assertion, so a
-        "this repo" branch from a foreign account under multi-root is still a
-        foreign account's branch. Also, review-trace's carry-forward
-        deliberately attributes a sidechain event the main-thread branch,
-        over a merged main+sidechain stream, which would need subagents' own
-        main_thread_branches attestation machinery to disclose safely — real
+        foreign account's branch stays foreign under multi-root even when
+        `--this-repo` is set.
+
+        Also, review-trace's carry-forward deliberately attributes a
+        sidechain event the main-thread branch, over a merged main+sidechain
+        stream, which would need subagents' own main_thread_branches
+        attestation machinery to disclose safely. That would be real
         machinery for marginal gain, so this closure never discloses
         regardless of --this-repo.
         """
@@ -2110,22 +2111,24 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
 
     def _redact_subagent_type(jsonl: Path, stype: str) -> str:
         """Redact a reviewer-spawn's subagent_type under multi-root scope,
-        mirroring subagent-mix's own subagent_type redaction (_stype_label).
-
-        Follows the same closed-vocabulary disclosure policy
+        following the same closed-vocabulary disclosure policy
         cmd_review_trace's own model= bullet states above.
         _repo_tracked_agent_type_names is the membership test that decides
         which side of that policy a given subagent_type falls on, matching
-        names tracked in the invoking checkout's index. --this-repo is
-        deliberately excluded from this carve-out's disclose= condition
-        too, for the same scoping-flag-vs-disclosure-assertion reason
-        _redact_branch's docstring states above. An independently-named
-        foreign account's agent sharing a tracked name (e.g. an unrelated
-        third party's own "staff-sdet") is an attribution ambiguity for the
-        reader, not a disclosure. The printed string is public either way
-        regardless of which account actually dispatched it.
-        See _repo_tracked_agent_type_names's docstring for the naming-
-        convention precondition this carve-out's safety depends on.
+        names tracked in the invoking checkout's index.
+
+        - Mirrors subagent-mix's own subagent_type redaction (_stype_label).
+        - Excludes --this-repo from this carve-out's disclose= condition,
+          for the same scoping-flag-vs-disclosure-assertion reason
+          _redact_branch's docstring states above.
+        - A name collision with an independently-named foreign account's
+          agent (e.g. an unrelated third party's own "staff-sdet") is an
+          attribution ambiguity for the reader, not a disclosure. The
+          printed string is public either way regardless of which account
+          actually dispatched it.
+        - Safety depends on a naming-convention precondition. See
+          _repo_tracked_agent_type_names's docstring for what that
+          precondition is.
         """
         if not multi_root:
             return _sanitize_table_cell(stype)
