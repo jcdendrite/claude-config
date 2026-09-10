@@ -457,7 +457,7 @@ Multi-root scope — the default once `~/.claude/transcript-config-dirs` declare
 - Every branch name printed — in the per-session `branches=...` summary line and in each event's own `(branch=...)` suffix — is redacted the same way, to an opaque `account-<K>/branch-<N>` label. See `_redact_branch`'s docstring in `transcript-analysis.py` for why there is no `--this-repo` disclosure carve-out for this redaction.
 - `model=` stays raw regardless of scope, since a model ID carries no account or project identity.
 - Every denial and friction event's `msg=...` field is omitted entirely, since this repo's own hook denials routinely embed absolute filesystem paths that would disclose the same project directory name.
-- `hook=` is classified through the same `_denial_hook_label` classifier `--deny-summary` uses, rather than printing a legacy denial's raw `hookName`, regardless of scope — a correctness fix, not a redaction.
+- `hook=` is classified through the same `_denial_hook_label` classifier `--deny-summary` uses, instead of a legacy denial's raw `hookName`. This applies regardless of scope — it is a correctness fix, not a redaction.
 - A reviewer-spawn event's `subagent_type` is redacted the same way as branch, except a `subagent_type` tracked in the invoking checkout's own `agents/` directory (or a Claude Code built-in) discloses raw. See `_redact_subagent_type`'s docstring in `transcript-analysis.py` for the membership test and why there is no `--this-repo` disclosure carve-out for this redaction either, and `_repo_tracked_agent_type_names`'s docstring for the naming-convention precondition this disclosure depends on.
 
 **Sample output.**
