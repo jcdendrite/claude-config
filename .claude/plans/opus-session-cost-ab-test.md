@@ -154,8 +154,9 @@ Data crosses machines as **files the engineer moves himself**, never as message 
 - Pooled G0 needs both censuses evaluated together before either measurement runs, which a fire-and-forget message cannot synchronously gate.
 
 1. **Phase 1 — feasibility and freeze, run independently on each machine.** Each machine runs the original design's Dispatch split item 1 in full against its own declared-roots union, assigns its own `machine-<M>/stratum-<N>` labels, emits **payload A** and **payload C** (schemas below), and displays its reconciliation list — opaque label against real `(account, repo)` — in its own session only. Sync point 1: both machines' payload A and C files reach the pooling machine (the machine holding this plan's implementation branch and worktree), and the engineer, having read each reconciliation list on the machine that produced it, supplies **payload D**, the pairing table (Delta 2). The engineer also records that machine's own scratch-directory path at this same hand-off, since that machine's phase 3 may run in a different session once the sync-point gap has elapsed.
-2. **Phase 2 — pooling and gate evaluation, on the pooling machine only.** Merges the two payload A files under payload D's pairing table, runs X1 (below), dispositions every fingerprint collision, and evaluates pooled G0, G1, and G2. A collision across two unpaired strata returns to the engineer as a pairing re-check before the gates are evaluated (Delta 2). On a pass, emits a small **go-list** per machine: a go/no-go flag plus the branch fingerprints to drop. Sync point 2: the go-list reaches the other machine.
+2. **Phase 2 — pooling and gate evaluation, on the pooling machine only.** Merges the two payload A files under payload D's pairing table, runs X1 (below), dispositions every fingerprint collision, and evaluates pooled G0, G1, and G2. A collision across two unpaired strata returns to the engineer as a pairing re-check before the gates are evaluated (Delta 2). On a pass, emits a small **go-list** per machine: a machine label, a go/no-go flag, plus the branch fingerprints to drop. Sync point 2: the go-list reaches the other machine.
 3. **Phase 3 — measurement, run independently on each machine, only on a pooled G0 pass.** Each machine:
+   - Confirms the go-list's own `machine_label` matches this machine before consuming it; a mismatch is a fail-loud stop, not a silent proceed.
    - Recomputes its own admissible branches' fingerprints the same way payload A's `branch_fingerprint` field was derived.
    - Drops any branch whose recomputed fingerprint matches one on its own go-list.
    - Reads its own frozen files and builds arms at all three threshold pairs.
@@ -390,6 +391,7 @@ The admissible-branch list is the classifier's own output, not raw scan noise: i
 - A go-list with a `no-go` flag and no fingerprints.
 - A go-list fingerprint absent from that machine's payload A.
 - A fingerprint repeated on the same go-list.
+- A go-list whose `machine_label` disagrees with the machine processing it (a transport-time swap), rejected rather than silently matching zero fingerprints.
 
 Four new payload schemas, plus the go-list (Delta 3, phase 2), cross machines as files the engineer moves himself — never committed to this repository, never sent as message content. Tab-separated, one record per line, no header.
 
@@ -433,9 +435,10 @@ A stratum-threshold-arm combination whose `branch_count` falls below 10 — `rev
 
 Written by the engineer at sync point 1 from the two reconciliation lists (Delta 2), never by a dispatched session, and never containing a real name in either direction. It carries the whole cross-machine join; a stratum absent from it is a single-machine stratum by construction, not an error.
 
-**The go-list — one line per machine, a go/no-go flag plus zero or more branch fingerprints to drop (Delta 3, phase 2):**
-1. The flag — literal `go` or `no-go`.
-2. onward. Zero or more `^[0-9a-f]{12}$` branch fingerprints, each dispositioned by X1 for removal from that machine's own admissible set before phase 3 runs. A `no-go` flag carries none — the run stops before phase 3, so nothing remains to drop.
+**The go-list — one line per machine, a machine label, a go/no-go flag, plus zero or more branch fingerprints to drop (Delta 3, phase 2):**
+1. `machine_label` — literal `machine-1` or `machine-2`, the same field every sibling artifact carries.
+2. The flag — literal `go` or `no-go`.
+3. onward. Zero or more `^[0-9a-f]{12}$` branch fingerprints, each dispositioned by X1 for removal from that machine's own admissible set before phase 3 runs. A `no-go` flag carries none — the run stops before phase 3, so nothing remains to drop.
 
 Emitted on the pooling machine at phase 2 and delivered to the machine it names, one go-list per machine. Its fingerprint count is bounded by that machine's own payload A line count, the same G0 admissible-branch count payload A's own Allow rule already bounds itself by. Deny/Allow rules follow immediately below. Storage, transport, and deletion follow the same rules as payloads A–D (Amendments for the cross-machine pooled report, Critical files, above).
 
@@ -451,11 +454,12 @@ Emitted on the pooling machine at phase 2 and delivered to the machine it names,
   - Payload B: exactly 8.
   - Payload C: exactly 10 fixed fields, plus one per-root `SKIP`-count field per declared root, that root count read from payload C's own 6th field (declared-root count).
   - Payload D: exactly 2.
-  - The go-list: exactly 1 flag field, plus zero or more fingerprint fields, bounded per the go-list's own schema definition above.
+  - The go-list: exactly 1 `machine_label` field, 1 flag field, plus zero or more fingerprint fields, bounded per the go-list's own schema definition above.
 - Payload A holds exactly one line per admissible branch reported in that machine's own G0 census.
 - Every payload D label appears in that machine's payload A, and no label appears on more than one payload D line in either column, since pairing is one-to-one.
 - Every go-list fingerprint appears in that machine's own payload A, the same membership check payload D's labels are held to.
 - No fingerprint appears more than once on the same go-list, the same distinctness guarantee payload D's one-to-one pairing already carries.
+- A go-list's own `machine_label` matches the machine actually processing it; a mismatch is a fail-loud stop, not a silent zero-match no-op.
 
 ## Verification
 
@@ -490,10 +494,11 @@ The only repository change is this plan file's own commit — no toolkit code, s
    - Every fingerprint appears in that machine's own payload A.
    - No fingerprint appears more than once.
    - A `no-go` flag carries no fingerprints.
+   - Its `machine_label` matches the machine it landed on, confirmable directly only for the go-list that stays local to the pooling machine. The transported go-list's agreement is enforced by phase 3's own check on the receiving machine (Delta 3, phase 3). The write-up observes that outcome only through the machine's completion status (item 11).
 
    A violation of any of these properties is a disclosable event named in the report's Limits section, and — as with the original's item 5 — a corrected re-emission requires recomputing every pooled figure derived from the affected artifact, not reusing the pre-fix merge.
 
-9. **Claim re-derivation, amended for two machines.** The write-up session sits on the pooling machine and cannot read the other machine's frozen scan files, so the original's item 3 control is satisfied in two hops rather than one: each machine's phase-3 session re-derives its own figures from its own frozen scan at payload-write time and attests to having done so in payload C; the pooling session then re-derives every pooled figure from the payloads at the moment it writes each one, alongside the command, scope flags, and run date behind it. Residual, named in Limits: the pooling session takes the other machine's per-branch rows on item 8's schema check plus that machine's local attestation, not on its own read of the underlying scan. Rescanning on either machine is still forbidden — it would reintroduce the drift the freeze removes. Each machine also confirms, as part of its own phase 3, that it excluded every one of its own go-list's fingerprinted branches before building arms (Delta 3 phase 3's own recompute-and-drop step). This is the same local-attestation residual named above for the non-pooling machine: the pooling session has no real branch names to independently re-run that check with, and takes that machine's own attestation rather than its own read, the same as every other cross-machine fact this design holds to that residual.
+9. **Claim re-derivation, amended for two machines.** The write-up session sits on the pooling machine and cannot read the other machine's frozen scan files, so the original's item 3 control is satisfied in two hops rather than one: each machine's phase-3 session re-derives its own figures from its own frozen scan at payload-write time. This is a procedural rule, not an attested one. Payload C is emitted once, in phase 1, so it predates phase 3 and cannot attest to it. Payload B carries no attestation field either. The pooling session then re-derives every pooled figure from the payloads at the moment it writes each one, alongside the command, scope flags, and run date behind it. Residual, named in Limits: the pooling session takes the other machine's per-branch rows on item 8's schema check plus that machine's local attestation, not on its own read of the underlying scan. Rescanning on either machine is still forbidden — it would reintroduce the drift the freeze removes. Each machine also confirms, as part of its own phase 3, that it excluded every one of its own go-list's fingerprinted branches before building arms (Delta 3 phase 3's own recompute-and-drop step). This is the same local-attestation residual named above for the non-pooling machine: the pooling session has no real branch names to independently re-run that check with, and takes that machine's own attestation rather than its own read, the same as every other cross-machine fact this design holds to that residual.
 
 10. **Join-control confirmation.** Confirm the report states, for X1:
     - The branch-fingerprint collision count, with the disposition of every colliding branch — dropped from both lists and escalated inside a paired stratum, or returned to the engineer as a pairing re-check across two unpaired strata (Delta 2).
@@ -512,7 +517,7 @@ The only repository change is this plan file's own commit — no toolkit code, s
       - The freeze skew.
       - Each machine's round2-consult-pilot sentinel state and firing count (Delta 8).
       - Payload C's per-root `SKIP`-count field is kept in real declared-roots order, unlike every other cross-machine positional field.
-      - Whether each machine's phase 3 ran to completion. For any stratum pooled into phase 2's gate evaluation whose measurement is missing because one machine's phase 3 did not complete — a lost scratch-directory path (Dispatch split, amended), a dispatch error, or an interruption — the report describes that stratum's outcome as gated-pooled-but-measured-on-one-machine rather than presenting it as a fully pooled figure.
+      - Whether each machine's phase 3 ran to completion. For any stratum pooled into phase 2's gate evaluation whose measurement is missing because one machine's phase 3 did not complete, the report names the specific cause: a lost scratch-directory path (Dispatch split, amended), a go-list `machine_label` mismatch caught by phase 3's own check, a dispatch error, or an interruption. The write-up takes this cause from the engineer's own observation of that machine's dispatch, never from a cross-machine payload field. The non-pooling machine's deletion confirmation below relies on the same evidentiary source. A caught `machine_label` mismatch is never folded into a generic dispatch-error bucket. That stratum's outcome is described as gated-pooled-but-measured-on-one-machine rather than presented as a fully pooled figure.
     - The payload files, the go-list files, and both scratch directories were deleted on **both** machines — the pooling machine's copy via the report-delivery trigger (or its own error/interrupt trigger), and the non-pooling machine's copy via the engineer's own post-ping action or, on a missing ping, his own error/interrupt action (Critical files, amended) — with confirmation of the non-pooling machine's deletion obtained directly from the engineer rather than assumed.
     - The incoming payload landed on the pooling machine outside any git tree with non-world-readable permissions, and payload D was held under that same constraint from its creation at sync point 1 through its delivery to phase 2 (Critical files, amended).
     - Each machine's scratch directory passed the original's item 6 control check (`0700`, outside any git tree, non-predictable `mktemp` name) on that machine.
