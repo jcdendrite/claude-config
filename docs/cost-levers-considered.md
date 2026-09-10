@@ -34,10 +34,9 @@ vars exposes this field" claim above is outdated — `ENABLE_PROMPT_CACHING_1H`
 and `FORCE_PROMPT_CACHING_5M` are real, documented environment variables
 (`code.claude.com/docs/en/prompt-caching`) that select TTL per session.
 Verdict unchanged (rejected): main-thread 5-minute-tier writes are 96–97%
-concentrated in idle gaps under 5 minutes on every account checked (personal-
-subscription, small-subscription-client, API-key-client), where the pricier
-1-hour breakpoint adds cost with no avoided-rebuild benefit — do not set
-either variable.
+concentrated in idle gaps under 5 minutes across the corpus, where the
+pricier 1-hour breakpoint adds cost with no avoided-rebuild benefit — do not
+set either variable.
 
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
@@ -527,3 +526,47 @@ Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-stud
 | Does cost per shipped PR improve? | Yes — a clean win | Mean $/PR fell 47.5% ($49.55→$26.01, pooled n=19 before / n=49 after); both machines' own after-era medians sit at or below the before-era median |
 | Does handoff/continuation overhead fall, and does deep-tail spend absorb some of the savings? | Both, in the predicted direction | Startup-burn share 3.6%→2.1–2.3% (both machines); share of session dollars past the advisory threshold 57.6%→77.3% (pooled) |
 | Does review quality decline under the raised floor? | No | Reviewer dispatch/finding volume roughly doubled between checkpoints against a ~1.45x rise in active branches on the one machine where both eras are directly comparable — engagement outpaced corpus growth |
+
+## From a 2026-09-07 session measurement — "`review-round-cost`: first cross-machine run"
+
+Whether the plan-review/code-review/ready-for-review loop itself is a
+worthwhile cost-reduction target, now that PR #914 shipped a subcommand to
+measure it directly.
+
+Figures are from `review-round-cost`, run 2026-09-07, at default
+machine-wide scope — every declared account, not one repo — on each of two
+machines. The two machines' output is pooled into one total. Per-account
+splits and branch identities are withheld here for the same reason cited in
+the
+`subagent-idle-gap-cache-rebuild-split.md` section above: the corpus mixes
+private-project and public transcripts, and any more granular figure would
+inherit the private half's composition. The pooled ratio below is not
+subject to that withholding, since it never surfaces any single account's
+share.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Treat the review loop as a standalone cost-reduction target | No lever identified yet, measured baseline only | Round-window spend is 30.3% of tracked branch dollars pooled across both machines (460 branches, 3,626 rounds) — the majority, ≈70%, falls outside every round window entirely, i.e. ordinary implementation work, not review overhead. |
+
+The tool's own `main $` column conflates a round's skill cost with
+same-window fix-application turns, since no fresh user prompt separates
+them under autonomous shipping. A hand-sum of the cleaner
+reviewer-dispatch-only figure (`agent $`) across a handful of branches is
+not a computed corpus total; treat its precision accordingly. It ran
+roughly 10–15% of total spend, well under the 30.3% round-window figure.
+Nothing in
+the toolkit decomposes the non-round ≈70% without double-counting round
+windows, so chasing that split further isn't productive.
+
+**Qualitative follow-up on the round-count tail.** A branch reaching 19
+review-loop invocations turned out, on a close read of its
+`review-trace` output, to be genuine multi-session iterative work with real
+reviewer fan-out at nearly every round. The branch's round-based
+review-escalation gate fired exactly as designed. The branch also carried a real vein of
+wasted spend: the same denial fired verbatim more than half a dozen times
+in one session before the ordinary per-round review gate underneath it was
+actually satisfied. High
+round counts on this one sample are not attributable to a single cause;
+genuine convergence difficulty and denial-retry churn coexist on the same
+branch. Reading further branches in the tail, rather than pooled statistics
+alone, is the next step if this is revisited.
