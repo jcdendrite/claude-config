@@ -118,6 +118,9 @@
 #   push/pr-create/pr-ready commands, so any latent portability gap in that
 #   shared path is now fully exposed, not reached only by a narrow slice of
 #   commands.
+# - The active-marker bypass check now also runs before that same
+#   command-shape scan, so its cost is paid on every Bash call during an
+#   active /ready-for-review run, not only at the terminal push/PR command.
 
 set -uo pipefail
 

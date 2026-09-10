@@ -118,11 +118,17 @@ extends by analogy:
   - Cost is dollar or token spend on running the tooling. Duration is
     wall-clock time spent running the tooling. Cost and Duration may
     never be reported as a client-billed, engagement-revenue, or
-    billable-hours figure. Report each only as a rate per tool call,
-    session, or dispatch (e.g., median cost per session), never as a
-    raw pooled total. A raw total scales with pool volume and, unlike
-    a per-unit rate, can be converted to an engagement-value estimate
-    using public day-rate references.
+    billable-hours figure.
+    - Report each as a rate per tool call, session, or dispatch (e.g.,
+      median cost per session) — never as a raw pooled total.
+    - Cost may also be reported as a dimensionless share of pooled
+      spend, split along any dimension but project, account, or
+      engagement (e.g., Opus dollars as a percentage of total).
+    - Duration may not: a share of pooled wall-clock is one hop from
+      billable hours per deliverable.
+    - A raw total is barred outright — it scales with pool volume,
+      and, unlike a rate or a share, it can be converted to an
+      engagement-value estimate using public day-rate references.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
@@ -137,6 +143,15 @@ extends by analogy:
     successive artifacts are the time series the bullet above bars.
     The figure that completes the reconstruction is the one that
     crosses the line.
+
+These two lists govern the mixed-corpus figure "What it permits" opens
+with, and nothing else. A figure the repo-root `CLAUDE.md` rule's own
+per-project, per-account, or per-engagement exclusion already places
+outside this class is not reached by any condition below.
+`pr-cost-section.sh`'s output is the worked case: it calls
+`transcript-analysis.py cost --this-repo --branches <branch>
+--summary`, and `--summary` exits non-zero unless the scope resolves to
+this repository and one account.
 
 **Approval gate.** An agent never publishes a figure under this
 carve-out on its own judgment. It proposes the figure, the exact
