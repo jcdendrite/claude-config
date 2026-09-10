@@ -105,7 +105,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
   - the repo
   - the PR number
   - the account name
-- **A generalized statistical fact about a single outlier is safe to publish only when stripped of anything that could correlate it back to its source.** "One branch reached over 40 review rounds" is fine on its own — nothing to redact. Any of the following turns the same fact into a structural fingerprint (see the repo CLAUDE.md's "Also redact structural fingerprints and provenance" section) even with the name stripped out:
+- **A generalized statistical fact about a single outlier is safe to publish only when stripped of anything that could correlate it back to its source.** "One branch reached 50 review rounds" is fine on its own — nothing to redact. (Use a made-up round number for this kind of illustration, not a real observed figure — a real one drifts out of date the next time someone re-measures.) Any of the following turns the same fact into a structural fingerprint (see the repo CLAUDE.md's "Also redact structural fingerprints and provenance" section) even with the name stripped out:
   - a date
   - a dollar figure specific to that one item
   - detail specific enough to narrow which branch or project it could be (e.g. naming the exact hook, gate, or denial message that fired)

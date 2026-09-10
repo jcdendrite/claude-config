@@ -548,13 +548,14 @@ share.
 |---|---|---|
 | Treat the review loop as a standalone cost-reduction target | No lever identified yet, measured baseline only | Round-window spend is 30.3% of tracked branch dollars pooled across both machines (460 branches, 3,626 rounds) — the majority, ≈70%, falls outside every round window entirely, i.e. ordinary implementation work, not review overhead. The tool's own `main $` column conflates a round's skill cost with same-window fix-application turns, since no fresh user prompt separates them under autonomous shipping. A hand-sum of the cleaner reviewer-dispatch-only figure (`agent $`) across a handful of branches — not a computed corpus total, treat the precision accordingly — ran roughly 10–15% of total spend, well under the 30.3% round-window figure. Nothing in the toolkit decomposes the non-round ≈70% without double-counting round windows, so chasing that split further isn't productive. |
 
-**Qualitative follow-up on the round-count tail.** A branch reaching well
-over 40 review-loop invocations turned out, on a close read of its
+**Qualitative follow-up on the round-count tail.** A branch reaching 19
+review-loop invocations turned out, on a close read of its
 `review-trace` output, to be genuine multi-session iterative work with real
-reviewer fan-out at nearly every round. The round-3-to-architect-consult
-gate fired exactly as designed. The branch also carried a real vein of
+reviewer fan-out at nearly every round. The branch's round-based
+review-escalation gate fired exactly as designed. The branch also carried a real vein of
 wasted spend: the same denial fired verbatim more than half a dozen times
-in one session before the underlying gate was actually satisfied. High
+in one session before the ordinary per-round review gate underneath it was
+actually satisfied. High
 round counts on this one sample are not attributable to a single cause;
 genuine convergence difficulty and denial-retry churn coexist on the same
 branch. Reading further branches in the tail, rather than pooled statistics

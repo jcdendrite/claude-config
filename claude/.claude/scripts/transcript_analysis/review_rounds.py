@@ -412,7 +412,8 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
 
     See docs/transcript-analysis.md's review-round-cost section for the
     round/non-round reconciliation-line formula, and for the
-    "Non-round dollars"/"Dangling dispatches"/"Unpriced turns" footer lines.
+    "Non-round dollars"/"Reviewer-dispatch dollars"/"Dangling dispatches"/
+    "Unpriced turns" footer lines.
     Under multi-root scope the footer prints one block per root, never
     blended across roots.
 
@@ -482,6 +483,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         "skill_dollar_totals": defaultdict(float),
         "total_round_dollars": 0.0,
         "total_branch_dollars": 0.0,
+        "total_agent_dollars": 0.0,
         "total_unpriced_turns": 0,
         "total_dangling": 0,
     })
@@ -529,6 +531,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             root_totals["total_dangling"] += e["dangling"]
         root_totals["total_round_dollars"] += branch_round_dollars
         root_totals["total_branch_dollars"] += branch_dollars
+        root_totals["total_agent_dollars"] += sum(e["agent_dollars"] for e in branch_rounds)
 
     def _print_footer(totals: dict, *, prefix: str = "") -> None:
         skill_round_counts = totals["skill_round_counts"]
@@ -547,6 +550,10 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         print(
             f"{prefix}Non-round dollars: {render._pct_of(non_round_dollars, totals['total_branch_dollars'])}"
             " of branch dollars fell outside every round window"
+        )
+        print(
+            f"{prefix}Reviewer-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
+            " of branch dollars, inside round windows"
         )
         print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")
         print(f"{prefix}Unpriced turns inside round windows: {totals['total_unpriced_turns']}")
