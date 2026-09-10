@@ -142,6 +142,7 @@ case "$SUBCOMMAND" in
     DISPOSITION=""
     RATIONALE=""
     SOURCE="n/a"
+    # Empty means the caller omitted --authoring-agent/--authoring-effort ("not declared"), not that it declared and confirmed empty.
     AUTHORING_AGENT=""
     AUTHORING_EFFORT=""
     while [ $# -gt 0 ]; do

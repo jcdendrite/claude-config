@@ -121,7 +121,17 @@ that judged its diff (`compute_author_outcomes`), by completion-index ordering a
 `review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by matching that
 round's own `review-ledger.sh append code-review`/`marker.sh write code-review` Bash `tool_use`
 commands directly, by argv shape. It reads only the transcript — no review-narrative-ledger file
-is ever opened. Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
+is ever opened. The Bash `tool_use` record of that call is the primary record of "the orchestrator
+asserted disposition X for finding Y"; the ledger file on disk is a lossy downstream derivative of
+it, not an equivalent source:
+
+- it dedups verbatim-duplicate lines
+- it no-ops entirely under the kill switch
+- it rejects over-cap fields
+- it sweeps entries after 30 days
+- its record carries no timestamp or session id
+
+Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
 (attribute access), matching `review_rounds.py`'s own convention. See
 `docs/transcript-analysis.md`'s author-outcome section for the full failure definition, output
 shape, and documented scope gaps.
