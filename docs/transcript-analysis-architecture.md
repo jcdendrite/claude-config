@@ -29,11 +29,10 @@ join, reused recursively by `review_rounds.py`'s nested-dispatch descent since t
 transcript file). No dependency on scope resolution, redaction, or pricing — every other module
 (and the shim) builds on this one.
 
-Also owns `split_command_segments` — shlex-tokenize a raw shell command string, then split on
-`&&`/`||`/`;`/`|` into segments — promoted here from the shim (which had its own,
-`_bash_command_is_mutating_git`-only copy) as the single source of truth for three consumers:
-(1) the shim's own mutating-git classifier, (2) `author_outcome.py`'s ledger-append matcher
-(`_parse_ledger_append_flags`), and (3) its clean-marker-write matcher (`_is_clean_marker_write`).
+Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
+as the single source of truth for three consumers: (1) the shim's own mutating-git classifier,
+(2) `author_outcome.py`'s ledger-append matcher (`_parse_ledger_append_flags`), and (3) its
+clean-marker-write matcher (`_is_clean_marker_write`).
 
 ### `scope.py`
 

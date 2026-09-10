@@ -31,11 +31,9 @@ from pathlib import Path
 
 from transcript_analysis import corpus, pricing, render, review_rounds, scope
 
-# The review_rounds.REVIEW_SKILLS member this subcommand's whole join keys
-# on. review-ledger.sh's own gate name ("append code-review") and
-# marker.sh's own gate name ("write code-review") happen to share this same
-# literal, but each is validated independently by its own hook allowlist --
-# this is not a shared enum symbol, just a coincidence of naming.
+# review-ledger.sh's `append code-review` gate and marker.sh's `write code-review`
+# gate happen to share this literal by coincidence, not as a shared enum; each is
+# validated independently by its own hook allowlist.
 _CODE_REVIEW_SKILL = "code-review"
 
 # Mirrors review-ledger.sh's own --disposition/--authoring-agent case enums
@@ -129,32 +127,22 @@ def _is_clean_marker_write(command: str) -> bool:
     return False
 
 
-# Rescans the full session's records per matched append call rather than the round-scoped
-# slice, O(n^2) worst case across a round's matched calls; acceptable for an occasional batch
-# CLI run, revisit if a real corpus run shows it dominating wall-clock.
-def _is_append_call_rejected(records: list[dict], tool_use_id: str) -> bool:
-    """True iff `tool_use_id`'s own paired `tool_result` block carries
-    `is_error` -- review-ledger.sh append rejecting an invalid
-    `--disposition`/`--authoring-agent` enum or an over-cap value at
-    runtime.
+# O(1) lookup against the pre-built tool_result_index map -- no per-call rescan of records.
+def _is_append_call_rejected(tool_result_index: dict[str, tuple[int, bool]], tool_use_id: str) -> bool:
+    """True iff `tool_use_id`'s own paired `tool_result` block (looked up in
+    `tool_result_index`) carries `is_error` -- review-ledger.sh append
+    rejecting an invalid `--disposition`/`--authoring-agent` enum or an
+    over-cap value at runtime.
 
     A matched append call with no paired tool_result at all (the Bash call
     never completed) is treated as accepted rather than rejected: every
     append call inside an already-closed round span has necessarily
     completed by the time that round opened.
     """
-    for rec in records:
-        if rec.get("type") != "user":
-            continue
-        content = (rec.get("message") or {}).get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            if block.get("tool_use_id") == tool_use_id:
-                return bool(block.get("is_error"))
-    return False
+    entry = tool_result_index.get(tool_use_id)
+    if entry is None:
+        return False
+    return entry[1]
 
 
 def _code_review_rounds(records: list[dict]) -> list[tuple[int, int]]:
@@ -178,7 +166,11 @@ def _code_review_rounds(records: list[dict]) -> list[tuple[int, int]]:
 
 
 def _round_ledger_signals(
-    records: list[dict], open_idx: int, span_end: int, data_quality: Counter,
+    records: list[dict],
+    open_idx: int,
+    span_end: int,
+    data_quality: Counter,
+    tool_result_index: dict[str, tuple[int, bool]],
 ) -> tuple[list[dict[str, str]], bool]:
     """(accepted append-call flag dicts, whether a clean marker-write call
     appears) inside one round's own outcome span [open_idx, span_end).
@@ -209,7 +201,7 @@ def _round_ledger_signals(
                 if not flags:
                     continue
                 tool_use_id = block.get("id") or ""
-                if tool_use_id and _is_append_call_rejected(records, tool_use_id):
+                if tool_use_id and _is_append_call_rejected(tool_result_index, tool_use_id):
                     data_quality[_DQ_REJECTED_APPEND] += 1
                     continue
                 append_calls.append(flags)
@@ -253,19 +245,23 @@ def _agent_dispatch_tool_use_ids(records: list[dict], agent_type: str) -> list[t
     return dispatches
 
 
-def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
-    """Map each tool_use_id to the record index (into `records`) of its own
-    paired tool_result -- the dispatch's completion position, used as the
+def _build_tool_result_index_map(records: list[dict]) -> dict[str, tuple[int, bool]]:
+    """Map each tool_use_id to (the record index into `records` of its own
+    paired tool_result, that tool_result's own is_error value).
+
+    The index half is the dispatch's completion position, used as the
     ordering key against each round's own open_idx (mechanism
     justifications: completion-keyed, not start-keyed, since a round can
-    legitimately open while a dispatch is still running).
+    legitimately open while a dispatch is still running). The is_error half
+    is `_is_append_call_rejected`'s own O(1) lookup, replacing a per-call
+    rescan of `records`.
 
     Mirrors reviewer_yield._build_tool_result_ts_map's own scan shape, but
     returns the record's index rather than its timestamp -- both keys must
     be indices into the same (already deduped) records list, never a
     timestamp compared against an index.
     """
-    index_map: dict[str, int] = {}
+    index_map: dict[str, tuple[int, bool]] = {}
     for idx, rec in enumerate(records):
         if rec.get("type") != "user":
             continue
@@ -277,7 +273,7 @@ def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
                 continue
             tid = block.get("tool_use_id")
             if tid:
-                index_map[tid] = idx
+                index_map[tid] = (idx, bool(block.get("is_error")))
     return index_map
 
 
@@ -313,9 +309,12 @@ def compute_author_outcomes(
 
     for jsonl, raw_records in session_iter:
         records = pricing.dedup_turns_by_request_id(raw_records)
+        tool_result_index = _build_tool_result_index_map(records)
         code_review_rounds = _code_review_rounds(records)
         for open_idx, span_end in code_review_rounds:
-            append_calls, has_marker_write = _round_ledger_signals(records, open_idx, span_end, data_quality)
+            append_calls, has_marker_write = _round_ledger_signals(
+                records, open_idx, span_end, data_quality, tool_result_index,
+            )
             classification = _classify_round(append_calls, has_marker_write)
             rounds_by_key[(jsonl, open_idx)] = {
                 "classification": classification,
@@ -324,16 +323,18 @@ def compute_author_outcomes(
                 "unfiltered_dispatch_count": 0,
             }
 
-        tool_result_index = _build_tool_result_index_map(records)
         for tool_use_id, dispatch_idx in _agent_dispatch_tool_use_ids(records, agent_type):
+            # dispatch_idx is the dispatch's start (Agent/Task tool_use) record, so --since
+            # filters by the dispatch's start timestamp, not its completion timestamp.
             ts = corpus._parse_ts(records[dispatch_idx].get("timestamp"))
             in_scope = since_ts is None or (ts is not None and ts >= since_ts)
 
-            completion_idx = tool_result_index.get(tool_use_id)
-            if completion_idx is None:
+            completion_entry = tool_result_index.get(tool_use_id)
+            if completion_entry is None:
                 if in_scope:
                     data_quality[_DQ_UNDECIDABLE] += 1
                 continue
+            completion_idx = completion_entry[0]
             attributed_open_idx = next(
                 (open_idx for open_idx, _span_end in code_review_rounds if open_idx > completion_idx),
                 None,

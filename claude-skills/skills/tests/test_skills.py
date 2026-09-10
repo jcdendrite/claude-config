@@ -507,11 +507,10 @@ class TestConventionSkillWiring:
 
 
 class TestReviewLedgerAuthoringEffortLiteral:
-    """code-review's `--authoring-effort` literal must equal code-writer's own
-    `effort:` frontmatter — the ledger logs a constant because effort is
-    subagent-definition frontmatter, not a per-dispatch parameter, so a
-    literal that drifted from the agent's actual value would silently
-    mislabel every ledger line."""
+    """Asserts code-review's `--authoring-effort` literal equals
+    `code-writer`'s own `effort:` frontmatter. Effort is subagent-definition
+    frontmatter, not a per-dispatch parameter, so a literal that drifted from
+    the agent's actual value would silently mislabel every ledger line."""
 
     def test_authoring_effort_literal_matches_code_writer_frontmatter(self):
         # Substring check, not a regex extraction -- catches drift on either
@@ -520,6 +519,41 @@ class TestReviewLedgerAuthoringEffortLiteral:
         assert f"--authoring-effort {code_writer_effort}" in _skill_body("code-review"), (
             f"code-review/SKILL.md's --authoring-effort literal must match "
             f"code-writer.md's own effort: frontmatter ({code_writer_effort!r})"
+        )
+
+
+class TestReviewLedgerAuthoringAgentEnum:
+    """The `--authoring-agent` enum review-ledger.sh validates against must
+    equal the enum author_outcome.py's transcript-side classifier compares
+    declared values against -- a drift here would let review-ledger.sh
+    accept a value author_outcome.py silently never treats as consistent."""
+
+    def test_authoring_agent_enum_matches_author_outcome_constants(self):
+        review_ledger_source = (SCRIPTS_DIR / "review-ledger.sh").read_text()
+
+        author_outcome_source = (SCRIPTS_DIR / "transcript_analysis" / "author_outcome.py").read_text()
+        author_outcome_values = re.findall(
+            r'^_AUTHORING_AGENT_\w+ = "([^"]+)"', author_outcome_source, re.MULTILINE,
+        )
+
+        # Substring check, not a regex extraction of the shell case block --
+        # a comment inserted between `case ... in` and the pattern arm makes
+        # a multi-line case-block regex capture garbage instead of failing
+        # cleanly (test-conventions §9).
+        for value in author_outcome_values:
+            assert value in review_ledger_source, (
+                f"review-ledger.sh must accept author_outcome.py's "
+                f"_AUTHORING_AGENT_* value {value!r}"
+            )
+
+        # Bounded check for the reverse direction: the case pattern's
+        # closing paren immediately follows its last accepted value, so an
+        # extra value review-ledger.sh accepts breaks this exact substring.
+        expected_case_pattern = '""|' + "|".join(author_outcome_values) + ")"
+        assert expected_case_pattern in review_ledger_source, (
+            f"review-ledger.sh's --authoring-agent case pattern must be exactly "
+            f"{expected_case_pattern!r} (no values beyond author_outcome.py's "
+            f"_AUTHORING_AGENT_* constants)"
         )
 
 

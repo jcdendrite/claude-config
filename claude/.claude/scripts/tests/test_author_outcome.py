@@ -44,8 +44,8 @@ def _marker_write_use(tool_id: str) -> dict:
     return _bash_use(tool_id, "marker.sh write code-review")
 
 
-def _dispatch_start(tool_id: str, ts: str, *, agent_type: str = "code-writer") -> dict:
-    return _asst("claude-sonnet-5", branch="feat", ts=ts, content=[_agent_use(tool_id, agent_type)])
+def _dispatch_start(tool_id: str, ts: str, *, agent_type: str = "code-writer", tool_name: str = "Agent") -> dict:
+    return _asst("claude-sonnet-5", branch="feat", ts=ts, content=[_agent_use(tool_id, agent_type, tool_name=tool_name)])
 
 
 def _dispatch_complete(tool_id: str, ts: str) -> dict:
@@ -110,6 +110,18 @@ class TestParseLedgerAppendFlags:
         )
         assert ao._parse_ledger_append_flags(segment) == {"disposition": "ADDRESS"}
 
+    def test_full_six_flag_invocation_shape_from_skill_md_still_parses(self):
+        """Mirrors code-review/SKILL.md's own real six-flag order --
+        --finding, --disposition, --rationale, --source, --authoring-agent,
+        --authoring-effort -- distinct from every other fixture in this
+        class, which omits --source/--authoring-effort or uses a different
+        flag order."""
+        segment = self._segment(
+            'review-ledger.sh append code-review --finding "fix the bug" --disposition ADDRESS'
+            ' --rationale "why" --source "file.py:10" --authoring-agent code-writer --authoring-effort high'
+        )
+        assert ao._parse_ledger_append_flags(segment) == {"disposition": "ADDRESS", "authoring_agent": "code-writer"}
+
 
 class TestIsCleanMarkerWrite:
     def test_marker_write_chained_with_git_commit_is_matched(self):
@@ -127,14 +139,16 @@ class TestIsCleanMarkerWrite:
 class TestIsAppendCallRejected:
     def test_true_when_paired_tool_result_is_error(self):
         records = [_user_msg([{"type": "tool_result", "tool_use_id": "b1", "content": "invalid enum", "is_error": True}])]
-        assert ao._is_append_call_rejected(records, "b1") is True
+        tool_result_index = ao._build_tool_result_index_map(records)
+        assert ao._is_append_call_rejected(tool_result_index, "b1") is True
 
     def test_false_when_paired_tool_result_is_not_error(self):
         records = [_user_msg([_tool_result("b1", "ok")])]
-        assert ao._is_append_call_rejected(records, "b1") is False
+        tool_result_index = ao._build_tool_result_index_map(records)
+        assert ao._is_append_call_rejected(tool_result_index, "b1") is False
 
     def test_false_when_no_paired_tool_result_exists(self):
-        assert ao._is_append_call_rejected([], "b1") is False
+        assert ao._is_append_call_rejected(ao._build_tool_result_index_map([]), "b1") is False
 
 
 class TestComputeAuthorOutcomesBuckets:
@@ -201,6 +215,24 @@ class TestComputeAuthorOutcomesBuckets:
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+
+    def test_task_tool_name_dispatch_is_picked_up_identically_to_agent_tool_name(self, fake_projects):
+        """pricing._SPAWN_TOOL_NAMES covers both "Agent" and "Task" --
+        a dispatch spawned via the "Task" tool must classify the same as
+        every other fixture in this class, which all use "Agent"."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z", tool_name="Task"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
+                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
 
     def test_dispatch_is_unresolved_when_no_code_review_round_follows_it(self, fake_projects):
         session_id = "sess-1"
@@ -504,3 +536,18 @@ class TestCmdAuthorOutcomeReport:
         assert "Dispatches in scope" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
         assert "Data quality" in out
+
+    def test_report_prints_zero_resolved_dispatches_without_zero_division(self, fake_projects, capsys):
+        """A session with only an UNRESOLVED dispatch (no code-review round
+        ever follows it) contributes zero to both failure and passed, so
+        resolved computes to 0 -- render._pct_of's pre-existing zero-guard
+        renders that as "0 of 0 resolved dispatches (0.0%)"."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _user_msg("thanks, no review needed", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        _mod.cmd_author_outcome(self._args())
+        out = capsys.readouterr().out
+        assert "Failure share: 0 of 0 resolved dispatches (0.0%)" in out

@@ -160,6 +160,9 @@ case "$SUBCOMMAND" in
         --source) SOURCE="$2"; shift 2 ;;
         --authoring-agent) AUTHORING_AGENT="$2"; shift 2 ;;
         --authoring-effort) AUTHORING_EFFORT="$2"; shift 2 ;;
+        # Unrecognized flags hard-reject (exit 2): this repo's stow model
+        # keeps SKILL.md and this script co-committed, so cross-version
+        # skew doesn't arise in practice.
         *)
           printf "review-ledger.sh: unknown argument '%s'\n" "$1" >&2
           usage

@@ -192,8 +192,8 @@ class TestReviewLedgerAppendHappyPath:
     def test_repeat_identical_line_with_authoring_fields_is_deduped(self, isolated_home, git_repo):
         """authoring_agent/authoring_effort are round-stable, so an identical
         retry with the same values is still a no-op, not a duplicate --
-        confirms the new fields didn't turn dedup's whole-line grep -qFx
-        into a per-call-varying comparison."""
+        confirms `authoring_agent`/`authoring_effort` don't turn dedup's
+        whole-line `grep -qFx` into a per-call-varying comparison."""
         _seed_session(isolated_home, SID)
         args = _append_args(authoring_agent="code-writer", authoring_effort="high")
         _run(args, cwd=git_repo, home=isolated_home)
