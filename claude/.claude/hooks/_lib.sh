@@ -1175,12 +1175,21 @@ _lib_command_invokes_tool_subcmd() {
   return 1
 }
 
-# _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE
+# _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE [BYTE_LIMIT]
 # Shared body behind check-skill-length.sh and check-claude-md-length.sh:
 # deny a git commit when a staged file matching PATTERN (a grep -E pattern
 # over `git diff --cached --name-only` output) is over its per-file limit
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
+#
+# BYTE_LIMIT is optional and opt-in. When set, the byte check derives
+# counts via `git cat-file -s` rather than reusing the `git show` reads
+# captured for the line-count check — bash command substitution silently
+# drops embedded NUL bytes, which would undercount `wc -c` over that
+# captured content. check-skill-length.sh's call site omits it (2-arg
+# form, unchanged behavior). check-claude-md-length.sh passes it. Both
+# dimensions accumulate into the same $messages/$fail pair below,
+# producing one combined emit_deny call at the bottom rather than two.
 #
 # Callback-by-convention, the same shape _lib_parse_tool_input_or_deny
 # already establishes: CALLER MUST define `emit_deny` (as every gate hook
@@ -1210,11 +1219,14 @@ _lib_command_invokes_tool_subcmd() {
 #
 # The rev-parse and diff calls' cap-engagement characterization tests live
 # only in test_check_skill_length.py, valid for both callers because these
-# capped calls are caller-invariant; the two show calls have no dedicated
-# cap-engagement test anywhere, a pre-existing gap this extraction doesn't
-# close.
+# capped calls are caller-invariant. The two show calls (one per revision,
+# feeding the line-count check) still have no dedicated cap-engagement test
+# anywhere, a pre-existing gap this extraction doesn't close. The two
+# cat-file -s calls (one per revision, feeding the byte-count check) are
+# covered by test_byte_cap_cat_file_git_timeout_engages_cap in
+# test_check_claude_md_length.py.
 _lib_staged_length_gate() {
-  local pattern="$1" over_limit_message="$2"
+  local pattern="$1" over_limit_message="$2" byte_limit="${3:-}"
   _lib_command_invokes_git_subcmd "$COMMAND" commit
   local git_commit_match_status=$?
   if [ "$git_commit_match_status" -eq 1 ]; then
@@ -1236,20 +1248,42 @@ _lib_staged_length_gate() {
     return 0
   fi
 
-  local fail=0 messages="" f new old limit
+  local fail=0 messages="" f new old limit new_content old_content
   while IFS= read -r f; do
-    new=$(_lib_capped git show ":$f" 2>/dev/null | awk 'END{print NR}')
-    old=$(_lib_capped git show "HEAD:$f" 2>/dev/null | awk 'END{print NR}')
+    # The trailing 'x' sentinel, stripped back off via "${var%x}", preserves
+    # trailing blank lines that command substitution would otherwise strip,
+    # so the line count below doesn't undercount a file ending in blank
+    # lines. Byte counts do NOT go through this captured content — they use
+    # the separate `git cat-file -s` calls below, precisely to avoid this
+    # same command substitution's NUL-byte-dropping behavior (see the
+    # BYTE_LIMIT comment on _lib_staged_length_gate's header above).
+    new_content=$(_lib_capped git show ":$f" 2>/dev/null; printf x)
+    new_content="${new_content%x}"
+    old_content=$(_lib_capped git show "HEAD:$f" 2>/dev/null; printf x)
+    old_content="${old_content%x}"
+    new=$(printf '%s' "$new_content" | awk 'END{print NR}')
+    old=$(printf '%s' "$old_content" | awk 'END{print NR}')
     limit=$(limit_for "$f")
     if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
       messages="${messages}  $f: $new lines (was $old, limit $limit)\n"
       fail=1
     fi
+    if [ -n "$byte_limit" ]; then
+      local new_bytes old_bytes
+      new_bytes=$(_lib_capped git cat-file -s ":$f" 2>/dev/null)
+      old_bytes=$(_lib_capped git cat-file -s "HEAD:$f" 2>/dev/null)
+      [ -n "$new_bytes" ] || new_bytes=0
+      [ -n "$old_bytes" ] || old_bytes=0
+      if [ "$new_bytes" -gt "$byte_limit" ] && [ "$new_bytes" -gt "$old_bytes" ]; then
+        messages="${messages}  $f: $new_bytes bytes (was $old_bytes, limit $byte_limit)\n"
+        fail=1
+      fi
+    fi
   done < <(_lib_capped git diff --cached --name-only 2>/dev/null | grep -E "$pattern")
 
   if [ "$fail" -eq 1 ]; then
     local reason
-    reason=$(printf '%s Reduce to the limit or fewer lines before committing:\n%b' "$over_limit_message" "$messages")
+    reason=$(printf '%s Reduce to the limit before committing:\n%b' "$over_limit_message" "$messages")
     emit_deny "$reason"
   fi
   return 0

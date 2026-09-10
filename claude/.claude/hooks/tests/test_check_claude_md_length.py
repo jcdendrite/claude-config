@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,8 +17,17 @@ from helpers import (
     run_hook_reason,
 )
 
+from .conftest import assert_cap_engaged
+
 CHECK_CLAUDE_MD_LENGTH_HOOK = HOOKS_DIR / "check-claude-md-length.sh"
 CLAUDE_MD_PATH = "claude/.claude/CLAUDE.md"
+
+# Mirrors GLOBAL_CLAUDE_MD_BYTE_LIMIT in check-claude-md-length.sh.
+# test_byte_limit_constant_matches_hook_source below cross-checks the two
+# stay in sync.
+BYTE_LIMIT = 25600
+
+_GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE = re.compile(r"^GLOBAL_CLAUDE_MD_BYTE_LIMIT=(\d+)", re.MULTILINE)
 
 SETTINGS_PATH = Path(__file__).resolve().parents[4] / "claude/.claude/settings.json"
 
@@ -27,13 +37,67 @@ def make_lines(n: int, prefix: str = "line") -> str:
     return "\n".join(f"{prefix} {i + 1}" for i in range(n)) + "\n"
 
 
+def make_bytes(n: int, filler: str = "a") -> str:
+    """Return content that is exactly n bytes: one line of (n - 1) filler
+    characters plus a trailing newline. A single line keeps the line-count
+    dimension out of play so byte-cap tests isolate the byte dimension."""
+    return filler * (n - 1) + "\n"
+
+
+def make_multibyte_bytes(n: int, filler: str = "é") -> str:
+    """Return content that is exactly n bytes (UTF-8 encoded), padded with a
+    multi-byte filler character plus a trailing newline. Isolates byte count
+    from character/codepoint count: `filler` must encode to more than one
+    byte, so a test built on this can distinguish `wc -c` semantics from a
+    codepoint count, which every `make_bytes` (single-byte ASCII filler)
+    test cannot. `n - 1` must be evenly divisible by the filler's UTF-8
+    byte length so the padding lands on an exact character boundary."""
+    filler_byte_length = len(filler.encode("utf-8"))
+    if filler_byte_length < 2:
+        raise ValueError(f"filler {filler!r} must be multi-byte in UTF-8")
+    if (n - 1) % filler_byte_length != 0:
+        raise ValueError(
+            f"n - 1 ({n - 1}) must be divisible by filler byte length {filler_byte_length}"
+        )
+    return filler * ((n - 1) // filler_byte_length) + "\n"
+
+
+def make_lines_over_byte_limit(n: int, min_bytes: int, filler: str = "a") -> str:
+    """Return content with exactly n lines whose total byte count is at
+    least min_bytes, padding the last line with filler characters. Lets a
+    test grow both the line-count and byte-count dimensions at once from a
+    single piece of content."""
+    lines = [f"line {i + 1}" for i in range(n)]
+    content = "\n".join(lines) + "\n"
+    deficit = min_bytes - len(content.encode("utf-8"))
+    if deficit > 0:
+        lines[-1] += filler * deficit
+        content = "\n".join(lines) + "\n"
+    return content
+
+
+def make_repo_with_byte_file(tmp_path: Path, target_path: str, head_bytes: int) -> Path:
+    """Git repo with `target_path` committed at exactly `head_bytes` bytes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    target = repo / target_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(make_bytes(head_bytes))
+    subprocess.run(["git", "add", target_path], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
     (GH-783), `grep` for the path-filter match, `awk` for the line
-    count, `git` for the _lib_capped-wrapped show calls), omitting both
-    timeout(1) and gtimeout(1). Mirrors
+    count, `git` for the _lib_capped-wrapped show and cat-file -s
+    calls), omitting both timeout(1) and gtimeout(1). Mirrors
     test_require_worktree_for_git_writes.py's test_python3_absent_denies
     shape; skips (does not silently under-symlink) when a needed real
     binary is itself absent from the test machine."""
@@ -255,7 +319,9 @@ class TestCheckClaudeMdLength:
         )
 
     def test_deny_message_includes_filename_and_counts(self, isolated_home, tmp_path):
-        """Deny reason must name the file, new line count, old line count, and limit."""
+        """Deny reason must name the file, new line count, old line count, and
+        limit — and must NOT carry the byte-violation fragment, since this
+        commit only crosses the line limit."""
         repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
         (repo / CLAUDE_MD_PATH).write_text(make_lines(201))
         subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
@@ -269,6 +335,195 @@ class TestCheckClaudeMdLength:
         assert "201" in reason
         assert "190" in reason
         assert "200" in reason
+        assert "bytes (was" not in reason
+
+    # --- Byte-cap logic matrix (mirrors the line-cap matrix above) ---
+
+    def test_byte_cap_at_exactly_limit_allows(self, isolated_home, tmp_path):
+        """BYTE_LIMIT bytes is at the limit — the gate is `> BYTE_LIMIT`, so
+        exactly BYTE_LIMIT passes, mirroring the line-cap boundary case."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_byte_cap_already_over_growing_denies(self, isolated_home, tmp_path):
+        """HEAD over BYTE_LIMIT, staged larger still: growing while over the
+        byte limit → deny."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 1)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 10))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_byte_cap_already_over_shrinking_allows(self, isolated_home, tmp_path):
+        """HEAD over BYTE_LIMIT, staged smaller but still over: shrinking
+        while over the byte limit → allow (ratchet-with-relief)."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 10)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 5))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_byte_cap_already_over_limit_same_size_allows(self, isolated_home, tmp_path):
+        """HEAD over BYTE_LIMIT, staged at the same byte count (different
+        content, not growing) → allow. Byte-dimension analog of
+        test_already_over_limit_same_size_allows."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 10)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 10, filler="b"))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_byte_cap_under_limit_growing_allows(self, isolated_home, tmp_path):
+        """HEAD and staged both under BYTE_LIMIT: growing but never crossing
+        the limit → allow."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT - 10))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_byte_cap_growing_past_limit_in_one_commit_denies(
+        self, isolated_home, tmp_path
+    ):
+        """HEAD at BYTE_LIMIT - 100, staged crosses to BYTE_LIMIT + 1: new >
+        limit and new > old → deny. Mirrors test_claude_md_growing_to_201_denies
+        for the byte dimension."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_new_claude_md_over_byte_limit_denies(self, isolated_home, tmp_path):
+        """New file with no HEAD version staged over BYTE_LIMIT — there is no
+        `HEAD:$f` for `git cat-file -s` to read, so the file is new to this
+        commit and old_bytes is 0 → deny. Mirrors
+        test_new_claude_md_over_limit_denies for the byte dimension."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("hello\n")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        target = repo / CLAUDE_MD_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_byte_cap_deny_message_includes_both_byte_counts(
+        self, isolated_home, tmp_path
+    ):
+        """Deny reason must name both the new and old byte counts — and must
+        NOT carry the line-violation fragment, since this commit only
+        crosses the byte limit."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT + 1)
+        new_bytes = BYTE_LIMIT + 10
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(new_bytes))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_CLAUDE_MD_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert str(new_bytes) in reason
+        assert str(BYTE_LIMIT + 1) in reason
+        assert str(BYTE_LIMIT) in reason
+        assert "lines (was" not in reason
+
+    def test_byte_cap_multibyte_utf8_content_denies_at_byte_threshold(
+        self, isolated_home, tmp_path
+    ):
+        """Staged content's UTF-8 byte count crosses BYTE_LIMIT while its
+        character/codepoint count stays well under it — isolates `wc -c`
+        byte semantics from a codepoint count, which no `make_bytes`
+        (single-byte ASCII filler) test can distinguish."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        multibyte_content = make_multibyte_bytes(BYTE_LIMIT + 1, filler="é")
+        assert len(multibyte_content.encode("utf-8")) == BYTE_LIMIT + 1
+        assert len(multibyte_content) < BYTE_LIMIT
+        (repo / CLAUDE_MD_PATH).write_text(multibyte_content, encoding="utf-8")
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_combined_line_and_byte_violation_denies_with_both_reasons(
+        self, isolated_home, tmp_path
+    ):
+        """HEAD under both limits, staged crosses both simultaneously: the
+        deny reason must include both the line-violation and byte-violation
+        message fragments, not just one (mutation regression: overwriting
+        instead of appending the byte-violation message would silently drop
+        the line-violation message)."""
+        repo = make_repo_with_file(tmp_path, CLAUDE_MD_PATH, 190)
+        content = make_lines_over_byte_limit(250, BYTE_LIMIT + 100)
+        (repo / CLAUDE_MD_PATH).write_text(content)
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        reason = run_hook_reason(
+            CHECK_CLAUDE_MD_LENGTH_HOOK,
+            bash_input("git commit -m foo"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "lines (was" in reason
+        assert "limit 200)" in reason
+        assert "bytes (was" in reason
+        assert f"limit {BYTE_LIMIT})" in reason
 
     def test_cwd_not_repo_root_does_not_cause_false_negative(
         self, isolated_home, tmp_path
@@ -668,6 +923,96 @@ class TestCheckClaudeMdLength:
             )
             == "allow"
         )
+
+    def test_byte_cap_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, tmp_path
+    ):
+        """Byte-dimension analog of
+        test_growing_over_limit_denies_when_neither_timeout_nor_gtimeout_present:
+        stub_bin_without_timeout's PATH has no wc, exercising the byte
+        dimension's git-cat-file-s derivation without wc on PATH. File
+        stays a single line (well under the 200-line limit) so only the
+        byte dimension is in play."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "deny"
+        )
+
+    def test_byte_cap_at_limit_allows_when_neither_timeout_nor_gtimeout_present(
+        self, isolated_home, tmp_path
+    ):
+        """Companion allow case for the deny above: under the same PATH, a
+        file at the byte limit (not growing past it) must still pass."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        stub_bin = stub_bin_without_timeout(tmp_path)
+        assert (
+            run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env={"PATH": str(stub_bin)},
+            )
+            == "allow"
+        )
+
+    # --- Newly-capped `git cat-file -s` calls (byte dimension of
+    # _lib_staged_length_gate) ---
+
+    @pytest.mark.timing
+    def test_byte_cap_cat_file_git_timeout_engages_cap(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """Both `git cat-file -s ":$f"` and `git cat-file -s "HEAD:$f"` (the
+        byte-count dimension's _lib_capped wrap) must actually engage their
+        5s cap rather than hang, mirroring check-skill-length.py's coverage
+        of the shared git show/diff/rev-parse call sites. One shim predicate
+        (matching on the `cat-file` subcommand) covers both the new- and
+        old-revision calls, since they share it. A capped, empty byte count
+        defaults new_bytes/old_bytes to 0 (see _lib_staged_length_gate), so
+        the gate degrades to allow rather than hanging."""
+        repo = make_repo_with_byte_file(tmp_path, CLAUDE_MD_PATH, BYTE_LIMIT - 100)
+        (repo / CLAUDE_MD_PATH).write_text(make_bytes(BYTE_LIMIT + 1))
+        subprocess.run(["git", "add", CLAUDE_MD_PATH], cwd=repo, check=True)
+        env = git_timeout_shim('[ "$1" = "cat-file" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_CLAUDE_MD_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    # --- Byte-limit constant cross-check ---
+
+    def test_byte_limit_constant_matches_hook_source(self):
+        """This file's BYTE_LIMIT must track GLOBAL_CLAUDE_MD_BYTE_LIMIT in
+        check-claude-md-length.sh — that constant's own header comment
+        documents a dated log of prior values appended on every future
+        change, so drift between the two is an anticipated future event.
+        The boundary-value tests above already fail on any such drift
+        indirectly, via a deny-vs-allow mismatch a maintainer has to trace
+        back to the constant. This test adds a direct, single-assertion
+        diagnostic for the same drift instead. Mirrors
+        test_transcript_analysis.py's
+        test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label,
+        which extracts a bash constant out of hook source the same way."""
+        match = _GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE.search(CHECK_CLAUDE_MD_LENGTH_HOOK.read_text())
+        assert match is not None, (
+            "GLOBAL_CLAUDE_MD_BYTE_LIMIT not found in check-claude-md-length.sh"
+        )
+        assert int(match.group(1)) == BYTE_LIMIT
 
     # --- Settings.json wiring ---
 

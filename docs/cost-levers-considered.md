@@ -315,6 +315,23 @@ Breakdown for the global-file row above:
 
 Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales with rebuild magnitude (byte count), not frequency — see "Context cost root cause" above.
 
+**Second pass: `claude-md-audience-restructure.md` (2026-09-03).** By the time this plan started, the global file had regrown to 178 lines / 31,515 bytes (`git show a3b74ce7^:claude/.claude/CLAUDE.md | wc -lc`) — up from the 146-line landing the first pass measured. That regrowth went unnoticed by the line-only gate. It motivated a second, narrower pass:
+
+- A behavior-test audit of that delta.
+- One exact-trigger relocation (settings.json conventions) into a new user-scope `.claude/rules/` file.
+- Moving Safety to the file head for attention.
+- A byte-size ratchet so the next regrowth doesn't repeat silently.
+
+Landed at 177 lines / 30,969 bytes — still over the new byte limit, by design: the ratchet is relief-on-shrink (denies a commit only when the staged file is both over the limit and larger than its predecessor), so an already-over file can keep shrinking commit by commit without being blocked outright.
+
+Six unrelated upstream commits merged to `main` while `claude-md-audience-restructure.md`'s work was in review, growing the file further before this branch's own merge. As of `0ac48138` it measures 183 lines / 31,908 bytes (`git show 0ac48138:claude/.claude/CLAUDE.md | wc -lc`) — still under the 200-line cap but 24.6% over the 25,600-byte ratchet. Tracked in [GH-885](https://github.com/jcdendrite/claude-config/issues/885) rather than trimmed here; trimming is out of scope for the ratchet-mechanism pass.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Byte-size ratchet added to `check-claude-md-length.sh` (25,600 bytes, extrapolated from Anthropic's `MEMORY.md` "25KB" load-window figure — `claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md` § "Cross-vendor size table"), applying to every stow consumer's CLAUDE.md/AGENTS.md alongside the existing 200-line cap | Adopted | Closes the exact gap the regrowth exposed: the file was already over the new byte figure (30,969 > 25,600) while still under the 200-line cap, so line count alone was not catching cumulative growth. Implemented as an opt-in third parameter on the shared `_lib_staged_length_gate` helper rather than a widen of its two-arg contract, so `check-skill-length.sh`'s call site and behavior are unchanged. |
+| `SessionStart` + `additionalContext` per-subagent injection of the orchestrator-only CLAUDE.md block, to spare the 28.6%-of-dollars subagent slice the block's context cost | Declined, not deferred | - Converts a vendor-guaranteed load into a locally-scripted one that fails silently.<br>- Moves rules onto an unmeasured-adherence surface to improve adherence.<br>- Saving lands in the smaller cost slice (main thread carries 71.4% of dollar cost, §22 in `design-decisions.md`, and would keep the block).<br>- Its premise (`SessionStart` not firing for subagents) was not settled during the plan's own investigation.<br><br>Full reasoning and the lighter alternatives considered instead: [`design-decisions/declined-sessionstart-additionalcontext-injection.md`](design-decisions/declined-sessionstart-additionalcontext-injection.md). |
+| Further in-place compression of `claude/.claude/CLAUDE.md` | Near-exhausted | Two consecutive passes at this lever both landed short of their targets:<br>- Pass 1: +1,118 chars against a projected cut (row above).<br>- This pass: a 546-byte cut (31,515 → 30,969) against a stated 3,811-byte regrowth delta (`claude-md-audience-restructure.md:31`).<br><br>The durable deliverable from this pass is the byte-size ratchet, not the trim. |
+
 ## From `disable-artifact-workflow-default.md` — "Disable Artifact/Workflow by default, with per-session opt-back-in" (2026-08-25)
 
 | Lever | Verdict | Measured reason |
