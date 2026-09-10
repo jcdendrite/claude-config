@@ -2875,6 +2875,40 @@ def test_skill_citations_resolve_to_real_headings() -> None:
     )
 
 
+def _assert_citation_resolves_to_heading(
+    doc_path: Path,
+    expected_target: str,
+    expected_heading_raw: str,
+    *,
+    repo_root: Path,
+) -> None:
+    """Shared body for the doc → SKILL.md-heading citation tests below:
+    find the citation, resolve its target file, and confirm the target
+    heading actually exists there."""
+    expected_heading = _normalize_heading(expected_heading_raw)
+    citations = [
+        citation
+        for citation in _extract_citations(doc_path.read_text())
+        if citation.target == expected_target
+        and _normalize_heading(citation.heading) == expected_heading
+    ]
+    assert citations, (
+        f"{doc_path} no longer cites {expected_target}'s "
+        f'"{expected_heading_raw}" section'
+    )
+
+    resolved = _resolve_citation_target(
+        citations[0].target, citing_file=doc_path, repo_root=repo_root
+    )
+    assert resolved is not None, (
+        f"{doc_path}'s citation target {expected_target!r} failed to resolve"
+    )
+    assert expected_heading in _heading_texts(resolved.read_text()), (
+        f"{doc_path}'s citation resolved to {resolved} but it has no "
+        f"heading matching {expected_heading!r}"
+    )
+
+
 def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     """docs/handoff-nudge.md's cross-reference to handoff/SKILL.md's
     warrant-check section resolves to a real heading there.
@@ -2884,29 +2918,39 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
     test_skill_citations_resolve_to_real_headings never sees this citation —
     targeted narrowly here instead of widening that corpus.
     """
-    repo_root = REPO_ROOT
-    doc_path = repo_root / "docs" / "handoff-nudge.md"
-    expected_heading = _normalize_heading("Before writing: is a handoff warranted?")
-    citations = [
-        citation
-        for citation in _extract_citations(doc_path.read_text())
-        if citation.target == "handoff/SKILL.md"
-        and _normalize_heading(citation.heading) == expected_heading
-    ]
-    assert citations, (
-        "docs/handoff-nudge.md no longer cites handoff/SKILL.md's "
-        "warrant-check section"
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "handoff-nudge.md",
+        "handoff/SKILL.md",
+        "Before writing: is a handoff warranted?",
+        repo_root=REPO_ROOT,
     )
 
-    resolved = _resolve_citation_target(
-        citations[0].target, citing_file=doc_path, repo_root=repo_root
-    )
-    assert resolved is not None, (
-        "docs/handoff-nudge.md's citation target 'handoff/SKILL.md' failed to resolve"
-    )
-    assert expected_heading in _heading_texts(resolved.read_text()), (
-        f"docs/handoff-nudge.md's citation resolved to {resolved} but it has "
-        f"no heading matching {expected_heading!r}"
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "docs/cost-levers-considered.md",
+        "docs/design-decisions/schedulewakeup-misapplied-documented.md",
+        "docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md",
+    ],
+)
+def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
+    relative_path: str,
+) -> None:
+    """Each sibling withholding site's `docs/private-project-redaction.md`
+    § "Publishing a pooled tooling measurement" citation resolves to a real
+    heading there.
+
+    `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
+    plus its REFERENCES.md/ROUTING.md siblings only), so
+    test_skill_citations_resolve_to_real_headings never sees these citations
+    — targeted narrowly here instead of widening that corpus.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / relative_path,
+        "docs/private-project-redaction.md",
+        "Publishing a pooled tooling measurement",
+        repo_root=REPO_ROOT,
     )
 
 
