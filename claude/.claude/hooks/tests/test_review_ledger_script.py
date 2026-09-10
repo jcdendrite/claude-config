@@ -212,6 +212,21 @@ class TestReviewLedgerAppendHappyPath:
         assert record["authoring_agent"] == ""
         assert record["authoring_effort"] == ""
 
+    def test_declared_authoring_fields_land_in_the_record(self, isolated_home, git_repo):
+        """A non-default --authoring-agent/--authoring-effort pair must
+        reach the persisted record verbatim, not get silently dropped by a
+        `jq --arg` wiring mistake."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent="mixed", authoring_effort="xhigh"),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_agent"] == "mixed"
+        assert record["authoring_effort"] == "xhigh"
+
     def test_invalid_authoring_agent_rejected(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
         result = _run(

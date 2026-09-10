@@ -5,21 +5,16 @@ For each `--agent`-typed dispatch (default `code-writer`), answers whether
 the `code-review` round that judged its diff recorded a must-fix
 (`ADDRESS`) finding -- the numerator GitHub issue #800 asks for. See
 docs/transcript-analysis.md's author-outcome section for the full failure
-definition and every bucket/counter this module reports, and
-.claude/plans/review-ledger-agent-instrumentation.md's "Failure definition"
-section for the design rationale.
+definition and every bucket/counter this module reports.
 
 Imports corpus, pricing, render, review_rounds, and scope by module
 (attribute access, not by name) -- matching review_rounds.py's own
 cross-module discipline (see scope.py's own top-of-file comment for why).
 
-Reads only the transcript -- no review-narrative-ledger file is ever
-opened. Every signal the classifier needs (a round's own `--disposition`/
-`--authoring-agent` values, and a clean marker write) is already a
-literal argv token on the transcript's own `review-ledger.sh append
-code-review` and `marker.sh write code-review` Bash `tool_use` commands,
-matched by argv shape rather than joined against a second, on-disk
-representation.
+Reads only the transcript: every signal the classifier needs is a literal
+argv token on the round's own `review-ledger.sh append code-review`/
+`marker.sh write code-review` Bash commands, so no ledger file is ever
+opened.
 """
 from __future__ import annotations
 
@@ -287,12 +282,11 @@ def compute_author_outcomes(
     every signal this join needs lives on the main thread).
 
     Returns {"outcomes": Counter over _OUTCOME_KEYS, "data_quality": Counter
-    over _DATA_QUALITY_KEYS}. See the "Failure definition" section of
-    .claude/plans/review-ledger-agent-instrumentation.md for the
-    UNRESOLVED/FAILURE/PASS/UNATTRIBUTED classification this implements,
-    and the precondition (a dispatch with no paired tool_result is
-    UNDECIDABLE, counted only under data_quality, never entering the
-    three-test walk).
+    over _DATA_QUALITY_KEYS}. See docs/transcript-analysis.md's
+    author-outcome section for the UNRESOLVED/FAILURE/PASS/UNATTRIBUTED
+    classification this implements, and the precondition (a dispatch with
+    no paired tool_result is UNDECIDABLE, counted only under data_quality,
+    never entering the three-test walk).
     """
     outcomes: Counter = Counter({key: 0 for key in _OUTCOME_KEYS})
     data_quality: Counter = Counter({key: 0 for key in _DATA_QUALITY_KEYS})
@@ -373,8 +367,8 @@ def compute_author_outcomes(
 def cmd_author_outcome(args: argparse.Namespace) -> None:
     """For each `--agent`-typed dispatch (default code-writer), what share
     of the code-review rounds that judged its diff recorded a must-fix
-    (ADDRESS) finding -- the numerator issue #800 defines. Read-only, no gh calls,
-    and reads only the transcript -- no ledger file is ever opened.
+    (ADDRESS) finding -- the numerator issue #800 defines. Read-only: no
+    `gh` calls. Reads only the transcript, so no ledger file is ever opened.
 
     See docs/transcript-analysis.md's author-outcome section for the full
     output shape, every named bias/counter, and this subcommand's

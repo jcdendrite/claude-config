@@ -19,8 +19,9 @@ from .conftest import (
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
+# alone doesn't register it), so it can't shadow the real transcript_analysis package.
+# The standard importlib recipe does register in sys.modules and would shadow it --
+# don't switch to that recipe here.
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
@@ -31,11 +32,19 @@ def _session_iter(fake_projects):
     return corpus.iter_sessions(fake_projects.parent, "*")
 
 
-def _append_use(tool_id: str, disposition: str, *, authoring_agent: str | None = None, finding: str = "some finding") -> dict:
+def _append_use(
+    tool_id: str,
+    disposition: str,
+    *,
+    authoring_agent: str | None = None,
+    authoring_effort: str | None = None,
+    finding: str = "some finding",
+) -> dict:
     agent_flag = f" --authoring-agent {authoring_agent}" if authoring_agent is not None else ""
+    effort_flag = f" --authoring-effort {authoring_effort or 'high'}"
     command = (
         f'review-ledger.sh append code-review --finding "{finding}" --disposition {disposition}'
-        f'{agent_flag} --rationale "why" --source n/a'
+        f' --rationale "why" --source n/a{agent_flag}{effort_flag}'
     )
     return _bash_use(tool_id, command)
 
@@ -366,10 +375,75 @@ class TestInlineAndCoAuthored:
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
 
+    def test_authoring_agent_unknown_declared_against_a_code_writer_round_is_skipped(self, fake_projects):
+        """declared "unknown" against a round genuinely authored by a
+        completed code-writer dispatch -- skipped like an absent flag,
+        not counted as inconsistent."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
+                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="unknown")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+
+    def test_authoring_agent_unknown_declared_against_a_zero_dispatch_round_is_skipped(self, fake_projects):
+        """declared "unknown" against a round with zero attributing
+        dispatches (transcript_side "inline") -- still skipped, the skip
+        does not depend on which transcript_side the round has."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="unknown")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+
+    def test_authoring_agent_code_writer_declared_against_a_code_writer_round_is_consistent(self, fake_projects):
+        """declared "code-writer" -- the module's own default -- against a
+        round genuinely authored by a completed code-writer dispatch:
+        consistent, not counted."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
+                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="code-writer")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+
+    def test_authoring_agent_code_writer_declared_against_a_zero_dispatch_round_is_inconsistent(self, fake_projects):
+        """declared "code-writer" against a round with zero attributing
+        dispatches (transcript_side "inline") -- inconsistent."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="code-writer")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
+
     def test_authoring_agent_absent_is_skipped_not_miscounted(self, fake_projects):
-        """--authoring-agent entirely absent (not merely empty) -- the
-        shape every pre-migration transcript has -- is skipped by the
-        cross-check rather than treated as an inconsistency."""
+        """--authoring-agent entirely absent (not merely empty), with
+        --authoring-effort present at its default value, is skipped by the
+        cross-check rather than treated as an inconsistency. Only
+        --authoring-agent's absence is under test here; authoring_effort
+        isn't parsed by the classifier, so its value is irrelevant."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),

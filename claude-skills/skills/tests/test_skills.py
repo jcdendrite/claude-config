@@ -536,19 +536,16 @@ class TestReviewLedgerAuthoringAgentEnum:
             r'^_AUTHORING_AGENT_\w+ = "([^"]+)"', author_outcome_source, re.MULTILINE,
         )
 
-        # Substring check, not a regex extraction of the shell case block --
-        # a comment inserted between `case ... in` and the pattern arm makes
-        # a multi-line case-block regex capture garbage instead of failing
-        # cleanly (test-conventions §9).
-        for value in author_outcome_values:
-            assert value in review_ledger_source, (
-                f"review-ledger.sh must accept author_outcome.py's "
-                f"_AUTHORING_AGENT_* value {value!r}"
-            )
-
-        # Bounded check for the reverse direction: the case pattern's
-        # closing paren immediately follows its last accepted value, so an
-        # extra value review-ledger.sh accepts breaks this exact substring.
+        # Exact-substring check, not a regex extraction of the shell case
+        # block -- a comment inserted between `case ... in` and the pattern
+        # arm makes a multi-line case-block regex capture garbage instead of
+        # failing cleanly (test-conventions §9). The case pattern's closing
+        # paren immediately follows its last accepted value, so an extra
+        # value review-ledger.sh accepts breaks this exact substring, and a
+        # missing one does too -- a per-value substring loop would be
+        # satisfiable by unrelated text (review-ledger.sh's own "unknown
+        # argument"/"unknown subcommand" error messages already contain the
+        # literal substring "unknown").
         expected_case_pattern = '""|' + "|".join(author_outcome_values) + ")"
         assert expected_case_pattern in review_ledger_source, (
             f"review-ledger.sh's --authoring-agent case pattern must be exactly "
