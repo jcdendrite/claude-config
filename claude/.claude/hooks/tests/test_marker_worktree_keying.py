@@ -72,6 +72,17 @@ def _stage_a_change(tree) -> None:
     subprocess.run(["git", "add", "work.txt"], cwd=tree, check=True)
 
 
+def _stage_a_skill_md_change(tree) -> None:
+    """Stage a real SKILL.md-matching path, so `write skill-review` sees a
+    non-empty pathspec-scoped diff and actually writes a marker rather than
+    hitting the empty-diff no-marker branch."""
+    skill_dir = tree / "claude-skills" / "skills" / "worktree-keying-test-skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("# test skill\n")
+    subprocess.run(["git", "add", str(skill_md)], cwd=tree, check=True)
+
+
 class TestMarkerScriptRefusesMainTreeUnderEnforcement:
     """The five states the fail-closed check has to distinguish. Only the
     first is a refusal — the rest must behave exactly as they did before the
@@ -292,12 +303,24 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
     exercises all four.
 
     Each arm's minimal setup is chosen so that, absent the refusal, the write
-    would otherwise succeed: `_stage_a_change` gives code-review a staged
-    diff and ready-for-review a resolvable HEAD; skill-review hashes cleanly
-    even with no staged SKILL.md (the empty-diff hash is non-empty);
-    plan-review hashes cleanly with no `.claude/plans/` at all (empty hash,
-    still a successful write). That is what makes returncode 2 attributable
-    to the refusal specifically, not to some other precondition failing.
+    would otherwise succeed -- meaning "writes a marker", not merely "exits
+    0" via some other branch:
+
+    - code-review: `_stage_a_change` stages a real diff, so the write arm
+      hashes non-empty content instead of taking the empty-diff no-marker
+      branch.
+    - ready-for-review: `_stage_a_change` gives it a resolvable HEAD, so the
+      write arm clears HEAD resolution and reaches the marker write.
+    - skill-review: `_stage_a_change` plus `_stage_a_skill_md_change` stages
+      a real SKILL.md-matching path, so the skill-review-specific
+      precondition is satisfied and the write reaches the marker rather than
+      the empty-diff no-marker branch.
+    - plan-review: with no `.claude/plans/` at all, the hash computes
+      cleanly over an empty plan set, which is itself a successful write,
+      not a failure exit.
+
+    That is what makes returncode 2 attributable to the refusal
+    specifically, not to some other precondition failing.
     """
 
     def test_denies_from_main_tree_when_worktree_exists(
@@ -306,6 +329,8 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
         repo, _wt = opted_in_with_worktree
         _seed_session(isolated_home)
         _stage_a_change(repo)
+        if skill == "skill-review":
+            _stage_a_skill_md_change(repo)
 
         result = _run_marker(["write", skill], cwd=repo, home=isolated_home)
 
@@ -320,6 +345,8 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
         _repo, wt = opted_in_with_worktree
         _seed_session(isolated_home)
         _stage_a_change(wt)
+        if skill == "skill-review":
+            _stage_a_skill_md_change(wt)
 
         result = _run_marker(["write", skill], cwd=wt, home=isolated_home)
 

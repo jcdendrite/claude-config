@@ -904,12 +904,15 @@ class TestCmdReviewRoundCost:
         total_round_dollars = branch_a_round + branch_b_round
         non_round_dollars = total_branch_dollars - total_round_dollars
         expected_pct = render._pct_of(non_round_dollars, total_branch_dollars)
+        total_agent_dollars = 0.0  # no _agent_use dispatch in this fixture
+        expected_agent_pct = render._pct_of(total_agent_dollars, total_branch_dollars)
 
         _mod.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
         assert "Totals: 2 branches, 2 rounds (code-review=1  plan-review=1  ready-for-review=0)" in out
         assert "Mean rounds per branch: 1.00" in out
         assert f"Non-round dollars: {expected_pct} of branch dollars fell outside every round window" in out
+        assert f"Reviewer-dispatch dollars: {expected_agent_pct} of branch dollars, inside round windows" in out
 
     def test_footer_is_partitioned_per_root_and_does_not_blend_dollars_or_round_counts_across_roots(
         self, tmp_path, monkeypatch, capsys,
@@ -917,18 +920,28 @@ class TestCmdReviewRoundCost:
         """Under more than one declared root, the footer prints one
         account-<K>-prefixed block per root, summed only from that root's
         own branches. A blended block would let a reader subtract out one
-        account's known spend to recover the other's."""
+        account's known spend to recover the other's. Root A's round also
+        carries a resolved (non-dangling) subagent dispatch, so its
+        Reviewer-dispatch-dollars figure is nonzero while root B's stays at
+        0%. A shared accumulator that summed total_agent_dollars across
+        roots instead of partitioning it would leak root A's dollars into
+        root B's line -- indistinguishable from a correct partition if both
+        figures were 0%."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         proj_a = roots[0] / "-home-user-repo-a"
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a1.jsonl", [
             _priced("claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T09:00:00.000Z"),  # non-round: $0.20
-            _priced(
+            _priced(  # round open: $0.20, also spawns dispatch a1
                 "claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review")],
-            ),  # round: $0.20
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
             _user_msg("thanks", branch="feat-a1", ts="2026-08-01T10:01:00.000Z"),
         ])
+        _write_subagent_dispatch(
+            proj_a, "sess-a1", "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat-a1", ts="2026-08-01T10:00:30.000Z")],  # $1.00
+        )
         _write_jsonl(proj_a / "sess-a2.jsonl", [
             _priced(
                 "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
@@ -946,12 +959,15 @@ class TestCmdReviewRoundCost:
             _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:01:00.000Z"),
         ])
 
-        root_a_branch_dollars = 0.20 + 0.20 + 0.20
-        root_a_round_dollars = 0.20 + 0.20
+        root_a_agent_dollars = 1.00  # dispatch a1, priced above
+        root_a_branch_dollars = 0.20 + 0.20 + 0.20 + root_a_agent_dollars
+        root_a_round_dollars = 0.20 + 0.20 + root_a_agent_dollars
         root_a_pct = render._pct_of(root_a_branch_dollars - root_a_round_dollars, root_a_branch_dollars)
+        root_a_agent_pct = render._pct_of(root_a_agent_dollars, root_a_branch_dollars)
         root_b_branch_dollars = 0.40
         root_b_round_dollars = 0.40
         root_b_pct = render._pct_of(root_b_branch_dollars - root_b_round_dollars, root_b_branch_dollars)
+        root_b_agent_pct = render._pct_of(0.0, root_b_branch_dollars)  # no _agent_use dispatch in root B's fixture
 
         _mod.cmd_review_round_cost(_review_round_cost_args())
         out = capsys.readouterr().out
@@ -959,9 +975,11 @@ class TestCmdReviewRoundCost:
         assert "account-1 Totals: 2 branches, 2 rounds (code-review=2  plan-review=0  ready-for-review=0)" in out
         assert "account-1 Mean rounds per branch: 1.00" in out
         assert f"account-1 Non-round dollars: {root_a_pct} of branch dollars fell outside every round window" in out
+        assert f"account-1 Reviewer-dispatch dollars: {root_a_agent_pct} of branch dollars, inside round windows" in out
         assert "account-2 Totals: 1 branches, 1 rounds (code-review=0  plan-review=1  ready-for-review=0)" in out
         assert "account-2 Mean rounds per branch: 1.00" in out
         assert f"account-2 Non-round dollars: {root_b_pct} of branch dollars fell outside every round window" in out
+        assert f"account-2 Reviewer-dispatch dollars: {root_b_agent_pct} of branch dollars, inside round windows" in out
         # Asserts the footer never blends root A's and root B's totals into one combined figure.
         assert "3 branches, 3 rounds" not in out
         assert "code-review=2  plan-review=1" not in out

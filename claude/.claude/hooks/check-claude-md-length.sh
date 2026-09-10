@@ -28,11 +28,22 @@
 #
 # The commit-detection, repo-root, growth-comparison, and deny-message logic
 # is shared with check-skill-length.sh via _lib_staged_length_gate in
-# _lib.sh — this file supplies only the staged-path pattern and limit_for.
+# _lib.sh — this file supplies only the staged-path pattern, limit_for, and
+# (unlike check-skill-length.sh) the byte-limit constant below.
 
 set -uo pipefail
 
 DENY_GATE_LABEL="CLAUDE.md length"
+
+# Byte limit: 25,600 bytes = 25 KiB (binary reading), the nearest in-family
+# precedent — MEMORY.md's documented "200 lines or 25KB" threshold
+# (claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md's
+# "Cross-vendor size table" section). Applies to every stow consumer's
+# CLAUDE.md/AGENTS.md, the same scope the 200-line check above already has.
+#
+# Dated log of prior values (one line per raise: date, old value, new value,
+# one-line reason) — empty today; append here on every future change.
+GLOBAL_CLAUDE_MD_BYTE_LIMIT=25600
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
@@ -73,4 +84,4 @@ limit_for() {
 # directory, or at any depth inside a .claude/ directory. Does NOT match
 # files in arbitrary subdirectories (e.g. foo/CLAUDE.md) — only root-level
 # and .claude/-scoped files.
-_lib_staged_length_gate '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$' "one or more files grew past the 200-line limit."
+_lib_staged_length_gate '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$' "one or more files grew past the 200-line or ${GLOBAL_CLAUDE_MD_BYTE_LIMIT}-byte limit." "$GLOBAL_CLAUDE_MD_BYTE_LIMIT"

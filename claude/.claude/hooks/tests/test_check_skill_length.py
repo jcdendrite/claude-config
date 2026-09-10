@@ -430,6 +430,22 @@ class TestCheckSkillLength:
             == "deny"
         )
 
+    def test_byte_limit_never_fires_for_this_caller(self, isolated_home, new_skill_repo):
+        """check-skill-length.sh calls _lib_staged_length_gate in its 2-arg
+        form, omitting BYTE_LIMIT — a new SKILL.md well over 25,600 bytes but
+        under its line limit must still be allowed, proving the opt-in byte
+        check stays opt-out for this caller."""
+        (new_skill_repo / SKILL_PATH).write_text("a" * 30000 + "\n")
+        subprocess.run(["git", "add", SKILL_PATH], cwd=new_skill_repo, check=True)
+        assert (
+            run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=new_skill_repo,
+            )
+            == "allow"
+        )
+
     def test_memory_files_skill_falls_to_default_limit(self, isolated_home, tmp_path):
         """ai-instruction-and-memory-files/SKILL.md gets no per-skill override.
 
