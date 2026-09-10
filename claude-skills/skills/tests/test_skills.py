@@ -2692,6 +2692,7 @@ class _Citation(NamedTuple):
     line: int
     target: str | None  # None means "resolve against the citing file itself"
     heading: str
+    span: tuple[int, int]  # match.span() in the (frontmatter-blanked) prose
 
 
 def _extract_citations(markdown_text: str) -> list[_Citation]:
@@ -2718,7 +2719,9 @@ def _extract_citations(markdown_text: str) -> list[_Citation]:
         lineno = _lineno(match.start())
         if (lineno - 1) in fenced_lines:
             continue
-        citations.append(_Citation(lineno, match.group("target"), match.group("heading")))
+        citations.append(
+            _Citation(lineno, match.group("target"), match.group("heading"), match.span())
+        )
 
     for match in _BARE_CITATION_RE.finditer(prose):
         if any(start <= match.start() < end for start, end in consumed_spans):
@@ -2726,7 +2729,7 @@ def _extract_citations(markdown_text: str) -> list[_Citation]:
         lineno = _lineno(match.start())
         if (lineno - 1) in fenced_lines:
             continue
-        citations.append(_Citation(lineno, None, match.group("heading")))
+        citations.append(_Citation(lineno, None, match.group("heading"), match.span()))
 
     return citations
 
@@ -2929,6 +2932,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
 @pytest.mark.parametrize(
     "relative_path",
     [
+        "CLAUDE.md",
         "docs/cost-levers-considered.md",
         "docs/design-decisions/schedulewakeup-misapplied-documented.md",
         "docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md",
@@ -2952,6 +2956,122 @@ def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
         "Publishing a pooled tooling measurement",
         repo_root=REPO_ROOT,
     )
+
+
+# A citation-shaped construct that `_extract_citations` fails to recognize is
+# a silent miss, not a failure: both `_CITATION_WITH_TARGET_RE` and
+# `_BARE_CITATION_RE` require `\s+` between `§` and the opening quote, so a
+# no-space opener (`§"Heading"`) or a heading split across a line break
+# (`§ "Path-specific\nrules"`, whose `[^"\n]+` heading group can't span the
+# newline) both yield zero matches instead of a resolvable-but-wrong one.
+# This regex is deliberately looser than the extractor's own pattern — `\s*`
+# instead of `\s+`, so it also catches the no-space form — so every candidate
+# it finds can be checked against what the extractor actually returned,
+# rather than re-implementing the extractor's notion of a citation.
+# Matches the ASCII straight quote only; this repo's docs are plain-ASCII
+# by convention. Widen to `["""]` if that changes.
+_CITATION_CANDIDATE_RE = re.compile(r'§\s*"')
+
+
+def _unextracted_citation_candidate_report(paths: Iterable[Path], *, repo_root: Path) -> list[str]:
+    """Every `§\\s*"` construct in `paths` that `_extract_citations` did not
+    recognize as a citation. Excludes frontmatter and closed fenced code
+    blocks, matching `_extract_citations`'s own exclusions. A bare `§4`
+    section reference is never a candidate — it isn't followed by a quote —
+    so no allowlist is needed for that shape.
+    """
+    violations: list[str] = []
+    for path in paths:
+        text = path.read_text()
+        prose = _blank_frontmatter(text)
+        lines = prose.split("\n")
+        fenced_lines = _closed_fence_line_indices(lines)
+        citation_spans = [citation.span for citation in _extract_citations(text)]
+        for match in _CITATION_CANDIDATE_RE.finditer(prose):
+            lineno = prose.count("\n", 0, match.start())
+            if lineno in fenced_lines:
+                continue
+            if any(start <= match.start() < end for start, end in citation_spans):
+                continue
+            violations.append(f"{path.relative_to(repo_root)}:{lineno + 1}")
+    return violations
+
+
+def test_every_citation_shaped_construct_is_extracted() -> None:
+    """Asserts every `` `target` § "Heading" `` (or bare `§ "Heading"`)
+    construct in the skill/doc corpus was recognized by `_extract_citations`,
+    catching a hard-wrapped or no-space citation that
+    `_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` silently miss and that
+    test_skill_citations_resolve_to_real_headings and
+    test_pooled_tooling_measurement_citation_resolves_to_real_heading never
+    see. Scanned corpus: `_citation_sources_for_skill_md`'s expansion of
+    every `_all_skill_md_files()` entry, plus every path `_all_doc_paths()`
+    covers — the same two named helpers the resolution tests above draw
+    from.
+
+    This checks extraction only — the `docs/rules-references.md`
+    external-URL citation is intentionally never asserted to resolve here.
+    """
+    repo_root = REPO_ROOT
+    skill_md_sources: list[Path] = []
+    for skill_md_path in _all_skill_md_files():
+        skill_md_sources.extend(_citation_sources_for_skill_md(skill_md_path))
+
+    violations = _unextracted_citation_candidate_report(
+        skill_md_sources + _all_doc_paths(), repo_root=repo_root
+    )
+    assert not violations, (
+        "Citation-shaped construct not recognized by "
+        "`_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` — check for a missing "
+        "space before the opening quote or a heading hard-wrapped across a "
+        "line break:\n" + "\n".join(f"  {violation}" for violation in violations)
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_violation_count"),
+    [
+        pytest.param(
+            '## Real Heading\n\nCitation: `sibling.md` §"No Space Heading"\n',
+            1,
+            id="no-space-opener-goes-unextracted",
+        ),
+        pytest.param(
+            'Wrapped: `sibling.md` § "Hard\nWrapped Heading"\n',
+            1,
+            # The heading class `[^"\n]+` can't span the newline, so this
+            # candidate matches neither `_CITATION_WITH_TARGET_RE` nor
+            # `_BARE_CITATION_RE` — a hard-wrap is a distinct failure shape
+            # from the no-space case above, caught by the same guard.
+            id="hard-wrapped-heading-goes-unextracted",
+        ),
+        pytest.param(
+            '## Real Heading\n\nCitation: `sibling.md` § "Well Formed Heading"\n',
+            0,
+            id="well-formed-citation-is-extracted",
+        ),
+        pytest.param(
+            "See §4 for the full rule text, not a citation.\n",
+            0,
+            id="bare-section-number-is-not-a-candidate",
+        ),
+        pytest.param(
+            '## Real Heading\n\n```\nFenced: `sibling.md` §"No Space Heading"\n```\n',
+            0,
+            id="candidate-inside-closed-fence-not-scanned",
+        ),
+    ],
+)
+def test_unextracted_citation_candidate_report_cases(
+    tmp_path: Path, source_text: str, expected_violation_count: int
+) -> None:
+    """`_unextracted_citation_candidate_report` flags a `§ "` construct only
+    when `_extract_citations` did not return a matching citation for it —
+    not merely when the construct spans a line break."""
+    doc_path = tmp_path / "example.md"
+    doc_path.write_text(source_text)
+    violations = _unextracted_citation_candidate_report([doc_path], repo_root=tmp_path)
+    assert len(violations) == expected_violation_count, violations
 
 
 @pytest.mark.parametrize(
