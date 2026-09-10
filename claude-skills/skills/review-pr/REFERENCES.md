@@ -66,6 +66,25 @@ Every match folds case (`.MCP.json` matches the same as `.mcp.json`)
 because a case-insensitive filesystem (macOS default, Windows) resolves
 both to the same loaded file.
 
+### Git-tracked symlinks (checked by `review-pr-checkout.sh`, not `_classify()`)
+
+`_classify()` matches on path text alone, so it is blind to a git-tracked
+symlink -- tree-entry mode `120000` in the tree, vs `100644`/`100755` for a
+regular file. An innocuously-named symlink (e.g. `notes.txt`, pointing at
+an absolute path into the operator's home directory holding local
+credentials) checks out verbatim via `git worktree add` with
+no target validation, and the reviewing agent's `Read` tool then
+transparently returns the target's content, which could reach the posted
+findings body. `review-pr-checkout.sh` runs `git ls-tree -r <FETCHED_SHA> --
+<changed-file-paths>` -- scoped to the PR's own changed files (the same
+list already fetched for the audit above), never the whole tree -- and
+treats any `120000` entry among them as a stop condition, reported the same
+way as an execution-surface hit (matched path + reason on stderr, non-zero
+exit, no worktree left behind). Scoping to the changed-file list, not the
+whole tree, is deliberate: a symlink already committed on the base branch
+that this PR never touches is not this PR's own risk, and must not stop
+every future review of the repo.
+
 ## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
 
 A spawned review-only subagent carries no Write tool for this path, so requiring the Write tool makes the step un-completable from a subagent by construction, rather than by convention.

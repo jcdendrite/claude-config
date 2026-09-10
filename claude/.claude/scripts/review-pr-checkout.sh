@@ -22,15 +22,21 @@ Self-derives every fact the passive-execution audit and the checkout need
 rather than trusting them as arguments. First checks that <owner>/<repo>
 matches this worktree's own origin remote, aborting before any gh call on a
 mismatch. Then fetches the PR's own full, paginated file list and its
-current headRefOid directly from `gh`, pipes the file list
-to audit-execution-surface.py, and only fetches refs/pull/<N>/head when the
-audit returns clean. A stop verdict exits non-zero before any fetch of the
-PR's ref, naming the matched paths and reasons on stderr. On a clean audit,
-asserts the fetched SHA still equals the headRefOid this script itself
-fetched earlier in the same run -- a force-push race between audit and
-checkout -- and aborts with no worktree left behind on a mismatch. A second
-run against the same PR replaces the prior worktree. Prints the worktree's
-absolute path on stdout as the sole output of a successful run.
+current headRefOid directly from `gh`, re-fetches headRefOid once more to
+catch a force-push landing while the file list was being paginated, pipes
+the file list to audit-execution-surface.py, and only fetches
+refs/pull/<N>/head when the audit returns clean. A stop verdict exits
+non-zero before any fetch of the PR's ref, naming the matched paths and
+reasons on stderr. On a clean audit, asserts the fetched SHA still equals
+the headRefOid this script itself fetched earlier in the same run -- a
+force-push race between audit and checkout -- and aborts with no worktree
+left behind on a mismatch. Also lists the fetched tree's own entries for the
+PR's own changed files, for any git-tracked symlink (mode 120000) among
+them, which audit-execution-surface.py's path-only match cannot see, and
+aborts the same way on a hit. A pre-existing symlink elsewhere in the tree
+that this PR does not touch is out of scope. A second run against the same
+PR replaces the prior worktree. Prints the worktree's absolute path on
+stdout as the sole output of a successful run.
 EOF
 }
 
@@ -157,6 +163,23 @@ if ! FILES_JSON=$(printf '%s' "$RAW_FILES" | _lib_jq -R -s 'split("\n") | map(se
   exit 2
 fi
 
+# TOCTOU guard: HEAD_REF_OID above was fetched before the file list just
+# above it, so a force-push landing in that window would let the audit run
+# against a file list that no longer matches the PR's current head -- the
+# final checkout's own HEAD_REF_OID comparison further below only re-verifies
+# at the fetch/checkout boundary, never at the moment this file list was
+# captured. Re-fetch headRefOid here and compare against the value captured
+# above, before the audit runs against a possibly-stale list.
+HEAD_REF_OID_RECHECK=$(_lib_capped_for "$GH_PR_VIEW_TIMEOUT_SECONDS" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
+if [[ -z "$HEAD_REF_OID_RECHECK" ]]; then
+  echo "review-pr-checkout.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm the file list above is still current. Abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+if [[ "$HEAD_REF_OID_RECHECK" != "$HEAD_REF_OID" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's headRefOid changed from $HEAD_REF_OID to $HEAD_REF_OID_RECHECK while its file list was being fetched -- a force-push race between the two self-fetches. Abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+
 # The audit's own exit code mirrors its "stop" verdict (1 = stop, 0 = clean,
 # 2 = malformed stdin). Captured explicitly via the if/else exemption from
 # `set -e` (shell-script-conventions.md) rather than a bare pipeline, so the
@@ -205,6 +228,51 @@ if [[ "$FETCHED_SHA" != "$HEAD_REF_OID" ]]; then
   exit 2
 fi
 
+# audit-execution-surface.py classifies by path text alone, so it is blind
+# to a git-tracked symlink (tree-entry mode 120000, vs 100644/100755 for a
+# regular file) -- REFERENCES.md's "Git-tracked symlinks" section names this
+# as a separate mechanism from _classify()'s path-only match. An
+# innocuously-named symlink (e.g. notes.txt -> an absolute path into the
+# operator's home directory holding local credentials)
+# checks out verbatim via `git worktree add` with no target validation, and
+# a Read tool then transparently returns the target's content. Checked here,
+# against $FETCHED_SHA's own tree -- only resolvable locally now that the ref
+# fetch above has landed those objects -- and before any worktree exposes
+# them to a Read-driven review step.
+#
+# Scoped to the PR's own changed files, not the whole tree: a symlink
+# already committed on the base branch that this PR never touches is not
+# this PR's own risk, and must not stop every future review of the repo.
+# CHANGED_FILE_PATHS is the same newline-delimited list RAW_FILES already
+# holds for the path-based audit above -- built with a `read` loop, not
+# `mapfile`/`readarray` (bash-4+, forbidden here; test_no_bash4_constructs.py).
+CHANGED_FILE_PATHS=()
+while IFS= read -r changed_path; do
+  [[ -n "$changed_path" ]] && CHANGED_FILE_PATHS+=("$changed_path")
+done <<< "$RAW_FILES"
+
+# 30s, not _lib_capped's 5s local-read default: `ls-tree -r` still walks a
+# subtree per pathspec given, whose cost scales with the number and depth of
+# the PR's own changed paths, not with a single local index read.
+SYMLINK_CHECK_TIMEOUT_SECONDS=30
+SYMLINK_ENTRIES=""
+if [[ "${#CHANGED_FILE_PATHS[@]}" -gt 0 ]]; then
+  # --literal-pathspecs: a changed-file path is untrusted PR content, so a
+  # filename containing pathspec magic characters (e.g. a leading `:`) must
+  # never be reinterpreted as a glob or magic pathspec instead of matched
+  # literally.
+  if ! SYMLINK_ENTRIES=$(_lib_capped_for "$SYMLINK_CHECK_TIMEOUT_SECONDS" git -C "$REPO_ROOT" --literal-pathspecs ls-tree -r "$FETCHED_SHA" -- "${CHANGED_FILE_PATHS[@]}" 2>/dev/null \
+    | awk -F'\t' '{ if (substr($1, 1, 6) == "120000") print $2 }'); then
+    echo "review-pr-checkout.sh: could not list PR $OWNER_REPO#$PR_NUMBER's changed-file tree entries at $FETCHED_SHA to check for git-tracked symlinks. Abort with no worktree created." >&2
+    exit 2
+  fi
+fi
+if [[ -n "$SYMLINK_ENTRIES" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER tracks a git symlink -- git checks it out verbatim with no target validation, and a Read tool could transparently follow it outside the repo. Abort with no worktree created. Matched paths:" >&2
+  printf '%s\n' "$SYMLINK_ENTRIES" >&2
+  exit 2
+fi
+
 WORKTREE_DIR="$REPO_ROOT/.claude/worktrees/review-pr-${OWNER_REPO//\//-}-$PR_NUMBER"
 # `git worktree add` below creates WORKTREE_DIR's own leading directories
 # itself, but the lock directory below is a plain `mkdir` (not `mkdir -p`),
@@ -215,23 +283,90 @@ mkdir -p -- "$(dirname "$WORKTREE_DIR")"
 # check/remove/add sequence below, so one invocation's `worktree remove`
 # can never delete a directory the other has already started reading from.
 # Keyed to WORKTREE_DIR (unique per owner/repo/PR-number), so a concurrent
-# run against a DIFFERENT PR never blocks on this one. mkdir-based mutex --
-# nudge-long-turn-subagent.sh's own _scan_turn_count_cached uses the same
-# pattern -- rather than flock(1), which stock macOS does not ship.
+# run against a DIFFERENT PR never blocks on this one. Directory-mutex,
+# published via the atomic rename below -- rather than flock(1), which
+# stock macOS does not ship.
 # LOCK_WAIT_DEADLINE_SECONDS bounds how long a second invocation blocks
 # before giving up, rather than waiting forever behind a lock a crashed
 # prior run never released.
 LOCK_DIR="$WORKTREE_DIR.lock"
-LOCK_WAIT_DEADLINE_SECONDS=30
+# Overridable for tests exercising the deadline-exceeded path without a real
+# 30s wait; malformed (empty, non-digit, zero, zero-padded, or 9+ digits)
+# falls back to the production default, same guard shape as marker.sh's
+# CODE_REVIEW_CHECK_MAX_AGE_SECONDS.
+case "${REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS:-}" in
+  ''|0|*[!0-9]*|0[0-9]*|?????????*) LOCK_WAIT_DEADLINE_SECONDS=30 ;;
+  *) LOCK_WAIT_DEADLINE_SECONDS="$REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS" ;;
+esac
+# A lock whose owner PID is dead, or whose owner file has aged past this many
+# minutes, is reclaimed rather than waited out: this script's own internal
+# timeouts (two headRefOid fetches, the paginated files fetch, the ref
+# fetch, the symlink ls-tree, and up to two worktree ops) sum to under 170s
+# in the worst case, so a lock still held after 5 minutes almost certainly
+# outlived a SIGKILLed prior run, not a slow-but-alive one. Overridable for
+# tests exercising the aged-live-PID reclaim path without a real 5-minute
+# wait; same malformed-value-fallback guard shape as
+# LOCK_WAIT_DEADLINE_SECONDS above.
+case "${REVIEW_PR_LOCK_STALE_AGE_MINUTES:-}" in
+  ''|0|*[!0-9]*|0[0-9]*|?????????*) LOCK_STALE_AGE_MINUTES=5 ;;
+  *) LOCK_STALE_AGE_MINUTES="$REVIEW_PR_LOCK_STALE_AGE_MINUTES" ;;
+esac
 LOCK_DEADLINE=$(( $(date +%s) + LOCK_WAIT_DEADLINE_SECONDS ))
-until mkdir "$LOCK_DIR" 2>/dev/null; do
-  if [[ "$(date +%s)" -ge "$LOCK_DEADLINE" ]]; then
-    echo "review-pr-checkout.sh: could not acquire the worktree lock for $WORKTREE_DIR within ${LOCK_WAIT_DEADLINE_SECONDS}s -- a concurrent invocation against the same PR may be stuck. Abort." >&2
-    exit 2
+LOCK_ACQUIRED=""
+until [[ -n "$LOCK_ACQUIRED" ]]; do
+  # Atomic acquisition: stage the owner-PID file inside a mktemp -d sibling
+  # (same parent directory as LOCK_DIR, so the publish step below stays on
+  # one filesystem), then publish it onto LOCK_DIR's own path via a single
+  # os.rename(2) call. rename(2) fails outright (ENOTEMPTY) when LOCK_DIR
+  # already exists and is non-empty, unlike a plain `mv` onto an existing
+  # directory, which would nest the staged directory inside it instead of
+  # failing. A bare `mkdir "$LOCK_DIR"` followed by a separate `printf >
+  # owner` (the prior shape here) left a window where a waiter could read
+  # an empty or missing owner file and misjudge a lock that is
+  # mid-acquisition as orphaned.
+  STAGED_LOCK_DIR=$(mktemp -d "$WORKTREE_DIR.lock.XXXXXX" 2>/dev/null) || STAGED_LOCK_DIR=""
+  if [[ -n "$STAGED_LOCK_DIR" ]]; then
+    printf '%s' "$$" > "$STAGED_LOCK_DIR/owner"
+    if _lib_capped python3 -c '
+import os, sys
+try:
+    os.rename(sys.argv[1], sys.argv[2])
+except OSError:
+    sys.exit(1)
+' "$STAGED_LOCK_DIR" "$LOCK_DIR" 2>/dev/null; then
+      LOCK_ACQUIRED=1
+    else
+      rm -rf -- "$STAGED_LOCK_DIR" 2>/dev/null
+    fi
   fi
-  sleep 0.2
+  if [[ -z "$LOCK_ACQUIRED" ]]; then
+    # Same two-part liveness test _lib_active_bypass_marker_live applies to
+    # its own markers (dead PID, or a live PID whose marker has aged out) --
+    # not that function itself, since a directory-based mutex with a PID
+    # file inside it is a different marker shape than its single-file
+    # session markers.
+    LOCK_OWNER_PID=$(_lib_capped cat "$LOCK_DIR/owner" 2>/dev/null | _lib_capped tr -d '[:space:]') || LOCK_OWNER_PID=""
+    if ! { [[ "$LOCK_OWNER_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_OWNER_PID" 2>/dev/null \
+      && [[ -n "$(_lib_capped find "$LOCK_DIR/owner" -mmin -"$LOCK_STALE_AGE_MINUTES" 2>/dev/null)" ]]; }; then
+      # Dead PID, or aged past the ceiling above -- reclaim rather than wait
+      # out the full deadline. Falls through to the deadline check and sleep
+      # below rather than looping back immediately: an `rm -rf` that keeps
+      # failing (e.g. a permissions issue) must still hit the deadline
+      # instead of spinning with no sleep.
+      rm -rf -- "$LOCK_DIR" 2>/dev/null
+    fi
+    if [[ "$(date +%s)" -ge "$LOCK_DEADLINE" ]]; then
+      echo "review-pr-checkout.sh: could not acquire the worktree lock at $LOCK_DIR within ${LOCK_WAIT_DEADLINE_SECONDS}s -- a concurrent invocation against the same PR may still be running. If it is not, remove the lock with: rmdir $LOCK_DIR. Abort." >&2
+      exit 2
+    fi
+    sleep 0.2
+  fi
 done
-trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+# Re-reads $LOCK_DIR/owner rather than trusting this process still owns it:
+# a lock robbed by a waiter that misjudged it stale (a narrow race this
+# process cannot itself prevent) must never have its rightful new owner's
+# live lock torn down by this process's own stale cleanup.
+trap '[[ "$(_lib_capped cat "$LOCK_DIR/owner" 2>/dev/null)" == "$$" ]] && { rm -f "$LOCK_DIR/owner" 2>/dev/null; rmdir "$LOCK_DIR" 2>/dev/null; }' EXIT
 
 # A second run against the same PR replaces the prior worktree rather than
 # erroring on an existing path (SKILL.md's own rerun policy). `worktree

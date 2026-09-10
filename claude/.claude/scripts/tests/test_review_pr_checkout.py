@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,10 @@ def _worktree_dir(repo: Path) -> Path:
     return repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '-')}-{PR_NUMBER}"
 
 
+def _lock_dir(repo: Path) -> Path:
+    return Path(f"{_worktree_dir(repo)}.lock")
+
+
 def _local_pr_ref_names(repo: Path) -> str:
     return subprocess.run(
         ["git", "for-each-ref", "refs/review-pr"], cwd=repo, capture_output=True, text=True, check=True
@@ -59,7 +64,8 @@ def isolated_home(tmp_path):
 
 
 def _build_repo_with_pr_ref(
-    tmp_path: Path, owner_repo: str = OWNER_REPO, pr_number: str = PR_NUMBER
+    tmp_path: Path, owner_repo: str = OWNER_REPO, pr_number: str = PR_NUMBER,
+    *, symlink_name: str | None = None, base_symlink_name: str | None = None,
 ) -> tuple[Path, str]:
     """A local repo with an `origin` remote and a PR ref pushed directly to
     it under `refs/pull/<N>/head` -- mirrors GitHub's synthetic per-PR ref,
@@ -73,6 +79,16 @@ def _build_repo_with_pr_ref(
     (comparing $1's owner/repo against the worktree's actual origin) sees
     the same value callers pass as $1 -- the same last-two-path-segments
     shape a real `https://github.com/<owner>/<repo>.git` origin parses to.
+
+    symlink_name, when given, adds a git-tracked symlink (tree-entry mode
+    120000) at that path to the PR commit alongside pr_file.txt -- used by
+    the symlink-detection tests below, which need a PR commit that actually
+    is a symlink, not a same-named regular file.
+
+    base_symlink_name, when given, instead commits the symlink on the BASE
+    branch, before the PR commit -- used by the scoping test below, which
+    needs a symlink this PR's own diff never touches, distinct from
+    symlink_name above (which the PR commit itself adds).
     """
     bare = tmp_path / "remote" / owner_repo
     bare.mkdir(parents=True)
@@ -84,14 +100,25 @@ def _build_repo_with_pr_ref(
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     (repo / "file.txt").write_text("main\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    base_add_paths = ["file.txt"]
+    if base_symlink_name is not None:
+        (repo / base_symlink_name).symlink_to("/etc/passwd")
+        base_add_paths.append(base_symlink_name)
+    # --literal-pathspecs: a pathspec-magic-prefixed symlink name (e.g. a
+    # leading ':') must be added literally, not parsed as a magic-signature
+    # pathspec -- "--" alone does not disable that parsing.
+    subprocess.run(["git", "--literal-pathspecs", "add", *base_add_paths], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
     subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True)
     main_sha = head_sha(repo)
 
     (repo / "pr_file.txt").write_text("pr change\n")
-    subprocess.run(["git", "add", "pr_file.txt"], cwd=repo, check=True)
+    git_add_paths = ["pr_file.txt"]
+    if symlink_name is not None:
+        (repo / symlink_name).symlink_to("/etc/passwd")
+        git_add_paths.append(symlink_name)
+    subprocess.run(["git", "--literal-pathspecs", "add", *git_add_paths], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "pr commit"], cwd=repo, check=True)
     pr_sha = head_sha(repo)
     subprocess.run(["git", "push", "-q", "origin", f"HEAD:refs/pull/{pr_number}/head"], cwd=repo, check=True)
@@ -112,6 +139,7 @@ def _gh_shim_source(
     fail_pr_view: bool = False,
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
+    head_ref_oid_second: str | None = None,
 ) -> str:
     """gh shim recording every invocation, matching test_review_pr_post.py's
     own shim shape. Dispatches on the invocation's own first word(s):
@@ -122,7 +150,11 @@ def _gh_shim_source(
     binary's own always-0 stand-in masking the script's failure branch.
     `partial_files_then_fail` prints those filenames, then exits 1 --
     `--paginate` failing partway through, after already emitting one or more
-    pages, distinct from `fail_files`'s zero-output failure."""
+    pages, distinct from `fail_files`'s zero-output failure. `head_ref_oid_second`,
+    when given, is returned by the SECOND `pr view` call onward instead of
+    `head_ref_oid` -- models a force-push landing between
+    review-pr-checkout.sh's initial headRefOid fetch and its own re-fetch of
+    it just before the audit runs."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -131,11 +163,20 @@ def _gh_shim_source(
 
         CALL_LOG = {str(call_log)!r}
         HEAD_REF_OID = {head_ref_oid!r}
+        HEAD_REF_OID_SECOND = {head_ref_oid_second!r}
         FILES = {list(files or [])!r}
         FAIL_PR_VIEW = {fail_pr_view!r}
         FAIL_FILES = {fail_files!r}
         PARTIAL_FILES_THEN_FAIL = {list(partial_files_then_fail or [])!r}
         args = sys.argv[1:]
+        prior_pr_view_calls = 0
+        if os.path.exists(CALL_LOG):
+            with open(CALL_LOG) as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    if json.loads(line)["args"][:2] == ["pr", "view"]:
+                        prior_pr_view_calls += 1
         record = {{
             "args": args,
             "GH_HOST": os.environ.get("GH_HOST"),
@@ -146,8 +187,11 @@ def _gh_shim_source(
         if args[:2] == ["pr", "view"]:
             if FAIL_PR_VIEW:
                 sys.exit(1)
-            if HEAD_REF_OID:
-                print(HEAD_REF_OID)
+            oid = HEAD_REF_OID
+            if HEAD_REF_OID_SECOND is not None and prior_pr_view_calls >= 1:
+                oid = HEAD_REF_OID_SECOND
+            if oid:
+                print(oid)
             sys.exit(0)
         if args[:1] == ["api"]:
             if PARTIAL_FILES_THEN_FAIL:
@@ -186,6 +230,7 @@ def _run(
     fail_pr_view: bool = False,
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
+    head_ref_oid_second: str | None = None,
     extra_env: dict | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     call_log = tmp_path / "gh_calls.jsonl"
@@ -193,7 +238,8 @@ def _run(
         **_shimmed_env(
             tmp_path,
             _gh_shim_source(
-                call_log, head_ref_oid, files, fail_pr_view, fail_files, partial_files_then_fail
+                call_log, head_ref_oid, files, fail_pr_view, fail_files, partial_files_then_fail,
+                head_ref_oid_second,
             ),
         ),
         "HOME": str(home),
@@ -409,6 +455,40 @@ class TestHeadRefOidMismatch:
         assert not _worktree_dir(repo).exists()
 
 
+class TestHeadRefOidDriftDuringFileListFetch:
+    def test_headrefoid_drift_between_initial_fetch_and_file_list_fetch_aborts_before_audit(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Distinct from TestHeadRefOidMismatch above (the gh-reported
+        headRefOid vs. the actually-fetched ref, caught only at final
+        checkout): this covers a force-push landing between the initial
+        headRefOid fetch and the file-list fetch, before the audit even
+        runs. Without the re-fetch-and-compare guard, the audit would run
+        against a file list gh already considers stale, and the final
+        checkout's own headRefOid comparison could pass anyway if the
+        checkout's own ref fetch lands on that same later SHA -- the drifted
+        file list would never actually have been audited."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, head_ref_oid_second="f" * 40, files=["src/app.py"],
+        )
+        assert result.returncode != 0
+        assert "force-push" in result.stderr
+        assert _local_pr_ref_names(repo) == "", (
+            "a drift-detected-mid-audit abort must never fetch refs/pull/<N>/head into a local ref"
+        )
+        assert not _worktree_dir(repo).exists()
+
+        calls = _read_calls(call_log)
+        pr_view_calls = [c for c in calls if c[:2] == ["pr", "view"]]
+        assert len(pr_view_calls) == 2, (
+            "headRefOid must be fetched twice: once before the file list, "
+            "once to re-verify it before the audit runs"
+        )
+
+
 class TestMalformedGhApiOutput:
     def test_files_listing_failure_aborts_rather_than_auditing_an_empty_list(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -532,3 +612,171 @@ class TestGhHostStripped:
         for record in records:
             assert record["GH_HOST"] is None
             assert record["GH_ENTERPRISE_TOKEN"] is None
+
+
+class TestSymlinkDetection:
+    """audit-execution-surface.py's _classify() matches on path text alone,
+    so it is blind to a git-tracked symlink (tree-entry mode 120000) with an
+    innocuous-looking name -- review-pr-checkout.sh must catch it itself via
+    `git ls-tree`'s own mode field, since git checks out a symlink verbatim
+    and a Read tool would then transparently follow it outside the repo."""
+
+    def test_pr_tracked_symlink_trips_the_stop_condition(self, isolated_home, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, symlink_name="notes.txt")
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt", "notes.txt"],
+        )
+        assert result.returncode != 0
+        assert "notes.txt" in result.stderr
+        assert "symlink" in result.stderr
+        assert not _worktree_dir(repo).exists()
+
+    def test_pre_existing_symlink_on_base_branch_untouched_by_this_pr_does_not_stop(
+        self, isolated_home, tmp_path
+    ):
+        """The scoping guarantee: `legacy-symlink` is committed on the base
+        branch and carried unchanged into the PR commit's own tree, so it is
+        present at FETCHED_SHA -- but the PR's own changed-file list (what
+        `files=` below reports, matching what gh's own files endpoint would
+        report) never names it. A symlink check scoped to the whole tree
+        would wrongly stop this review; scoped to the PR's own changed
+        files, it must not, since this PR's own diff never touches it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, base_symlink_name="legacy-symlink")
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        # The pre-existing symlink really is present at the checked-out
+        # commit -- proving this test's own premise, not merely that
+        # checkout succeeded for an unrelated reason.
+        worktree_dir = Path(result.stdout.strip())
+        assert (worktree_dir / "legacy-symlink").is_symlink()
+
+    def test_pathspec_magic_prefixed_symlink_name_still_trips_the_stop_condition(
+        self, isolated_home, tmp_path
+    ):
+        """Regression test for the bypass `--literal-pathspecs` on the
+        `git ls-tree` call closes: a changed-file path containing pathspec
+        magic characters (a leading ':') must be matched literally, not
+        reinterpreted as a glob or magic pathspec -- without the flag,
+        `git ls-tree -r <tree> -- ':weird-colon-symlink'` returns zero output
+        for this real tracked symlink, silently evading the check."""
+        _install_audit_script(isolated_home)
+        symlink_name = ":weird-colon-symlink"
+        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, symlink_name=symlink_name)
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt", symlink_name],
+        )
+        assert result.returncode != 0
+        assert symlink_name in result.stderr
+        assert "symlink" in result.stderr
+        assert not _worktree_dir(repo).exists()
+
+
+class TestWorktreeLock:
+    """The directory mutex around the worktree add/remove sequence, published
+    via an atomic rename so a waiter never observes a lock directory with no
+    owner file inside it, and its stale-lock reclamation: a lock directory
+    with no live, fresh owner PID inside it is reclaimed rather than waited
+    out, distinguishing a concurrent invocation that is still genuinely
+    running from one a prior run's SIGKILL orphaned."""
+
+    def test_live_owner_pid_denies_at_the_deadline_and_names_path_and_remedy(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS overrides the production 30s
+        wait so this test doesn't itself block for 30s -- the lock's own
+        owner PID is this test process's own pid, alive for the whole test
+        run, so the wait genuinely runs out rather than reclaiming early."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        lock_dir = _lock_dir(repo)
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "owner").write_text(str(os.getpid()))
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            extra_env={"REVIEW_PR_LOCK_WAIT_DEADLINE_SECONDS": "1"},
+        )
+        assert result.returncode != 0
+        assert str(lock_dir) in result.stderr
+        assert f"rmdir {lock_dir}" in result.stderr
+        assert not _worktree_dir(repo).exists()
+        # The lock itself must survive an unsuccessful wait -- a genuinely
+        # live owner's lock must never be torn down by a losing waiter.
+        assert lock_dir.exists()
+
+    @pytest.mark.timing
+    def test_dead_pid_owner_is_reclaimed_without_waiting_out_the_deadline(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Distinct from the live-owner case above: a dead owner PID must be
+        reclaimed on sight, not held up against the (here, default 30s)
+        wait deadline -- proven by wall-clock elapsed time, not just a
+        successful outcome, since a regression that fell through to the
+        ordinary wait-then-timeout path would also eventually deny rather
+        than succeed, but only after the full deadline. 25s (not the
+        original tighter bound) tolerates this script's own subprocess-heavy
+        run (two headRefOid fetches, a paginated files fetch, a ref fetch,
+        an audit, a symlink ls-tree, two worktree ops) under CI contention,
+        while still proving reclaim happens well under the 30s wait
+        deadline this test is actually pinning."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        lock_dir = _lock_dir(repo)
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "owner").write_text("99999999")  # outside Linux/macOS max pid range -> always dead
+
+        started = time.monotonic()
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+        )
+        elapsed = time.monotonic() - started
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 25, (
+            f"a dead-PID lock must be reclaimed immediately, not waited out ({elapsed}s elapsed)"
+        )
+        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        assert not lock_dir.exists(), "the lock must be released again on a successful run"
+
+    @pytest.mark.timing
+    def test_live_pid_owner_with_aged_mtime_is_reclaimed_without_waiting_out_the_deadline(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Distinct from both cases above: a live owner PID whose owner-file
+        mtime has aged past LOCK_STALE_AGE_MINUTES is reclaimed on sight too,
+        the same as a dead PID -- REVIEW_PR_LOCK_STALE_AGE_MINUTES overrides
+        the production 5-minute ceiling so this test doesn't itself wait 5
+        minutes for the age to pass. Owned by this test process's own PID
+        (alive for the whole test run), so only the aged-mtime branch of the
+        reclaim guard can be what lets this succeed quickly."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        lock_dir = _lock_dir(repo)
+        lock_dir.mkdir(parents=True)
+        owner_file = lock_dir / "owner"
+        owner_file.write_text(str(os.getpid()))
+        aged_time = time.time() - 90  # older than the 1-minute override below
+        os.utime(owner_file, (aged_time, aged_time))
+
+        started = time.monotonic()
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            extra_env={"REVIEW_PR_LOCK_STALE_AGE_MINUTES": "1"},
+        )
+        elapsed = time.monotonic() - started
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 25, (
+            f"an aged-mtime live-PID lock must be reclaimed immediately, not waited out ({elapsed}s elapsed)"
+        )
+        assert Path(result.stdout.strip()) == _worktree_dir(repo)
+        assert not lock_dir.exists(), "the lock must be released again on a successful run"

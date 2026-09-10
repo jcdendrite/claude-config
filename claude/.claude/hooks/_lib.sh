@@ -462,6 +462,33 @@ _lib_review_pr_completion_marker_fields() {
   printf '%s\n%s\n%s\n' "$pr_identity" "$head_ref_oid" "$body_hash"
 }
 
+# _lib_sha256_no_follow PATH
+# Prints PATH's sha256 hex digest through a single os.open(O_NOFOLLOW) and
+# returns 0 -- refuses a symlink at the final path component atomically with
+# the read, so a pre-planted symlink at a predictable marker or
+# findings-body destination is never followed and hashed as if it were the
+# real file. A separate `[ -L ]` check followed by sha256sum is not atomic;
+# an attacker can swap in a symlink between the two. Prints nothing and
+# returns 1 on a missing file, a symlink, or a permission error. Shared by
+# marker.sh's `write review-pr` arm and review-pr-post.sh's own
+# re-verification of that same findings-body file, which otherwise embedded
+# byte-for-byte identical `python3 -c` blocks.
+_lib_sha256_no_follow() {
+  local target="$1"
+  _lib_capped python3 -c '
+import hashlib, os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(1)
+digest = hashlib.sha256()
+with os.fdopen(fd, "rb") as f:
+    for chunk in iter(lambda: f.read(65536), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+' "$target"
+}
+
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
 # untracked, or tracked-and-modified-vs-HEAD. A plan that is tracked and
 # byte-identical to HEAD is historical (its PR shipped) and is excluded.

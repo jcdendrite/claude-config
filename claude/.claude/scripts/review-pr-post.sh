@@ -74,21 +74,10 @@ fi
 # body here and nowhere else.
 FINDINGS_BODY_PATH="$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.body"
 
-# O_NOFOLLOW read, matching marker.sh's own hardened read of this same file:
-# a separate `[ -L ]` check followed by sha256sum is not atomic, so read
-# through a single open that refuses a symlink at the final path component.
-ACTUAL_BODY_HASH=$(_lib_capped python3 -c '
-import hashlib, os, sys
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(1)
-digest = hashlib.sha256()
-with os.fdopen(fd, "rb") as f:
-    for chunk in iter(lambda: f.read(65536), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-' "$FINDINGS_BODY_PATH" 2>/dev/null) || ACTUAL_BODY_HASH=""
+# _lib_sha256_no_follow reads through a single O_NOFOLLOW open, matching
+# marker.sh's own hardened read of this same file: a separate `[ -L ]` check
+# followed by sha256sum is not atomic.
+ACTUAL_BODY_HASH=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null) || ACTUAL_BODY_HASH=""
 if [[ -z "$ACTUAL_BODY_HASH" || "$ACTUAL_BODY_HASH" != "$MARKER_BODY_HASH" ]]; then
   echo "review-pr-post.sh: findings-body file $FINDINGS_BODY_PATH is missing, unreadable, a symlink, or no longer matches the reviewed hash. Abort without posting." >&2
   exit 2

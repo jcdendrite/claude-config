@@ -20,6 +20,12 @@ PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 # scans for.
 REVIEW_PR_SCAN_SCRIPT="$(dirname "$0")/review-pr-scan-findings-body.sh"
 
+# Sibling script, invoked by the `write review-pr` arm below to mechanically
+# backstop SKILL.md Step 7's "start with **[Claude Code]**" instruction
+# before the completion marker is written -- see that script's own header
+# for what it checks.
+REVIEW_PR_ATTRIBUTION_SCRIPT="$(dirname "$0")/review-pr-check-attribution-prefix.sh"
+
 # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
 # plugin, and plugin-root-equals-repo-root locations) plus plan-review/ROUTING.md,
 # matching what require-skill-review.sh checks at commit time.
@@ -596,6 +602,22 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: %s does not name the fixed findings-body path %s. Abort without writing a marker.\n' "$FINDINGS_SIBLING" "$FINDINGS_BODY_FIXED_PATH" >&2
           exit 2
         fi
+        # Mechanical backstop for SKILL.md Step 7's own "start with
+        # **[Claude Code]**" instruction: same rationale as the secret scan
+        # below -- a PreToolUse hook never sees the findings body, since
+        # it's composed by the model's own reasoning rather than passed as a
+        # tool-call argument. Run before the body is hashed or the
+        # completion marker written, so a missing attribution prefix
+        # refuses the whole write rather than getting marker-ized.
+        # _lib_capped (5s default): a local `head` read over a
+        # session-owned text file, the same budget the secret scan below
+        # and the BODY_HASH computation further below use for their own
+        # reads of this same file.
+        if ! ATTRIBUTION_OUTPUT=$(_lib_capped "$REVIEW_PR_ATTRIBUTION_SCRIPT" "$FINDINGS_BODY_PATH" 2>&1); then
+          printf '%s\n' "$ATTRIBUTION_OUTPUT" >&2
+          printf 'marker.sh: findings-body attribution-prefix check failed. Abort without writing a marker.\n' >&2
+          exit 2
+        fi
         # Mechanical backstop for SKILL.md Step 7's own prose scrubbing
         # instruction: a PreToolUse hook never sees the findings body, since
         # it's composed by the model's own reasoning rather than passed as a
@@ -610,26 +632,12 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # A separate `[ -L ]` check followed by `sha256sum` is not atomic --
-        # an attacker can swap in a symlink between the two, which defeats a
-        # pre-planted-symlink check just as easily as it evades one. Read
-        # through a single os.open(O_NOFOLLOW) instead: it refuses a symlink
-        # at the final path component atomically with the read, so there is
-        # no window between check and use. Compute before redirecting, same
-        # reasoning as every arm above: a failed hash must not truncate a
-        # valid existing marker.
-        BODY_HASH=$(_lib_capped python3 -c '
-import hashlib, os, sys
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(1)
-digest = hashlib.sha256()
-with os.fdopen(fd, "rb") as f:
-    for chunk in iter(lambda: f.read(65536), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-' "$FINDINGS_BODY_PATH" 2>/dev/null)
+        # _lib_sha256_no_follow reads through a single os.open(O_NOFOLLOW) --
+        # a separate `[ -L ]` check followed by `sha256sum` is not atomic, so
+        # an attacker could swap in a symlink between the two. Compute
+        # before redirecting, same reasoning as every arm above: a failed
+        # hash must not truncate a valid existing marker.
+        BODY_HASH=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
         [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/review-pr-markers"
         printf '%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" | _write_marker_no_follow "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" \

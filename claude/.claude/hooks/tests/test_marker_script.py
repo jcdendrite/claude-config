@@ -890,7 +890,7 @@ class TestMarkerDirectoryNamingConvention:
         sibling_dir = home / ".claude" / ".review-pr-active.d"
         sibling_dir.mkdir(parents=True, exist_ok=True)
         findings_body = sibling_dir / f"{sid}.body"
-        findings_body.write_text("# findings\n")
+        findings_body.write_text("**[Claude Code]** # findings\n")
         (sibling_dir / f"{sid}.findings").write_text(f"foo/bar#1\nabc123\n{findings_body}\n")
 
     @pytest.mark.parametrize("skill", WRITE_SKILLS)
@@ -3495,7 +3495,7 @@ class TestMarkerScriptReviewPr:
         ).stdout.strip()
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("# findings body\n")
+        findings_body.write_text("**[Claude Code]** # findings body\n")
         self._declare_sibling(isolated_home, "foo/bar#42", head_sha, findings_body, sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
@@ -3523,13 +3523,36 @@ class TestMarkerScriptReviewPr:
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("# findings body, no secrets here\n")
+        findings_body.write_text("**[Claude Code]** # findings body, no secrets here\n")
         self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
         assert list(marker_dir.iterdir()) != []
+
+    def test_write_refuses_a_findings_body_missing_the_attribution_prefix(
+        self, isolated_home, git_repo
+    ):
+        """Mechanical backstop for SKILL.md Step 7's own "start with
+        **[Claude Code]**" instruction: review-pr-check-attribution-prefix.sh
+        runs before the marker is written, the same as the secret scan
+        above -- a `PreToolUse` hook never sees the findings body, since
+        it's composed by the model's own reasoning rather than passed as a
+        tool-call argument."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text("# findings body, no attribution prefix\n")
+        self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "attribution" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a findings body missing the attribution prefix must not write a marker: {stray}"
 
     def test_write_refuses_a_findings_body_containing_a_credential_shaped_string(
         self, isolated_home, git_repo
@@ -3542,7 +3565,7 @@ class TestMarkerScriptReviewPr:
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("# findings\n\nleaked: ghp_" + "a" * 36 + "\n")
+        findings_body.write_text("**[Claude Code]** # findings\n\nleaked: ghp_" + "a" * 36 + "\n")
         self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
 
         result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
@@ -3615,7 +3638,7 @@ class TestMarkerScriptReviewPr:
         _seed_session(isolated_home, sid)
         fixed_path = self._fixed_body_path(isolated_home, sid)
         fixed_path.parent.mkdir(parents=True, exist_ok=True)
-        fixed_path.write_text("# findings body\n")
+        fixed_path.write_text("**[Claude Code]** # findings body\n")
         relative_spelling = f".claude/.review-pr-active.d/{sid}.body"
         decoy = git_repo / relative_spelling
         decoy.parent.mkdir(parents=True, exist_ok=True)
@@ -3663,7 +3686,7 @@ class TestMarkerScriptReviewPr:
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("# findings body\n")
+        findings_body.write_text("**[Claude Code]** # findings body\n")
         self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
 
         repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
@@ -3694,7 +3717,7 @@ class TestMarkerScriptReviewPr:
         active_dir.mkdir(parents=True)
         (active_dir / sid).write_text(str(os.getpid()))
         findings_body = self._fixed_body_path(isolated_home, sid)
-        findings_body.write_text("# findings body\n")
+        findings_body.write_text("**[Claude Code]** # findings body\n")
         sibling = self._declare_sibling(isolated_home, "foo/bar#42", "abc123", findings_body, sid)
 
         assert _run(["write", "review-pr"], cwd=git_repo, home=isolated_home).returncode == 0
@@ -3752,7 +3775,7 @@ class TestMarkerScriptReviewPr:
         active_dir.mkdir(parents=True)
         (active_dir / sid).write_text(str(os.getpid()))
         fixed_path = self._fixed_body_path(isolated_home, sid)
-        fixed_path.write_text("# findings body\n")
+        fixed_path.write_text("**[Claude Code]** # findings body\n")
         relative_spelling = f".claude/.review-pr-active.d/{sid}.body"
         decoy = git_repo / relative_spelling
         decoy.parent.mkdir(parents=True, exist_ok=True)
@@ -3838,7 +3861,7 @@ class TestMarkerScriptReviewPr:
         sid = self.SID
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("# findings body\n")
+        findings_body.write_text("**[Claude Code]** # findings body\n")
 
         if adjacent_pid is not None:
             active_dir = isolated_home / ".claude" / ".review-pr-active.d"
@@ -3870,7 +3893,7 @@ class TestMarkerScriptReviewPr:
         )
         findings_body = self._fixed_body_path(isolated_home, sid)
         findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text("# findings body\n")
+        findings_body.write_text("**[Claude Code]** # findings body\n")
 
         result = _run(["clear-stale", "--dry-run"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr

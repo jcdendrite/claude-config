@@ -59,7 +59,7 @@ Invoke `/code-review` over the merge-base diff, under one standing override for 
 
 ## Step 6 — Run checks (unconditional confirmation)
 
-Running the project's checks executes the PR's code by definition, so this always stops for confirmation, naming the exact command. Discover the command from the repo's CI workflow, manifest, or Makefile; when none is discoverable, skip and report why rather than guess. Dependency installation is governed by CLAUDE.md §Safety as always.
+Running the project's checks executes the PR's code by definition, so this always stops for confirmation. Discover the command from the repo's CI workflow, manifest, or Makefile; when none is discoverable, skip and report why rather than guess. Naming the command alone is not enough: also read the actual script or manifest entry it invokes (e.g. `package.json`'s `scripts` section, the relevant `Makefile` target, or the CI workflow step) from the step-2 worktree, and show that content alongside the command name — a bare `npm test` does not disclose that the PR's own diff rewrote what `test` runs. Dependency installation is governed by CLAUDE.md §Safety as always.
 
 ## Step 7 — Synthesize and record completion
 

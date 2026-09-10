@@ -1241,6 +1241,33 @@ class TestReviewPrActiveMarkerReadBypass:
         )
         assert not marker.exists(), "hook must evict the orphan marker on dead PID"
 
+    def test_active_marker_hit_advances_mtime(self, isolated_home, git_repo):
+        """Mirrors test_fresh_bypass_marker_allows's own sibling test above
+        for .respond-pr-active.d: this hook must check .review-pr-active.d
+        via the touching variant too, not the bare liveness predicate, so a
+        long-running `gh` call (rate-limit backoff, a large paginated fetch)
+        during an active /review-pr session doesn't have its own bypass
+        marker silently evicted mid-window."""
+        sid = "test-session-review-pr-touch"
+        _write_review_pr_active_marker(isolated_home, sid)
+        marker = isolated_home / ".claude" / ".review-pr-active.d" / sid
+        old_time = time.time() - 300  # in-window, but old enough to detect a refresh
+        os.utime(marker, (old_time, old_time))
+        assert (
+            run_hook(
+                RESPOND_PR_HOOK,
+                bash_input(
+                    "gh api repos/foo/bar/pulls/5/reviews --paginate", session_id=sid
+                ),
+                cwd=git_repo,
+                home=isolated_home,
+            )
+            == "allow"
+        )
+        assert marker.stat().st_mtime > old_time + 1, (
+            "a gate hit against a live .review-pr-active.d marker must refresh its mtime"
+        )
+
 
 class TestGhPrEditBodyMutatingFormsDenied:
     """The 'never edit someone else's PR body' invariant, folded into this

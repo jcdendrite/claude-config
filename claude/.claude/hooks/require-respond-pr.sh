@@ -119,7 +119,7 @@ fi
 # review itself happened. It releases reads unconditionally further below;
 # a write additionally requires the completion marker checked there.
 REVIEW_PR_ACTIVE=0
-if _lib_active_bypass_marker_live ".review-pr-active.d" "$SESSION_ID"; then
+if _lib_active_bypass_marker_live_and_touch ".review-pr-active.d" "$SESSION_ID"; then
   REVIEW_PR_ACTIVE=1
 fi
 
