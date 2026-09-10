@@ -11,7 +11,7 @@ A review of this repo owner's own session history found the pattern recurring ac
 - A call omitting the required `prompt` field is rejected instantly by the harness's own schema validation.
 - A well-formed call actually schedules a wakeup, which later fires and re-invokes the session before the assistant recognizes the mismatch and cancels it.
 
-Counts and durations are not reproduced here: the corpus mixes this owner's private-project and public-repo transcripts, so an aggregate figure would inherit the private half. See the upstream reports below for the full evidence.
+Counts and durations are not reproduced here: the corpus mixes this owner's private-project and public-repo transcripts, so publishing a figure from it is governed by `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" and its approval gate, unexercised here. See the upstream reports below for the full evidence.
 
 `ScheduleWakeup`'s own description doesn't name the latent risk directly, but an adjacent one is real: the `Agent` tool's description warns "Never fabricate or predict a pending agent's results" for exactly the moment a stray `ScheduleWakeup` wakeup could land — mid-pending-dispatch. None of the observed instances actually fabricated or predicted a result. Every one cancelled cleanly and resumed. The clean outcome is what was observed here, not a property the pattern guarantees.
 
