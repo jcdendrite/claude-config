@@ -29,10 +29,12 @@
 #     substitution that builds COLLAPSED_PROMPT fails and yields an empty
 #     string. An empty COLLAPSED_PROMPT no-matches both grep arms below,
 #     reaching the same fail-open outcome by a different mechanism.
-#   - Neither `tr` nor `grep` has a timeout wrap; a hung (not missing) one
-#     blocks every dispatch until the harness's own timeout intervenes --
-#     see the decision doc's Known gaps for why this is accepted rather
-#     than wrapped.
+#   - `tr` and `grep` are wrapped in _lib_capped (5s timeout), matching
+#     this file's other external-process calls and the repo's established
+#     pattern for guarding against an environmental hang (stale mount,
+#     scheduler starvation) -- this gate fires on every Agent/Task
+#     dispatch, a higher frequency than most gates, so an unbounded hang
+#     here would have a larger blast radius than elsewhere.
 
 set -uo pipefail
 
@@ -105,7 +107,7 @@ PROMPT=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_input.prompt // empty' 2>/de
 
 # Whitespace-collapse before either arm, so a no-op instruction wrapped
 # across a newline ("do\nnothing") still matches a single-line grep.
-COLLAPSED_PROMPT=$(printf '%s' "$PROMPT" | tr -s '[:space:]' ' ')
+COLLAPSED_PROMPT=$(printf '%s' "$PROMPT" | _lib_capped tr -s '[:space:]' ' ')
 
 # `tr -s` squeezes whitespace runs but leaves a single leading or
 # trailing space uncollapsed, which the anchored stub regex below cannot
@@ -120,7 +122,7 @@ COLLAPSED_PROMPT="${COLLAPSED_PROMPT% }"
 # docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps section
 # for the platform-dependence of this claim.
 
-if printf '%s' "$COLLAPSED_PROMPT" | grep -qiE "$NOOP_STUB_TOKEN_RE" || printf '%s' "$COLLAPSED_PROMPT" | grep -qiE "$NOOP_PHRASE_RE"; then
+if printf '%s' "$COLLAPSED_PROMPT" | _lib_capped grep -qiE "$NOOP_STUB_TOKEN_RE" || printf '%s' "$COLLAPSED_PROMPT" | _lib_capped grep -qiE "$NOOP_PHRASE_RE"; then
   emit_deny "this dispatch's prompt is short and instructs the agent to do no work. CLAUDE.md §Agent Briefing bars dispatching an agent — of any type — whose instructions are to report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing, and still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one. If this dispatch does have real work to do, state that work in the prompt and retry — a prompt long enough to specify a task does not trip this gate. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
   exit 0
 fi
