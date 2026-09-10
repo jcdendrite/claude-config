@@ -382,8 +382,11 @@ class TestSelectPytestTargets:
     def test_hooks_change_selects_hooks_tests_and_transcript_analysis(self):
         """TICKET_REFERENCE_DISCIPLINE_TEST_PATH and CLAUDE_TESTS_DIR are
         also selected: this is a .py file under claude/, which that test
-        statically scans and which test_pytest_collection_config.py
-        collects and AST-parses."""
+        statically scans. TestConftestModuleNamesAreUnique in
+        test_pytest_collection_config.py (CLAUDE_TESTS_DIR) resolves every
+        tracked conftest.py repo-wide, with no root scoping, so this
+        predicate's breadth is what lets a future conftest.py anywhere
+        under its three roots be caught."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -406,8 +409,9 @@ class TestSelectPytestTargets:
         """test_ticket_reference_discipline.py statically scans every
         tracked .py file under claude/, including this one, for
         ticket-prefixed identifiers and plan-phase-qualified labels.
-        CLAUDE_TESTS_DIR is also selected: test_pytest_collection_config.py
-        collects and AST-parses every tracked test module under claude/."""
+        CLAUDE_TESTS_DIR is also selected: TestConftestModuleNamesAreUnique
+        in test_pytest_collection_config.py resolves every tracked
+        conftest.py repo-wide, with no root scoping."""
         result = _mod.select_pytest_targets(["claude/.claude/scripts/mark-terminal.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -546,8 +550,8 @@ class TestSelectPytestTargets:
         """test_ticket_reference_discipline.py statically scans every
         tracked .py file under plugins/ too, so this .py change now selects
         TICKET_REFERENCE_DISCIPLINE_TEST_PATH alongside SKILLS_TESTS_DIR.
-        CLAUDE_TESTS_DIR is also selected: test_pytest_collection_config.py
-        collects and AST-parses every tracked test module under plugins/."""
+        TestConftestModuleNamesAreUnique's repo-wide conftest.py scan
+        (CLAUDE_TESTS_DIR) needs the same .py change to be selected too."""
         result = _mod.select_pytest_targets(["plugins/skill-management/scripts/validate_skill_structure.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -678,13 +682,9 @@ class TestSelectPytestTargets:
         }
 
     def test_helpers_py_global_trigger_forces_full_suite(self):
-        """Guards against removing helpers.py from GLOBAL_TRIGGER_PATHS:
-        without it, a helpers.py change would select only
-        claude/.claude/tests via CLAUDE_TESTS_DIR's own domain rule, even
-        though every domain's tests import it. This assertion already holds
-        today via GLOBAL_TRIGGER_PATHS's short-circuit, which runs before
-        domain matching -- it guards a future regression, not a case this
-        diff makes newly pass."""
+        """Regression guard: without GLOBAL_TRIGGER_PATHS, a helpers.py
+        change would select only claude/.claude/tests, even though every
+        domain's tests import it."""
         result = _mod.select_pytest_targets(["claude/.claude/tests/helpers.py"])
         assert result.is_full_suite is True
         assert result.reason == "global-trigger"
@@ -911,11 +911,10 @@ class TestSelectPytestTargets:
         the skills test tree -- not just a literal `SKILL.md` -- selects
         `SKILLS_TESTS_DIR`. TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
         CLAUDE_TESTS_DIR are also selected: this is a .py file under
-        claude-skills/, which that test statically scans and which
-        test_pytest_collection_config.py collects and AST-parses.
-        SELECT_TESTS_TEST_PATH is selected too: test_skills.py is itself in
-        _test_corpus(), so a change to it can introduce a module-level
-        constant the completeness scan must see."""
+        claude-skills/, which both tests' scans cover. SELECT_TESTS_TEST_PATH
+        is selected too: test_skills.py is itself in _test_corpus(), so a
+        change to it can introduce a module-level constant the completeness
+        scan must see."""
         result = _mod.select_pytest_targets(["claude-skills/skills/tests/test_skills.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -967,10 +966,23 @@ class TestSelectPytestTargets:
         """_is_py_source_under_claude_or_plugins is plugin-generic, not tied
         to a named plugin's own cross-domain exception -- a .py file under a
         plugin with no dedicated rule of its own (unlike skill-management or
-        lovable-cloud) still selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH.
-        CLAUDE_TESTS_DIR is also selected: test_pytest_collection_config.py
-        collects and AST-parses every tracked test module under plugins/."""
+        lovable-cloud) still selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH
+        and CLAUDE_TESTS_DIR."""
         result = _mod.select_pytest_targets(["plugins/npm-semver/scripts/check.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
+        }
+
+    def test_second_plugin_conftest_py_also_selects_claude_tests_dir(self):
+        """TestConftestModuleNamesAreUnique (claude/.claude/tests/test_pytest_collection_config.py,
+        CLAUDE_TESTS_DIR) resolves every tracked conftest.py repo-wide via
+        git ls-files, with no root scoping. plugins/lovable-cloud already has
+        this exact tests/__init__.py-but-no-plugin-root-__init__.py layout;
+        a second plugin adding its own tests/conftest.py at this shape would
+        resolve to the same tests.conftest module name, and that collision
+        can only be caught locally if this path selects CLAUDE_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["plugins/some-other-plugin/tests/conftest.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH, _mod.CLAUDE_TESTS_DIR,
@@ -993,7 +1005,9 @@ class TestSelectPytestTargets:
         """test_statusline_command.py matches three predicates at once:
         CLAUDE_TESTS_DIR's own domain rule, _is_py_source_under_claude_or_plugins
         (a .py file under claude/), and _is_test_source_change (a test_*.py
-        file directly inside a tests/ directory)."""
+        file directly inside a tests/ directory) -- the first two both
+        contribute CLAUDE_TESTS_DIR, so the target set still has three
+        members."""
         result = _mod.select_pytest_targets(["claude/.claude/tests/test_statusline_command.py"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1373,7 +1387,7 @@ class TestRuleTablePathFidelity:
         for constant in _EXACT_MATCH_LITERAL_PATH_CONSTANTS:
             assert (_REPO_ROOT / constant).is_file(), f"{constant} does not exist as a file"
 
-    def test_every_real_top_level_claude_dir_is_mapped_or_allowlisted(self):
+    def test_every_real_top_level_claude_dir_is_mapped(self):
         """Existing tests above validate declared table entries -- that a
         target exists, that a glob matches something. None of them validate
         completeness against the real tree: a new top-level directory under
@@ -1394,7 +1408,7 @@ class TestRuleTablePathFidelity:
         )
 
     def test_every_mapped_top_level_dir_exists_on_disk(self):
-        """Reverse of test_every_real_top_level_claude_dir_is_mapped_or_allowlisted
+        """Reverse of test_every_real_top_level_claude_dir_is_mapped
         above: that test catches a missing entry, this one catches a stale
         extra one. SKILLS_DIR is the motivating case -- it now points outside
         claude/.claude/, but a constant of that name could still linger in
@@ -1407,7 +1421,7 @@ class TestRuleTablePathFidelity:
             )
 
     def test_every_real_root_claude_dir_is_mapped(self):
-        """Mirrors test_every_real_top_level_claude_dir_is_mapped_or_allowlisted
+        """Mirrors test_every_real_top_level_claude_dir_is_mapped
         for the separate root .claude/ tree, where PLANS_DIR, ROOT_RULES_DIR,
         and ROOT_SKILLS_DIR reference subdirectories by path. No
         DELIBERATELY_UNMAPPED-style counterpart is needed here: every real

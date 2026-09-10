@@ -191,11 +191,11 @@ ROOT_SKILLS_DIR = ".claude/skills"
 # claudeMdExcludes entry by path.
 ROOT_SETTINGS_JSON = ".claude/settings.json"
 
-# claude/.claude/tests/test_statusline_command.py (CLAUDE_TESTS_DIR) reads
-# this exact file by path. test_shellcheck.py (HOOKS_TESTS_DIR) lints every
-# tracked shell script, and test_no_bash4_constructs.py and
-# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
-# recursively glob claude/.claude/ for *.sh files -- all three pick it up.
+# test_statusline_command.py (CLAUDE_TESTS_DIR) reads this file by path.
+# test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
+# tracked-shell-script sweep. test_no_bash4_constructs.py and
+# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR) pick
+# it up via their own recursive *.sh globs.
 STATUSLINE_COMMAND_SH = "claude/.claude/statusline-command.sh"
 
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
@@ -230,10 +230,9 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
 FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
 
 # Each path below forces a full-suite run rather than a domain selection:
-# - claude/.claude/tests/helpers.py is imported by every domain's own test dir.
-#   It also matches CLAUDE_TESTS_DIR's own domain rule, so without this entry
-#   a helpers.py change would select only claude/.claude/tests instead of
-#   every importing domain.
+# - claude/.claude/tests/helpers.py's own DOMAIN_RULES match alone would
+#   under-select it to claude/.claude/tests plus TICKET_REFERENCE_DISCIPLINE_TEST_PATH.
+#   This entry is what forces every importing domain's tests to run instead.
 # - pyproject.toml governs collection for all of them
 # - this script's own table can't be trusted to correctly select tests for
 #   itself once changed
@@ -317,6 +316,11 @@ def _is_hooks_dir_shell_script_change(path: str) -> bool:
 # hooks/scripts shell-script domain rules.
 # Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly rather than the
 # HOOKS_TESTS_DIR domain it lives in.
+# Also selects CLAUDE_TESTS_DIR: TestConftestModuleNamesAreUnique in
+# test_pytest_collection_config.py resolves every tracked conftest.py
+# repo-wide via git ls-files, with no root scoping, so a .py file anywhere
+# under this predicate's three roots can be a new conftest.py that needs
+# that pairwise-uniqueness check to actually run.
 def _is_py_source_under_claude_or_plugins(path: str) -> bool:
     return (
         path.endswith(".py")
@@ -436,10 +440,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
 # STATUSLINE_COMMAND_SH: see its own comment above for citation.
 # _is_py_source_under_claude_or_plugins: see its own comment above for
-# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH directly.
-# test_pytest_collection_config.py (CLAUDE_TESTS_DIR) collects the whole
-# claude/.claude/ tree in a subprocess and AST-parses every tracked test
-# module under the three roots this predicate covers, so it's selected too.
+# citation. Selects TICKET_REFERENCE_DISCIPLINE_TEST_PATH and
+# CLAUDE_TESTS_DIR directly.
 # _is_test_source_change: see SELECT_TESTS_TEST_PATH's own comment above for
 # citation. A strict subset of _is_py_source_under_claude_or_plugins, since
 # only a test file under one of the five selectable test directories can
