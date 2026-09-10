@@ -11488,6 +11488,14 @@ def build_parser() -> argparse.ArgumentParser:
             " --no-redact, and --config-dir."
         ),
     )
+    p_cost.add_argument(
+        "--share-only", action="store_true",
+        help=(
+            "Four dimensionless percentage-share tables (class, model, thread, context bucket) —"
+            " never a dollar figure, a token count, or a grand total. Refuses --by-project,"
+            " --no-redact, --summary, and --top. See docs/transcript-analysis.md."
+        ),
+    )
     p_cost.set_defaults(func=cmd_cost)
 
     p_context_dist = sub.add_parser(

@@ -2602,6 +2602,221 @@ class TestCostSummary:
         assert _extract_md_grand_total(out) == pytest.approx(2.00)
 
 
+class TestCostShareOnly:
+    """--share-only: four dimensionless percentage-share tables (class,
+    model, thread, context bucket) and nothing else -- never a dollar
+    figure, a token count, or a grand total, so running `cost` over a
+    mixed/multi-account corpus never puts a barred raw absolute into the
+    caller's context. _cost_report takes an early return before the first
+    dollar-emitting print site (_print_token_class_table) once share_only
+    is set, not a suppression flag threaded through the existing printers,
+    so a dollar/token-emitting print site added to _cost_report later stays
+    unreachable under --share-only only because it never runs past that
+    return (see the matching comment at the early-return line in cost.py).
+    The structural assertions below -- exact two-column header sets, and
+    every non-label cell matching a percentage shape (`\\d+\\.\\d%`), never a
+    raw-float shape -- are the actual leak check, not a `$`/`Tokens`
+    substring-absence check: this codebase's table renderers never attach
+    `$` or `Tokens` to a data cell, only to a header, so a malformed
+    share-only table could leak a bare, mislabeled figure and still pass a
+    substring-absence check. Extend these structural assertions if a fifth
+    share-only table or a differently-labeled column is ever added.
+    """
+
+    @staticmethod
+    def _share_table_rows(out: str, section: str) -> list[str]:
+        """Slice one share-only table's own header-and-data-row lines
+        (`[header, *data_rows]`), from its `## Cost by {section} (share
+        only)` heading through the next blank line."""
+        lines = out.splitlines()
+        heading_idx = next(i for i, ln in enumerate(lines) if ln == f"## Cost by {section} (share only)")
+        header_idx = heading_idx + 2  # heading, then the blank line the print's own \n\n opens
+        end = header_idx + 1
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        return lines[header_idx:end]
+
+    def _assert_share_table_structure(self, out: str, section: str, label: str) -> None:
+        header, *data_rows = self._share_table_rows(out, section)
+        assert header.split() == [label, "Share"]
+        assert data_rows, f"no data rows found for the {section!r} share table"
+        for row in data_rows:
+            cells = row.split()
+            assert len(cells) == 2, f"expected a 2-cell row, got {row!r}"
+            assert re.fullmatch(r"\d+\.\d%", cells[1]), f"non-percentage share cell: {cells[1]!r}"
+
+    @staticmethod
+    def _excluded_spend_line(out: str) -> str:
+        for line in out.splitlines():
+            if line.startswith("EXCLUDED SPEND"):
+                return line
+        raise AssertionError("EXCLUDED SPEND banner not found in output")
+
+    # -- Refusals --------------------------------------------------------
+
+    def test_refuses_by_project(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, by_project=True), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --by-project" in capsys.readouterr().err
+
+    def test_refuses_no_redact(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, no_redact=True), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --no-redact" in capsys.readouterr().err
+
+    def test_refuses_summary(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, summary=True, this_repo=True), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --summary" in capsys.readouterr().err
+
+    def test_refuses_non_default_top(self, fake_projects, capsys):
+        """A dead combination, not a silent accept -- --top selects rows for
+        a table that sits entirely after the early return and is never
+        rendered under --share-only."""
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, top=5), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --top" in capsys.readouterr().err
+
+    def test_refuses_top_zero(self, fake_projects, capsys):
+        """--top 0 is falsy. Reading it via the `or 20`-collapsed top_n
+        instead of the raw parsed value would silently fold it back to the
+        default and let it slip past this refusal."""
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, top=0), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses --top" in capsys.readouterr().err
+
+    def test_share_only_flag_registered_at_argparse_level(self):
+        args = _mod.build_parser().parse_args(["cost", "--share-only"])
+        assert args.share_only is True
+
+    # -- The four tables ---------------------------------------------------
+
+    def test_four_tables_render_percentage_shaped_cells_only(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, cache_read=500_000, output=200_000),
+            _priced("claude-opus-5", input=250_000, ephemeral_1h=100_000),
+        ])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        self._assert_share_table_structure(out, "token class", "Class")
+        self._assert_share_table_structure(out, "model ID", "Model")
+        self._assert_share_table_structure(out, "thread", "Thread")
+        self._assert_share_table_structure(out, "context-at-turn bucket", "Bucket")
+
+    def test_print_share_only_tables_computes_exact_percentages_from_known_totals(self, capsys):
+        """Direct unit call on _print_share_only_tables, mirroring
+        TestCostMarkdownTablePrinters's pattern of hand-picked totals and an
+        exact expected percentage, rather than only the shape the structural
+        test above checks. A denominator/argument-order regression (e.g. a
+        swapped grand_total) would still produce a percentage-shaped string
+        and pass every structural assertion above, so this pins one row per
+        table against an independently hand-computed percentage."""
+        class_totals = {cls: 0.0 for cls in _mod._TOKEN_CLASSES}
+        class_totals["input"] = 3.0
+        class_totals["output"] = 1.0
+        model_totals = {"claude-sonnet-5": 3.0, "claude-opus-5": 1.0}
+        bucket_totals = {_mod.pricing._CONTEXT_BUCKET_UNDER: 3.0, _mod.pricing._CONTEXT_BUCKET_OVER: 1.0}
+        _mod.cost._print_share_only_tables(class_totals, model_totals, 3.0, 1.0, bucket_totals, 4.0)
+        out = capsys.readouterr().out
+
+        def _cell(section: str, label: str) -> str:
+            for row in self._share_table_rows(out, section)[1:]:
+                cells = row.split()
+                if cells[0] == label:
+                    return cells[1]
+            raise AssertionError(f"no {label!r} row in the {section!r} share table")
+
+        assert _cell("token class", "input") == "75.0%"
+        assert _cell("token class", "output") == "25.0%"
+        assert _cell("model ID", "claude-sonnet-5") == "75.0%"
+        assert _cell("model ID", "claude-opus-5") == "25.0%"
+        assert _cell("thread", "main") == "75.0%"
+        assert _cell("thread", "subagent") == "25.0%"
+        assert _cell("context-at-turn bucket", _mod.pricing._CONTEXT_BUCKET_UNDER) == "75.0%"
+        assert _cell("context-at-turn bucket", _mod.pricing._CONTEXT_BUCKET_OVER) == "25.0%"
+
+    # -- Suppression, not refusal, under multi-root -------------------------
+
+    def test_multi_root_composes_and_suppresses_per_account_and_top_n_sections(self, tmp_path, capsys):
+        """Multi-root scope is exactly the mixed corpus --share-only exists
+        to serve -- it is not refused, unlike --by-project/--no-redact/
+        --summary/--top above -- but the identity-bearing per-account and
+        top-N-by-dollars sections still don't render."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-opus-5", input=500_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "## Cost by account" not in out
+        assert "## Top" not in out
+        self._assert_share_table_structure(out, "token class", "Class")
+
+    def test_branch_exclusion_diagnostic_suppressed(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main"),
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x"),
+        ])
+        _mod._cost_report(_cost_args(share_only=True, branches="main"), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        assert "## Branch-filter exclusions" not in out
+
+    # -- Excluded-spend banner: count-free in both directions ----------------
+
+    def test_excluded_spend_banner_share_only_variant_has_no_count_priced_and_unpriced_mix(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("<synthetic>", input=1_000_000, output=500_000),  # unpriced
+            _priced("claude-sonnet-5", input=100_000),                 # priced
+        ])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        line = self._excluded_spend_line(out)
+        assert line == (
+            "EXCLUDED SPEND — some turns used unpriced or unrecognized model IDs and are"
+            " excluded from the shares below."
+        )
+        assert not re.search(r"\d", line)
+        assert "Unpriced tokens (unknown model IDs):" not in out
+        assert not re.search(r"unpriced\s+[\d,]+\s+tokens", out)
+
+    def test_excluded_spend_banner_share_only_variant_has_no_count_all_unpriced_corpus(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-example-9", input=1_000_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        out = capsys.readouterr().out
+        line = self._excluded_spend_line(out)
+        assert not re.search(r"\d", line)
+        self._assert_share_table_structure(out, "token class", "Class")
+
+    # -- Zero-session multi-root scope ---------------------------------------
+
+    def test_zero_session_multi_root_scope_renders_clean_caption_and_warnings(self, tmp_path, capsys):
+        """render._pct_of is zero-safe: a zero-session scope still renders
+        the four share tables (every cell 0.0%), plus the caption and one
+        WARNING per empty root -- no crash, and no stale-total artifact
+        left over from a prior computation."""
+        empty_root_a = tmp_path / "acct-empty-a"
+        empty_root_a.mkdir(parents=True)
+        empty_root_b = tmp_path / "acct-empty-b"
+        empty_root_b.mkdir(parents=True)
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[empty_root_a, empty_root_b])
+        out = capsys.readouterr().out
+        assert "Scope: pooled corpus, all time." in out
+        assert out.count("WARNING: cost:") == 2
+        header, *data_rows = self._share_table_rows(out, "token class")
+        assert header.split() == ["Class", "Share"]
+        for row in data_rows:
+            assert row.split()[1] == "0.0%"
+
+
 class TestListPriceCaveat:
     """The two render paths diverge on purpose. `--summary` wraps the caveat
     in a GFM `> [!IMPORTANT]` alert for a GitHub PR body. The full report
