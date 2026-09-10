@@ -64,6 +64,8 @@ def _append_args(
     disposition: str = "ADDRESS",
     rationale: str = "fixed inline",
     source: str | None = None,
+    authoring_agent: str | None = None,
+    authoring_effort: str | None = None,
 ) -> list[str]:
     args = [
         "append",
@@ -77,6 +79,10 @@ def _append_args(
     ]
     if source is not None:
         args += ["--source", source]
+    if authoring_agent is not None:
+        args += ["--authoring-agent", authoring_agent]
+    if authoring_effort is not None:
+        args += ["--authoring-effort", authoring_effort]
     return args
 
 
@@ -148,6 +154,8 @@ class TestReviewLedgerAppendHappyPath:
             "disposition": "ADDRESS",
             "rationale": "fixed inline",
             "source": "foo.py:12",
+            "authoring_agent": "",
+            "authoring_effort": "",
         }
 
     def test_append_defaults_source_to_n_a(self, isolated_home, git_repo):
@@ -180,6 +188,48 @@ class TestReviewLedgerAppendHappyPath:
         )
         dispositions = {json.loads(line)["disposition"] for line in lines}
         assert dispositions == {"DEFER", "ADDRESS"}
+
+    def test_repeat_identical_line_with_authoring_fields_is_deduped(self, isolated_home, git_repo):
+        """authoring_agent/authoring_effort are round-stable, so an identical
+        retry with the same values is still a no-op, not a duplicate --
+        confirms the new fields didn't turn dedup's whole-line grep -qFx
+        into a per-call-varying comparison."""
+        _seed_session(isolated_home, SID)
+        args = _append_args(authoring_agent="code-writer", authoring_effort="high")
+        _run(args, cwd=git_repo, home=isolated_home)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical repeat append must be a no-op, got: {lines}"
+
+    def test_absent_authoring_flags_still_succeeds(self, isolated_home, git_repo):
+        """An absent --authoring-agent/--authoring-effort must never abort
+        the append -- only an invalid value does."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_agent"] == ""
+        assert record["authoring_effort"] == ""
+
+    def test_invalid_authoring_agent_rejected(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent="general-purpose"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_invalid_authoring_effort_rejected(self, isolated_home, git_repo):
+        """`max` is deliberately excluded from the effort enum (CLAUDE.md's
+        "xhigh, not max") -- rejecting it is the signal that the routing
+        rule changed, not a value to silently record."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_effort="max"), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
 
     def test_unknown_gate_argument_rejected(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)

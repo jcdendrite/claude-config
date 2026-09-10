@@ -9,6 +9,8 @@ from transcript_analysis import corpus, render, review_rounds
 from .conftest import (
     _agent_use,
     _priced,
+    _skill_block,
+    _slash_user,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
@@ -45,14 +47,6 @@ def _review_round_cost_args(
 
 def _session_iter(fake_projects):
     return corpus.iter_sessions(fake_projects.parent, "*")
-
-
-def _skill_block(tool_id: str, skill: str) -> dict:
-    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
-
-
-def _slash_user(skill: str, *, branch: str = "main", ts: str | None = None) -> dict:
-    return _user_msg(f"<command-name>/{skill}</command-name>", branch=branch, ts=ts)
 
 
 def _nested_subagent_session_id(top_session_id: str, top_agent_id: str) -> str:

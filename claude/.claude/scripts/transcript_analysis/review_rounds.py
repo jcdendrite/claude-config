@@ -116,7 +116,7 @@ def _round_open_skill(rec: dict) -> str | None:
     return None
 
 
-def _detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
+def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
     (already deduped, main-thread-only) records.
 
@@ -127,6 +127,11 @@ def _detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     opening record. No cross-path dedup is needed between the two
     invocation shapes. They are disjoint by construction: a Skill tool_use
     lives on an assistant record, a /slash tag lives on a user record.
+
+    Public (no leading underscore): author_outcome.py is a second consumer,
+    reading only each window's own open_idx/skill (its own outcome-span
+    definition is not this function's window_end -- see
+    docs/transcript-analysis.md's author-outcome section).
     """
     n = len(records)
     windows: list[tuple[int, int, str]] = []
@@ -316,7 +321,7 @@ def compute_review_round_costs(
     for jsonl, records in session_iter:
         records = pricing.dedup_turns_by_request_id(records)  # dedup before pricing — see pricing.py
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
-        windows = _detect_round_windows(records)
+        windows = detect_round_windows(records)
         record_branches = _session_record_branches(records, windows)
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         visited: set[str] = set()

@@ -37,6 +37,7 @@ from _config_dir import config_dir
 # scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
 # scope.PROJECTS_DIR.
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
+from transcript_analysis.author_outcome import cmd_author_outcome
 from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,
     _index_subagent_dispatches,
@@ -9360,33 +9361,6 @@ _TURN_SHAPE_MUTATING_GIT_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 
 
-# Shell operators that chain multiple invocations into one Bash command --
-# splitting on these keeps a mutating git call from hiding in a later segment
-# of e.g. "cd worktree && git commit -m wip".
-_TURN_SHAPE_SHELL_OPERATOR_TOKENS: frozenset[str] = frozenset({"&&", "||", ";", "|"})
-
-
-def _split_command_tokens_on_shell_operators(tokens: list[str]) -> list[list[str]]:
-    """Split a shlex-tokenized command into segments at &&, ||, ;, and | operators.
-
-    A quoted operator (e.g. a commit message containing "&&") survives as
-    part of its enclosing token from shlex.split and is never treated as a
-    separator here, since it can't equal one of these bare operator tokens.
-    """
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token in _TURN_SHAPE_SHELL_OPERATOR_TOKENS:
-            if current:
-                segments.append(current)
-            current = []
-        else:
-            current.append(token)
-    if current:
-        segments.append(current)
-    return segments
-
-
 # A single env-var-assignment token, e.g. "FOO=bar" -- the per-token form of
 # _DENIAL_COMMAND_ENV_PREFIX_RE's leading-assignment character classes, applied
 # per shell-operator segment (not just once at the start of the whole
@@ -9420,13 +9394,9 @@ def _bash_command_is_mutating_git(command: str) -> bool:
     """Return True iff any &&/;/|/||-chained segment of `command` invokes a
     mutating git subcommand (see _command_segment_is_mutating_git).
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
     return any(
         _command_segment_is_mutating_git(segment)
-        for segment in _split_command_tokens_on_shell_operators(tokens)
+        for segment in corpus.split_command_segments(command)
     )
 
 
@@ -11878,6 +11848,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print only rounds for one skill name (default: all three); never narrows detection.",
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
+
+    p_author_outcome = sub.add_parser(
+        "author-outcome",
+        help=(
+            "For each --agent-typed dispatch (default code-writer), what share of the code-review"
+            " rounds that judged its diff recorded a must-fix (ADDRESS) finding -- the numerator"
+            " issue #800 defines. Reads only the transcript, matching commands by argv shape. Corpus-wide,"
+            " no gh calls."
+        ),
+    )
+    _add_project_scope_args(p_author_outcome)
+    p_author_outcome.add_argument(
+        "--agent", metavar="NAME", default="code-writer",
+        help="subagent_type to join dispatches against (default: code-writer).",
+    )
+    p_author_outcome.add_argument(
+        "--since", metavar="Nd",
+        help="Limit to dispatches with a timestamp in the last N days (e.g. 30d); default: all time.",
+    )
+    p_author_outcome.set_defaults(func=cmd_author_outcome)
 
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",

@@ -29,6 +29,12 @@ join, reused recursively by `review_rounds.py`'s nested-dispatch descent since t
 transcript file). No dependency on scope resolution, redaction, or pricing — every other module
 (and the shim) builds on this one.
 
+Also owns `split_command_segments` — shlex-tokenize a raw shell command string, then split on
+`&&`/`||`/`;`/`|` into segments — promoted here from the shim (which had its own,
+`_bash_command_is_mutating_git`-only copy) as the single source of truth for three consumers:
+(1) the shim's own mutating-git classifier, (2) `author_outcome.py`'s ledger-append matcher
+(`_parse_ledger_append_flags`), and (3) its clean-marker-write matcher (`_is_clean_marker_write`).
+
 ### `scope.py`
 
 Scan-root and project-scope resolution: `PROJECTS_DIR`, `resolve_scan_roots`,
@@ -104,7 +110,22 @@ when absent, and every record inside that round's window is attributed to it, ne
 `cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
 never needs. `REVIEW_SKILLS` is the one public name here, back-imported by
 the still-unmigrated `cmd_judgment_pair` in the shim for its own `--skills` default — a second
-entry in the one-directional exception noted above.
+entry in the one-directional exception noted above. `detect_round_windows` is public (no leading
+underscore) for the same reason: `author_outcome.py` is a second consumer, reading only each
+window's own `open_idx`/`skill`.
+
+### `author_outcome.py`
+
+The author-outcome command family: `cmd_author_outcome` and every helper used only by it —
+for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code-review` round
+that judged its diff (`compute_author_outcomes`), by completion-index ordering against
+`review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by matching that
+round's own `review-ledger.sh append code-review`/`marker.sh write code-review` Bash `tool_use`
+commands directly, by argv shape. It reads only the transcript — no review-narrative-ledger file
+is ever opened. Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
+(attribute access), matching `review_rounds.py`'s own convention. See
+`docs/transcript-analysis.md`'s author-outcome section for the full failure definition, output
+shape, and documented scope gaps.
 
 ## Sibling scripts
 
@@ -124,5 +145,8 @@ per-command-group test file the decomposition has produced; it loads its own ind
 `test_transcript_analysis.py` uses, rather than importing that file's `_mod`. `tests/conftest.py`
 carries the shared fixtures that reach across the shim/package boundary and across both test files
 (`fake_projects`, `fake_config_dir_factory`, `_table_cols`, `cost_ledger_file`); see its own
-docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's still-independent
-`config_dir` binding.
+docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and
+the shim's still-independent `config_dir` binding. `author_outcome.py`'s own tests live in
+`tests/test_author_outcome.py`: most exercise the package module directly
+(`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
+shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.

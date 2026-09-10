@@ -22,10 +22,14 @@ Usage: ~/.claude/scripts/review-ledger.sh <subcommand> [args]
 
 Subcommands:
   append code-review --finding <text> --disposition ADDRESS|DEFER \
-      --rationale <text> [--source <file:line>]
+      --rationale <text> [--source <file:line>] \
+      [--authoring-agent code-writer|inline|mixed|unknown] \
+      [--authoring-effort low|medium|high|xhigh]
              Append one finding-disposition event to this session's ledger.
              No-ops (exit 0) if the identical line already exists, or if
              ~/.claude/.review-narrative-ledger-disabled is present.
+             --authoring-agent and --authoring-effort are optional; an
+             absent flag never aborts the append, but an invalid value does.
   show       Print this session's ledger contents, or an absence message.
   clear-stale [--dry-run]
              Remove ledger (.jsonl) and orphaned lock (.lock) files older
@@ -138,9 +142,11 @@ case "$SUBCOMMAND" in
     DISPOSITION=""
     RATIONALE=""
     SOURCE="n/a"
+    AUTHORING_AGENT=""
+    AUTHORING_EFFORT=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --finding|--disposition|--rationale|--source)
+        --finding|--disposition|--rationale|--source|--authoring-agent|--authoring-effort)
           if [ $# -lt 2 ]; then
             printf "review-ledger.sh: %s requires a value\n" "$1" >&2
             exit 2
@@ -152,6 +158,8 @@ case "$SUBCOMMAND" in
         --disposition) DISPOSITION="$2"; shift 2 ;;
         --rationale) RATIONALE="$2"; shift 2 ;;
         --source) SOURCE="$2"; shift 2 ;;
+        --authoring-agent) AUTHORING_AGENT="$2"; shift 2 ;;
+        --authoring-effort) AUTHORING_EFFORT="$2"; shift 2 ;;
         *)
           printf "review-ledger.sh: unknown argument '%s'\n" "$1" >&2
           usage
@@ -166,6 +174,16 @@ case "$SUBCOMMAND" in
       *) printf "review-ledger.sh: --disposition must be ADDRESS or DEFER, got '%s'\n" "$DISPOSITION" >&2; exit 2 ;;
     esac
     [ -n "$RATIONALE" ] || { printf 'review-ledger.sh: --rationale is required\n' >&2; exit 2; }
+    # Absent (empty) never aborts -- only a present-but-invalid value does,
+    # consistent with --disposition above but optional rather than required.
+    case "$AUTHORING_AGENT" in
+      ""|code-writer|inline|mixed|unknown) ;;
+      *) printf "review-ledger.sh: --authoring-agent must be one of code-writer, inline, mixed, unknown, got '%s'\n" "$AUTHORING_AGENT" >&2; exit 2 ;;
+    esac
+    case "$AUTHORING_EFFORT" in
+      ""|low|medium|high|xhigh) ;;
+      *) printf "review-ledger.sh: --authoring-effort must be one of low, medium, high, xhigh, got '%s'\n" "$AUTHORING_EFFORT" >&2; exit 2 ;;
+    esac
 
     # Reject over-cap fields rather than truncate — silent truncation would
     # corrupt exactly the narrative fidelity this ledger exists to preserve.
@@ -200,7 +218,9 @@ case "$SUBCOMMAND" in
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
-      '{finding: $finding, disposition: $disposition, rationale: $rationale, source: $source}')
+      --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \
+      '{finding: $finding, disposition: $disposition, rationale: $rationale, source: $source,
+        authoring_agent: $authoring_agent, authoring_effort: $authoring_effort}')
     if [ -z "$LINE" ]; then
       printf 'review-ledger.sh: could not build the ledger line (jq missing, failed, or timed out). Abort without writing.\n' >&2
       exit 2

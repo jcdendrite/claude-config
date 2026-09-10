@@ -224,6 +224,14 @@ def _bash_use(tool_id: str, command: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
 
 
+def _skill_block(tool_id: str, skill: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
+
+
+def _slash_user(skill: str, *, branch: str = "main", ts: str | None = None) -> dict:
+    return _user_msg(f"<command-name>/{skill}</command-name>", branch=branch, ts=ts)
+
+
 def _tool_result(tool_id: str, text: str) -> dict:
     return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
 
