@@ -498,6 +498,21 @@ class TestDenyPiiInCommits:
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo) == "allow"
 
     # ------------------------------------------------------------------ #
+    # Self-exclusion: built-in PATHSPEC_EXCLUDES                          #
+    # ------------------------------------------------------------------ #
+
+    def test_scripts_tests_dir_credential_fixture_allowed(self, isolated_home, git_repo):
+        """claude/.claude/scripts/tests/** is always excluded from the diff
+        scan alongside claude/.claude/hooks/tests/** -- it carries synthetic
+        credential-shaped fixtures for testing
+        review-pr-scan-findings-body.sh. Without this exclusion, every
+        commit adding such a fixture would trip this hook on its own test
+        data."""
+        (git_repo / "claude" / ".claude" / "scripts" / "tests").mkdir(parents=True)
+        _stage(git_repo, "claude/.claude/scripts/tests/test_new_case.py", f"token = {GHP_TOKEN!r}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "allow"
+
+    # ------------------------------------------------------------------ #
     # exclude: globs                                                      #
     # ------------------------------------------------------------------ #
 

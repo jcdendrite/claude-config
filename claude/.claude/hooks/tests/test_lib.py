@@ -11,6 +11,7 @@ OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1083,6 +1084,100 @@ def test_marker_value_present_restores_nullglob_state() -> None:
         ["bash", "-c", harness], capture_output=True, text=True, check=False
     )
     assert result.stdout.strip() == "RESTORED", repr(result.stdout)
+
+
+# --- _lib_review_pr_completion_marker_fields -------------------------------
+#
+# review-pr-post.sh's only read of the completion marker /review-pr's
+# `write review-pr` arm writes -- session-scoped (never a cross-session
+# glob, unlike _lib_marker_value_present above), since this authorizes a
+# `gh pr review` POST rather than releasing a gate for a read.
+
+
+def _review_pr_completion_marker_fields(
+    config_dir: Path, repo_hash: str, session_id: str
+) -> subprocess.CompletedProcess:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_review_pr_completion_marker_fields "$@"', "bash",
+        str(config_dir), repo_hash, session_id,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def _write_review_pr_marker(config_dir: Path, repo_hash: str, session_id: str, content: str) -> None:
+    marker_dir = config_dir / "review-pr-markers"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    (marker_dir / f"{repo_hash}.{session_id}").write_text(content)
+
+
+def test_review_pr_completion_marker_fields_returns_the_three_stored_lines(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\n"
+
+
+def test_review_pr_completion_marker_fields_tolerates_missing_trailing_newline(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\n"
+
+
+def test_review_pr_completion_marker_fields_absent_marker_returns_1_with_no_output(
+    tmp_path: Path,
+) -> None:
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("foo/bar#42\nabc123\n", id="only_two_lines"),
+        pytest.param("foo/bar#42\n\ndef456\n", id="empty_middle_line"),
+        pytest.param("\nabc123\ndef456\n", id="empty_first_line"),
+        pytest.param("foo/bar#42\nabc123\n\n", id="empty_third_line"),
+        pytest.param("", id="empty_file"),
+    ],
+)
+def test_review_pr_completion_marker_fields_malformed_content_returns_1_with_no_output(
+    tmp_path: Path, content: str
+) -> None:
+    """A marker that doesn't parse into exactly three non-empty lines must
+    never authorize a post on partial data -- each malformed shape below
+    fails closed the same way an absent marker does."""
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", content)
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_wrong_session_returns_1(tmp_path: Path) -> None:
+    """Session-scoped, unlike _lib_marker_value_present's cross-session glob
+    above: a marker written under one session must not authorize a read from
+    another -- see test_other_sessions_marker_does_not_leak_bypass for the
+    equivalent property on the active-bypass marker."""
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-b")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_wrong_repo_hash_returns_1(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "otherrepohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_rejects_traversal_session_id(tmp_path: Path) -> None:
+    """Routed through _lib_valid_session_id_component before ever building
+    the marker path -- a '../' session id must not escape review-pr-markers/."""
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "../canary")
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 # --- _lib_is_no_gate_release_agent ---------------------------------------
@@ -4351,6 +4446,48 @@ class TestRedactCredentialShapedStrings:
         assert token not in result.stdout
         assert "dpl_abcdefghijklmno" not in result.stdout
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+
+
+class TestLibSha256NoFollow:
+    """Direct unit coverage for _lib_sha256_no_follow -- otherwise only
+    exercised indirectly through marker.sh's `write review-pr` arm and
+    review-pr-post.sh's own re-verification of the same findings-body
+    file."""
+
+    def test_real_file_digest_matches_hashlib(self, tmp_path: Path) -> None:
+        target = tmp_path / "body.txt"
+        content = b"findings body content\n"
+        target.write_bytes(content)
+        result = _run_lib_call(f'_lib_sha256_no_follow "{target}"', env=dict(os.environ))
+        assert result.returncode == 0
+        assert result.stdout.strip() == hashlib.sha256(content).hexdigest()
+
+    def test_symlink_is_refused(self, tmp_path: Path) -> None:
+        real_target = tmp_path / "real.txt"
+        real_target.write_text("real content\n")
+        link = tmp_path / "link.txt"
+        link.symlink_to(real_target)
+        result = _run_lib_call(f'_lib_sha256_no_follow "{link}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_missing_path_is_refused(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist.txt"
+        result = _run_lib_call(f'_lib_sha256_no_follow "{missing}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_permission_denied_path_is_refused(self, tmp_path: Path) -> None:
+        target = tmp_path / "no-read.txt"
+        target.write_text("secret\n")
+        target.chmod(0o000)
+        try:
+            result = _run_lib_call(f'_lib_sha256_no_follow "{target}"', env=dict(os.environ))
+        finally:
+            target.chmod(0o644)
+        assert result.returncode != 0
+        assert result.stdout == ""
 
 
 # --- _lib_config_lines -------------------------------------------------
