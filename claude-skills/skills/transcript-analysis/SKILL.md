@@ -100,7 +100,7 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ## Writing up a finding for a durable or public document
 
-- **Resolving real identity to read a session's own trace content is a legitimate internal step — never let the resolved identity itself reach the write-up.** `--branches`/`--this-repo` filtering matches the real underlying value, so correlating a redacted, opaque `account-N/branch-M` figure back to its actual transcript may require temporarily resolving the real branch or repo. A long round-tail's genuine-work-vs-thrash judgment is one case where this comes up. That resolution stays scoped to your own reasoning. The write-up states the generalized fact only — never any of:
+- **Resolving real identity to read a session's own trace content is a legitimate internal step, but never let it leave your own reasoning — the write-up states the generalized fact only.** (`--branches`/`--this-repo` filtering matches the real underlying value, so correlating a redacted, opaque `account-N/branch-M` figure back to its actual transcript may require temporarily resolving the real branch or repo — for example, to judge a long round-tail's genuine-work-vs-thrash.) Never state any of:
   - the branch
   - the repo
   - the PR number

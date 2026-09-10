@@ -546,7 +546,17 @@ share.
 
 | Lever | Verdict | Measured reason |
 |---|---|---|
-| Treat the review loop as a standalone cost-reduction target | No lever identified yet, measured baseline only | Round-window spend is 30.3% of tracked branch dollars pooled across both machines (460 branches, 3,626 rounds) — the majority, ≈70%, falls outside every round window entirely, i.e. ordinary implementation work, not review overhead. The tool's own `main $` column conflates a round's skill cost with same-window fix-application turns, since no fresh user prompt separates them under autonomous shipping. A hand-sum of the cleaner reviewer-dispatch-only figure (`agent $`) across a handful of branches — not a computed corpus total, treat the precision accordingly — ran roughly 10–15% of total spend, well under the 30.3% round-window figure. Nothing in the toolkit decomposes the non-round ≈70% without double-counting round windows, so chasing that split further isn't productive. |
+| Treat the review loop as a standalone cost-reduction target | No lever identified yet, measured baseline only | Round-window spend is 30.3% of tracked branch dollars pooled across both machines (460 branches, 3,626 rounds) — the majority, ≈70%, falls outside every round window entirely, i.e. ordinary implementation work, not review overhead. |
+
+The tool's own `main $` column conflates a round's skill cost with
+same-window fix-application turns, since no fresh user prompt separates
+them under autonomous shipping. A hand-sum of the cleaner
+reviewer-dispatch-only figure (`agent $`) across a handful of branches is
+not a computed corpus total; treat its precision accordingly. It ran
+roughly 10–15% of total spend, well under the 30.3% round-window figure.
+Nothing in
+the toolkit decomposes the non-round ≈70% without double-counting round
+windows, so chasing that split further isn't productive.
 
 **Qualitative follow-up on the round-count tail.** A branch reaching 19
 review-loop invocations turned out, on a close read of its
