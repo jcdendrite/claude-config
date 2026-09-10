@@ -2605,22 +2605,15 @@ class TestCostSummary:
 class TestCostShareOnly:
     """--share-only: four dimensionless percentage-share tables (class,
     model, thread, context bucket) and nothing else -- never a dollar
-    figure, a token count, or a grand total, so running `cost` over a
-    mixed/multi-account corpus never puts a barred raw absolute into the
-    caller's context. _cost_report takes an early return before the first
-    dollar-emitting print site (_print_token_class_table) once share_only
-    is set, not a suppression flag threaded through the existing printers,
-    so a dollar/token-emitting print site added to _cost_report later stays
-    unreachable under --share-only only because it never runs past that
-    return (see the matching comment at the early-return line in cost.py).
+    figure, a token count, or a grand total.
+
     The structural assertions below -- exact two-column header sets, and
     every non-label cell matching a percentage shape (`\\d+\\.\\d%`), never a
     raw-float shape -- are the actual leak check, not a `$`/`Tokens`
     substring-absence check: this codebase's table renderers never attach
-    `$` or `Tokens` to a data cell, only to a header, so a malformed
-    share-only table could leak a bare, mislabeled figure and still pass a
-    substring-absence check. Extend these structural assertions if a fifth
-    share-only table or a differently-labeled column is ever added.
+    `$` or `Tokens` to a data cell, only to a header. Extend these
+    structural assertions if a fifth share-only table or a
+    differently-labeled column is ever added.
     """
 
     @staticmethod
@@ -2815,6 +2808,16 @@ class TestCostShareOnly:
         assert header.split() == ["Class", "Share"]
         for row in data_rows:
             assert row.split()[1] == "0.0%"
+        # Unlike the fixed-row token-class/thread/bucket tables, the model-ID
+        # table's row count tracks model_totals, which is empty when no
+        # session in scope used any model. A header with zero data rows is
+        # the deliberate output for that case, not a bug -- asserted here
+        # rather than via _assert_share_table_structure, whose `assert
+        # data_rows` is correct for every other share-only call site but
+        # doesn't hold for this one.
+        model_header, *model_rows = self._share_table_rows(out, "model ID")
+        assert model_header.split() == ["Model", "Share"]
+        assert model_rows == []
 
 
 class TestListPriceCaveat:

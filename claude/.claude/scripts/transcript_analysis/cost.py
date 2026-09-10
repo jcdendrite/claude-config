@@ -595,7 +595,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             # above folds an explicit --top 0 back to the default, which
             # would let it slip past this refusal.
             print(
-                "cost: --share-only refuses --top — it selects rows for the top-N-sessions table,"
+                "cost: --share-only refuses --top — it selects rows for the top-N-by-dollars table,"
                 " which is never rendered under --share-only",
                 file=sys.stderr,
             )

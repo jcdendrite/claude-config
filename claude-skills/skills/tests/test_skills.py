@@ -2958,18 +2958,15 @@ def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
     )
 
 
-# A citation-shaped construct that `_extract_citations` fails to recognize is
-# a silent miss, not a failure: both `_CITATION_WITH_TARGET_RE` and
-# `_BARE_CITATION_RE` require `\s+` between `§` and the opening quote, so a
-# no-space opener (`§"Heading"`) or a heading split across a line break
-# (`§ "Path-specific\nrules"`, whose `[^"\n]+` heading group can't span the
-# newline) both yield zero matches instead of a resolvable-but-wrong one.
-# This regex is deliberately looser than the extractor's own pattern — `\s*`
-# instead of `\s+`, so it also catches the no-space form — so every candidate
-# it finds can be checked against what the extractor actually returned,
-# rather than re-implementing the extractor's notion of a citation.
-# Matches the ASCII straight quote only; this repo's docs are plain-ASCII
-# by convention. Widen to `["""]` if that changes.
+# A citation-shaped construct `_extract_citations` misses is a silent miss,
+# not an error (both extractor regexes require `\s+` before the quote; a
+# no-space opener or a line-wrapped heading yields zero matches instead of a
+# wrong one).
+# This regex uses `\s*` (looser than the extractor's `\s+`) so a candidate
+# can be checked against what the extractor actually returned, rather than
+# re-implementing its notion of a citation.
+# ASCII straight quote only, per this repo's plain-ASCII convention — widen
+# to `["""]` if that changes.
 _CITATION_CANDIDATE_RE = re.compile(r'§\s*"')
 
 
