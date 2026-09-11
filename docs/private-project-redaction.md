@@ -158,9 +158,13 @@ extends by analogy:
       not independently named.
     - Both sides report the same statistic, in whatever form that
       statistic is otherwise permitted (a share, a rate, or a
-      median — a total is excluded, below). Together they
-      exhaustively partition the period the whole-period figure
-      covered. This split adds no new permitted form for any
+      median — a total is excluded, below), resolved to a single
+      account and machine. The account/machine-spanning share
+      exception below does not extend to a split, for the same
+      cross-account-subtraction reason that exception's own boundary
+      exists (see "Account and machine scope" below). Together the
+      two sides exhaustively partition the period the whole-period
+      figure covered. This split adds no new permitted form for any
       statistic — it adds a second point in time for a form already
       permitted. Duration stays rate-only, per the
       Cost/Duration bullet above. Neither side's own pool size is
