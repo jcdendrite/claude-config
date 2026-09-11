@@ -376,6 +376,9 @@ def compute_author_outcomes(
             completion_idx = tool_result_index.get(tool_use_id)
             if completion_idx is None:
                 if in_scope:
+                    # Deliberately not gated by session_round_mismatch: a missing
+                    # tool-result completion is a transcript-side attribution fact,
+                    # not something the ledger/round join's mismatch affects.
                     data_quality[_DQ_UNDECIDABLE] += 1
                 continue
             attributed_open_idx = next(
@@ -395,6 +398,9 @@ def compute_author_outcomes(
 
     for round_entry in rounds_by_key.values():
         if round_entry["dispatch_count"] > 1:
+            # Deliberately not gated by session_round_mismatch: more than one
+            # dispatch attributed to a round is a transcript-side attribution
+            # fact, not something the ledger/round join's mismatch affects.
             data_quality[_DQ_CO_AUTHORED_ROUNDS] += 1
         transcript_side = (
             agent_type if round_entry["unfiltered_dispatch_count"] >= 1

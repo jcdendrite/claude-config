@@ -725,6 +725,33 @@ class TestRoundNumberMismatchIntegration:
         # would otherwise be a FAILURE -- excluded by the mismatch instead.
         assert sum(result["outcomes"].values()) == 0
 
+    def test_mismatched_session_still_increments_transcript_side_dq_counters(self, fake_projects):
+        """_DQ_UNDECIDABLE and _DQ_CO_AUTHORED_ROUNDS measure transcript-side
+        dispatch-to-round attribution, not the ledger/round join
+        session_round_mismatch guards -- both must still increment for a
+        mismatched session, unlike the headline outcomes counters, which
+        this same session's mismatch excludes."""
+        session_id = "sess-mismatched-with-quality-issues"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=2, disposition="DEFER")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _dispatch_start("a2", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("a2", "2026-08-01T10:01:10.000Z"),
+            _dispatch_start("a3", "2026-08-01T10:02:00.000Z"),  # never completes
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:03:00.000Z", content=[_skill_block("s1", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        # a1 and a2 both complete before the session's one round-open and
+        # attribute to it, co-authoring round 1 despite the mismatch above.
+        assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 1
+        # a3 never gets a paired tool_result, so it's undecidable regardless
+        # of the mismatch above.
+        assert result["data_quality"][ao._DQ_UNDECIDABLE] == 1
+
 
 class TestMultiRootLedgerLookup:
     """_config_dir_root_for_session derives each session's own ledger
