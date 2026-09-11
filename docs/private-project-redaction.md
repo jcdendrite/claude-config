@@ -145,34 +145,36 @@ extends by analogy:
       was named, using the same session-identifier-and-turn-index/
       timestamp precision as the pivot citation. That turn must precede
       the turn where the split-producing command ran.
-    - The two sides report the same statistic in whatever form that
-      statistic is otherwise permitted — a share, a rate, or a median —
-      and exhaustively partition the period the whole-period figure
-      covered. This split adds no new permitted form for any statistic —
-      it only adds a second point in time for a form already permitted.
-      Duration still stays rate-only, per the Cost/Duration bullet
-      above. Neither side's own pool size is published. The
-      whole-period value of the same statistic is not published beside
-      them, in this artifact or any other, at any time. Together, the
-      two would recover both pool sizes by arithmetic once the pooled
-      count is known. A count total on one side of a pivot is pool
-      volume dated against calendar time, which is the cadence this
-      bullet withholds.
+    - Both sides report the same statistic, in whatever form that
+      statistic is otherwise permitted (a share, a rate, or a
+      median). Together they exhaustively partition the period the
+      whole-period figure covered. This split adds no new permitted
+      form for any statistic — it adds a second point in time for a
+      form already permitted. Duration stays rate-only, per the
+      Cost/Duration bullet above. Neither side's own pool size is
+      published: a count total on one side of a pivot is pool volume
+      dated against calendar time, which is the cadence this bullet
+      withholds. What may not be published alongside a split is the
+      composition bullet's subject, below.
   - These limits bind what published figures compose to, not only what
     each one states on its own. A permitted rate times a permitted
     pool-size count is the raw pooled total the Cost/Duration bullet
     bars, whether both land in one artifact or in separate
     publications months apart. Whole-period figures published across
     successive artifacts are the time series the bullet above bars.
-    A second before/after split of the same statistic at a different
-    pivot is that series too — this repository's history offers a commit
-    near any date a reader would want. A later whole-period publication
-    of the same statistic, in any artifact, composes with an
-    already-published split the same way — together they recover both
-    sides' pool sizes by the same arithmetic — and is barred on that
-    basis regardless of how much time separates the two publications.
-    The figure that completes the reconstruction is the one that
-    crosses the line.
+    Once a split is published, nothing further may be published that,
+    combined with it, recovers how much of the pool fell on either
+    side of the pivot or extends the split into a series. A ratio or
+    relative-proportion statement between the two sides recovers
+    exactly that, the same as an absolute count would. This holds in
+    this artifact or any other, at any time, and turns on what the
+    further figure yields, not on how it is labelled. The statistic's
+    whole-period value, its complement within a fixed-sum partition, a
+    rescaling of it, and a split at a second pivot each recover one of
+    those two outcomes. This repository's history offers a commit near
+    any date a reader would want. The Counts bullet permits the pooled
+    total the arithmetic needs. The figure that completes the
+    reconstruction is the one that crosses the line.
 
 These two lists govern the mixed-corpus figure "What it permits" opens
 with, and nothing else. A figure the repo-root `CLAUDE.md` rule's own
@@ -208,8 +210,8 @@ exception, the proposal additionally states each side's window
 bounds and pool size, as approval-only input for the owner to judge
 thinness. That disclosure is never part of the published figure, and
 never quoted in any commit message, PR body, issue, or other
-public-repo artifact. The disclosure travels through the same
-non-public channel the approval citation itself is drawn from.
+public-repo artifact. The disclosure travels through a non-public
+channel, regardless of which channel carries the approval citation.
 
 Doubt about pool diversity goes to the owner as part of the proposal,
 not a reason to publish anyway. The proposal also names any prior

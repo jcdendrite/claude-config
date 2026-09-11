@@ -2936,7 +2936,6 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
         "docs/cost-levers-considered.md",
         "docs/design-decisions/schedulewakeup-misapplied-documented.md",
         "docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md",
-        ".claude/skills/code-review-claude-config/SKILL.md",
     ],
 )
 def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
@@ -2949,14 +2948,7 @@ def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
     plus its REFERENCES.md/ROUTING.md siblings only), so
     test_skill_citations_resolve_to_real_headings never sees these citations
-    — targeted narrowly here instead of widening that corpus. The
-    `.claude/skills/code-review-claude-config/SKILL.md` entry differs:
-    that file is inside the scanned corpus, so this entry positively pins
-    the citation's presence via the function's own `assert citations`
-    check. If the quoted heading is ever re-wrapped across multiple
-    lines, the citation would become invisible to both this test and the
-    corpus-wide one without either failing — this entry guards against
-    that.
+    — targeted narrowly here instead of widening that corpus.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / relative_path,
@@ -3085,6 +3077,30 @@ def test_unextracted_citation_candidate_report_cases(
     doc_path.write_text(source_text)
     violations = _unextracted_citation_candidate_report([doc_path], repo_root=tmp_path)
     assert len(violations) == expected_violation_count, violations
+
+
+def test_pooled_tooling_measurement_code_review_skill_citation_survives_rewrap() -> None:
+    """`code-review-claude-config/SKILL.md`'s `docs/private-project-redaction.md`
+    § "Publishing a pooled tooling measurement" citation is still present.
+
+    Unlike the `docs/*.md` sites above, this SKILL.md file is inside
+    `_all_skill_md_files`'s scanned corpus, so
+    test_skill_citations_resolve_to_real_headings already covers its
+    resolution correctness. But that corpus-wide test only validates
+    citations it manages to extract. It never asserts that a specific
+    one is present. If the quoted heading is ever re-wrapped across
+    multiple lines, extraction would silently stop seeing the citation
+    and the corpus-wide test would pass regardless. This test pins the
+    citation's presence via `_assert_citation_resolves_to_heading`'s own
+    `assert citations` check, so a re-wrap that breaks extraction fails
+    loudly here instead.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / ".claude/skills/code-review-claude-config/SKILL.md",
+        "docs/private-project-redaction.md",
+        "Publishing a pooled tooling measurement",
+        repo_root=REPO_ROOT,
+    )
 
 
 @pytest.mark.parametrize(

@@ -136,6 +136,15 @@ a new one):
 >   side of a pivot is pool volume dated against calendar time, which
 >   is the cadence this bullet withholds.
 
+**Superseded by rows 21, 23, 24** (this second sub-bullet and the
+composition-bullet quote below): the shipped text moved the
+whole-period-value bar out of this sub-bullet and into the composition
+bullet, closed a mismatched-statistics regression a round-2 attempt
+introduced, and named a ratio/relative-proportion disclosure as a
+covered outcome. `docs/private-project-redaction.md:148-177` is the
+current text; this blockquote is kept as the historical record of what
+was first proposed.
+
 Into the composition bullet at `:138-145`, inserted after "…are the
 time series the bullet above bars." and before the closing "The figure
 that completes the reconstruction…" sentence, so the closer stays the
@@ -148,6 +157,9 @@ closer:
 > already-published split the same way — together they recover both
 > sides' pool sizes by the same arithmetic — and is barred on that
 > basis regardless of how much time separates the two publications.
+
+**Superseded by rows 21, 23, 24** — see the note above the split
+sub-bullet's quote.
 
 At `.claude/skills/code-review-claude-config/SKILL.md:20`, the P1
 bullet becomes:
@@ -183,6 +195,13 @@ paragraph:
 > quoted in any commit message, PR body, issue, or other public-repo
 > artifact. The disclosure travels through the same non-public channel
 > the approval citation itself is drawn from.
+
+**Superseded by row 22:** the closing sentence's circular premise (it
+assumed the approval-citation channel is non-public, a property the
+base Approval-gate paragraph never establishes) was found and fixed.
+`docs/private-project-redaction.md:199-205` is the current text; this
+blockquote is kept as the historical record of what was first
+proposed.
 
 This is a disclosure requirement on the *proposal*, not a change to who
 approves or what may be published — G2 (the gate is unsatisfiable by an
@@ -237,14 +256,21 @@ reach:
 | 18 | M2's added sentence, as first drafted, only barred a second *split* at a different pivot — not a later independent whole-period publication of the same statistic recombining with an already-published split via row 5's arithmetic to recover both sides' pool sizes. `ciso-reviewer` (Finding D) found this gap; the general composition clause elsewhere already extends other bars across separate artifacts and time, so this split-specific clause was narrower than its own sibling rule without a stated reason. Fixed by extending both the split sub-bullet itself and M2's sentence to cover any artifact, at any time. | `[verified: ciso-reviewer, plan-review round 1, against docs/private-project-redaction.md:138-145's "whether both land in one artifact or in separate publications months apart"]` |
 | 19 | Row 15/M5's disclosure sentence, as first drafted, said the window bounds and pool size are "never as part of the published figure" but named no restriction on *where* the proposal itself may be posted — this repo is public, so posting that disclosure as a PR comment would itself publish exactly what the split sub-bullet bars. `/code-review`'s `ciso-reviewer` pass (a fresh check against the committed file, not the plan-review round) found this egress gap and pointed at `background-wait-phase2-measurement.md`'s M4 as this repo's own existing precedent for closing it. Fixed by adding the same non-public-channel restriction to M5's sentence. | `[verified: ciso-reviewer, code-review pass on the staged commit; precedent at .claude/plans/background-wait-phase2-measurement.md M4]` |
 | 20 | Row 7/16's "transcript turn" citation, as first drafted, named no citation format — unlike the pivot's own "cited by SHA or merge date" in the same sentence, an agent could satisfy the letter of the clause with a bare narrative turn-number assertion pointing at nothing a third party could check, falling short of the doc's own "durable, independently-checkable" approval-citation bar it claims parity with. `ciso-reviewer` (code-review pass) found this a partial, not full, close of the original Finding B. Fixed by requiring the citation to include a session identifier plus turn index or timestamp. | `[verified: ciso-reviewer, code-review pass on the staged commit, against docs/private-project-redaction.md:161-163's "durable, independently-checkable record" standard]` |
+| 21 | A follow-up attempt to close row 23's "same statistic" gap (widening it to cover an algebraically-derivable equivalent, not just a label match) was itself the wrong fix: applied at the split sub-bullet, it turned a same/same comparability *requirement* between the two split sides into a permission for mismatched statistics between them, and left a fourth occurrence (the composition bullet's "second split... at a different pivot" sentence) uncovered. A `plan-architect` round-3 consult found both defects and that "define the open-ended enumeration once, reference it three times" would still be wrong-shaped, since M2's own rationale (row above) already rejects a second pivot-specific site as the duplication the composition clause exists to avoid. Resolution: the split sub-bullet's comparability requirement is restored to a pure same-statistic match (no widening), and the composition bullet is restated once, at the altitude its own rationale already sits at — barring whatever a further figure would *yield* (recovering either side's share of the pool, or extending the split into a series), not gating on the statistic's label. This covers the whole-period-value case, the complement/rescaling case, and the second-split case in one sentence. "Algebraically derivable" no longer appears in any operative sentence in the repo. | `[verified: plan-architect, round-3 consult, against docs/private-project-redaction.md:148-177's on-disk state; also verified "algebraically derivable" exists nowhere else in the repo]` |
+| 22 | Row 19's M5 fix ("the same non-public channel the approval citation itself is drawn from") itself assumed a property the base Approval-gate paragraph never establishes — the citation requirement is satisfied equally by a private channel or a public PR comment from the owner's own account — so an agent reading the clause narrowly could treat a public citation channel as license to post the disclosure publicly too. `ciso-reviewer` (code-review pass, round 2) found this circularity. Fixed by stating the non-public-channel requirement on the disclosure directly: "a non-public channel, regardless of which channel carries the approval citation." This does not weaken the base citation requirement, which is untouched. | `[verified: ciso-reviewer, code-review pass round 2, against docs/private-project-redaction.md:186-196's base Approval-gate paragraph; confirmed non-weakening by ciso-reviewer, code-review pass round 4]` |
+| 23 | `ciso-reviewer` (code-review pass, round 2) found a reconstruction gap distinct from row 5's basic arithmetic: as first drafted, "the same statistic" in the split sub-bullet and composition bullet gated on label identity, not algebraic equivalence, so a same-partition complement or a rescaling of the split statistic, published under a different label, would still recover both sides' pool sizes via row 5's arithmetic. Row 21 is the resolution this finding required — this row exists because row 21 originally misattributed the finding to row 15 (the approval-gate disclosure requirement, an unrelated row); this row corrects the citation. | `[verified: ciso-reviewer, code-review pass round 2, agent-reviews/ciso-reviewer-1789092539-pooled-measurement-t.md]` |
+| 24 | `ciso-reviewer` (code-review pass, round 4, re-reviewing row 21's fix) found the composition bullet's "recovers how much of the pool fell on either side of the pivot" outcome test named four transforms of the whole-period statistic (whole-period value, complement, rescaling, second split) but no direct side-to-side ratio statement — a ratio recovers the same private information (relative pool-size distribution across the pivot) without needing the whole-period value or the Counts bullet's pooled total at all, so it is a distinct route to the same outcome the four named transforms don't cover by name. Fixed by adding a sentence stating a ratio or relative-proportion statement between the two sides recovers the same thing an absolute count would. | `[verified: ciso-reviewer, code-review pass round 4, agent-reviews/ciso-reviewer-1789095915-pooled-measurement-t.md, against docs/private-project-redaction.md:165-175]` |
+| 25 | Row 12 (`[verified]`, settled prior round) asserted no new test was warranted for the `code-review-claude-config/SKILL.md` citation. A round-2 `staff-sdet` review found the corpus-wide `test_skill_citations_resolve_to_real_headings` doesn't actually pin that citation's presence — it only validates citations it manages to extract, so a future re-wrap could silently drop CI coverage with no failing test. Row 12's "no new test" claim is superseded by a dedicated positive-presence test, `test_pooled_tooling_measurement_code_review_skill_citation_survives_rewrap`, added instead of the originally-planned parametrize-list extension. Row 12 is kept as the record of the original (incorrect) assessment, per this repo's provenance convention. | `[verified: staff-sdet, code-review pass round 2, agent-reviews/staff-sdet-1789092539-pooled-measurement-t.md; test added at claude-skills/skills/tests/test_skills.py]` |
 
 ### Mechanisms
 
-**M1 — Add the exception as two third-level sub-bullets under the time-series bullet** (`docs/private-project-redaction.md:135-137`), text as quoted above. Placing it inside the bullet it narrows keeps one site stating what is permitted, and the third level is the shape the Cost/Duration bullet already uses. `anchors: root, row1, row2, row3, row4, row5, row7, row20`
+**M1 — Add the exception as two third-level sub-bullets under the time-series bullet** (`docs/private-project-redaction.md:135-137`), text as quoted above. Placing it inside the bullet it narrows keeps one site stating what is permitted, and the third level is the shape the Cost/Duration bullet already uses. Row 21's round-3 correction reverts the split sub-bullet's comparability requirement to a pure same-statistic match — a round-2 widening attempt had turned it into a permission for mismatched statistics between the two sides. `anchors: root, row1, row2, row3, row4, row5, row7, row20, row21, row23`
 
-**M2 — Add one sentence to the composition bullet** (`:138-145`) covering successive pivots. This is the accumulation case, which is the composition clause's own subject; a second pivot-specific site would be the duplication that clause exists to avoid. `anchors: row6`
+**M2 — Restate the composition bullet's bar** (`:159-177`) to cover successive pivots, a same-statistic republication, and a whole-period-value/complement/rescaling transform of the split statistic in one sentence, gated on what a further figure would yield rather than on the statistic's label. This is the accumulation case, which is the composition clause's own subject; a second pivot-specific site would be the duplication that clause exists to avoid — row 21's round-3 correction restates this once rather than adding the second site a first attempt introduced. `anchors: row6, row21, row23, row24`
 
 **M3 — Make the P1 bullet defer** (`.claude/skills/code-review-claude-config/SKILL.md:20`), and while in that item, unwrap the hard-wrapped quoted heading at `:12-13` onto one line so its citation becomes CI-checked. `anchors: row9, row11`
+
+**M5 (addendum) — Fix the M5 approval-gate sentence's circular premise**, row 22's resolution: state the non-public-channel requirement on the disclosure directly rather than by reference to the approval citation's own channel. `anchors: row22`
 
 **M4 — Otherwise change nothing else.** The scope lead-in (`:108-110`), the Counts and Cost/Duration bullets' existing forms, the cadence bullet, the three sibling withholding sites, `docs/design-decisions/`, and the test tree. `anchors: G1, G3, row12, row13`
 
@@ -268,7 +294,7 @@ The one clause that could read as an added layer is row 7's "named before the fi
 
 - The dimensionless-versus-total reasoning already exists at `:129-131`; the new sub-bullet extends that sentence's logic rather than introducing a second rationale for the same distinction.
 - The citation string `` `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" `` already exists in the file being edited — reflow it, do not retype it.
-- No new test. `test_skill_citations_resolve_to_real_headings` (`claude-skills/skills/tests/test_skills.py:2854`) already covers the corpus this diff touches once the unwrap lands (row 11).
+- **Superseded by row 25:** this line originally read "No new test," on the reasoning that `test_skill_citations_resolve_to_real_headings` (`claude-skills/skills/tests/test_skills.py:2854`) already covers the corpus this diff touches once the unwrap lands (row 11). Row 25 records why a dedicated test was added instead.
 
 ## Verification
 
