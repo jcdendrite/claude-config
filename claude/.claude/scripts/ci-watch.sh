@@ -23,7 +23,7 @@
 #                           calls, since fine-grained PATs 403 on the Checks
 #                           API. Resolved automatically via direnv for the
 #                           current directory before first use (see
-#                           resolve_ci_checks_gh_token below) — an ambient
+#                           resolve_ci_checks_gh_token below). An ambient
 #                           value survives untouched when direnv is absent
 #                           or its resolution fails. See docs/scripts.md for
 #                           provisioning guidance.
@@ -71,10 +71,10 @@ fi
 # docs/scripts.md's CI_CHECKS_GH_TOKEN entry for why and how.
 #
 # The notice fires only when direnv's answer actually differs from the
-# ambient value (set, cleared, or changed) — not on every run where direnv
-# happens to be installed but this directory's .envrc has nothing to say
-# about CI_CHECKS_GH_TOKEN, which would otherwise spam this line on every
-# invocation on any contributor machine with direnv present.
+# ambient value (set, cleared, or changed). It does not fire on every run
+# where direnv happens to be installed but this directory's .envrc has
+# nothing to say about CI_CHECKS_GH_TOKEN, which would otherwise spam this
+# line on every invocation on any contributor machine with direnv present.
 resolve_ci_checks_gh_token() {
   command -v direnv >/dev/null 2>&1 || return 0
   # resolved is assigned separately below (not `local resolved=$(...)`), so

@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from .conftest import (
     _base_test_env,
     _direnv_shim_source_exits_nonzero_with_unset_payload,
     _direnv_shim_source_reads_stdin,
+    _direnv_shim_source_stalls_without_reading_stdin,
     _direnv_shim_source_static_export,
     _direnv_shim_source_unconditional_unset,
     _shimmed_env,
@@ -542,7 +544,7 @@ def test_ambient_gh_repo_and_host_are_unset_before_every_gh_call(fake_gh, tmp_pa
 # resolve_ci_checks_gh_token — direnv resolution of CI_CHECKS_GH_TOKEN
 #
 # ci-watch.sh is launched via `Bash` `run_in_background`, a non-interactive
-# shell that never fires direnv's PROMPT_COMMAND hook — resolve_ci_checks_gh_token
+# shell that never fires direnv's PROMPT_COMMAND hook. resolve_ci_checks_gh_token
 # resyncs CI_CHECKS_GH_TOKEN against this directory's own direnv-sourced
 # identity before gh_with_checks_token's first call, the same problem shape
 # cleanup-merged-branches.sh's load_repo_environment already solves.
@@ -590,6 +592,30 @@ def test_direnv_absent_leaves_ambient_token_intact(fake_gh, tmp_path):
     calls = _parse_token_log(token_log)
     assert calls["watch"] == ("ambient-only-token", "")
     assert calls["json"] == ("ambient-only-token", "")
+    assert "resolved via direnv" not in result.stderr
+
+
+def test_direnv_present_with_nothing_to_say_suppresses_notice(fake_gh, tmp_path):
+    # direnv installed, CI_CHECKS_GH_TOKEN absent from the ambient env, and
+    # this directory's .envrc has nothing to say about it (the default
+    # no-op shim) — the common case on any contributor machine with direnv
+    # installed but no CI_CHECKS_GH_TOKEN provisioning. Must not spam the
+    # "resolved via direnv" notice on every such run.
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+    )
+    result = _run(env, _PR_NUMBER)
+    assert result.returncode == 0
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("", "")
+    assert calls["json"] == ("", "")
     assert "resolved via direnv" not in result.stderr
 
 
@@ -779,12 +805,11 @@ def test_direnv_export_containing_other_vars_does_not_perturb_running_script(fak
     # Subshell-containment guarantee: an .envrc exporting GH_TOKEN, PATH, and
     # STDERR_FILE alongside CI_CHECKS_GH_TOKEN must not let any of the first
     # three cross into the running script's own environment — only
-    # CI_CHECKS_GH_TOKEN's resolved value may. The unwrapped `gh pr view`
-    # call is the tell for a GH_TOKEN leak: it never receives the
-    # CI_CHECKS_GH_TOKEN override, so it only ever sees a leaked GH_TOKEN if
-    # containment failed. STDERR_FILE is the tell for the EXIT trap: if
-    # containment failed and STDERR_FILE were hijacked to this decoy path,
-    # the trap's `rm -f "$STDERR_FILE"` would delete it.
+    # CI_CHECKS_GH_TOKEN's resolved value may. Two tells prove containment held:
+    # - The unwrapped `gh pr view` call never receives the CI_CHECKS_GH_TOKEN
+    #   override, so it only ever sees a leaked GH_TOKEN if containment failed.
+    # - STDERR_FILE: if containment failed and STDERR_FILE were hijacked to
+    #   this decoy path, the trap's `rm -f "$STDERR_FILE"` would delete it.
     token_log = tmp_path / "token.log"
     decoy_stderr_file = tmp_path / "decoy-stderr-file"
     decoy_stderr_file.write_text("decoy-content-must-survive")
@@ -858,3 +883,48 @@ def test_stdin_reading_envrc_does_not_hang(fake_gh):
     finally:
         os.close(write_fd)
     assert proc.returncode == 0
+
+
+@pytest.mark.timing
+def test_direnv_export_wall_clock_cap_interrupts_stalled_envrc(fake_gh, tmp_path):
+    # direnv_export_bash caps `direnv export bash` at 5s (_direnv-lib.sh) —
+    # a stalled .envrc must not wedge ci-watch.sh's unattended background
+    # run indefinitely. The shim sleeps 30s (well past the cap) without
+    # reading stdin, so elapsed time itself proves the wall-clock cap fired
+    # rather than the </dev/null guard test_stdin_reading_envrc_does_not_hang
+    # already covers. The wide margin below the sleep duration (mirroring
+    # TestFetchLoopCapInterruptsHungRemote's 15s-cap/30s-sleep precedent in
+    # test_cleanup_merged_branches.py) absorbs subprocess-spawn contention
+    # from concurrent test runs on a shared machine.
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+    token_log = tmp_path / "token.log"
+    checks = [
+        {"name": "tests", "bucket": "pass", "description": "", "link": "", "workflow": "CI"},
+    ]
+    env = fake_gh(
+        watch_output="All checks were successful\n",
+        watch_exit=0,
+        json_payload=checks,
+        token_log=token_log,
+        extra_env={"CI_CHECKS_GH_TOKEN": "ambient-survives-token"},
+        direnv_source=_direnv_shim_source_stalls_without_reading_stdin(30),
+    )
+    start = time.monotonic()
+    result = _run(env, _PR_NUMBER)
+    elapsed = time.monotonic() - start
+    assert result.returncode == 0
+    assert elapsed >= 4.5, (
+        f"elapsed {elapsed:.1f}s is too fast for the shim to have actually stalled — "
+        f"this doesn't prove the cap interrupted anything"
+    )
+    assert elapsed < 20, (
+        f"expected the 5s direnv_export_bash cap to fire (shim sleeps 30s if it "
+        f"does not), took {elapsed:.1f}s"
+    )
+    # A timed-out direnv resolution must degrade to the existing "ambient
+    # value untouched" fallback, not just avoid crashing.
+    calls = _parse_token_log(token_log)
+    assert calls["watch"] == ("ambient-survives-token", "")
+    assert calls["json"] == ("ambient-survives-token", "")
+    assert "resolved via direnv" not in result.stderr
