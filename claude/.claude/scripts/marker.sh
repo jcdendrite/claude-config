@@ -35,22 +35,22 @@ Subcommands:
              Print this session's canonically-resolved session id. Takes no
              skill argument.
   status     Report every completion marker (code-review, skill-review,
-             plan-review, ready-for-review, cumulative-review) for this repo
-             and every active-bypass marker (plan-review, ready-for-review,
-             respond-pr, memory-skill, handoff) for this session, each as
-             live, historical, or absent. Takes no skill argument. Evicts a
-             stale (dead-PID) active-bypass marker for this session as a
-             side effect of classifying it.
+             plan-review, ready-for-review, verification, cumulative-review)
+             for this repo and every active-bypass marker (plan-review,
+             ready-for-review, respond-pr, memory-skill, handoff) for this
+             session, each as live, historical, or absent. Takes no skill
+             argument. Evicts a stale (dead-PID) active-bypass marker for
+             this session as a side effect of classifying it.
   check      Report whether a completion marker already matches the
              current state, without writing anything. Exit 0 and print
              "match" if it does, exit 1 and print "no-match" if it
              doesn't.
 
 Valid (subcommand, skill) combinations:
-  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review
+  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review | verification
   activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
   deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
-  check       code-review
+  check       code-review | verification
 EOF
 }
 
@@ -303,20 +303,39 @@ _marker_mtime_epoch() {
   _lib_capped_for 5 stat -c%Y -- "$target" 2>/dev/null || _lib_capped_for 5 stat -f%m -- "$target" 2>/dev/null
 }
 
-# _resolve_code_review_check_max_age_seconds
-# Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
-# deliberately conservative, ungrounded choice (docs/design-decisions.md
-# §62). Malformed override (empty, zero, non-digit, zero-padded, or 9+
-# digits) falls back to the default -- same guard shape as
-# nudge-long-turn-subagent.sh's resolve_threshold.
-_resolve_code_review_check_max_age_seconds() {
-  case "${CODE_REVIEW_CHECK_MAX_AGE_SECONDS:-}" in
-    ''|0|*[!0-9]*|0[0-9]*|?????????*) CODE_REVIEW_CHECK_MAX_AGE_SECONDS=86400 ;;
-    *) ;;
+# _marker_max_age_or_default RAW DEFAULT
+# Prints RAW if it is a well-formed positive integer with no leading zero and
+# at most 8 digits, else prints DEFAULT. Malformed (empty, zero, non-digit,
+# zero-padded, or 9+ digits) falls back to DEFAULT -- same guard shape as
+# nudge-long-turn-subagent.sh's resolve_threshold. Shared by
+# _resolve_code_review_check_max_age_seconds and
+# _resolve_verification_check_max_age_seconds so the five-branch malformed-
+# input case has one copy.
+_marker_max_age_or_default() {
+  local raw="$1" default="$2"
+  case "$raw" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) printf '%s' "$default" ;;
+    *) printf '%s' "$raw" ;;
   esac
 }
 
-# _code_review_marker_fresh_age MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX MAX_AGE_SECONDS
+# _resolve_code_review_check_max_age_seconds
+# Sets CODE_REVIEW_CHECK_MAX_AGE_SECONDS (global). Default 86400 (24h) is a
+# deliberately conservative, ungrounded choice (docs/design-decisions.md
+# §62).
+_resolve_code_review_check_max_age_seconds() {
+  CODE_REVIEW_CHECK_MAX_AGE_SECONDS=$(_marker_max_age_or_default "${CODE_REVIEW_CHECK_MAX_AGE_SECONDS:-}" 86400)
+}
+
+# _resolve_verification_check_max_age_seconds
+# Sets VERIFICATION_CHECK_MAX_AGE_SECONDS (global). Default 14400 (4h) is a
+# deliberately conservative, ungrounded choice
+# (docs/design-decisions/ready-for-review-verification-cache.md).
+_resolve_verification_check_max_age_seconds() {
+  VERIFICATION_CHECK_MAX_AGE_SECONDS=$(_marker_max_age_or_default "${VERIFICATION_CHECK_MAX_AGE_SECONDS:-}" 14400)
+}
+
+# _marker_fresh_age MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX MAX_AGE_SECONDS
 # Prints the age in seconds of the freshest file in MARKERS_DIR matching
 # GLOB_PREFIX that holds EXPECTED_VALUE as a whole line and is younger than
 # MAX_AGE_SECONDS, and returns 0. Prints nothing and returns 1 when no such
@@ -329,7 +348,7 @@ _resolve_code_review_check_max_age_seconds() {
 # hashing keys REPO_HASH to an ephemeral per-branch path rather than a
 # stable long-lived one. A non-worktree-enforced repo would scale
 # unboundedly here, since completion markers are never pruned.
-_code_review_marker_fresh_age() {
+_marker_fresh_age() {
   local markers_dir="$1" expected_value="$2" glob_prefix="$3" max_age_seconds="$4"
   local nullglob_was_set=0
   if shopt -q nullglob; then nullglob_was_set=1; fi
@@ -596,8 +615,31 @@ case "$SUBCOMMAND" in
             > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID" \
           && rm -f "$SUBJECT_FILE"
         ;;
+      verification)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # No _guard_staged_vs_unstaged call: this marker covers the
+        # committed tree (HEAD^{tree}), not the staged diff, so that guard's
+        # staged-vs-unstaged question does not apply here.
+        #
+        # Each marker kind hashes what its own step consumes. `verification`
+        # hashes the tree (what step 2 executes); `cumulative-review` hashes
+        # the diff (what step 3 reads).
+        # Compute before redirecting -- same shape as every other write arm
+        # above: `>` truncates the marker before the pipeline runs, so a
+        # failed hash would destroy a valid marker and silently force a
+        # re-verification.
+        MARKER_VALUE=$(_lib_head_tree_hash uncapped "$REPO_ROOT") || {
+          printf 'marker.sh: could not resolve HEAD^{tree}. Abort without writing a marker.\n' >&2
+          exit 2
+        }
+        mkdir -p "$CONFIG_DIR/verification-markers"
+        printf '%s\n' "$MARKER_VALUE" \
+          > "$CONFIG_DIR/verification-markers/$REPO_HASH.$SESSION_ID"
+        ;;
       *)
-        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review\n" "$SKILL" >&2
+        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review, verification\n" "$SKILL" >&2
         exit 2
         ;;
     esac
@@ -818,6 +860,15 @@ case "$SUBCOMMAND" in
     READY_FOR_REVIEW_VALUE=$(_lib_capped git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)
     _status_report_completion_marker ready-for-review "$CONFIG_DIR/ready-for-review-markers" "$REPO_HASH_PREFIX" "$READY_FOR_REVIEW_VALUE"
 
+    # verification: same recipe as the `write verification` arm above,
+    # capped and stderr-suppressed like ready-for-review's line -- a
+    # zero-commit repo has no HEAD^{tree} to hash, which `status` must
+    # report as absent rather than error on. No age bound here: `check
+    # verification` applies VERIFICATION_CHECK_MAX_AGE_SECONDS, `status`
+    # reports hash state only, matching code-review's split above.
+    VERIFICATION_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT")
+    _status_report_completion_marker verification "$CONFIG_DIR/verification-markers" "$REPO_HASH_PREFIX" "$VERIFICATION_VALUE"
+
     # cumulative-review: same recipe as the `write cumulative-review` arm
     # above, via the shared _lib_cumulative_diff_hash. Makes a network round
     # trip (gh pr view) unlike every other line in this report, which are
@@ -896,7 +947,28 @@ case "$SUBCOMMAND" in
         # applies only here, not to the write/commit-gate side.
         if _lib_marker_value_present "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH."; then
           _resolve_code_review_check_max_age_seconds
-          if FRESH_AGE=$(_code_review_marker_fresh_age "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH." "$CODE_REVIEW_CHECK_MAX_AGE_SECONDS"); then
+          if FRESH_AGE=$(_marker_fresh_age "$CONFIG_DIR/code-review-markers" "$MARKER_VALUE" "$REPO_HASH." "$CODE_REVIEW_CHECK_MAX_AGE_SECONDS"); then
+            printf 'match age_seconds=%s\n' "$FRESH_AGE"
+            exit 0
+          fi
+        fi
+        printf 'no-match\n'
+        exit 1
+        ;;
+      verification)
+        REPO_ROOT=$(_resolve_repo_root) || exit 2
+        # Same hash recipe as the `write verification` arm. Read-only: no
+        # SESSION_ID needed since this never writes.
+        # A hash that can't be computed must read as no-match, not match --
+        # same fail-closed direction as `check code-review` above.
+        MARKER_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # A hash match older than VERIFICATION_CHECK_MAX_AGE_SECONDS reads as
+        # no-match too. See docs/design-decisions.md for why this age bound
+        # applies only here, not to the write side.
+        if _lib_marker_value_present "$CONFIG_DIR/verification-markers" "$MARKER_VALUE" "$REPO_HASH."; then
+          _resolve_verification_check_max_age_seconds
+          if FRESH_AGE=$(_marker_fresh_age "$CONFIG_DIR/verification-markers" "$MARKER_VALUE" "$REPO_HASH." "$VERIFICATION_CHECK_MAX_AGE_SECONDS"); then
             printf 'match age_seconds=%s\n' "$FRESH_AGE"
             exit 0
           fi
@@ -905,7 +977,7 @@ case "$SUBCOMMAND" in
         exit 1
         ;;
       *)
-        printf "marker.sh: 'check %s' is not valid. 'check' supports: code-review\n" "$SKILL" >&2
+        printf "marker.sh: 'check %s' is not valid. 'check' supports: code-review, verification\n" "$SKILL" >&2
         exit 2
         ;;
     esac
