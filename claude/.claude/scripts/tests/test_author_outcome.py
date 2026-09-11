@@ -1,5 +1,6 @@
 """Tests for transcript_analysis/author_outcome.py (author-outcome)."""
 import importlib.util
+import itertools
 import sys
 from pathlib import Path
 
@@ -67,6 +68,24 @@ class TestIsCleanMarkerWrite:
 
     def test_path_qualified_marker_write_still_matches_via_basename(self):
         assert ao._is_clean_marker_write("~/.claude/scripts/marker.sh write code-review") is True
+
+
+class TestConfigDirRootForSession:
+    def test_derives_the_owning_root_for_two_distinct_config_dir_roots(self, tmp_path):
+        """TestMultiRootLedgerLookup (below) pins the same invariant through
+        compute_author_outcomes' full pipeline; this pins it directly on
+        _config_dir_root_for_session, the cheaper unit underneath it."""
+        root_a = tmp_path / "acct-a"
+        root_b = tmp_path / "acct-b"
+        jsonl_a = root_a / "projects" / "-home-user-repo1" / "sess-a.jsonl"
+        jsonl_b = root_b / "projects" / "-home-user-repo2" / "sess-b.jsonl"
+        jsonl_a.parent.mkdir(parents=True)
+        jsonl_b.parent.mkdir(parents=True)
+        jsonl_a.write_text("")
+        jsonl_b.write_text("")
+
+        assert ao._config_dir_root_for_session(jsonl_a) == root_a
+        assert ao._config_dir_root_for_session(jsonl_b) == root_b
 
 
 class TestLedgerPathForSession:
@@ -162,6 +181,19 @@ class TestRoundNumberMismatch:
 
     def test_empty_ledger_is_not_a_mismatch(self):
         assert ao._round_number_mismatch([], round_open_count=3) is False
+
+    def test_reversed_but_complete_sequence_is_a_mismatch(self):
+        """Round rows present in file order 3, 2, 1 -- a complete 1..3 set,
+        but not recorded in ascending sequence -- still counts as a
+        mismatch under this function's own "round rows recorded out of
+        sequence" branch, since first-occurrence order [3, 2, 1] doesn't
+        equal the expected [1, 2, 3]."""
+        rows = [
+            _ledger_row(round=3, disposition="DEFER"),
+            _ledger_row(round=2, disposition="DEFER"),
+            _ledger_row(round=1, disposition="DEFER"),
+        ]
+        assert ao._round_number_mismatch(rows, round_open_count=3) is True
 
 
 class TestClassifyRound:
@@ -679,6 +711,50 @@ class TestRoundNumberMismatchIntegration:
         # a1's attributed round (round 1, ADDRESS from the picked file)
         # would otherwise be a FAILURE -- excluded by the mismatch instead.
         assert sum(result["outcomes"].values()) == 0
+
+
+class TestMultiRootLedgerLookup:
+    """_config_dir_root_for_session derives each session's own ledger
+    lookup root from that session's own jsonl path, not from a single root
+    fixed by the caller -- a session scanned from a second --config-dir
+    root must still find its own ledger file there, not silently read as
+    zero rows and get misclassified."""
+
+    def test_second_roots_session_ledger_row_is_found_not_dropped(
+        self, fake_projects, fake_config_dir_factory,
+    ):
+        root1_session_id = "sess-root1"
+        _seed_ledger(fake_projects, root1_session_id, [_ledger_row(round=1, disposition="ADDRESS")])
+        _write_jsonl(fake_projects / f"{root1_session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+
+        acct_b = fake_config_dir_factory("acct-b")
+        root2_project = acct_b / "projects" / "-home-user-otherrepo"
+        root2_project.mkdir(parents=True)
+        root2_session_id = "sess-root2"
+        _write_ledger_file(acct_b, root2_session_id, [_ledger_row(round=1, disposition="DEFER")])
+        _write_jsonl(root2_project / f"{root2_session_id}.jsonl", [
+            _dispatch_start("b1", "2026-08-01T11:00:00.000Z"),
+            _dispatch_complete("b1", "2026-08-01T11:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T11:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T11:02:00.000Z"),
+        ])
+
+        session_iter = itertools.chain(
+            corpus.iter_sessions(fake_projects.parent, "*"),
+            corpus.iter_sessions(acct_b / "projects", "*"),
+        )
+        result = ao.compute_author_outcomes(session_iter)
+        # root1's ADDRESS row -> FAILURE; root2's DEFER row -> PASS. A
+        # dropped root2 ledger lookup would read root2 as zero rows, no
+        # marker write, and reclassify it UNATTRIBUTED instead of PASS.
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 0
 
 
 class TestBuildParserWiring:

@@ -72,3 +72,4 @@ class TestLibAppendLineLocked:
         result = _append_line_locked(target, lock_file, "after-live-lock")
         assert result.returncode == 0
         assert target.read_text().splitlines() == ["after-live-lock"]
+        assert lock_file.exists()

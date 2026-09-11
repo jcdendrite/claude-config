@@ -21,6 +21,8 @@ from pathlib import Path
 
 from helpers import HOOKS_DIR
 
+from .conftest import _dead_pid
+
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
 
@@ -159,3 +161,33 @@ class TestLibAppendJsonLineLocked:
             "this is not json at all",
             '{"round":1,"disposition":"ADDRESS"}',
         ], "a duplicate of the valid line must not be appended despite the malformed neighbor"
+
+
+class TestLibAppendJsonLineLockedLockEviction:
+    """Dead-PID-eviction / live-PID-fallthrough coverage of the shared
+    _lib_acquire_append_lock primitive, exercised through this function's
+    own call path -- ported from test_lib_append_line_locked.py's
+    TestLibAppendLineLocked, which exercises the same primitive through
+    its sibling."""
+
+    def test_stale_lock_held_by_dead_pid_is_evicted_and_append_proceeds(self, tmp_path):
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        lock_file.write_text(str(_dead_pid()))
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', "{round, disposition}",
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+        assert not lock_file.exists()
+
+    def test_live_pid_lock_falls_through_to_unlocked_append(self, tmp_path, live_pid):
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        lock_file.write_text(str(live_pid))
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', "{round, disposition}",
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+        assert lock_file.exists()

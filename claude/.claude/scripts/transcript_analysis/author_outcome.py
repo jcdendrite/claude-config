@@ -8,15 +8,15 @@ docs/transcript-analysis.md's author-outcome section for the full failure
 definition and every bucket/counter this module reports.
 
 Imports corpus, pricing, render, review_rounds, and scope by module
-(attribute access, not by name) -- matching review_rounds.py's own
+(attribute access, not by name). This matches review_rounds.py's own
 cross-module discipline (see scope.py's own top-of-file comment for why).
 
 Classifies each round by reading its own review-narrative-ledger file
-directly -- located per session by a session-id glob, a direct 1:1 point
-lookup, since session ids are globally unique (UUIDs) and need no
-repo-hash join. The transcript is still the sole source for round-open
+directly. The file is located per session by a session-id glob, a direct
+1:1 point lookup, since session ids are globally unique (UUIDs) and need
+no repo-hash join. The transcript is still the sole source for round-open
 positions, dispatch completion ordering, and the marker-write fallback
-signal; only the disposition/authoring-agent values move to the ledger.
+signal. Only the disposition/authoring-agent values move to the ledger.
 """
 from __future__ import annotations
 
@@ -30,12 +30,12 @@ from pathlib import Path
 from transcript_analysis import corpus, pricing, render, review_rounds, scope
 
 # review-ledger.sh's `append code-review` gate and marker.sh's `write code-review`
-# gate happen to share this literal by coincidence, not as a shared enum; each is
-# validated independently by its own hook allowlist.
+# gate happen to share this literal by coincidence, not as a shared enum.
+# Each is validated independently by its own hook allowlist.
 _CODE_REVIEW_SKILL = "code-review"
 
-# Mirrors review-ledger.sh's own --disposition/--authoring-agent case enums
-# -- this module never writes a ledger line, only reads back what
+# Mirrors review-ledger.sh's own --disposition/--authoring-agent case enums.
+# This module never writes a ledger line, only reads back what
 # review-ledger.sh already wrote, so these are read-side comparison
 # targets, not a second validator.
 _DISPOSITION_ADDRESS = "ADDRESS"
@@ -144,14 +144,18 @@ def _ledger_path_for_session(jsonl: Path) -> Path | None:
     """The one review-narrative-ledger file for this transcript's own
     session id, found by session-id glob. Correct only under the
     precondition that at most one repo-hash writes a ledger file for this
-    session id -- the ledger filename is `<repo_hash>.<session_id>.jsonl`,
-    so a session spanning more than one worktree of the same repo produces
-    two files matching the glob and this returns only one of them (see
-    docs/transcript-analysis.md's "Accepted risk" entry for the
-    round-number-mismatch exclusion this currently relies on). None when
-    no such file exists (the kill switch was on for the session's entire
-    lifetime, or the session predates review-ledger.sh, or its ledger was
-    already swept)."""
+    session id. The ledger filename is `<repo_hash>.<session_id>.jsonl`.
+    A session spanning more than one worktree of the same repo produces
+    two files matching the glob, and this returns only one of them. See
+    docs/transcript-analysis.md's "Accepted risk: a session spanning
+    multiple worktrees..." entry for the round-number-mismatch exclusion
+    this currently relies on.
+
+    None when no such file exists:
+    - the kill switch was on for the session's entire lifetime
+    - the session predates review-ledger.sh
+    - its ledger was already swept
+    """
     session_id = jsonl.stem
     ledger_dir = _config_dir_root_for_session(jsonl) / _REVIEW_LEDGER_DIRNAME
     matches = sorted(ledger_dir.glob(f"*.{session_id}.jsonl"))
@@ -191,14 +195,15 @@ def _read_ledger_rows_for_session(jsonl: Path) -> list[dict]:
 def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bool:
     """True if this session's ledger `round` values, in first-occurrence
     file order, don't equal the exact 1..round_open_count sequence the
-    transcript's own round-open detector found for this session -- a gap
-    (a round-open whose round never got a ledger row), a ledger round
-    number with no corresponding round-open, or round rows recorded out of
-    sequence.
+    transcript's own round-open detector found for this session:
 
-    A ledger with zero rows carrying a `round` key at all -- entirely
-    legacy rows (pre-schema-v2), or no ledger file for this session --
-    is not evaluated: there is no schema-v2 sequence to compare, so this
+    - a gap (a round-open whose round never got a ledger row)
+    - a ledger round number with no corresponding round-open
+    - round rows recorded out of sequence
+
+    A ledger with zero rows carrying a `round` key at all is not
+    evaluated: entirely legacy rows (pre-schema-v2), or no ledger file for
+    this session. There is no schema-v2 sequence to compare, so this
     always returns False for that case rather than flagging every
     pre-migration or ledger-less session as a mismatch.
     """
@@ -223,9 +228,10 @@ def _classify_round(
     against round_ordinal, this round's own 1-indexed position in the
     transcript's own code-review-open sequence. A legacy row (no `round`
     key) has round None, which can never equal an int, so it never matches
-    any round -- it falls through with every other round that has no
-    matching ledger rows, to the marker-write fallback below, exactly like
-    a round the kill switch suppressed every append for.
+    any round. It falls through with every other round that has no
+    matching ledger rows to the marker-write fallback below. That is the
+    same path a round the kill switch suppressed every append for also
+    takes.
     """
     matching = [row for row in ledger_rows if row.get("round") == round_ordinal]
     if any(row.get("disposition") == _DISPOSITION_ADDRESS for row in matching):
@@ -234,10 +240,10 @@ def _classify_round(
         return _OUTCOME_PASS, matching
     if has_marker_write:
         # No ledger row at all for this round -- the kill switch was on,
-        # or every append attempt errored before landing -- but the
-        # round's own marker.sh write code-review call still ran, so the
-        # review did conclude clean. Distinct from a genuine ledger-backed
-        # PASS: this bucket is inferred, not asserted.
+        # or every append attempt errored before landing. But the round's
+        # own marker.sh write code-review call still ran, so the review
+        # did conclude clean. Distinct from a genuine ledger-backed PASS:
+        # this bucket is inferred, not asserted.
         data_quality[_DQ_KILL_SWITCH_INFERRED_CLEAN] += 1
         return _OUTCOME_PASS, matching
     return _OUTCOME_UNATTRIBUTED, matching

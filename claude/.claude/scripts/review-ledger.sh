@@ -28,9 +28,10 @@ Subcommands:
       [--authoring-agent code-writer|inline|mixed|unknown] \
       [--authoring-effort low|medium|high|xhigh]
              Append one finding-disposition event to this session's ledger.
-             --finding/--rationale are required for ADDRESS|DEFER and must
-             be omitted for CLEAN. --round is the 1-based review round
-             number for this /code-review run in this session.
+             --finding/--rationale are required for ADDRESS|DEFER;
+             --finding/--rationale/--source must be omitted for CLEAN.
+             --round is the 1-based review round number for this
+             /code-review run in this session.
              No-ops (exit 0) if the identical line (by round, finding,
              disposition, rationale, source, authoring_agent,
              authoring_effort) already exists, or if
@@ -92,8 +93,7 @@ _reject_missing_round() {
 
 --round is the 1-based review round number for *this* /code-review run in
 this session: 1 for the first round, incrementing once per subsequent
-/code-review invocation you've made. This flag is new -- if your
-understanding of this command predates it, retry with --round added:
+/code-review invocation you've made. Retry with --round added:
 
   ~/.claude/scripts/review-ledger.sh append code-review --finding "<summary>" \
     --disposition ADDRESS|DEFER --rationale "<one line>" --round <N> \
@@ -109,7 +109,7 @@ EOF
 # *.lock file under LEDGER_DIR older than 30 days by mtime, across every
 # repo-hash — mirrors nudge-handoff-near-context-cap.sh's directory-wide
 # `find ... -mtime +30 -delete` sweep of .handoff-nudge-fired.d. REPORT=1
-# prints per-file and summary lines (clear-stale); REPORT=0 is silent (the
+# prints per-file and summary lines (clear-stale). REPORT=0 is silent (the
 # best-effort sweep append performs on every invocation).
 _sweep_stale_ledger_files() {
   local ledger_dir="$1" dry_run="$2" report="$3"
@@ -246,8 +246,9 @@ case "$SUBCOMMAND" in
         exit 2
         ;;
     esac
-    # Absent (empty) never aborts -- only a present-but-invalid value does,
-    # consistent with --disposition above but optional rather than required.
+    # Absent (empty) never aborts -- only a present-but-invalid value does.
+    # This is consistent with --disposition above but optional rather than
+    # required.
     case "$AUTHORING_AGENT" in
       ""|code-writer|inline|mixed|unknown) ;;
       *) printf "review-ledger.sh: --authoring-agent must be one of code-writer, inline, mixed, unknown, got '%s'\n" "$AUTHORING_AGENT" >&2; exit 2 ;;
@@ -284,11 +285,11 @@ case "$SUBCOMMAND" in
     LOCK_FILE="$LEDGER_FILE.lock"
 
     # Captured once here, before the dedup check inside
-    # _lib_append_json_line_locked, and never recomputed on a lock retry --
+    # _lib_append_json_line_locked, and never recomputed on a lock retry.
     # event_time varies on every call, so it is excluded from the dedup key
     # filter below rather than baked into LINE per attempt.
     # event_time is for a human reading `review-ledger.sh show` to
-    # reconstruct the review's own narrative timeline; no code reader
+    # reconstruct the review's own narrative timeline. No code reader
     # branches on it.
     EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -297,9 +298,9 @@ case "$SUBCOMMAND" in
     # for why and its local-filesystem-only caveat.
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
-    # schema_version carries no reader that branches on it today -- it's
-    # for a future migration to distinguish row shapes without re-deriving
-    # them from which optional keys are present or absent.
+    # schema_version carries no reader that branches on it today. It's for
+    # a future migration to distinguish row shapes without re-deriving them
+    # from which optional keys are present or absent.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
       --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \
@@ -313,10 +314,10 @@ case "$SUBCOMMAND" in
     fi
 
     # Dedup key excludes schema_version (a constant) and event_time (varies
-    # on every call, including an otherwise-identical retry) -- two rounds
-    # raising a textually identical finding must both land, which whole-line
-    # dedup would otherwise collapse to one line now that event_time differs
-    # per call.
+    # on every call, including an otherwise-identical retry). Two rounds
+    # raising a textually identical finding must both land. Whole-line
+    # dedup would otherwise collapse them to one line now that event_time
+    # differs per call.
     _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
       '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}'
 

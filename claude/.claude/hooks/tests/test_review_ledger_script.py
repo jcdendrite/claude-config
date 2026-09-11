@@ -478,6 +478,58 @@ class TestReviewLedgerRoundScopedDedup:
         assert len(lines) == 1, f"identical retry within the same round must dedup, got: {lines}"
 
 
+class TestReviewLedgerDedupFilterIsStaticLiteral:
+    """_lib_append_json_line_locked's own docstring (_lib.sh) requires its
+    DEDUP_KEY_JQ_FILTER argument to be a static, developer-authored jq
+    literal, never derived from session- or user-controlled data, since it
+    is spliced directly into the jq program text with no --arg/--argjson
+    escaping. The behavioral test below pins the security property that
+    invariant protects, by driving the CLI and confirming that
+    user-controlled --finding/--rationale/--source values are bound via
+    jq's --arg mechanism rather than spliced into any filter text. The
+    source-scan test is a secondary tripwire on the static-literal call
+    site itself, needed because a regression there away from a static
+    literal produces no stdout/exit-code difference for the behavioral
+    test to observe."""
+
+    def test_call_site_passes_a_single_quoted_literal_with_no_expansion(self):
+        source = REVIEW_LEDGER_SCRIPT.read_text()
+        match = re.search(
+            r"^\s*_lib_append_json_line_locked\b[^\n]*\n\s*(\S.*)$",
+            source,
+            re.MULTILINE,
+        )
+        assert match, "no _lib_append_json_line_locked call site found in review-ledger.sh"
+        filter_arg = match.group(1).strip()
+        assert filter_arg.startswith("'") and filter_arg.endswith("'"), (
+            f"dedup filter argument must be a single-quoted literal, got: {filter_arg!r}"
+        )
+        assert "$" not in filter_arg, (
+            f"dedup filter argument must contain no variable expansion, got: {filter_arg!r}"
+        )
+
+    def test_jq_filter_special_chars_in_finding_round_trip_unmodified(self, isolated_home, git_repo):
+        """--finding/--rationale/--source are user-controlled and reach jq
+        only through _lib_jq's --arg binding, never spliced into filter
+        text. This drives the CLI with a value containing jq-filter syntax
+        (quote, backslash, pipe, dot) and asserts it lands in the ledger
+        row byte-for-byte. A naive string-splice would either break the
+        filter (non-zero exit) or let the value's dots/pipes reshape the
+        jq program instead of being treated as opaque string content."""
+        _seed_session(isolated_home, SID)
+        injected = 'has "quotes" \\ backslash | pipe .dot $var {brace}'
+        result = _run(
+            _append_args(finding=injected, rationale=injected, source=injected),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["finding"] == injected
+        assert record["rationale"] == injected
+        assert record["source"] == injected
+
+
 class TestReviewLedgerFieldCaps:
     def test_over_cap_finding_rejected_with_no_partial_write(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
