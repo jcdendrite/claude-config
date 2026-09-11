@@ -54,7 +54,7 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 # that provisions a classic PAT exports it carrying that identical secret,
 # so it needs the same scrubbing.
 _SENSITIVE_ENV_VARS = frozenset({
-    "GH_TOKEN", "GH_HOST", "GITHUB_TOKEN",
+    "GH_TOKEN", "GH_HOST", "GH_REPO", "GITHUB_TOKEN",
     "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
     "CI_CHECKS_GH_TOKEN", "NODE_AUTH_TOKEN",
 })

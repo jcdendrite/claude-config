@@ -32,6 +32,13 @@
 
 set -euo pipefail
 
+# None of this script's gh calls pass --repo, so gh resolves its target repo
+# from $PWD's git remote. GH_REPO/GH_HOST override that cwd-based resolution.
+# Unset them so a stale value from a differently-scoped invoking shell
+# doesn't leak in. Otherwise the repo gh targets could silently diverge from
+# the repo the token was resolved for.
+unset GH_REPO GH_HOST
+
 # direnv_export_bash is shared with cleanup-merged-branches.sh.
 # shellcheck source=_direnv-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_direnv-lib.sh"
@@ -59,15 +66,9 @@ if ! command -v gh &>/dev/null; then
   exit 1
 fi
 
-# resolve_ci_checks_gh_token — apply this directory's direnv resolution of
-# CI_CHECKS_GH_TOKEN over whatever ambient value this process inherited,
-# before gh_with_checks_token's first call. This script is launched via
-# `Bash` `run_in_background` (ready-for-review's "CI watch (out-of-band)"
-# step), a non-interactive, tool-spawned shell that never fires direnv's
-# PROMPT_COMMAND hook, so an ambient CI_CHECKS_GH_TOKEN reflects whatever
-# container the invoking shell last had it exported for, not necessarily
-# this one. See docs/scripts.md's CI_CHECKS_GH_TOKEN entry for the
-# subshell-containment mechanism and the empty-wins/fallback semantics.
+# resolve_ci_checks_gh_token — resyncs CI_CHECKS_GH_TOKEN via direnv for
+# this directory before gh_with_checks_token's first call. See
+# docs/scripts.md's CI_CHECKS_GH_TOKEN entry for why and how.
 #
 # The notice fires only when direnv's answer actually differs from the
 # ambient value (set, cleared, or changed) — not on every run where direnv
@@ -76,6 +77,8 @@ fi
 # invocation on any contributor machine with direnv present.
 resolve_ci_checks_gh_token() {
   command -v direnv >/dev/null 2>&1 || return 0
+  # resolved is assigned separately below (not `local resolved=$(...)`), so
+  # its exit status isn't masked by `local`'s own always-zero status.
   local ambient="${CI_CHECKS_GH_TOKEN:-}" resolved
   if resolved=$(
         eval "$(direnv_export_bash)"
