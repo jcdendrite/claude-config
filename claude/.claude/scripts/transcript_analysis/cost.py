@@ -374,7 +374,53 @@ def _print_thread_table(main_total: float, subagent_total: float, grand_total: f
     print(f"{'subagent':<10} {subagent_total:>14,.2f} {render._pct_of(subagent_total, grand_total):>7}")
 
 
-def _print_excluded_spend_banner(unpriced_tokens: dict[str, int], total_unpriced_tokens: int, *, markdown: bool) -> None:
+def _print_share_only_tables(
+    class_totals: dict[str, float],
+    model_totals: dict[str, float],
+    main_total: float,
+    subagent_total: float,
+    bucket_totals: dict[str, float],
+    grand_total: float,
+) -> None:
+    """Renders --share-only's four dimensionless share tables -- Class,
+    Model, Thread, and Bucket -- each a {label, Share} two-column pair
+    computed from the same accumulators and render._pct_of the full report's
+    own dollar tables use.
+
+    No $, Tokens, or grand-total column anywhere -- barred by the
+    pooled-measurement carve-out (docs/private-project-redaction.md §
+    "Publishing a pooled tooling measurement"). This printer never takes a
+    dollar or token argument, by construction. The early return in
+    _cost_report is what keeps this the only render path reached under
+    --share-only. If a fifth table or differently-labeled column is ever
+    added here, extend TestCostShareOnly's structural cell-shape assertion
+    too.
+    """
+    print("\n## Cost by token class (share only)\n")
+    print(f"{'Class':<16} {'Share':>7}")
+    for cls in pricing._TOKEN_CLASSES:
+        print(f"{cls:<16} {render._pct_of(class_totals[cls], grand_total):>7}")
+
+    print("\n## Cost by model ID (share only)\n")
+    print(f"{'Model':<28} {'Share':>7}")
+    for model, val in sorted(model_totals.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"{model:<28} {render._pct_of(val, grand_total):>7}")
+
+    print("\n## Cost by thread (share only)\n")
+    print(f"{'Thread':<10} {'Share':>7}")
+    print(f"{'main':<10} {render._pct_of(main_total, grand_total):>7}")
+    print(f"{'subagent':<10} {render._pct_of(subagent_total, grand_total):>7}")
+
+    print("\n## Cost by context-at-turn bucket (share only)\n")
+    print(f"{'Bucket':<8} {'Share':>7}")
+    for bucket in (pricing._CONTEXT_BUCKET_UNDER, pricing._CONTEXT_BUCKET_OVER):
+        val = bucket_totals.get(bucket, 0.0)
+        print(f"{bucket:<8} {render._pct_of(val, grand_total):>7}")
+
+
+def _print_excluded_spend_banner(
+    unpriced_tokens: dict[str, int], total_unpriced_tokens: int, *, markdown: bool, share_only: bool = False,
+) -> None:
     """Loud excluded-spend signal -- shape mirrors STALE PRICING
     (all-caps token, em-dash, fact, action). No-op when
     pricing._reportable_unpriced_model_ids finds nothing to report (e.g. an
@@ -386,9 +432,26 @@ def _print_excluded_spend_banner(unpriced_tokens: dict[str, int], total_unpriced
     message.model string can carry an account-identifying pre-announcement
     codename, so it stays on the maintainer-only full-report path, which
     prints every ID by name.
+
+    share_only=True (--share-only) drops the count too, not just the ID
+    strings, since a count of distinct unrecognized model IDs is not on the
+    pooled-measurement carve-out's closed countable list ("Claude Code tool
+    calls, sessions, and agent dispatches. Nothing else,"
+    docs/private-project-redaction.md). The banner states only that some
+    spend was excluded, no figures at all.
+
+    Checked before `markdown` so share_only's no-figures rule wins even if
+    the two flags stop being mutually exclusive (today they are refused in
+    combination by _cost_report).
     """
     reportable_ids = pricing._reportable_unpriced_model_ids(unpriced_tokens)
     if not reportable_ids:
+        return
+    if share_only:
+        print(
+            "\nEXCLUDED SPEND — some turns used unpriced or unrecognized model IDs and are"
+            " excluded from the shares below.\n"
+        )
         return
     if markdown:
         print(
@@ -455,6 +518,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     Sidechain turns are included (include_subagents=True) so dispatched spend counts toward the total.
     roots=None yields the single-root report with no per-root scan-summary lines (default for all direct callers but cmd_cost).
     --summary renders an aggregate-only block; see summary_mode branches.
+    --share-only takes an early return before the first dollar-emitting print
+    site and renders four dimensionless share tables instead; see
+    share_only branches and _print_share_only_tables.
     --branches filters on each record's carry-forward-attributed branch (_attributed_branch), not its literal gitBranch.
     """
     top_n: int = getattr(args, "top", 20) or 20
@@ -463,6 +529,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     scan_roots: Sequence[Path] = roots if roots is not None else (scope.PROJECTS_DIR,)
     multi_root = len(scan_roots) > 1
 
+    share_only: bool = bool(getattr(args, "share_only", False))
     summary_mode: bool = bool(getattr(args, "summary", False))
     if summary_mode:
         # --this-repo alone is the gate: every _path_to_project_slug-derived
@@ -493,6 +560,50 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             print(
                 "cost: --summary resolved to more than one root — refusing to"
                 " report a multi-account total",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    if share_only:
+        # Each refusal names its own reason, following --summary's own exit-2-on-stderr precedent above.
+        # These are dead or hazardous combinations, not scope narrowing --share-only itself performs.
+        if getattr(args, "projects", None) not in (None, "*"):
+            print(
+                "cost: --share-only refuses a non-default --projects glob — a percentage-share"
+                " profile computed over one project is a per-project figure by construction,"
+                " barred regardless of dollar/token content",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if bool(getattr(args, "by_project", False)):
+            print(
+                "cost: --share-only refuses --by-project — the Cost share bullet permits a split"
+                ' along any dimension but project, account, or engagement (see'
+                ' docs/private-project-redaction.md § "Publishing a pooled tooling measurement")',
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not redact:
+            print(
+                "cost: --share-only refuses --no-redact — it would reintroduce project labels and"
+                " session IDs into output whose whole purpose is publishability",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if summary_mode:
+            print(
+                "cost: --share-only refuses --summary — --summary is already scoped to this repo"
+                " on one account, so suppression buys nothing and the combination has no consumer",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if getattr(args, "top", 20) != 20:
+            # Reads the raw parsed value, not top_n. top_n's `or 20` collapse
+            # above folds an explicit --top 0 back to the default, which
+            # would let it slip past this refusal.
+            print(
+                "cost: --share-only refuses --top — it selects rows for the top-N-by-dollars table,"
+                " which is never rendered under --share-only",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -791,6 +902,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # Guards the accumulator split (double-count/drop/misroute), not _price_turn's math — a wrong
     # price would move both sides together. Tolerance is float64 noise, not rounding slack.
     if abs(main_total + subagent_total - grand_total) > 1e-6:
+        if share_only:
+            raise AssertionError(
+                "cost: main+subagent spend does not equal the grand total — the isSidechain"
+                " split is out of sync with the token-class totals"
+            )
         raise AssertionError(
             f"cost: main ({main_total:.6f}) + subagent ({subagent_total:.6f}) spend"
             f" does not equal the grand total ({grand_total:.6f}) — the isSidechain"
@@ -810,6 +926,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         per_account_class_total = sum(sum(acct["class_totals"].values()) for acct in per_account.values())
         per_account_model_total = sum(sum(acct["model_totals"].values()) for acct in per_account.values())
         if abs(per_account_class_total - grand_total) > 1e-6 or abs(per_account_model_total - grand_total) > 1e-6:
+            if share_only:
+                raise AssertionError(
+                    "cost: per-account totals do not both equal the grand total — the"
+                    " per-account accumulator is out of sync with the global token-class/model totals"
+                )
             raise AssertionError(
                 f"cost: per-account totals (class {per_account_class_total:.6f}, model"
                 f" {per_account_model_total:.6f}) do not both equal the grand total"
@@ -836,6 +957,13 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             total_transcripts_scanned, total_transcripts_skipped, priced_session_count, priced_turn_count,
         )
         print()
+    elif share_only:
+        print(f"\nScope: pooled corpus, {title_since}.")
+        print(
+            "Dimensionless shares only — see docs/private-project-redaction.md"
+            ' § "Publishing a pooled tooling measurement" for the approval gate before'
+            " publishing any figure derived from this output.\n"
+        )
     else:
         print(f"\n## Cost report ({title_since})\n")
         print(_LIST_PRICE_CAVEAT)
@@ -861,7 +989,13 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 " pr-cost-section.sh) to read the drift diagnostic on stderr.\n"
             )
 
-    _print_excluded_spend_banner(unpriced_tokens, total_unpriced_tokens, markdown=summary_mode)
+    _print_excluded_spend_banner(unpriced_tokens, total_unpriced_tokens, markdown=summary_mode, share_only=share_only)
+
+    # Early return, not a flag threaded through the printers below — keep this immediately after the
+    # last share-only-safe print so any dollar/token print added later stays unreachable under --share-only.
+    if share_only:
+        _print_share_only_tables(class_totals, model_totals, main_total, subagent_total, bucket_totals, grand_total)
+        return
 
     _print_token_class_table(class_totals, class_token_totals, grand_total, markdown=summary_mode)
     _print_model_id_table(model_totals, grand_total, markdown=summary_mode)

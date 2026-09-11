@@ -9,8 +9,7 @@ disable-model-invocation: true
 P1. **Private-corpus provenance** — Flag any measurement, example, log excerpt,
 or command output the diff adds whose only known source is private engagement
 material. See CLAUDE.md's "Also redact structural fingerprints and
-provenance" rule and `docs/private-project-redaction.md` § "Publishing a
-pooled tooling measurement" for the carve-out's conditions. A figure
+provenance" rule and `docs/private-project-redaction.md` § "Publishing a pooled tooling measurement" for the carve-out's conditions. A figure
 decomposed by project, account, or engagement is a P1 finding on sight.
 So is any of:
 
