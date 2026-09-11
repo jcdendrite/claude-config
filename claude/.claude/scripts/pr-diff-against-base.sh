@@ -80,27 +80,30 @@ trap _cleanup_diff_temp_files EXIT
 
 if [ "$RECORD" -eq 1 ]; then
   if REPO_ROOT=$(_lib_repo_root) && CONFIG_DIR=$(_lib_config_dir) && SESSION_ID=$(_lib_resolve_session_id); then
-    REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-    SUBJECT_DIR="$CONFIG_DIR/cumulative-review-subject-markers"
-    # Session-id-suffixed, matching every completion marker kind's own
-    # <repo-hash>.<session-id> keying, so two sessions recording in the same
-    # worktree don't overwrite or consume each other's subject.
-    SUBJECT_NAME="$REPO_HASH.$SESSION_ID"
-    if mkdir -p "$SUBJECT_DIR" 2>/dev/null; then
-      if TMP_FILE=$(mktemp "$SUBJECT_DIR/.$SUBJECT_NAME.XXXXXX" 2>/dev/null); then
-        # No trailing newline here (unlike the stdout printf above): marker.sh
-        # judges emptiness on this file's canonicalized $(cat ...) text, which
-        # strips trailing newlines the same way regardless of what's written.
-        if printf '%s' "$DIFF_TEXT" > "$TMP_FILE" && mv "$TMP_FILE" "$SUBJECT_DIR/$SUBJECT_NAME"; then
-          TMP_FILE=""
+    if REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT"); then
+      SUBJECT_DIR="$CONFIG_DIR/cumulative-review-subject-markers"
+      # Session-id-suffixed, matching every completion marker kind's own
+      # <repo-hash>.<session-id> keying, so two sessions recording in the same
+      # worktree don't overwrite or consume each other's subject.
+      SUBJECT_NAME="$REPO_HASH.$SESSION_ID"
+      if mkdir -p "$SUBJECT_DIR" 2>/dev/null; then
+        if TMP_FILE=$(mktemp "$SUBJECT_DIR/.$SUBJECT_NAME.XXXXXX" 2>/dev/null); then
+          # No trailing newline here (unlike the stdout printf above): marker.sh
+          # judges emptiness on this file's canonicalized $(cat ...) text, which
+          # strips trailing newlines the same way regardless of what's written.
+          if printf '%s' "$DIFF_TEXT" > "$TMP_FILE" && mv "$TMP_FILE" "$SUBJECT_DIR/$SUBJECT_NAME"; then
+            TMP_FILE=""
+          else
+            printf 'pr-diff-against-base.sh: --record could not write the subject file; subject not recorded.\n' >&2
+          fi
         else
-          printf 'pr-diff-against-base.sh: --record could not write the subject file; subject not recorded.\n' >&2
+          printf 'pr-diff-against-base.sh: --record could not create a temp file in %s; subject not recorded.\n' "$SUBJECT_DIR" >&2
         fi
       else
-        printf 'pr-diff-against-base.sh: --record could not create a temp file in %s; subject not recorded.\n' "$SUBJECT_DIR" >&2
+        printf 'pr-diff-against-base.sh: --record could not create %s; subject not recorded.\n' "$SUBJECT_DIR" >&2
       fi
     else
-      printf 'pr-diff-against-base.sh: --record could not create %s; subject not recorded.\n' "$SUBJECT_DIR" >&2
+      printf 'pr-diff-against-base.sh: --record could not compute the repo hash; subject not recorded.\n' >&2
     fi
   else
     printf 'pr-diff-against-base.sh: --record could not resolve the repo root, config directory, or session id; subject not recorded.\n' >&2
@@ -109,29 +112,32 @@ fi
 
 if [ "$WRITE_DIFF_FILE" -eq 1 ]; then
   if REPO_ROOT=$(_lib_repo_root) && CONFIG_DIR=$(_lib_config_dir) && SESSION_ID=$(_lib_resolve_session_id); then
-    REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-    DIFF_DIR="$CONFIG_DIR/cumulative-review-diff-markers"
-    DIFF_NAME="$REPO_HASH.$SESSION_ID"
-    if mkdir -p "$DIFF_DIR" 2>/dev/null; then
-      if DIFF_TMP=$(mktemp "$DIFF_DIR/.$DIFF_NAME.XXXXXX" 2>/dev/null); then
-        # Unlike --record's subject, this file keeps stdout's trailing
-        # newline: it has no hashing consumer to disagree with.
-        # mktemp+mv is atomic for one writer at a time per session; a
-        # concurrent --diff-file call within the same session is unsupported,
-        # since ready-for-review step 4 calls this once per gate pass.
-        if printf '%s\n' "$DIFF_TEXT" > "$DIFF_TMP" && mv "$DIFF_TMP" "$DIFF_DIR/$DIFF_NAME"; then
-          DIFF_TMP=""
-          # Printed only after the mv succeeds, so the line's presence is
-          # proof the file exists.
-          printf 'DIFF_FILE: %s\n' "$DIFF_DIR/$DIFF_NAME" >&2
+    if REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT"); then
+      DIFF_DIR="$CONFIG_DIR/cumulative-review-diff-markers"
+      DIFF_NAME="$REPO_HASH.$SESSION_ID"
+      if mkdir -p "$DIFF_DIR" 2>/dev/null; then
+        if DIFF_TMP=$(mktemp "$DIFF_DIR/.$DIFF_NAME.XXXXXX" 2>/dev/null); then
+          # Unlike --record's subject, this file keeps stdout's trailing
+          # newline: it has no hashing consumer to disagree with.
+          # mktemp+mv is atomic for one writer at a time per session; a
+          # concurrent --diff-file call within the same session is unsupported,
+          # since ready-for-review step 4 calls this once per gate pass.
+          if printf '%s\n' "$DIFF_TEXT" > "$DIFF_TMP" && mv "$DIFF_TMP" "$DIFF_DIR/$DIFF_NAME"; then
+            DIFF_TMP=""
+            # Printed only after the mv succeeds, so the line's presence is
+            # proof the file exists.
+            printf 'DIFF_FILE: %s\n' "$DIFF_DIR/$DIFF_NAME" >&2
+          else
+            printf 'pr-diff-against-base.sh: --diff-file could not write the diff file; diff file not written.\n' >&2
+          fi
         else
-          printf 'pr-diff-against-base.sh: --diff-file could not write the diff file; diff file not written.\n' >&2
+          printf 'pr-diff-against-base.sh: --diff-file could not create a temp file in %s; diff file not written.\n' "$DIFF_DIR" >&2
         fi
       else
-        printf 'pr-diff-against-base.sh: --diff-file could not create a temp file in %s; diff file not written.\n' "$DIFF_DIR" >&2
+        printf 'pr-diff-against-base.sh: --diff-file could not create %s; diff file not written.\n' "$DIFF_DIR" >&2
       fi
     else
-      printf 'pr-diff-against-base.sh: --diff-file could not create %s; diff file not written.\n' "$DIFF_DIR" >&2
+      printf 'pr-diff-against-base.sh: --diff-file could not compute the repo hash; diff file not written.\n' >&2
     fi
   else
     printf 'pr-diff-against-base.sh: --diff-file could not resolve the repo root, config directory, or session id; diff file not written.\n' >&2

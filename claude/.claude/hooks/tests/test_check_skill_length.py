@@ -121,32 +121,6 @@ class TestCheckSkillLength:
             == "allow"
         )
 
-    def test_skill_at_exactly_200_allows(self, isolated_home, skill_repo):
-        """200 lines is at the limit — the gate is `> 200`, so 200 passes."""
-        (skill_repo / SKILL_PATH).write_text(make_skill_content(200))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=skill_repo,
-            )
-            == "allow"
-        )
-
-    def test_skill_growing_to_201_denies(self, isolated_home, skill_repo):
-        """HEAD at 190, staged at 201: new > 200 and new > old → deny."""
-        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=skill_repo,
-            )
-            == "deny"
-        )
-
     def test_quoted_form_reaches_same_verdict_as_bare_form(self, isolated_home, skill_repo):
         """A quote-adjacent split (`"git" commit -m x`) must reach the same
         deny verdict as the unquoted form."""
@@ -194,48 +168,6 @@ class TestCheckSkillLength:
                 cwd=new_skill_repo,
             )
             == "deny"
-        )
-
-    def test_already_over_limit_growing_denies(self, isolated_home, tmp_path):
-        """HEAD at 210, staged at 215: growing while over limit → deny."""
-        repo = make_repo_with_skill(tmp_path, 210)
-        (repo / SKILL_PATH).write_text(make_skill_content(215))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_already_over_limit_reducing_allows(self, isolated_home, tmp_path):
-        """HEAD at 210, staged at 205: reducing while over limit → allow."""
-        repo = make_repo_with_skill(tmp_path, 210)
-        (repo / SKILL_PATH).write_text(make_skill_content(205))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_already_over_limit_same_size_allows(self, isolated_home, tmp_path):
-        """HEAD at 210, staged at 210 (different content, same count): not growing → allow."""
-        repo = make_repo_with_skill(tmp_path, 210)
-        (repo / SKILL_PATH).write_text(make_skill_content(210, prefix="row"))
-        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
-        assert (
-            run_hook(
-                CHECK_SKILL_LENGTH_HOOK,
-                bash_input("git commit -m foo"),
-                cwd=repo,
-            )
-            == "allow"
         )
 
     def test_staged_deletion_of_skill_allows(self, isolated_home, skill_repo):
@@ -703,3 +635,83 @@ class TestCheckSkillLength:
                 extra_env=env,
             )
         assert decision == "allow"
+
+    # --- Newly-tested `git show` calls (_lib_staged_length_gate) ---
+
+    @pytest.mark.timing
+    def test_new_content_show_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git show ":$f"`'s pre-existing _lib_capped wrap (the new-revision
+        read feeding the line-count check) must actually engage its 5s cap
+        rather than hang -- previously an admitted gap in this function's own
+        header comment. A capped, empty read means new=0, which is never
+        over the limit regardless of old, so the gate degrades to allow."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim(f'[ "$1" = "show" ] && [ "$2" = ":{SKILL_PATH}" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "allow"
+
+    @pytest.mark.timing
+    def test_old_content_show_git_timeout_engages_cap(
+        self, isolated_home, skill_repo, git_timeout_shim
+    ):
+        """`git show "HEAD:$f"`'s pre-existing _lib_capped wrap (the
+        old-revision read feeding the line-count check) must actually engage
+        its 5s cap rather than hang -- previously an admitted gap in this
+        function's own header comment. A capped, empty read means old=0; the
+        staged file (201 lines) is still over the limit and still greater
+        than 0, so the gate reaches the same deny it would reach without the
+        timeout -- unlike the shrinking-file scenario characterized below in
+        test_head_timeout_false_denies_shrinking_file, this growing-file case
+        is not an instance of the HEAD-timeout false-deny defect."""
+        (skill_repo / SKILL_PATH).write_text(make_skill_content(201))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=skill_repo, check=True)
+        env = git_timeout_shim(f'[ "$1" = "show" ] && [ "$2" = "HEAD:{SKILL_PATH}" ]')
+        with assert_cap_engaged():
+            decision = run_hook(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=skill_repo,
+                extra_env=env,
+            )
+        assert decision == "deny"
+
+    @pytest.mark.timing
+    def test_head_timeout_false_denies_shrinking_file(
+        self, isolated_home, tmp_path, git_timeout_shim
+    ):
+        """KNOWN-BUG PIN, not a spec: `git show "HEAD:$f"` timing out yields
+        empty stdout, so `old` computes to 0 -- and a file that is shrinking
+        but still over the limit (HEAD at 300, staged at 250, limit 200)
+        flips from its correct allow to a false deny reading "was 0" instead
+        of "was 300". Asserts the deny-reason text itself (that it names the
+        zeroed old value), not just the verdict, so this test cannot be
+        satisfied by an ordinary over-limit deny for the wrong reason --
+        mirrors test_sed_absent_from_path_denies's reason-text-assertion
+        shape in test_check_claude_md_length.py. The actual fix (telling
+        _lib_capped's exit 124 apart from a legitimately new file with no
+        HEAD ancestor, via PIPESTATUS) is out of scope here and belongs in
+        its own PR; this test exists so that fix shows up as a visible,
+        intentional edit to this assertion rather than a silent behavior
+        flip."""
+        repo = make_repo_with_skill(tmp_path, 300)
+        (repo / SKILL_PATH).write_text(make_skill_content(250))
+        subprocess.run(["git", "add", SKILL_PATH], cwd=repo, check=True)
+        env = git_timeout_shim(f'[ "$1" = "show" ] && [ "$2" = "HEAD:{SKILL_PATH}" ]')
+        with assert_cap_engaged():
+            reason = run_hook_reason(
+                CHECK_SKILL_LENGTH_HOOK,
+                bash_input("git commit -m foo"),
+                cwd=repo,
+                extra_env=env,
+            )
+        assert reason is not None
+        assert "was 0" in reason

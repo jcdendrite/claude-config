@@ -163,6 +163,21 @@ class TestMarkerLibRepoHash:
             f"Library hash {from_lib!r} != inline recipe {from_inline!r}"
         )
 
+    def test_sha256sum_failure_returns_nonzero_with_empty_stdout(self):
+        """_marker_lib_repo_hash delegates to _lib_hash_diff_text, so a
+        broken sha256sum must propagate as a failing exit status with empty
+        stdout rather than fail open -- callers like
+        pr-diff-against-base.sh run this unchecked under set -euo
+        pipefail and rely on a nonzero exit to abort instead of silently
+        continuing with an empty hash."""
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; sha256sum() {{ :; }}; _marker_lib_repo_hash "/tmp/test-repo"'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert result.stdout.strip() == ""
+
 
 class TestLibHashDiffText:
     """Direct coverage for _lib_hash_diff_text -- the shared sha256 recipe
