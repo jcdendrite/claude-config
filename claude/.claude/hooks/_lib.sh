@@ -1175,12 +1175,29 @@ _lib_command_invokes_tool_subcmd() {
   return 1
 }
 
+# _lib_length_ratchet_exceeded NEW OLD LIMIT
+# Pure predicate: exit 0 (true) iff NEW is over LIMIT AND NEW is longer than
+# OLD. Reducing an already-over-limit file commit by commit is allowed; new
+# bloat is not. Extracted out of _lib_staged_length_gate's loop body so this
+# boundary is reachable without a real git repo. NEW, OLD, and LIMIT are
+# plain integers regardless of whether the caller derived them from a line
+# count or a byte count — both dimensions in _lib_staged_length_gate below
+# call this same predicate.
+_lib_length_ratchet_exceeded() {
+  local new="$1" old="$2" limit="$3"
+  [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]
+}
+
 # _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE [BYTE_LIMIT]
 # Shared body behind check-skill-length.sh and check-claude-md-length.sh:
 # deny a git commit when a staged file matching PATTERN (a grep -E pattern
 # over `git diff --cached --name-only` output) is over its per-file limit
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
+#
+# Runs only when a Bash command invokes `git commit`, gated behind both
+# callers' `if: git commit *` matcher in settings.json — commit-time-cold,
+# not per-tool-call like most _lib.sh helpers.
 #
 # BYTE_LIMIT is optional and opt-in. When set, the byte check derives
 # counts via `git cat-file -s` rather than reusing the `git show` reads
@@ -1209,21 +1226,28 @@ _lib_command_invokes_tool_subcmd() {
 # killed, or erroring inside _lib_command_invokes_git_subcmd) denies rather
 # than silently skipping the length check.
 #
-# The git calls below are capped via _lib_capped, which degrades to allow
-# (not just to not-hanging) on timeout: a locked index or network mount
-# silently skips the length check rather than blocking the commit. That is
-# a deliberate choice for a style/lint gate, not a security-relevant
-# scanner — contrast deny-pii-in-commits.sh, which fails closed on the same
-# class of timeout because an unscanned commit there is an unscanned leak
-# vector.
+# The git calls below are capped via _lib_capped. rev-parse, diff --cached,
+# and the ":$f" show call all degrade to allow (not just to not-hanging) on
+# timeout: a locked index or network mount silently skips the length check
+# rather than blocking the commit. That is a deliberate choice for a
+# style/lint gate, not a security-relevant scanner — contrast
+# deny-pii-in-commits.sh, which fails closed on the same class of timeout
+# because an unscanned commit there is an unscanned leak vector.
 #
-# The rev-parse and diff calls' cap-engagement characterization tests live
-# only in test_check_skill_length.py, valid for both callers because these
-# capped calls are caller-invariant. The two show calls (one per revision,
-# feeding the line-count check) still have no dedicated cap-engagement test
-# anywhere, a pre-existing gap this extraction doesn't close. The two
-# cat-file -s calls (one per revision, feeding the byte-count check) are
-# covered by test_byte_cap_cat_file_git_timeout_engages_cap in
+# The "HEAD:$f" show call is the one exception to that degrade-to-allow
+# claim. A timeout there yields empty stdout, so `old` computes to 0 below.
+# A shrinking-but-still-over-limit file (e.g. new=250, old=300, limit=200)
+# then flips from its correct allow to a false deny reading "was 0". This is
+# known and characterized, not fixed, here — see test_check_skill_length.py's
+# HEAD-timeout characterization test. Fixing it needs PIPESTATUS handling to
+# distinguish exit 124 from a legitimately new file with no HEAD ancestor,
+# which test_new_claude_md_over_limit_denies pins as a real, non-timeout deny.
+#
+# The rev-parse, diff, and both show calls' cap-engagement characterization
+# tests live in test_check_skill_length.py, valid for both callers because
+# these capped calls are caller-invariant. The two cat-file -s calls (one
+# per revision, feeding the byte-count check) are covered by
+# test_byte_cap_cat_file_git_timeout_engages_cap in
 # test_check_claude_md_length.py.
 _lib_staged_length_gate() {
   local pattern="$1" over_limit_message="$2" byte_limit="${3:-}"
@@ -1264,7 +1288,7 @@ _lib_staged_length_gate() {
     new=$(printf '%s' "$new_content" | awk 'END{print NR}')
     old=$(printf '%s' "$old_content" | awk 'END{print NR}')
     limit=$(limit_for "$f")
-    if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
+    if _lib_length_ratchet_exceeded "$new" "$old" "$limit"; then
       messages="${messages}  $f: $new lines (was $old, limit $limit)\n"
       fail=1
     fi
@@ -1274,7 +1298,7 @@ _lib_staged_length_gate() {
       old_bytes=$(_lib_capped git cat-file -s "HEAD:$f" 2>/dev/null)
       [ -n "$new_bytes" ] || new_bytes=0
       [ -n "$old_bytes" ] || old_bytes=0
-      if [ "$new_bytes" -gt "$byte_limit" ] && [ "$new_bytes" -gt "$old_bytes" ]; then
+      if _lib_length_ratchet_exceeded "$new_bytes" "$old_bytes" "$byte_limit"; then
         messages="${messages}  $f: $new_bytes bytes (was $old_bytes, limit $byte_limit)\n"
         fail=1
       fi

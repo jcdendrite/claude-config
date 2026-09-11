@@ -4551,3 +4551,74 @@ def test_lib_config_lines_counts_raw_line_numbers_through_skipped_lines(tmp_path
     messages pointing the user at the actual line to fix."""
     content = "# comment\nfirst\n\nsecond\n"
     assert _config_lines(content, tmp_path) == [("2", "first"), ("4", "second")]
+
+
+# --- _lib_length_ratchet_exceeded -----------------------------------------
+#
+# Extracted out of _lib_staged_length_gate's loop body in _lib.sh so the
+# growth-comparison boundary (NEW > LIMIT && NEW > OLD) is reachable without
+# a real git repo. _lib_staged_length_gate calls this same predicate for
+# both its line-count check and its byte-count check, so the boundary
+# matrix below stands in for the pure-triple cases pruned out of
+# test_check_claude_md_length.py and test_check_skill_length.py (see the
+# hook length-limit tests' end-to-end matrices for the second-dimension
+# cases -- path pattern, command parsing, message text, fail-closed
+# posture -- that stay end-to-end).
+
+
+def _length_ratchet_exceeded(new: int, old: int, limit: int) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_length_ratchet_exceeded "$@"',
+            "bash",
+            str(new),
+            str(old),
+            str(limit),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestLengthRatchetExceeded:
+    def test_new_at_exactly_limit_not_exceeded(self) -> None:
+        """new == limit is not "over" it -- migrated from
+        test_claude_md_at_exactly_200_allows / test_skill_at_exactly_200_allows."""
+        assert not _length_ratchet_exceeded(200, 190, 200)
+
+    def test_new_over_limit_and_over_old_exceeded(self) -> None:
+        """Crossing the limit for the first time -- migrated from
+        test_claude_md_growing_to_201_denies / test_skill_growing_to_201_denies."""
+        assert _length_ratchet_exceeded(201, 190, 200)
+
+    def test_new_over_limit_growing_further_while_already_over_exceeded(self) -> None:
+        """Already over the limit and growing further still denies --
+        migrated from test_already_over_limit_growing_denies."""
+        assert _length_ratchet_exceeded(215, 210, 200)
+
+    def test_new_over_limit_but_shrinking_from_old_not_exceeded(self) -> None:
+        """Reducing an already-over-limit file is allowed -- migrated from
+        test_already_over_limit_reducing_allows."""
+        assert not _length_ratchet_exceeded(205, 210, 200)
+
+    def test_new_over_limit_same_size_as_old_not_exceeded(self) -> None:
+        """Different content, same count, still over limit: not growing, so
+        allowed -- migrated from test_already_over_limit_same_size_allows."""
+        assert not _length_ratchet_exceeded(210, 210, 200)
+
+    def test_new_under_limit_growing_not_exceeded(self) -> None:
+        """Growing but never crossing the limit -- migrated from
+        test_byte_cap_under_limit_growing_allows."""
+        assert not _length_ratchet_exceeded(190, 180, 200)
+
+    def test_new_zero_not_exceeded(self) -> None:
+        """NEW=0 (a capped-timeout read or a staged deletion) can never be
+        "over" a positive limit, regardless of OLD -- boundary case not
+        pinned by name in either hook's own test file, since there NEW=0
+        arises only as a side effect of git plumbing (deletion, timeout, or
+        a missing HEAD) rather than as a directly-asserted value."""
+        assert not _length_ratchet_exceeded(0, 300, 200)
