@@ -381,9 +381,9 @@ class TestCrossDomainReadCompleteness:
 
     def test_nested_worktree_fixture_shape_is_not_a_test_source_change(self):
         """Shape written by test_pytest_collection_config.py's
-        TestNestedWorktreeExcludedFromCollection for the duration of its
-        subprocess pytest run; must never satisfy the predicate regardless
-        of timing."""
+        TestNestedWorktreeExcludedFromCollection during its subprocess
+        pytest run. Must never satisfy the predicate, regardless of
+        timing."""
         assert not _mod._is_test_source_change(
             "claude/.claude/worktrees/12345/sub/tests/test_should_never_collect.py"
         )
