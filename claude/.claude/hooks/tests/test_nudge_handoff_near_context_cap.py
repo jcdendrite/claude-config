@@ -2076,6 +2076,47 @@ class TestNudgeHandoffNearContextCap:
         ctx = payload["hookSpecificOutput"]["additionalContext"]
         assert "nearly complete" in ctx
 
+    def test_advisory_nearly_complete_clause_carries_a_cost_qualifier(self, tmp_path):
+        """The cost qualifier is attached to the "nearly complete" sentence itself,
+        not merely present somewhere else in additionalContext — two disjoint `in`
+        checks would still pass if it landed unattached, e.g. on the opening
+        threshold sentence instead. Bounded by the sentence-ending period rather
+        than a fixed character count, so a benign same-sentence wording edit
+        doesn't false-fail this test."""
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        result = _run_hook(_base_payload(transcript), tmp_path)
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        qualifier = "judge that by what the remaining work costs, not by how many steps are left"
+        nearly_complete_idx = ctx.index("nearly complete")
+        sentence_end_idx = ctx.index(".", nearly_complete_idx)
+        assert nearly_complete_idx < ctx.index(qualifier) < sentence_end_idx
+
+    def test_advisory_cost_qualifier_absent_from_hard_block_stderr(self, tmp_path):
+        """The cost qualifier is advisory-path-only — it must never leak into the
+        hard-block stderr message, which fires unconditionally in every session
+        in every repo. Its block_at=50_000/rearm fixture shape copies
+        test_block_at_override_below_threshold_rearm_hard_blocks; the
+        negative-exclusion assertion pattern itself mirrors
+        test_escalation_ladder_blocks_once_estimate_reaches_block_at's own
+        (`"genuinely almost done" not in third.stderr`)."""
+        transcript = tmp_path / "t.jsonl"
+        block_at = 50_000
+        extra_env = {"HANDOFF_NUDGE_BLOCK_AT": str(block_at)}
+        estimate = LARGE_THRESHOLD
+        assert block_at < estimate, "the override must sit below the first-ever crossing's own estimate"
+        _write_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        first = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert first.returncode == 0
+
+        estimate += DEFAULT_REARM_SPACING
+        _append_to_transcript(transcript, [_record_totalling(estimate, model="claude-sonnet-5")])
+        second = _run_hook(_base_payload(transcript), tmp_path, extra_env=extra_env)
+        assert second.returncode == 2, f"re-arm past HANDOFF_NUDGE_BLOCK_AT={block_at} must hard-block"
+        assert "judge that by what the remaining work costs" not in second.stderr
+
     def test_synthetic_model_all_zero_usage_takes_schema_drift_path(self, tmp_path):
         """A <synthetic> model with all-zero usage still takes the schema-drift path, not the window/threshold path."""
         transcript = tmp_path / "t.jsonl"

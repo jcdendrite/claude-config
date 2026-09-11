@@ -4134,73 +4134,120 @@ class TestPlanItStep7FallbackToJudgment:
 
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
-# The condition→action clause from ready-for-review/SKILL.md's step-1
-# context-budget bullet, mirroring _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES:
-# pinning the bold label alone would still pass if a future edit added a
-# real halt condition nearby while leaving the label untouched.
-_PINNED_CONTEXT_BUDGET_CLAUSE = (
-    "**Context budget (warn only, never halts).** Run "
-    "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
-    '`"status":"ok"` with `over_threshold` or `already_fired` true, warn '
-    "the user with `estimate` and `threshold`. Also name `nudge_disabled` "
-    "inline when it is true — the measurement still holds, but no "
-    'nudge will arrive on its own. See `handoff/SKILL.md` § "Before '
-    'writing: is a handoff warranted?" for the remaining fields. This '
-    "bullet substitutes its own warn-and-continue action for that "
-    "section's write decision. Continue silently in every other case — "
-    '`"status":"ok"` under threshold, or any other status including '
-    "`cannot-resolve`/`schema-drift`. This gate's "
-    "outcome never depends on the tool's own success. Do not quote the "
-    "raw `session_id` into prose that may reach the PR body."
-)
+# The condition→action bullets from ready-for-review/SKILL.md's step-1
+# context-budget cluster, mirroring _PINNED_HANDOFF_WARRANT_CHECK_CLAUSES:
+# the cluster is one fact per sibling bullet rather than one run-on bullet,
+# so each is pinned and right-bounded independently — pinning the bold
+# label alone would still pass if a future edit added a real halt
+# condition nearby while leaving the label untouched.
+_PINNED_CONTEXT_BUDGET_CLAUSES: dict[str, str] = {
+    "defers_via_handoff": (
+        "**Context budget (defers, not a warning).** Run "
+        "`~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On "
+        '`"status":"ok"` with `over_threshold` or `already_fired` true, report '
+        "`estimate` and `threshold` — naming `nudge_disabled` inline when it "
+        "is also true, since the measurement still holds even though no "
+        "nudge will arrive on its own — then invoke `/handoff` instead of "
+        "running steps 2–7 in this session."
+    ),
+    "deferring_is_cheap": (
+        "Deferring here is unusually cheap: steps 3 and 4 each dispatch a "
+        "full reviewer pass over the cumulative diff and step 5 runs "
+        "`pr-description`'s own checks, so what remains costs what the diff "
+        "costs, not what the step counter says, while steps 2–7 take their "
+        "inputs from the repository — the cumulative diff, `gh pr view`, "
+        "`skill-fidelity-report.sh` — so a fresh session rebuilds almost "
+        "nothing this one holds."
+    ),
+    "marker_deactivation_ordering": (
+        "Only once `/handoff`'s own \"Verify the handoff file with Bash\" "
+        "step confirms the write succeeded, run "
+        "`~/.claude/scripts/marker.sh deactivate ready-for-review` — "
+        "deactivating before that confirmation would leave a session that "
+        "fails mid-`/handoff` with no active marker, no completion marker, "
+        "and no handoff file; a fresh session then restarts this gate from "
+        "step 0. If `/handoff` itself declines to write (e.g. its own "
+        "warrant check reports `cannot-resolve`, or states another reason "
+        "it won't write), that is itself a halt — report and stop, do not "
+        "deactivate the `ready-for-review` marker."
+    ),
+    "engineer_override": (
+        "The one exception is an engineer decision, not the agent's "
+        "judgment: an explicit, unambiguous instruction to finish in this "
+        'session overrides the deferral, but a vague "let\'s wrap up soon" '
+        "does not."
+    ),
+    "continue_silently_fallback": (
+        'Continue silently in every other case — `"status":"ok"` under '
+        "threshold, or any other status including "
+        "`cannot-resolve`/`schema-drift`. This gate's outcome never "
+        "depends on the tool's own success."
+    ),
+    "session_id_redaction": (
+        "Do not quote the raw `session_id` into prose that may reach the PR body."
+    ),
+    "handoff_cross_reference": (
+        'See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" '
+        "for the remaining fields."
+    ),
+}
 
 
-class TestReadyForReviewContextBudgetNeverHalts:
-    """Pin that ready-for-review's step-1 context-budget bullet warns and
-    continues rather than halting. Step 1's own header reads "(halt on
-    fail)", which invites a future edit to silently flip this bullet into a
-    gate on `over_threshold`; that stays warn-only by design.
+class TestReadyForReviewContextBudgetDefers:
+    """Pin that ready-for-review's step-1 context-budget bullet defers the
+    whole gate to a fresh session via `/handoff` on `over_threshold` or
+    `already_fired`, keyed on the same `--check` fields `plan-it` Step 7
+    already uses.
     """
 
-    def test_step1_context_budget_bullet_states_warn_only_never_halts(self) -> None:
+    @pytest.mark.parametrize("branch", sorted(_PINNED_CONTEXT_BUDGET_CLAUSES))
+    def test_step1_context_budget_bullet_matches_live_text(self, branch: str) -> None:
         raw_section = _raw_heading_section_text(
             _skill_file("ready-for-review"), _READY_FOR_REVIEW_STEP1_HEADING
         )
-        pinned_text = " ".join(_PINNED_CONTEXT_BUDGET_CLAUSE.split())
+        pinned_text = " ".join(_PINNED_CONTEXT_BUDGET_CLAUSES[branch].split())
         _assert_pinned_clause_right_bounded(
             pinned_text,
             raw_section,
-            context="ready-for-review/SKILL.md: step-1 context-budget bullet no longer matches its pinned clause.",
+            context=f"ready-for-review/SKILL.md: step-1 context-budget {branch!r} bullet no longer matches its pinned clause.",
         )
 
 
 _READY_FOR_REVIEW_OVERVIEW_HEADING = "# Ready-for-review gate"
 
-# The Overview's cross-reference binding the halt-step list to the
-# Completion section's restatement bullet, from ready-for-review/SKILL.md.
-_PINNED_HALT_RESTATEMENT_CLAUSE = (
-    "A halt on step 2, 3, 4, or 7 re-runs the context-budget check from "
-    "step 1 and restates it in the halt report, per the Completion "
-    "section's restatement bullet below."
+# The Overview's cross-reference binding a halt on step 2, 3, or 4 to a
+# context-budget re-check that runs only after that round's fix commit has
+# landed, from ready-for-review/SKILL.md. Step 7 is deliberately excluded
+# (pushing commits is cheap enough to finish before any deferral
+# consideration).
+_PINNED_HALT_DEFERS_CLAUSE = (
+    "A halt on step 2, 3, or 4 triggers the normal fix loop first "
+    "(dispatch `code-writer`, apply the fix, re-run step 2); only once "
+    "that round's fix commit has landed does a context-budget re-check "
+    "run, and only then does an over-threshold/already-fired result "
+    "route to step 1's deferral. A halt on step 7 stays outside this "
+    "routing — pushing the commits is cheap enough to finish before any "
+    "deferral consideration."
 )
 
 
-class TestReadyForReviewHaltRestatesContextBudget:
-    """Pin ready-for-review's Overview sentence binding a halt on step 2,
-    3, 4, or 7 to re-running and restating the step-1 context-budget check,
-    so narrowing the halt-step list or dropping the restatement
-    cross-reference fails this test instead of drifting silently.
+class TestReadyForReviewHaltRoutesToContextBudgetDeferral:
+    """Pin ready-for-review's Overview sentence routing a halt on step 2,
+    3, or 4 to a post-commit context-budget re-check that defers to step 1
+    when it reports `over_threshold` or `already_fired`, so narrowing the
+    halt-step list, dropping the deferral routing, or reordering it ahead
+    of the fix commit fails this test instead of drifting silently.
     """
 
-    def test_overview_names_halt_steps_and_restatement_cross_reference(self) -> None:
+    def test_overview_names_halt_steps_and_deferral_routing(self) -> None:
         raw_section = _raw_heading_section_text(
             _skill_file("ready-for-review"), _READY_FOR_REVIEW_OVERVIEW_HEADING
         )
-        pinned_text = " ".join(_PINNED_HALT_RESTATEMENT_CLAUSE.split())
+        pinned_text = " ".join(_PINNED_HALT_DEFERS_CLAUSE.split())
         _assert_pinned_clause_right_bounded(
             pinned_text,
             raw_section,
-            context="ready-for-review/SKILL.md: Overview's halt-restatement sentence no longer matches.",
+            context="ready-for-review/SKILL.md: Overview's halt-deferral sentence no longer matches.",
         )
 
 

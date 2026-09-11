@@ -6,8 +6,7 @@ description: >
   branch, "ship it" intent, before a multi-persona review (CISO +
   staff-* engineers) or /ultrareview, or on any push to a branch with
   an open PR, mid-iteration included.
-  DO NOT TRIGGER when: no push or gh pr ready is attempted, or on the
-  default branch.
+  DO NOT TRIGGER when: no push or gh pr ready is attempted, or on the default branch.
 argument-hint: "[optional PR context]"
 ---
 
@@ -16,7 +15,7 @@ argument-hint: "[optional PR context]"
 Run steps in order. Halt on failures unless the step is marked **warn
 only**. After fixes produced by step 3 or step 4, re-run
 step 2 — do not re-run either on its own output.
-A halt on step 2, 3, 4, or 7 re-runs the context-budget check from step 1 and restates it in the halt report, per the Completion section's restatement bullet below.
+A halt on step 2, 3, or 4 triggers the normal fix loop first (dispatch `code-writer`, apply the fix, re-run step 2); only once that round's fix commit has landed does a context-budget re-check run, and only then does an over-threshold/already-fired result route to step 1's deferral. A halt on step 7 stays outside this routing — pushing the commits is cheap enough to finish before any deferral consideration.
 
 ## 0. Activate gate session
 
@@ -36,11 +35,16 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 - **Session is anchored in the branch's worktree.** Confirm the working directory is this branch's linked worktree, not the main checkout — an unanchored session silently runs every later check against the wrong tree. Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
 - Current branch is not the default branch (`main` / `master` / `develop`). Also derive `<TICKET-ID>` here, once, for steps 5 and 6 to consume: split the branch name on `/`; if the first segment matches `^[A-Za-z]+-[0-9]+$`, that's the `<TICKET-ID>`, else there is none.
 - Working tree is clean: no unstaged or uncommitted changes.
+- **Context budget (defers, not a warning).** Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On `"status":"ok"` with `over_threshold` or `already_fired` true, report `estimate` and `threshold` — naming `nudge_disabled` inline when it is also true, since the measurement still holds even though no nudge will arrive on its own — then invoke `/handoff` instead of running steps 2–7 in this session.
+- Deferring here is unusually cheap: steps 3 and 4 each dispatch a full reviewer pass over the cumulative diff and step 5 runs `pr-description`'s own checks, so what remains costs what the diff costs, not what the step counter says, while steps 2–7 take their inputs from the repository — the cumulative diff, `gh pr view`, `skill-fidelity-report.sh` — so a fresh session rebuilds almost nothing this one holds.
+- Only once `/handoff`'s own "Verify the handoff file with Bash" step confirms the write succeeded, run `~/.claude/scripts/marker.sh deactivate ready-for-review` — deactivating before that confirmation would leave a session that fails mid-`/handoff` with no active marker, no completion marker, and no handoff file; a fresh session then restarts this gate from step 0. If `/handoff` itself declines to write (e.g. its own warrant check reports `cannot-resolve`, or states another reason it won't write), that is itself a halt — report and stop, do not deactivate the `ready-for-review` marker.
+- The one exception is an engineer decision, not the agent's judgment: an explicit, unambiguous instruction to finish in this session overrides the deferral, but a vague "let's wrap up soon" does not.
+- Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success.
+- Do not quote the raw `session_id` into prose that may reach the PR body.
+- See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
-- If no PR exists, step 5 authors the body and step 6 opens the PR from it,
-  after verification and review.
+- If no PR exists, step 5 authors the body and step 6 opens the PR from it, after verification and review.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 8's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
-- **Context budget (warn only, never halts).** Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`. On `"status":"ok"` with `over_threshold` or `already_fired` true, warn the user with `estimate` and `threshold`. Also name `nudge_disabled` inline when it is true — the measurement still holds, but no nudge will arrive on its own. See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields. This bullet substitutes its own warn-and-continue action for that section's write decision. Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success. Do not quote the raw `session_id` into prose that may reach the PR body.
 
 ## 2. Verification (halt on fail)
 
@@ -125,11 +129,7 @@ Create it ready for review, not `--draft`: this gate has already verified the wo
 Steps 3–6 may have produced new commits or body writes. Reconfirm:
 
 - Working tree is clean.
-- All commits are pushed. If `git status` shows the branch ahead of
-  `origin/<branch>` because steps 2/3/4 produced fix commits, push them
-  now — those commits are inside the approved scope of this gate and
-  the user does not need to re-authorize the push. After pushing,
-  re-verify the branch is no longer ahead.
+- All commits are pushed. If `git status` shows the branch ahead of `origin/<branch>` because steps 2/3/4 produced fix commits, push them now — those commits are inside the approved scope of this gate and the user does not need to re-authorize the push. After pushing, re-verify the branch is no longer ahead.
 - The PR body landed, whether step 5 edited it or step 6 created the PR from it — re-fetch with `gh pr view` and confirm.
 - Branch is not behind the base branch — if steps 3–6 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
@@ -157,8 +157,8 @@ Removes only this session's file. If the skill errors before reaching this step,
 - Any halt-on-fail step (1, 2, 3, 4, 7) produced findings that weren't
   fixed in this session.
 - The user asked you to present findings without finishing the gate.
-- You are not in a git repository.
-- The branch has no PR and no remote tracking (nothing to gate).
+- This session deferred via step 1's context-budget check.
+- You are not in a git repository, or the branch has no PR and no remote tracking (nothing to gate).
 
 ## Completion
 
