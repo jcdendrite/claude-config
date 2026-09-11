@@ -96,6 +96,10 @@ set -euo pipefail
 # (resolve_worktree_for_branch) are shared with cleanup-idle-open-pr-worktrees.sh.
 # shellcheck source=_worktree-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_worktree-lib.sh"
+# direnv_export_bash (load_repo_environment's own resolution call) is shared
+# with ci-watch.sh.
+# shellcheck source=_direnv-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/_direnv-lib.sh"
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
@@ -237,13 +241,14 @@ discover_repo_roots() {
 # apply on `cd`. That hook is installed into PROMPT_COMMAND, so a script's
 # own `cd` never fires it and a sweep would query every repo with the
 # invoking shell's credentials instead of each repo's own.
+#
+# The eval below is deliberately unguarded: DRY_RUN/ALL_PROJECTS are
+# readonly by this point, so an .envrc attempting to clobber either aborts
+# the whole script under set -e instead of silently taking effect (see the
+# `readonly DRY_RUN ALL_PROJECTS` comment above).
 load_repo_environment() {
-  command -v direnv >/dev/null 2>&1 || return 0
   local direnv_exports
-  # </dev/null: an .envrc that reads stdin would otherwise consume the TTY
-  # the sweep reattaches for the Tier B prompt, hanging with no output.
-  # direnv's stdout carries secret values verbatim and is never printed.
-  direnv_exports=$(direnv export bash </dev/null 2>/dev/null) || return 0
+  direnv_exports=$(direnv_export_bash)
   eval "$direnv_exports"
 }
 
