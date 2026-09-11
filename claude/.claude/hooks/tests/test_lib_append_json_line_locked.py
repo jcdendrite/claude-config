@@ -14,6 +14,7 @@ lives in test_review_ledger_script.py.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -138,6 +139,31 @@ class TestLibAppendJsonLineLocked:
             '{"round":2,"disposition":"ADDRESS"}',
         ], "the append must still succeed when the dedup check itself fails"
         assert "dedup check failed" in result.stderr
+
+    def test_duplicate_with_quote_and_brace_bearing_value_still_dedups(self, tmp_path):
+        """A dedup-relevant field value carrying an unbalanced quote and an
+        unclosed brace must still round-trip through the dedup comparison's
+        fromjson?/equality check once it's JSON-encoded into the line, so a
+        retry carrying such a value still collapses to one line."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        # Deliberately overlaps in character class with
+        # test_review_ledger_script.py's
+        # test_jq_filter_special_chars_in_finding_round_trip_unmodified
+        # payload. That one probes CLI-level --arg round-tripping. This one
+        # probes the dedup comparison's own round-trip. Don't collapse them
+        # into one payload.
+        breaking = 'unbalanced " quote and { unclosed brace'
+        first_line = json.dumps({"round": 1, "finding": breaking})
+        second_line = json.dumps({"round": 1, "finding": breaking, "rationale": "different text"})
+        _append_json_line_locked(target, lock_file, first_line, "{round, finding}")
+
+        result = _append_json_line_locked(target, lock_file, second_line, "{round, finding}")
+
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == [first_line], (
+            "a dedup-key value carrying an unbalanced quote and brace must still dedup"
+        )
 
     def test_malformed_neighbor_line_does_not_blind_dedup_against_the_rest(self, tmp_path):
         """A non-JSON line anywhere in the file (e.g. a partial write from a

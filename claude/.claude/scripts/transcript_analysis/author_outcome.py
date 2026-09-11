@@ -21,6 +21,7 @@ signal. Only the disposition/authoring-agent values move to the ledger.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 from collections import Counter
@@ -200,6 +201,8 @@ def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bo
     - a gap (a round-open whose round never got a ledger row)
     - a ledger round number with no corresponding round-open
     - round rows recorded out of sequence
+    - a round value reappearing non-contiguously after a different round
+      value already appeared (e.g. [1, 2, 1])
 
     A ledger with zero rows carrying a `round` key at all is not
     evaluated: entirely legacy rows (pre-schema-v2), or no ledger file for
@@ -210,8 +213,16 @@ def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bo
     rounds_with_key = [row["round"] for row in ledger_rows if isinstance(row.get("round"), int)]
     if not rounds_with_key:
         return False
-    seen_in_order = list(dict.fromkeys(rounds_with_key))
-    return seen_in_order != list(range(1, round_open_count + 1))
+    # groupby collapses each maximal run of a repeated value into one
+    # entry, so a round value whose rows are split across two
+    # non-adjacent blocks (the reappearance case above) keeps a second,
+    # separate entry in contiguous_blocks even though dict.fromkeys-style
+    # first-occurrence dedup would collapse it away. That extra entry
+    # already makes contiguous_blocks unequal to the expected
+    # 1..round_open_count sequence below, so no separate duplicate check
+    # is needed.
+    contiguous_blocks = [round_value for round_value, _ in itertools.groupby(rounds_with_key)]
+    return contiguous_blocks != list(range(1, round_open_count + 1))
 
 
 def _classify_round(

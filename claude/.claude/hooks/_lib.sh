@@ -2745,7 +2745,12 @@ _lib_append_line_locked() {
 # DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
 # bypassing the --arg/--argjson data/code separation this file uses for
 # every other jq input. It MUST therefore be a static, developer-authored
-# jq literal, never derived from session- or user-controlled data.
+# jq literal, never derived from session- or user-controlled data. Nothing
+# in this function enforces that beyond the contract stated here plus a
+# caller-scoped regression test (review-ledger.sh's
+# TestReviewLedgerDedupFilterIsStaticLiteral in
+# test_review_ledger_script.py) -- a future caller of this primitive needs
+# its own equivalent test, not a guarantee inherited from this docstring.
 # A duplicate is a no-op but still touches FILE's mtime, per
 # _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
 # above.

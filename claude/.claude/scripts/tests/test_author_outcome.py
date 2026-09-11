@@ -195,6 +195,19 @@ class TestRoundNumberMismatch:
         ]
         assert ao._round_number_mismatch(rows, round_open_count=3) is True
 
+    def test_round_value_reappearing_after_a_later_round_is_a_mismatch(self):
+        """Round rows in file order 1, 2, 1 -- a session-resume counter
+        reset that re-emits round 1 after round 2 already appeared.
+        First-occurrence dedup alone collapses this to [1, 2], which is
+        set-equal to the expected 1..2 sequence and would wrongly pass;
+        this pins that the non-contiguous reappearance is still caught."""
+        rows = [
+            _ledger_row(round=1, disposition="DEFER"),
+            _ledger_row(round=2, disposition="DEFER"),
+            _ledger_row(round=1, disposition="ADDRESS"),
+        ]
+        assert ao._round_number_mismatch(rows, round_open_count=2) is True
+
 
 class TestClassifyRound:
     def test_address_row_is_failure_even_with_other_defer_rows_present(self):

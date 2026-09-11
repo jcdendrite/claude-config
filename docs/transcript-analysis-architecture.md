@@ -129,34 +129,13 @@ positions, dispatch completion ordering, and the `marker.sh write code-review` B
 fallback signal used only when a round has no ledger row at all (`_is_clean_marker_write`).
 
 **Ledger append-lock primitives (`claude/.claude/hooks/_lib.sh`).**
-`review-ledger.sh` is the only caller of `_lib_append_json_line_locked`.
-`log-reviewer-round.sh` is the only caller left on its sibling,
-`_lib_append_line_locked`.
-
-- `_lib_append_json_line_locked` dedups by projecting each line through a
-  caller-supplied jq filter — here, `{round, finding, disposition, rationale,
-  source, authoring_agent, authoring_effort}` — rather than matching whole
-  lines.
-- `_lib_append_line_locked` instead dedups by matching whole lines
-  (`grep -qFx`).
-- The projection-based dedup exists because `event_time` varies on every
-  `review-ledger.sh append` call, which would otherwise defeat whole-line
-  dedup entirely.
-- Both siblings share one lock/dead-holder-eviction/retry primitive,
-  `_lib_acquire_append_lock`.
-- Its dead-PID eviction is the same pattern `_lib_active_bypass_marker_live`
-  uses for its own markers.
-- Eviction matters more at `log-reviewer-round.sh`'s `PostToolUse`-hook call
-  site than at `review-ledger.sh`'s own CLI invocation, because a hook is
-  more exposed to being killed mid-lock by the harness's own timeout than a
-  skill-invoked script.
-- `review-ledger.sh` builds each line with `jq -nc` (one record per line), so
-  its own `>>` append is atomic via the kernel's own inode locking on a local
-  filesystem.
-- That atomicity is distinct from PIPE_BUF, which governs pipe/FIFO writes,
-  not a file append.
-- That atomicity is also not guaranteed at all over a network-mounted
-  `$HOME`/`CLAUDE_CONFIG_DIR` (NFS).
+`review-ledger.sh`'s schema-v2 append dedups a candidate line against
+`{round, finding, disposition, rationale, source, authoring_agent,
+authoring_effort}` via a caller-supplied jq projection, not whole-line
+matching. `author_outcome.py`'s read side depends on that row shape staying
+stable. See `_lib.sh`'s own `_lib_acquire_append_lock` and
+`_lib_append_json_line_locked` docstrings for the lock/eviction/atomicity
+mechanism itself.
 
 Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
 (attribute access), matching `review_rounds.py`'s own convention. See
