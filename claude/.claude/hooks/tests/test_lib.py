@@ -4563,6 +4563,8 @@ class TestRedactCredentialShapedStrings:
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
         assert "credential-value-patterns.md line 1" in result.stderr
         assert "credential-value-patterns.md line 3" in result.stderr
+        assert "[unterminated(" not in result.stderr
+        assert "(unterminated" not in result.stderr
 
     def test_batched_call_failure_falls_back_to_per_line_validation(
         self, tmp_path: Path
@@ -4712,7 +4714,7 @@ def test_lib_config_lines_counts_raw_line_numbers_through_skipped_lines(tmp_path
 # posture -- that stay end-to-end).
 
 
-def _length_ratchet_exceeded(new: int, old: int, limit: int) -> bool:
+def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
     result = subprocess.run(
         [
             "bash",
@@ -4768,6 +4770,14 @@ class TestLengthRatchetExceeded:
         arises only as a side effect of git plumbing (deletion, timeout, or
         a missing HEAD) rather than as a directly-asserted value."""
         assert not _length_ratchet_exceeded(0, 300, 200)
+
+    def test_empty_limit_not_exceeded(self) -> None:
+        """Non-integer/empty LIMIT makes the underlying `[ -gt ]` test exit 2
+        ("integer expression expected") rather than 0 or 1 -- characterizes
+        the current fail-open behavior documented on the function's header:
+        every caller's `if ...; then deny; fi` treats that exit 2 the same
+        as "not exceeded", i.e. allow."""
+        assert not _length_ratchet_exceeded(250, 300, "")
 
 
 # --- _lib_list_contains ----------------------------------------------------

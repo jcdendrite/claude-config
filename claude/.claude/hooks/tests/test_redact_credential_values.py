@@ -294,6 +294,7 @@ class TestRedactCredentialValues:
         assert updated["stdout"] == f"a={REDACTED} b={REDACTED}"
         assert "credential-value-patterns.md line 1" in result.stderr
         assert "unaffected" in result.stderr
+        assert "[unterminated(" not in result.stderr
 
     def test_batched_validation_call_failure_falls_back_without_tripping_pipefail(
         self, isolated_home, tmp_path

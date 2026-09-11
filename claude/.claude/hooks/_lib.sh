@@ -1190,6 +1190,11 @@ _lib_command_invokes_tool_subcmd() {
 # plain integers regardless of whether the caller derived them from a line
 # count or a byte count — both dimensions in _lib_staged_length_gate below
 # call this same predicate.
+# Current behavior on a non-integer or empty LIMIT: `[ "$new" -gt "$limit" ]`
+# exits 2 with "integer expression expected" stderr noise, which every
+# caller's `if _lib_length_ratchet_exceeded ...; then deny; fi` treats the
+# same as "not exceeded" -- i.e. this fails open. Pre-existing property
+# inherited from the inline code before extraction, not a new defect.
 _lib_length_ratchet_exceeded() {
   local new="$1" old="$2" limit="$3"
   [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]
@@ -1241,14 +1246,9 @@ _lib_length_ratchet_exceeded() {
 # deny-pii-in-commits.sh, which fails closed on the same class of timeout
 # because an unscanned commit there is an unscanned leak vector.
 #
-# The "HEAD:$f" show call is the one exception to that degrade-to-allow
-# claim. A timeout there yields empty stdout, so `old` computes to 0 below.
-# A shrinking-but-still-over-limit file (e.g. new=250, old=300, limit=200)
-# then flips from its correct allow to a false deny reading "was 0". This is
-# known and characterized, not fixed, here — see test_check_skill_length.py's
-# HEAD-timeout characterization test. Fixing it needs PIPESTATUS handling to
-# distinguish exit 124 from a legitimately new file with no HEAD ancestor,
-# which test_new_claude_md_over_limit_denies pins as a real, non-timeout deny.
+# The "HEAD:$f" show call is the one exception: its timeout yields old=0,
+# which can flip a shrinking-but-still-over-limit file to a false deny (see
+# test_check_skill_length.py's HEAD-timeout characterization test).
 #
 # The rev-parse, diff, and both show calls' cap-engagement characterization
 # tests live in test_check_skill_length.py, valid for both callers because
@@ -2234,6 +2234,17 @@ _LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_
 # Body class excludes `-` so a greedy match stops at the first END footer rather than consuming past it; [:space:] (not `.`) lets the match span embedded newlines under Oniguruma without a dot-matches-newline flag.
 _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=[:space:]]*-----END[A-Z ]*PRIVATE KEY-----'
 
+# _lib_warn_skipped_credential_pattern FILE LINENO
+# One source of truth for the diagnostic _lib_redact_credential_shaped_strings
+# emits on both its skip paths (batch-success and per-pattern fallback) below
+# -- both branches print the same 4-line message, so a change to its wording
+# only needs to happen once.
+_lib_warn_skipped_credential_pattern() {
+  local file="$1" lineno="$2"
+  printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
+    "$file" "$lineno" >&2
+}
+
 # _lib_redact_credential_shaped_strings JSON
 # Replaces every credential-shaped string anywhere in JSON's value tree
 # (the PEM block/header, GitHub token prefixes, an AWS access key ID, plus
@@ -2288,9 +2299,9 @@ _lib_redact_credential_shaped_strings() {
       done
 
       # Validates every addition in one jq call instead of one fork per
-      # pattern: an unparseable pattern makes jq's test() throw, caught
-      # per-row via try/catch so one bad line can't fail the whole
-      # invocation the way it would fail the combined gsub call below.
+      # pattern. An unparseable pattern makes jq's test() throw; per-row
+      # try/catch isolates that failure to the offending line. Contrast the
+      # combined gsub call below, which fails wholesale on the same error.
       # Reads "<lineno>\t<pattern>" rows from stdin (the same tab-delimited
       # shape _lib_config_lines produces) and emits "1\t<pattern>" for a
       # pattern that compiles or "0\t<lineno>" for one that doesn't.
@@ -2308,20 +2319,34 @@ _lib_redact_credential_shaped_strings() {
       batch_status=$?
 
       if [ "$batch_status" -eq 0 ]; then
-        local valid_flag payload
+        local valid_flag payload batch_parsed_rows=0
+        local credential_value_pattern_before_batch="$credential_value_pattern"
+        # Safe to re-parse on a bare tab because _lib_config_lines trims
+        # every line first, so no addition_value can carry a leading tab.
         while IFS=$'\t' read -r valid_flag payload; do
           [ -z "$valid_flag" ] && continue
+          batch_parsed_rows=$((batch_parsed_rows + 1))
           if [ "$valid_flag" = "1" ]; then
             credential_value_pattern="${credential_value_pattern}|${payload}"
           else
-            printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
-              "$credential_value_patterns_file" "$payload" >&2
+            _lib_warn_skipped_credential_pattern "$credential_value_patterns_file" "$payload"
           fi
         done <<< "$batch_output"
-      else
+        # Row-count parity: a batch call that exits 0 but returns fewer rows
+        # than it was given (truncated output) must not be trusted -- undo
+        # its partial additions and fall back to per-pattern validation
+        # instead of silently under-applying the rest.
+        if [ "$batch_parsed_rows" -ne "${#addition_values[@]}" ]; then
+          credential_value_pattern="$credential_value_pattern_before_batch"
+          batch_status=1
+        fi
+      fi
+
+      if [ "$batch_status" -ne 0 ]; then
         # The batched call itself failed (jq crashed, timed out, or errored
-        # outright), not just one pattern failing to compile within it --
-        # fall back to validating each addition individually so only the
+        # outright) or returned a row count that doesn't match what it was
+        # given, not just one pattern failing to compile within it -- fall
+        # back to validating each addition individually so only the
         # malformed pattern(s) are skipped, not every custom addition.
         batch_i=0
         while [ "$batch_i" -lt "${#addition_values[@]}" ]; do
@@ -2329,8 +2354,7 @@ _lib_redact_credential_shaped_strings() {
           addition_lineno="${addition_linenos[$batch_i]}"
           # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
           if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
-            printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
-              "$credential_value_patterns_file" "$addition_lineno" >&2
+            _lib_warn_skipped_credential_pattern "$credential_value_patterns_file" "$addition_lineno"
           else
             credential_value_pattern="${credential_value_pattern}|${addition_value}"
           fi
@@ -2553,6 +2577,13 @@ _lib_review_only_agents() {
 # glob metacharacter (e.g. "code*") matches only that literal string.
 # Zero ITEMs (a flattened empty array) is a clean no-match, not a `set -u`
 # crash.
+# That guarantee covers only this helper's own zero-ITEMs case: an unset
+# array expanded via "${arr[@]}" under `set -u` would abort at the call
+# site, before _lib_list_contains is even entered, and this helper cannot
+# protect against that. Currently latent, not live -- all three call sites'
+# arrays below are module-level constants defined by construction, never a
+# conditionally-set variable, even though their gate-script callers do run
+# under `set -u`.
 # Shared by the three membership scans below, each over its own derived
 # array.
 _lib_list_contains() {
