@@ -35,7 +35,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 
 - **Session is anchored in the branch's worktree.** Confirm the working directory is this branch's linked worktree, not the main checkout — an unanchored session silently runs every later check against the wrong tree. Re-enter the worktree per `branch-management/SKILL.md` § "Anchor the session in the worktree", then restart this step.
 - Current branch is not the default branch (`main` / `master` / `develop`). Also derive `<TICKET-ID>` here, once, for steps 5 and 6 to consume: split the branch name on `/`; if the first segment matches `^[A-Za-z]+-[0-9]+$`, that's the `<TICKET-ID>`, else there is none.
-- Working tree is clean: no unstaged or uncommitted changes.
+- Working tree is clean: no unstaged, uncommitted, or untracked changes.
 - If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
 - If no PR exists, step 5 authors the body and step 6 opens the PR from it,
   after verification and review.
@@ -44,6 +44,10 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 
 ## 2. Verification (halt on fail)
 
+<!-- CACHE_RULE:ready-for-review-verification-cache start -->
+Before selecting any commands, run `~/.claude/scripts/marker.sh check verification`. `match` means this exact tree already passed a clean verification pass inside the freshness window. On a match: skip the commands below, report the cache hit in the Completion summary, and continue to step 3. On `no-match`, run the step normally, then write `~/.claude/scripts/marker.sh write verification` only after every selected command has run and passed. Do not write it after the scope-exception skip below — that path runs no commands, so nothing has passed.
+<!-- CACHE_RULE:ready-for-review-verification-cache end -->
+
 If the repo's CLAUDE.md has a Commands, Testing, or Verification section, use
 those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
@@ -51,16 +55,9 @@ test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
 **Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline". A genuine failure's fix is the parent's own inline edit here, not a `code-writer` dispatch as in steps 3 and 4. The read-heavy diagnosis that informs it dispatches per `subagent-delegation/SKILL.md` § "Debug-investigation probe → `general-purpose` or `Explore`".
 
-**Scope exceptions — skip step 2 entirely:** skip when the diff
-contains no executable code — only markdown, plans, or non-executable
-config. Examples: skill bodies under `.claude/skills/**`, plans under
-`.claude/plans/**`, agent configs under `.claude/agents/**`, top-level
-`*.md`, `docs/**`. If the diff touches scripts, hooks, tests, or
-application source — even alongside docs — run step 2.
+**Scope exceptions — skip step 2 entirely:** skip when the diff contains no executable code — only markdown, plans, or non-executable config. Examples: skill bodies under `.claude/skills/**`, plans under `.claude/plans/**`, agent configs under `.claude/agents/**`, top-level `*.md`, `docs/**`. If the diff touches scripts, hooks, tests, or application source — even alongside docs — run step 2.
 
-**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's
-unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for
-the existing owner or open a separate branch. Rebase once the default branch is green.
+**Pre-existing failures:** if a step fails on code unrelated to this diff, confirm it's unrelated (`git log -- <file>`, `git diff origin/<base> -- <file>`), then either wait for the existing owner or open a separate branch. Rebase once the default branch is green.
 
 **Test-to-fit is forbidden:** fix the code, not the test — unless the product requirement genuinely changed.
 
@@ -164,7 +161,7 @@ Removes only this session's file. If the skill errors before reaching this step,
 
 Summarize for the user, then (and only then) signal that the branch is ready for human review:
 
-- Verification: commands run and their results.
+- Verification: commands run and their results, or "skipped — cache hit."
 - Code review: findings fixed, "none," or "skipped — cache hit."
 - PR description: authored for a new PR, or updated / "already in sync."
 - CI: watch still running — it will report when checks resolve, or check `gh pr checks <n>` yourself. If it already resolved, report that result instead.
