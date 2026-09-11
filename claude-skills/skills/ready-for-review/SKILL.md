@@ -49,7 +49,7 @@ those commands. Otherwise inspect the config (`package.json`, `pyproject.toml`,
 `go.mod`, `Cargo.toml`, `Makefile`, CI workflows) to identify the project's
 test, lint, and typecheck commands. Do not invent — skip undefined steps.
 
-**Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline".
+**Run the checks inline** — per `subagent-delegation/SKILL.md` § "Heavy command output — run inline". A genuine failure's fix is the parent's own inline edit here, not a `code-writer` dispatch as in steps 3 and 4; the read-heavy diagnosis that informs it dispatches per `subagent-delegation/SKILL.md` § "Debug-investigation probe → `general-purpose` or `Explore`".
 
 **Scope exceptions — skip step 2 entirely:** skip when the diff
 contains no executable code — only markdown, plans, or non-executable
