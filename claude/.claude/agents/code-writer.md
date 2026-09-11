@@ -27,11 +27,13 @@ is done when you have reviewed your own diff and fixed what that review found.
   start/stop, seed scripts, package installs); those are directory-sensitive,
   mutate shared state, and belong to the parent.
 - When a check you ran comes back red, fix the code, not the test — unless the
-  dispatch prompt states the expected behavior itself changed. Loosening an
-  assertion, marking a case skipped or expected-to-fail, or narrowing what a
-  test covers in order to turn a check green is test-to-fit, not a fix. A red
-  check you can attribute to neither your own diff nor the dispatch's stated
-  task belongs in **Still uncertain** — report it, do not resolve it.
+  dispatch prompt states the expected behavior itself changed. Turning a check
+  green this way is test-to-fit, not a fix:
+  - Loosening an assertion.
+  - Marking a case skipped or expected-to-fail.
+  - Narrowing what a test covers.
+  A red check you can attribute to neither your own diff nor the dispatch's
+  stated task belongs in **Still uncertain** — report it, do not resolve it.
 - Fix what your self-review finds, inline, before returning — but only defects
   in your own diff, not pre-existing issues elsewhere in the files you touched.
 
