@@ -528,6 +528,46 @@ class TestDeleteConfirmationPrompt:
             "$HOME/.claude/worktree-required must never be offered for deletion, even with a TTY and a 'y' response"
         )
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_delete_failure_does_not_abort_the_remaining_records(self, tmp_path: Path) -> None:
+        """Review finding: _migrate_prompt_delete_legacy_file's
+        case arm ended in `rm -f -- "$path" && echo ...` as the function's
+        own last statement, called bare inside main's delete-confirmation
+        loop under `set -euo pipefail` -- a real `rm -f` I/O failure (EACCES
+        here, via a read-only parent directory) aborted the whole script,
+        skipping the delete-offer for every subsequent record. Drives
+        _migrate_run_delete_confirmation_phase directly with two
+        manually-constructed records, matching
+        test_home_worktree_required_is_never_offered_even_with_tty_and_yes_response's
+        technique, so the first record's directory can be made read-only
+        without affecting the second."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        undeletable_dir = tmp_path / "undeletable"
+        undeletable_dir.mkdir()
+        undeletable_file = undeletable_dir / "legacy-a"
+        undeletable_file.touch()
+        deletable_file = tmp_path / "legacy-b"
+        deletable_file.touch()
+        undeletable_dir.chmod(0o555)
+        try:
+            script = (
+                '_MIGRATE_TTY=1\n'
+                f'_MIGRATE_RECORDS=('
+                f'"{undeletable_file}|autonomous_shipping|true|imported|false" '
+                f'"{deletable_file}|handoff_nudge|true|imported|false")\n'
+                '_migrate_run_delete_confirmation_phase\n'
+            )
+            result = _run_sourced(script, "y\ny\n", _env(home))
+        finally:
+            undeletable_dir.chmod(0o755)
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "could not delete" in result.stderr
+        assert undeletable_file.exists(), "a failed rm must leave the file in place, not silently succeed"
+        assert not deletable_file.exists(), (
+            "the second record must still get its own delete-confirmation offer after the first record's rm failed"
+        )
+
     def test_lost_precedence_file_shows_outcome_in_debug_record(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         config_dir = tmp_path / "other-config-dir"

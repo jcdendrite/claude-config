@@ -13,9 +13,19 @@ from __future__ import annotations
 import os
 import shutil
 import textwrap
+import time
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, edit_input, multiedit_input, run_hook, run_hook_reason, write_input
+from helpers import (
+    HOOKS_DIR,
+    bash_input,
+    build_path_without,
+    edit_input,
+    multiedit_input,
+    run_hook,
+    run_hook_reason,
+    write_input,
+)
 
 ENFORCE_CONFIG_WRITE_SHAPE_HOOK = HOOKS_DIR / "enforce-config-write-shape.sh"
 
@@ -148,6 +158,56 @@ class TestBashNameScanArm:
         )
 
 
+class TestBraceSplitCallSitesClosed:
+    """row 50/52: a brace-split write-utility name or `_config_set` token
+    (`t{ee,ee}`, `_config_s{et,et}`) reaches a raw-text scan as a literal
+    that matches nothing, even though bash itself brace-expands it before
+    executing -- unless the scan is also run against the flattened
+    companion COMMAND_FLATTENED. One deny-path test per shape (comma,
+    range) at each of this hook's two raw-text call sites, each paired
+    with an "ordinary command still allows" control at the same call
+    site."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("t{ee,ee} ~/.claude/claude-config.toml", id="alternation-comma"),
+            pytest.param("t{e..e}e ~/.claude/claude-config.toml", id="alternation-range"),
+        ],
+    )
+    def test_write_utility_name_brace_split_denied(self, tmp_path, command):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input(command), home=home) == "deny"
+
+    def test_ordinary_command_still_allowed_at_alternation(self, tmp_path):
+        """Control for the alternation check above -- a brace-free command
+        is unaffected by the added flattened-candidates pass."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("echo hi"), home=home) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("_config_s{et,et} worktree_required true", id="config-set-scan-comma"),
+            pytest.param("_config_s{e..e}t worktree_required true", id="config-set-scan-range"),
+        ],
+    )
+    def test_config_set_name_scan_brace_split_denied(self, tmp_path, command):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input(command), home=home) == "deny"
+
+    def test_ordinary_command_still_allowed_at_config_set_scan(self, tmp_path):
+        """Control for the name-scan check above -- a brace-free command
+        naming neither _config_set nor a write utility is unaffected."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("git status"), home=home) == "allow"
+
+
 class TestSanctionedCallerAllowPaths:
     """The two sanctioned writers (docs/config-file.md's "Writing a value")
     invoke `_config_set` from inside a sourced/executed script, never as a
@@ -170,6 +230,175 @@ class TestSanctionedCallerAllowPaths:
             )
             == "allow"
         )
+
+
+class TestSedTrFailureFailsClosed:
+    """Test gap flagged in cumulative review: this hook's own two
+    sed/tr-dependent fail-closed branches (quote-stripping and
+    redirect-candidate-splitting) had no test, unlike
+    test_enforce_marker_script_shape.py's equivalent coverage for the
+    sibling hook."""
+
+    def test_command_unquoted_quote_strip_failure_denied(self, tmp_path):
+        """Mirrors test_sed_absent_from_path_denied: with sed entirely
+        absent from PATH, _lib_strip_shell_quotes fails on every call, so
+        COMMAND_UNQUOTED_EXIT must fail closed (deny) rather than let the
+        failure silently clear COMMAND_UNQUOTED and fall through to this
+        scan's normal no-match allow path."""
+        home = tmp_path / "home"
+        home.mkdir()
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input("echo hi"),
+                home=home,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_redirect_candidates_split_sed_failure_denied(self, tmp_path):
+        """Mirrors test_enforce_marker_script_shape.py's identically-named
+        test (GH-783): CONFIG_WRITE_REDIRECT_CANDIDATES_EXIT must fail
+        closed on its own, isolated from COMMAND_UNQUOTED_EXIT above --
+        both depend on the same sed binary, so a total sed-absent test
+        can't tell which of the two is actually catching the failure. A
+        sed shim fails on any invocation that isn't _lib_strip_shell_quotes's
+        own `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real
+        sed while the later _lib_split_fragments call inside
+        _lib_redirect_candidates (a bare `sed -E 's/.../g'`, no `-e` token)
+        fails on its own. The command carries a genuine write construct
+        (`>`) so _lib_command_has_write_construct's fast-reject does not
+        skip _lib_split_fragments outright."""
+        home = tmp_path / "home"
+        home.mkdir()
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        target = home / ".claude" / "claude-config.toml"
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(f"printf x > {target}"),
+                home=home,
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
+        )
+
+    def test_command_flattened_sed_failure_denied(self, tmp_path):
+        """Isolates _lib_brace_flatten's own sed call, distinct from the
+        two tests above: COMMAND_UNQUOTED_EXIT is caught first when sed is
+        entirely absent, and CONFIG_WRITE_REDIRECT_CANDIDATES_EXIT runs
+        after COMMAND_FLATTENED, so neither isolates this check on its
+        own. _lib_brace_flatten's sed invocation carries the literal
+        substring `\\{` in its own pattern arguments, which none of
+        _lib_strip_shell_quotes's three sed patterns do (they use `\\$`
+        and `\\(` instead), so a shim keyed on that substring lets
+        COMMAND_UNQUOTED's strip succeed via the real sed while
+        _lib_brace_flatten's own sed call fails on its own. The fixture
+        must itself contain a brace group -- _lib_brace_flatten's
+        fork-free fast path would otherwise never reach the sed call at
+        all."""
+        home = tmp_path / "home"
+        home.mkdir()
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-on-brace-flatten-pattern-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            for arg in "$@"; do
+              case "$arg" in
+                *'\\{{'*) exit 1 ;;
+              esac
+            done
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        reason = run_hook_reason(
+            ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+            bash_input("_config_s{et,et} worktree_required true"),
+            home=home,
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None
+        assert "could not flatten brace-expansion constructs" in reason
+
+    def test_pass_budget_exceeded_denied(self, tmp_path):
+        """Hook-level counterpart to test_lib.py's
+        test_lib_brace_flatten_fails_closed_past_the_16_pass_budget: 17
+        levels of real nesting -- one past _lib_brace_flatten's fixed
+        16-pass budget -- denies via this hook's own COMMAND_FLATTENED_EXIT
+        -eq 2 branch, not just at the isolated _lib_brace_flatten unit.
+        Fixture copied verbatim from test_lib.py's
+        _BRACE_FLATTEN_17_LEVEL_NESTED, since a single dropped or added
+        brace changes the required pass count."""
+        home = tmp_path / "home"
+        home.mkdir()
+        seventeen_level_nested = (
+            "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}}"
+        )
+        reason = run_hook_reason(
+            ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+            bash_input(f"_config_set worktree_required {seventeen_level_nested}"),
+            home=home,
+        )
+        assert reason is not None
+        assert "16-pass flattening budget" in reason
+
+
+class TestBraceFlattenTiming:
+    """End-to-end latency of the brace-flatten pass plus the doubled
+    (raw + flattened) redirect-candidate scan this diff adds, driven
+    through the real hook binary rather than the isolated _lib_brace_flatten
+    unit test_lib.py's own timing test covers. Generous bound, not a tight
+    wall-clock threshold, matching this repo's own stated timing-test
+    convention -- so this isn't flaky on a loaded machine, but still catches
+    a future regression to the doubled-scan wrapper or the pass count."""
+
+    @pytest.mark.timing
+    def test_sixteen_level_nested_brace_returns_promptly(self, tmp_path):
+        """`tee` (a recognized write utility, unaffected by flattening) keeps
+        the doubled redirect-candidate pipeline from fast-rejecting on
+        either the raw or the flattened pass, so both passes' full
+        fragment-split/extraction/shape-match cost is paid, on top of
+        _lib_brace_flatten's own 16-pass cost. No `/` anywhere in the
+        command, so `_lib_command_has_brace_expansion_bypass`'s categorical
+        write-construct+brace+slash predicate doesn't fire and mask the
+        timing measurement behind an early deny."""
+        home = tmp_path / "home"
+        home.mkdir()
+        sixteen_level_nested = (
+            "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}"
+        )
+        started = time.monotonic()
+        result = run_hook(
+            ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+            bash_input(f"tee destfile {sixteen_level_nested}"),
+            home=home,
+        )
+        elapsed = time.monotonic() - started
+        assert result == "allow"
+        assert elapsed < 5.0, f"16-level nested brace fixture took {elapsed:.2f}s -- should return promptly"
 
 
 class TestBashRedirectScanArm:
@@ -754,6 +983,118 @@ class TestCurlWgetImplicitDestinationResidual:
             )
             == "allow"
         )
+
+
+class TestConfigSetIndirectionResidualsAllowed:
+    """Characterization tests pinning two of this hook's own disclosed,
+    accepted _config_set indirection residuals as ALLOWED today -- not a
+    new runtime check, just a tripwire so a future accidental fix (or
+    regression that widens the gap further) is a deliberate, noticed
+    change to these tests, matching
+    TestCurlWgetImplicitDestinationResidual's own pattern above."""
+
+    def test_shell_variable_indirection_allowed_residual(self, tmp_path):
+        """The name-scan is a bare substring test against the literal text
+        `_config_set` -- splitting the name across two variable
+        assignments never reconstitutes that substring in the command text
+        the hook actually sees (no shell expansion happens before a
+        PreToolUse hook runs)."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input("A=_config_; B=set; $A$B worktree_required true"),
+                home=home,
+            )
+            == "allow"
+        )
+
+    def test_script_file_indirection_allowed_residual(self, tmp_path):
+        """Base64-encoded so the top-level command text never contains the
+        literal substring `_config_set` anywhere -- the payload decodes to
+        `_config_set worktree_required true`, matching this hook's own
+        header disclosure that a PreToolUse hook sees only the top-level
+        Bash command string, never a written file's own content."""
+        home = tmp_path / "home"
+        home.mkdir()
+        script = tmp_path / "indirected.sh"
+        payload = "X2NvbmZpZ19zZXQgd29ya3RyZWVfcmVxdWlyZWQgdHJ1ZQo="
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input(f"echo {payload} | base64 -d > {script} && bash {script}"),
+                home=home,
+            )
+            == "allow"
+        )
+
+
+class TestBraceExpansionBypassClosed:
+    """HIGH-severity review finding: bash brace-expands `pre{a,b}post`
+    into one word per component at PARSE time, but _lib_fragment_candidates
+    (shared with enforce-marker-script-shape.sh) only ever sees a
+    fragment's words AFTER runtime word-splitting, which bash never
+    re-brace-expands -- so an unexpanded `{.toml,-bak.toml}`-shaped literal
+    token reached _lib_shape_match unmatched, even though the real shell
+    that executes the command DOES brace-expand it into the real
+    claude-config.toml target. `_lib.sh`'s `_lib_command_has_brace_expansion_bypass`
+    closes this by detecting the construct's shape on the whole command
+    text and denying outright, rather than expanding it into candidates --
+    see test_lib.py's own `_lib_redirect_candidates` brace-expansion-bypass
+    tests for the shared predicate's full shape matrix; this class pins only
+    this hook's own wiring of that shared mechanism."""
+
+    def test_comma_list_glued_to_the_state_file_basename_denied(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        assert (
+            run_hook(
+                ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+                bash_input("cp /tmp/payload.toml ~/.claude/claude-config{.toml,-bak.toml}"),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_denial_message_names_the_brace_expansion_reason(self, tmp_path):
+        """Distinguishes this deny from the generic "could not split the
+        command into fragments" message a real sed/fragment-splitting
+        failure would produce -- both share a non-zero
+        _lib_redirect_candidates status, so the caller's status-check must
+        branch on _LIB_BRACE_EXPANSION_BYPASS_STATUS specifically rather
+        than falling into the generic branch."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude").mkdir()
+        reason = run_hook_reason(
+            ENFORCE_CONFIG_WRITE_SHAPE_HOOK,
+            bash_input("cp /tmp/payload.toml ~/.claude/claude-config{.toml,-bak.toml}"),
+            home=home,
+        )
+        assert reason is not None
+        assert "brace-expansion" in reason
+
+    def test_dollar_brace_shaped_command_denied(self, tmp_path):
+        """A `${...}` parameter expansion whose body has a `,` (`${x:-a,b}`)
+        denies, because real bash cannot distinguish "just a parameter
+        expansion" from "a parameter expansion that also brace-expands"
+        from command text alone."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("tee /tmp/x ${x:-a,b}"), home=home)
+            == "deny"
+        )
+
+    def test_ordinary_dollar_brace_command_still_allowed(self, tmp_path):
+        """Control for the test above -- a solitary `${x}` parameter
+        expansion with no comma or `..` in its body is not a brace-
+        expansion construct at all, so it allows."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert run_hook(ENFORCE_CONFIG_WRITE_SHAPE_HOOK, bash_input("tee /tmp/x ${x}"), home=home) == "allow"
 
 
 class TestNonMatchingToolNames:

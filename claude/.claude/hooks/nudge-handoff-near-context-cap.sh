@@ -386,12 +386,17 @@ run_check_mode() {
   # Delegates to _config_enabled's handoff_nudge schema row
   # (presence-disables, default true). Exit code 2 (unresolvable) can't
   # reach here -- this function's own top-of-body guard already refused on
-  # an unresolved CONFIG_DIR. The case below still distinguishes exit 2
-  # from exit 1 defensively, matching this key's documented fail direction
-  # in config-schema-audit.md.
+  # an unresolved CONFIG_DIR. Exit code 3 (config-keys.psv missing or
+  # unreadable) CAN reach here independently of that guard, and falls
+  # through the same `case` as exit 2 below (neither matches the sole `1)`
+  # arm), leaving nudge_disabled=false -- safe, not an omission:
+  # handoff_nudge's documented fail direction (config-schema-audit.md)
+  # treats an unresolvable kill switch as absent, so the nudge stays
+  # enabled rather than silently suppressed.
   _config_enabled handoff_nudge
   case "$?" in
     1) nudge_disabled=true ;;
+    3) ;; # schema unreadable: intentional no-op, see comment above
   esac
 
   # Same all-fields-zero condition the fire path logs as schema drift, minus
@@ -495,10 +500,15 @@ _lib_valid_session_id_component "$SESSION_ID" || exit 0
 # Kill-switch: suppress nudge for automated pipelines or user opt-out.
 # Delegates to _config_enabled's handoff_nudge schema row (presence-disables,
 # default true). Exit code 2 (unresolvable) can't reach here either, same
-# reason as run_check_mode's call site above.
+# reason as run_check_mode's call site above. Exit code 3 (config-keys.psv
+# missing or unreadable) is independent of CONFIG_DIR resolution and CAN
+# reach here; it falls through the same `case` as exit 2 (neither matches
+# the sole `1)` arm), so the nudge stays enabled -- safe by handoff_nudge's
+# documented fail direction (config-schema-audit.md), not by omission.
 _config_enabled handoff_nudge
 case "$?" in
   1) exit 0 ;;
+  3) ;; # schema unreadable: intentional no-op, see comment above
 esac
 
 # Subagent gate: only nudge in the main session, not in subagents.

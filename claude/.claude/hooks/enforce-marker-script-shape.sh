@@ -60,6 +60,27 @@
 #     own destination-argument syntax -- this scan is a fixed name list, not
 #     a general write-syscall trace, so a program not on the list is
 #     entirely unscanned.
+#   - A braced write-utility-fragment argument (`{a,b}`, `{a..b}`) denies
+#     whether or not it resolves to a protected path once bash actually
+#     expands it — over-matching, not a coverage gap: `_lib.sh`'s
+#     `_lib_command_has_brace_expansion_bypass` detects the construct's
+#     shape rather than expanding it, so `cp src/{a,b}.txt /tmp/` denies
+#     even though only one of the two expanded targets is real.
+#   - A quoted brace the real shell would NOT itself expand also denies,
+#     since quote-stripping only deletes quote characters and leaves the
+#     brace, comma, and slash the predicate keys on untouched.
+#   - Unlike every other Bash-arm candidate check in this file, this one is
+#     not agent-scoped: it denies before the per-candidate no-gate-release
+#     check runs, so it applies even to an agent that could have run the
+#     review.
+#   - The predicate scans heredoc bodies too, with no notion of a
+#     heredoc-body boundary: a `cat <<EOF > /path/to/file.json` writing
+#     ordinary `{"a": 1, "b": 2}`-shaped JSON denies whenever a recognized
+#     write utility and a `/` both appear anywhere in the same command.
+#   - A write-utility name or path token spelled via brace-expansion
+#     syntax (`marker.s{h,h}`) is caught via COMMAND_FLATTENED, a
+#     16-pass-flattened companion every raw-text scan below is paired
+#     with — see `_lib.sh`'s `_lib_brace_flatten`.
 #   - `_lib_shape_match`'s `-ef`-based inode-identity checks (shared with
 #     enforce-config-write-shape.sh): a `..` path segment through a
 #     not-yet-created directory has no inode to stat yet — narrow, since in
@@ -212,6 +233,9 @@ case "$TOOL_NAME" in
     # Path-based arm. Every marker lives under a known directory, so the
     # decision is "is this agent writing marker state?" — a question the
     # resolved path answers directly, with no command text to outsmart.
+    # No brace-expansion check needed here: file_path is a literal string
+    # handed straight to the filesystem, never parsed by a shell, so there
+    # is no brace construct for a shell to expand.
     TARGET_PATH="$FILE_PATH"
 
     _lib_is_no_gate_release_agent "$AGENT_TYPE" || exit 0
@@ -291,36 +315,77 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
   emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
   exit 0
 fi
-MARKER_WRITE_REDIRECT_CANDIDATES=$(_bash_marker_redirect_candidates "$COMMAND_UNQUOTED")
-MARKER_WRITE_REDIRECT_CANDIDATES_EXIT=$?
-if [ "$MARKER_WRITE_REDIRECT_CANDIDATES_EXIT" -ne 0 ]; then
-  emit_deny "could not split the command into fragments (exit ${MARKER_WRITE_REDIRECT_CANDIDATES_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+
+# Flattened companion to COMMAND_UNQUOTED: a brace-split `marker.sh` token
+# or write-target path (`marker.s{h,h}`, `code-review-markers{,x}/forged`)
+# reaches every raw-text scan below as one literal that matches nothing,
+# even though bash itself brace-expands it before executing. Every
+# detection check below that reads COMMAND_UNQUOTED is paired with an
+# identical check against COMMAND_FLATTENED — see _lib.sh's
+# _lib_brace_flatten for the flattening contract and
+# test_hook_alignment.py's static sweep for the invariant that keeps a
+# future scan from omitting its own pairing.
+COMMAND_FLATTENED=$(_lib_brace_flatten "$COMMAND_UNQUOTED")
+COMMAND_FLATTENED_EXIT=$?
+if [ "$COMMAND_FLATTENED_EXIT" -eq 2 ]; then
+  emit_deny "Marker write — the command's brace-expansion nesting exceeds this scan's 16-pass flattening budget. Failing closed rather than allowing an unscanned Bash write that could reach marker state — re-issue the command with each destination path written out literally instead."
   exit 0
 fi
-while IFS= read -r MARKER_WRITE_CANDIDATE; do
-  [ -n "$MARKER_WRITE_CANDIDATE" ] || continue
-  _marker_shape_match "$MARKER_WRITE_CANDIDATE"
-  MARKER_WRITE_SHAPE_STATUS=$?
-  if [ "$MARKER_WRITE_SHAPE_STATUS" -eq 2 ]; then
-    MARKER_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$MARKER_WRITE_CANDIDATE" | cut -c1-80)
-    emit_deny "Marker write — could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$MARKER_WRITE_CANDIDATE_TRUNCATED' is not a review-marker path."
+if [ "$COMMAND_FLATTENED_EXIT" -ne 0 ]; then
+  emit_deny "could not flatten brace-expansion constructs in the command text (exit ${COMMAND_FLATTENED_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+  exit 0
+fi
+
+# _marker_write_scan_command COMMAND_TEXT
+# Runs the redirect/utility-write extraction-and-shape-test pipeline once
+# against COMMAND_TEXT, denying (exiting the hook) on a brace-bypass
+# status, a fragment-split failure, or a candidate matching marker state.
+# Called twice below — once against COMMAND_UNQUOTED, once against
+# COMMAND_FLATTENED — so a brace-split write target is caught by the
+# flattened pass even when the raw pass finds nothing; the two calls'
+# outcomes are OR'd simply by both being able to deny and exit.
+_marker_write_scan_command() {
+  local command_text="$1"
+  local candidates candidates_exit
+  candidates=$(_bash_marker_redirect_candidates "$command_text")
+  candidates_exit=$?
+  if [ "$candidates_exit" -eq "$_LIB_BRACE_EXPANSION_BYPASS_STATUS" ]; then
+    emit_deny "Marker write — the command contains a brace-expansion construct (\`{a,b}\`/\`{a..b}\`), which bash expands before executing but this scan's own word-level candidate extraction cannot re-expand. Re-issue the command with each destination path written out literally instead."
     exit 0
   fi
-  [ "$MARKER_WRITE_SHAPE_STATUS" -eq 0 ] || continue
-  # AGENT_TYPE is already populated by _lib_parse_tool_input_or_deny's
-  # shared parse, at no added per-fire cost.
-  if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
-    MARKER_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$MARKER_WRITE_CANDIDATE" | cut -c1-80)
-    emit_deny "Marker write — the '$AGENT_TYPE' agent cannot release a review gate by writing '$MARKER_WRITE_CANDIDATE_TRUNCATED'.
+  if [ "$candidates_exit" -ne 0 ]; then
+    emit_deny "could not split the command into fragments (exit ${candidates_exit}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned Bash write that could reach marker state."
+    exit 0
+  fi
+  local candidate shape_status candidate_truncated
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    _marker_shape_match "$candidate"
+    shape_status=$?
+    if [ "$shape_status" -eq 2 ]; then
+      candidate_truncated=$(printf '%s' "$candidate" | cut -c1-80)
+      emit_deny "Marker write — could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty) to verify '$candidate_truncated' is not a review-marker path."
+      exit 0
+    fi
+    [ "$shape_status" -eq 0 ] || continue
+    # AGENT_TYPE is already populated by _lib_parse_tool_input_or_deny's
+    # shared parse, at no added per-fire cost.
+    if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
+      candidate_truncated=$(printf '%s' "$candidate" | cut -c1-80)
+      emit_deny "Marker write — the '$AGENT_TYPE' agent cannot release a review gate by writing '$candidate_truncated'.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
-    exit 0
-  fi
-# Here-string over the already-captured MARKER_WRITE_REDIRECT_CANDIDATES,
-# not a nested command substitution: the split's exit status is checked
-# above, before this loop starts, matching
-# _bash_marker_redirect_candidates's own inner loop.
-done <<< "$MARKER_WRITE_REDIRECT_CANDIDATES"
+      exit 0
+    fi
+  # Here-string over the already-captured candidates, not a nested command
+  # substitution: the split's exit status is checked above, before this
+  # loop starts, matching _bash_marker_redirect_candidates's own inner
+  # loop.
+  done <<< "$candidates"
+}
+
+_marker_write_scan_command "$COMMAND_UNQUOTED"
+_marker_write_scan_command "$COMMAND_FLATTENED"
 
 # Strip leading/trailing whitespace — computed before the activation guards so
 # both the fast-reject and anchored-path check share one computation.
@@ -337,12 +402,17 @@ TRIMMED_EXIT=$?
 # landing inside the `marker.sh` token (e.g.
 # `~/.claude/scripts/"marker".sh write ...`) breaks the contiguous
 # substring in raw text while executing identically to the unquoted form,
-# and this fast-reject exiting early would skip every check below.
+# and this fast-reject exiting early would skip every check below. Also
+# matches COMMAND_FLATTENED, so a brace-split `marker.s{h,h}` token (which
+# contains no literal `marker.sh` substring in either COMMAND_UNQUOTED) does
+# not fast-exit here.
 # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem
 # (macOS APFS/HFS+, Windows NTFS), Marker.sh opens the same file as
 # marker.sh -- a case-sensitive fast-reject here would skip this hook's
 # entire deep validation below, not just the gate-release-authority check.
-printf '%s' "$COMMAND_UNQUOTED" | grep -qFi 'marker.sh' || exit 0
+printf '%s' "$COMMAND_UNQUOTED" | grep -qFi 'marker.sh' \
+  || printf '%s' "$COMMAND_FLATTENED" | grep -qFi 'marker.sh' \
+  || exit 0
 
 # Bash arm of the gate-release authority check. Placed immediately after
 # Stage 1 and BEFORE Stage 2, deliberately: Stage 2 fast-exits wrapped forms
@@ -405,8 +475,13 @@ if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
 
   # Case-folded (-i): same case-insensitive-filesystem rationale as Stage 1's
   # fast-reject above. Matches COMMAND_UNQUOTED, not raw $COMMAND — see the
-  # comment block above this arm for why.
+  # comment block above this arm for why. Also matches COMMAND_FLATTENED, so
+  # a brace-split `marker.s{h,h} write ...` token (which contains no literal
+  # `marker.sh` substring in COMMAND_UNQUOTED) still matches this substring
+  # check — _lib_command_invokes_tool_subcmd's own flattened call below
+  # resolves a different fragment shape and is not a substitute for this one.
   printf '%s' "$COMMAND_UNQUOTED" | grep -qEi 'marker\.sh[[:space:]]+(write|activate)' \
+    || printf '%s' "$COMMAND_FLATTENED" | grep -qEi 'marker\.sh[[:space:]]+(write|activate)' \
     && MARKER_GATE_MATCHED=true
 
   for MARKER_GATE_OP in write activate; do
@@ -415,6 +490,18 @@ if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
     if [ "$MARKER_GATE_OP_STATUS" -eq 0 ]; then
       MARKER_GATE_MATCHED=true
     elif [ "$MARKER_GATE_OP_STATUS" -ne 1 ]; then
+      MARKER_GATE_INDETERMINATE=true
+    fi
+
+    # Flattened companion: a brace-split `marker.s{h,h}` invocation resolves
+    # its command word to `marker.sh` only after flattening, so this call
+    # against COMMAND_FLATTENED is what catches it -- the raw-$COMMAND call
+    # above alone would not.
+    _lib_command_invokes_tool_subcmd "$COMMAND_FLATTENED" marker.sh "$MARKER_GATE_OP"
+    MARKER_GATE_OP_FLATTENED_STATUS=$?
+    if [ "$MARKER_GATE_OP_FLATTENED_STATUS" -eq 0 ]; then
+      MARKER_GATE_MATCHED=true
+    elif [ "$MARKER_GATE_OP_FLATTENED_STATUS" -ne 1 ]; then
       MARKER_GATE_INDETERMINATE=true
     fi
   done
@@ -479,9 +566,15 @@ fi
 # fast-reject above -- unmatched here falls through to the wrapped-forms
 # fast-exit below, the same silent-allow shape Stage 1 guards against.
 # Scoped tightly around this one statement and restored immediately after.
+# Also matches COMMAND_FLATTENED: a brace-split `marker.s{h,h}` top-level
+# invocation contains no literal `marker.sh` substring in COMMAND_UNQUOTED,
+# and would otherwise fall through to the wrapped-forms fast-exit below --
+# skipping this hook's entire deep VALID_PATTERN/chain-pattern validation,
+# not merely one name-scan.
 shopt -s nocasematch
 STAGE2_ANCHOR_MATCHED=1
-if [[ "$COMMAND_UNQUOTED" =~ ^[[:space:]]*(\~|\$HOME|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh([[:space:]]|$) ]]; then
+if [[ "$COMMAND_UNQUOTED" =~ ^[[:space:]]*(\~|\$HOME|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh([[:space:]]|$) ]] \
+  || [[ "$COMMAND_FLATTENED" =~ ^[[:space:]]*(\~|\$HOME|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh([[:space:]]|$) ]]; then
   STAGE2_ANCHOR_MATCHED=0
 fi
 shopt -u nocasematch

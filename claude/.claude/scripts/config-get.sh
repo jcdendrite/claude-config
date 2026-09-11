@@ -50,7 +50,17 @@ if [ ! -r "$_CONFIG_SCHEMA_FILE" ]; then
   exit 3
 fi
 
-if ! _config_schema_field "$KEY" type >/dev/null; then
+_config_schema_field "$KEY" type >/dev/null
+SCHEMA_FIELD_STATUS=$?
+if [ "$SCHEMA_FIELD_STATUS" -eq 3 ]; then
+  # Closes a narrow TOCTOU window: the upfront [ ! -r ] check above already
+  # passed, but config-keys.psv became unreadable before this later
+  # _config_schema_field call ran -- the same window line 58's own
+  # _config_value call below already defends against.
+  echo "config-get.sh: schema file not found or unreadable: $_CONFIG_SCHEMA_FILE -- a partial stow-relink or interrupted git pull, not a typo'd key name" >&2
+  exit 3
+fi
+if [ "$SCHEMA_FIELD_STATUS" -ne 0 ]; then
   echo "config-get.sh: unknown key '$KEY'" >&2
   exit 2
 fi
@@ -59,6 +69,13 @@ VALUE=$(_config_value "$KEY")
 STATUS=$?
 if [ "$STATUS" -eq 2 ]; then
   echo "config-get.sh: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or \$HOME is unset/empty)" >&2
+  exit 3
+fi
+if [ "$STATUS" -eq 3 ]; then
+  # Closes a narrow TOCTOU window: the upfront [ ! -r ] check above already
+  # passed, but config-keys.psv became unreadable before this later
+  # _config_value call ran.
+  echo "config-get.sh: schema file not found or unreadable: $_CONFIG_SCHEMA_FILE -- a partial stow-relink or interrupted git pull, not a typo'd key name" >&2
   exit 3
 fi
 

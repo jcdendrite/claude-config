@@ -21,16 +21,12 @@
 # (macOS system bash is 3.2), and this file cannot assume its caller has
 # already turned `-u` off.
 #
-# Every call into this file's resolution chain (_config_value/_config_enabled/
+# Every resolution-chain call (_config_value/_config_enabled/
 # _config_schema_field/_config_read_key_from_file/_config_file_lines) does
-# un-timeout-wrapped filesystem I/O -- reading config-keys.psv and/or
-# claude-config.toml directly, no _lib_capped wrapper -- on every single
-# call, from every one of this repo's 11+ hook/script call sites. Accepted
-# for this deployment shape (local disk, single machine per config dir), not
-# a silent gap: a stuck read here would block whichever hook or script made
-# the call, the same class of un-timeout-wrapped-I/O tradeoff
-# enforce-config-write-shape.sh and enforce-marker-script-shape.sh already
-# disclose for their own filesystem checks.
+# unwrapped filesystem I/O on every call, from this repo's 11+ hook/script
+# call sites -- accepted for local-disk/single-machine deployment; a stuck
+# read blocks the calling hook, the same tradeoff enforce-config-write-shape.sh/
+# enforce-marker-script-shape.sh already disclose.
 _CONFIG_SCHEMA_FILE="$(dirname "${BASH_SOURCE[0]}")/config-keys.psv"
 _CONFIG_STATE_FILENAME="claude-config.toml"
 
@@ -48,9 +44,8 @@ _CONFIG_STATE_FILENAME="claude-config.toml"
 # caught. Every call site must capture and check the exit status first:
 #   config_dir=$(_lib_config_dir) || { <fail-open-or-deny per this caller>; }
 #
-# Moved here from _lib.sh: _lib.sh sources this file, so every existing
-# _lib.sh caller keeps working unchanged, and this is now the single bash
-# definition of config-dir resolution rather than one of three.
+# _lib.sh sources this file, so existing _lib.sh callers are unaffected;
+# this is the single bash definition of config-dir resolution.
 _lib_config_dir() {
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     case "$CLAUDE_CONFIG_DIR" in
@@ -182,56 +177,24 @@ _config_file_lines() {
 # _config_read_key_from_file KEY STATE_FILE [KNOWN_KEYS KEY_TYPE]
 # Prints KEY's value from STATE_FILE to stdout and returns 0 if any
 # conforming row for KEY exists; returns 1 (nothing printed) if the file is
-# absent or has no conforming row for KEY. A duplicate KEY row is not
-# rejected -- the LAST occurrence wins, matching this file's own
-# last-write-wins rewrite semantics in _config_set. Every non-blank,
-# non-comment line that fails the value-subset grammar is warned once, to
-# stderr, truncated to 80 chars -- a hand-edit typo affects only that one
-# key, not the whole document -- regardless of whether that malformed line
-# belongs to KEY or a different key, since this function already has to
-# walk the whole file.
+# absent or has no conforming row for KEY. Last KEY row wins on duplicates,
+# matching _config_set's own rewrite semantics. A grammar-invalid or
+# wrong-type row is warned (stderr, truncated 80 chars) and skipped, never
+# treated as authoritative -- a hand-edit typo on a `bool` key must not
+# silently resolve as enabled under _config_enabled's any-value-but-false
+# rule. An unrecognized key (grammatically valid but no config-keys.psv row)
+# is warned separately from a malformed line. When config-keys.psv itself is
+# unreadable, membership is treated as unknown, not "no keys known," so every
+# grammatically-valid row is treated as recognized and key_type is left
+# empty (matching neither the `bool` nor `enum:*` type-check case, so KEY's
+# row still resolves instead of being misreported as absent).
 #
-# A row for KEY whose value passes the generic grammar check but fails
-# KEY's own config-keys.psv `type` (e.g. a `bool` key's value being neither
-# `true` nor `false`) is warned and skipped the same way, not returned as
-# authoritative -- otherwise a hand-edit typo on a bool key (`autonomous_shipping
-# = notabool`) would resolve as "enabled" under _config_enabled's own
-# any-value-but-false rule, the wrong direction for a key whose off-state
-# contract is security-relevant.
-#
-# A line whose key is grammatically valid but has no row at all in
-# config-keys.psv (a case- or spelling-typo'd key, e.g. `Worktree_Required`)
-# is a distinct case from a malformed line -- it parses cleanly and would
-# otherwise sit silently ignored forever, since no lookup ever queries that
-# exact misspelled string. Warned once, to stderr, truncated to 80 chars,
-# the same shape as the malformed-line warning above but its own distinct
-# message.
-#
-# When config-keys.psv itself is unreadable (or readable but has no
-# recognized rows), membership is unknowable, so the unrecognized-key skip
-# above is not applied at all: every grammatically-valid row is treated as
-# recognized. key_type is left empty in this case rather than sourced from
-# a second, independently-guarded _config_schema_field call -- both
-# functions would otherwise print the same schema-unreadable warning once
-# each, double-counting one underlying failure. An empty key_type matches
-# neither the `bool` nor `enum:*` case in the type-check block below, so
-# KEY's own row still resolves to its real value instead of being
-# misreported as absent.
-#
-# KNOWN_KEYS and KEY_TYPE are optional, and must be passed both or neither.
-# They let a caller that has already computed both values pass them
-# straight through instead of re-forking
-# _config_schema_known_keys/_config_schema_field a second time for the
-# identical key.
-# Today the only such caller is _config_value's config-dir-or-home union,
-# which calls this function once per location for the same KEY.
-# Detected by argument COUNT (`$# -eq 4`), not by whether KNOWN_KEYS is
-# non-empty.
-# An empty KNOWN_KEYS is itself a legitimate precomputed value (schema
-# unreadable), indistinguishable from "not passed" by content alone.
-# Every existing 2-arg caller (install.sh, migrate-legacy-config.sh, and
-# this file's own tests) is unaffected: it still self-derives exactly as
-# before.
+# KNOWN_KEYS/KEY_TYPE are optional (both or neither, detected via `$# -eq 4`)
+# and let a caller that already resolved both skip re-deriving them --
+# today only _config_value's config-dir-or-home union, which calls this
+# function once per location for the same KEY. Every existing 2-arg caller
+# (install.sh, migrate-legacy-config.sh, this file's own tests) is
+# unaffected.
 _config_read_key_from_file() {
   [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || {
     echo "_config_read_key_from_file: expected 2 or 4 args, got $#" >&2
@@ -303,11 +266,13 @@ _config_read_key_from_file() {
 # default, resolution, legacy-probe-on-resolution-failure,
 # legacy-import-locations, legacy-filename, legacy-polarity, human-name,
 # docs-anchor, prompt-description. Returns 1 (nothing printed) if KEY has no
-# schema row, or FIELD is not one of the names above. Also returns 1 (with a
-# distinct stderr warning naming the schema file) when config-keys.psv itself
-# is missing or unreadable -- a partial stow-relink or interrupted `git pull`
-# -- rather than silently reusing the same-return-code "unknown key" signal
-# with no indication the real cause is infrastructure, not the key name.
+# schema row, or FIELD is not one of the names above. Returns 3 (nothing
+# printed, plus a distinct stderr warning naming the schema file) when
+# config-keys.psv itself is missing or unreadable -- a partial stow-relink or
+# interrupted `git pull` -- a genuinely different exit code from "unknown
+# key," not just a distinct message, so a caller can map it to its own
+# fail-closed direction instead of silently treating infrastructure failure
+# the same as a misspelled key.
 #
 # Uses install.sh:479's own `IFS='|' read -r' idiom -- reads directly from
 # the schema file rather than a bash array, since config-keys.psv is a real
@@ -316,7 +281,7 @@ _config_schema_field() {
   local key="$1" field="$2"
   if [ ! -r "$_CONFIG_SCHEMA_FILE" ]; then
     printf '_config.sh: warning: schema file not found or unreadable: %s\n' "$_CONFIG_SCHEMA_FILE" >&2
-    return 1
+    return 3
   fi
   local row_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
   while IFS='|' read -r row_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do
@@ -352,6 +317,10 @@ _config_schema_field() {
 # _config_schema_field gives, when config-keys.psv itself is missing or
 # unreadable -- callers must treat that as "membership unknown", not "no
 # keys are known", since the latter would reject every row as unrecognized.
+# Unlike _config_schema_field, this doesn't distinguish that case with its
+# own exit 3: no caller today branches on this function's failure mode
+# beyond a bare non-zero check, so there is nothing yet for a distinct code
+# to be read by.
 _config_schema_known_keys() {
   if [ ! -r "$_CONFIG_SCHEMA_FILE" ]; then
     printf '_config.sh: warning: schema file not found or unreadable: %s\n' "$_CONFIG_SCHEMA_FILE" >&2
@@ -475,7 +444,12 @@ _config_location_value() {
 # no legitimate caller in this repo reaches this path (every call site
 # passes a hardcoded literal key name, and config-get.sh checks for an
 # unknown key itself before ever calling in here), so this is a defensive
-# fallback, not a validated contract.
+# fallback, not a validated contract. Exit 3: config-keys.psv itself is
+# missing or unreadable. This is propagated from _config_schema_field's own
+# exit 3 unchanged, never collapsed into 1. A caller must not treat it the
+# same as "KEY has no schema row," since the right failure direction differs
+# per key -- see _lib_worktree_enforcement_active/_lib_round_consult_gate_disabled
+# in _lib.sh for the enforcement-critical keys that must fail closed on it.
 #
 # CONFIG_DIR_OVERRIDE lets a caller that already has its own config dir (or
 # needs a specific one — e.g. transcript-analysis.py's --all-accounts loop,
@@ -494,8 +468,10 @@ _config_location_value() {
 # the union (see above).
 _config_value() {
   local key="$1" config_dir_override="${2:-}"
-  local resolution legacy_probe
-  resolution=$(_config_schema_field "$key" resolution) || return 1
+  local resolution resolution_status legacy_probe
+  resolution=$(_config_schema_field "$key" resolution)
+  resolution_status=$?
+  [ "$resolution_status" -eq 0 ] || return "$resolution_status"
   legacy_probe=$(_config_schema_field "$key" legacy-probe-on-resolution-failure)
 
   local primary_dir=""
@@ -588,7 +564,8 @@ _config_value() {
 
 # _config_enabled KEY [CONFIG_DIR_OVERRIDE]
 # Boolean wrapper over _config_value: 0 (true/enabled), 1 (false/disabled),
-# 2 (config dir unresolvable — propagated from _config_value unchanged). Any
+# 2 (config dir unresolvable), 3 (config-keys.psv unreadable) — 2 and 3 are
+# both propagated from _config_value unchanged, never collapsed into 1. Any
 # resolved value other than the literal "false" counts as enabled — an
 # enum-typed key's only "off" value is "false", so e.g. pr_cost_disclosure
 # resolving to "dollars" is enabled.
@@ -761,8 +738,8 @@ _config_scaffold() {
     local schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
     local already excluded present_key
     # One pass over config-keys.psv, not a per-key _config_schema_field call
-    # inside this loop (which would re-read this 14-row file once per key,
-    # 14 total re-reads for one scaffold call) -- same field list as
+    # inside this loop (which would re-read this 15-row file once per key,
+    # 15 total re-reads for one scaffold call) -- same field list as
     # _config_schema_field's own read, so key and default come off the same
     # line here instead of a second file scan.
     while IFS='|' read -r schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do

@@ -68,6 +68,7 @@ over any paraphrase here.
 | `commit_stall_block` | bool | `true` | config-dir | no | [commit-stall-block.md](commit-stall-block.md) |
 | `session_title_from_branch` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
 | `round_consult_gate` | bool | `true` | config-dir | no | [hooks.md § Gate hooks](hooks.md#gate-hooks) |
+| `round_consult_round2_pilot` | bool | `false` | config-dir | no | [hooks.md § Gate hooks](hooks.md#gate-hooks) |
 | `authorization_boundary_restore` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
 
 `worktree_required`, `autonomous_shipping`, `round_consult_gate`,
@@ -134,40 +135,44 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 15 keys, it checks for a legacy value at the location(s)
-   `legacy-import-locations` names — the resolved config dir alone, or
-   (for the six keys `install.sh`'s pre-migration writer always wrote to
-   `$HOME/.claude` regardless of `CLAUDE_CONFIG_DIR`, plus `pr_cost_disclosure`,
-   whose own pre-migration resolution could land at either location
-   depending on when a diverged user set `CLAUDE_CONFIG_DIR`) both
-   `$HOME/.claude/<legacy-filename>` and the resolved config dir's own
-   copy, with the resolved-config-dir value winning on disagreement.
-   Import writes a key's legacy-derived value only the first time that key
-   has no existing state-file row — a hand-edit or an earlier import is
-   never overwritten by a later run. For the ten non-enforcement-critical
-   keys this happens fully non-interactively. For the five
-   enforcement-critical keys, import is direction-aware rather than
-   TTY-gated: it compares the legacy-derived value against that key's
-   fail-closed value (`worktree_required=true`, `autonomous_shipping=false`,
-   `round_consult_gate=true`, `commit_stall_block=true`,
-   `authorization_boundary_restore=true`) and writes it, with no
-   confirmation of any kind, only when the two match — turning enforcement
-   further on can only make the machine more restrictive, so it needs no
-   gate. A permissive-direction legacy value is never written; it is
-   deferred the same way a read failure is (below) and printed for a human
-   to hand-paste into `claude-config.toml`. See
-   [`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)
-   for the full design rationale. A legacy-file read failure for one key
-   (unreadable file, or content that fails `pr_cost_disclosure`'s
-   `content-matches` grammar) does not abort the run; the remaining keys
-   still import normally. After every key has been processed, a
-   schema-default scaffold fills in a default row only for a key with no
-   legacy fallback mechanism at all — none exist among today's 15 keys, so
-   scaffold currently writes nothing. A key with a legacy-polarity
-   (`presence-enables`/`presence-disables`/`content-matches`) stays absent
-   from the state file unless this run's import path already gave it an
-   explicit row, so its legacy file remains a live override rather than
-   being permanently shadowed by a locked-in default.
+   the 15 keys:
+   - Checks for a legacy value at the location(s) `legacy-import-locations`
+     names — the resolved config dir alone, or (for the six keys
+     `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
+     regardless of `CLAUDE_CONFIG_DIR`, plus `pr_cost_disclosure`, whose own
+     pre-migration resolution could land at either location depending on
+     when a diverged user set `CLAUDE_CONFIG_DIR`) both
+     `$HOME/.claude/<legacy-filename>` and the resolved config dir's own
+     copy, with the resolved-config-dir value winning on disagreement.
+   - Writes the legacy-derived value only the first time the key has no
+     existing state-file row — a hand-edit or an earlier import is never
+     overwritten by a later run.
+   - For the ten non-enforcement-critical keys, this happens fully
+     non-interactively.
+   - For the five enforcement-critical keys, import is direction-aware
+     rather than TTY-gated: it compares the legacy-derived value against
+     that key's fail-closed value (`worktree_required=true`,
+     `autonomous_shipping=false`, `round_consult_gate=true`,
+     `commit_stall_block=true`, `authorization_boundary_restore=true`) and
+     writes it, with no confirmation of any kind, only when the two
+     match — turning enforcement further on can only make the machine
+     more restrictive, so it needs no gate. See
+     [`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)
+     for the full design rationale.
+   - A permissive-direction legacy value is never written; it is deferred
+     the same way a read failure is (below) and printed for a human to
+     hand-paste into `claude-config.toml`.
+   - A legacy-file read failure for one key (unreadable file, or content
+     that fails `pr_cost_disclosure`'s `content-matches` grammar) does not
+     abort the run; the remaining keys still import normally.
+   - After every key has been processed, a schema-default scaffold fills in
+     a default row only for a key with no legacy fallback mechanism at
+     all — none exist among today's 15 keys, so scaffold currently writes
+     nothing. A key with a legacy-polarity
+     (`presence-enables`/`presence-disables`/`content-matches`) stays
+     absent from the state file unless this run's import path already
+     gave it an explicit row, so its legacy file remains a live override
+     rather than being permanently shadowed by a locked-in default.
 2. **Interactive per-file delete offer**, gated once on `[ -t 0 ]` for the
    whole phase — hang-prevention only, not a security control, since
    nothing here stops an agent from running `rm` on a legacy file

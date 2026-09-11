@@ -35,6 +35,20 @@ _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
 # below to prove the fixed parser, not just the unit harness, denies.
 _REQUIRE_CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 
+
+def _lib_sh_with_unreadable_schema(tmp_path: Path) -> Path:
+    """Symlink _lib.sh and the _config.sh it sources into an isolated
+    directory with no config-keys.psv sibling, simulating an unreadable
+    schema file the way test_config_lib.py's _run_with_schema does for
+    _config.sh alone -- _lib.sh's own BASH_SOURCE-relative source of
+    _config.sh resolves against the symlink's own directory, so the
+    isolated dir's absent config-keys.psv is what _config_schema_field sees."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+    (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
+    return isolated_hooks_dir / "_lib.sh"
+
 # Shell harness: define emit_deny BEFORE sourcing _lib.sh (canonical pattern),
 # call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success, followed by
 # the four newly-folded fields and the field-shift overflow variable, each
@@ -3538,6 +3552,25 @@ class TestWorktreeEnforcementActive:
             repo, {"HOME": "", "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
         )
 
+    def test_active_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must not
+        silently disarm worktree enforcement -- worktree_required's own safe
+        direction is enforced, the same as the accepted exit-2
+        (config-dir-unresolvable) tradeoff above, not "not enforced"."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_worktree_enforcement_active "$1"', "bash", str(repo)],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
 
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
 # sentinel-presence check only, not the full autonomous-shipping-active
@@ -3622,6 +3655,25 @@ class TestAutonomousShippingSentinelPresent:
             check=False,
         )
         assert result.returncode == 2
+
+    def test_absent_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must
+        propagate as its own distinct exit code (3), fail toward NOT
+        shipping the same as every other resolution failure -- autonomous
+        shipping's own documented safe direction is off, so this must not
+        collapse into (or be mistaken for) an enabled sentinel."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_sentinel_present'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 3
 
 
 # _lib_autonomous_shipping_active — direct unit coverage.
@@ -3795,6 +3847,27 @@ class TestAutonomousShippingActive:
         assert result.returncode != 0
         assert "unbound variable" not in result.stderr
 
+    def test_inactive_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must
+        fail toward NOT shipping through the full active check too, not
+        just the sentinel-presence check above -- the `||` in this
+        function's own body already treats any nonzero
+        _lib_autonomous_shipping_sentinel_present exit identically."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
 
 # _lib_permission_prompt_tracking_active — direct unit coverage, mirroring
 # TestAutonomousShippingActive above minus the cases specific to the
@@ -3911,6 +3984,25 @@ class TestRoundConsultGateDisabled:
         assert not _round_consult_gate_disabled(
             {"HOME": str(home), "CLAUDE_CONFIG_DIR": "relative/path", "PATH": os.environ["PATH"]}
         )
+
+    def test_not_disabled_when_config_keys_psv_unreadable(self, tmp_path: Path) -> None:
+        """Cumulative-review finding: an unreadable config-keys.psv must
+        leave the gate armed, the same as the accepted exit-2
+        (config-dir-unresolvable) tradeoff above -- round_consult_gate's own
+        safe direction is armed, so this must not collapse into (or be
+        mistaken for) a legitimately disabled gate."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_round_consult_gate_disabled'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0, "the gate must stay armed (not disabled) when the schema is unreadable"
 
 
 # --- Shared credential-guard constants -------------------------------------
@@ -5153,6 +5245,278 @@ def test_lib_fragment_candidates_flags_a_protected_read_source_as_expected_false
     result = _run_lib_call(f'_lib_fragment_candidates "{fragment}"', env=dict(os.environ))
     assert result.returncode == 0, result.stderr
     assert _WRITE_GATE_TARGET in result.stdout.splitlines()
+
+
+# --- _lib_redirect_candidates: brace-expansion-bypass detection ------------
+#
+# `for word in $fragment` word-splits a fragment at runtime but never
+# re-brace-expands it, so an unexpanded `{a,b}`-shaped literal token
+# reaching _lib_shape_match would miss the real target the executing shell
+# actually brace-expands it into. Re-implementing bash's own
+# brace-expansion grammar to enumerate the real candidates has no bound
+# that is both cheap and sound against arbitrary nesting and comma-list
+# size, so `_lib_command_has_brace_expansion_bypass` instead detects the
+# construct's SHAPE on the whole command text and denies via
+# `_lib_redirect_candidates`'s own `_LIB_BRACE_EXPANSION_BYPASS_STATUS`
+# return -- no per-candidate enumeration, so no combinatorial cost
+# regardless of list size.
+
+# Read from _lib.sh itself rather than hardcoded, so this test can never
+# silently drift from the real constant's value.
+_LIB_BRACE_EXPANSION_BYPASS_STATUS = int(
+    _run_lib_call('printf %s "$_LIB_BRACE_EXPANSION_BYPASS_STATUS"', env=dict(os.environ)).stdout
+)
+
+
+def _run_redirect_candidates(command: str) -> subprocess.CompletedProcess:
+    """Delivers COMMAND over stdin, via `"$(cat)"`, rather than embedding it
+    in the -c string: a literal `$`/`"` in the test's own command text then
+    reaches _lib_redirect_candidates as data instead of being expanded by
+    the harness's own invoking bash -c shell, and the large-comma-list test
+    below needs this anyway -- a large enough command text embedded
+    directly in argv would exceed the kernel's per-argument length cap."""
+    harness = f'. {_LIB_SH}; _lib_redirect_candidates "$(cat)"'
+    return subprocess.run(
+        ["bash", "-c", harness],
+        input=command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(os.environ),
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The original finding: a comma list glued to a protected-looking
+        # path.
+        pytest.param("tee /home/x/.claude/code-review-markers{,x}/forged", id="glued-comma-list"),
+        # Nested groups are found regardless of depth, since the
+        # whole-command shape test doesn't need to enumerate expansions.
+        pytest.param("tee /home/x/.claude/code-review-markers{,{x,y}}/forged", id="nested-groups"),
+        # Numeric and alphabetic range forms.
+        pytest.param("tee /home/x/.claude/code-review-markers{1..9}/forged", id="numeric-range"),
+        pytest.param("tee /home/x/.claude/code-review-markers{a..z}/forged", id="char-range"),
+        # Accepted over-matching: a comma-list write with no relation to any
+        # protected path still denies once a `/` is present -- pinned so a
+        # later "helpful" narrowing doesn't silently reintroduce the gap
+        # this predicate closes.
+        pytest.param("cp src/{a,b}.txt /tmp/", id="unrelated-path-still-denies"),
+        # Both `{` occurrences in this word are live brace constructs; the
+        # second group alone is sufficient to deny.
+        pytest.param("tee file${x} a/{a,markers}", id="dollar-brace-and-separate-group"),
+        # A `${...}` parameter expansion whose body contains a `,` or `..`
+        # is indistinguishable from an ordinary brace group from command
+        # text alone, so it denies.
+        pytest.param("tee /tmp/x ${x:-a,b}", id="solitary-parameter-expansion"),
+        # A command whose only `/` originates inside the `${...}` occurrence
+        # itself, not elsewhere in the command -- distinct from every other
+        # `${...}`-shaped case above, which all source their `/` from a
+        # separate token. Pins that a future narrower re-introduction of the
+        # `$`-exclusion (e.g. "exclude `${...}` only when it contains no
+        # `/`") would still deny this shape.
+        pytest.param("tee ${x:-a/b,c}", id="dollar-brace-only-slash-source"),
+    ],
+)
+def test_lib_redirect_candidates_denies_brace_expansion_bypass(command: str) -> None:
+    result = _run_redirect_candidates(command)
+    assert result.returncode == _LIB_BRACE_EXPANSION_BYPASS_STATUS, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `mkdir` is not a recognized write utility and the command has no
+        # redirect operator, so _lib_command_has_write_construct's own
+        # fast-reject keeps this out of the brace-bypass path entirely --
+        # unchanged by this predicate's addition.
+        pytest.param("mkdir -p a/{b,c}", id="non-write-utility"),
+        # No `/` anywhere in the whole command -- brace expansion invents
+        # no new characters, so a `/`-free command can never expand into a
+        # path.
+        pytest.param("cp config.yml{,.bak} dest", id="no-slash-anywhere"),
+    ],
+)
+def test_lib_redirect_candidates_allows_non_bypass_shapes(command: str) -> None:
+    result = _run_redirect_candidates(command)
+    assert result.returncode != _LIB_BRACE_EXPANSION_BYPASS_STATUS, result.stdout + result.stderr
+
+
+def test_lib_redirect_candidates_quoted_space_containing_component_denies() -> None:
+    """Testing a post-quote-strip, post-word-split candidate would let a
+    quoted, space-containing brace component get re-split by `for word in
+    $fragment` into two half-tokens, neither carrying a complete `{`...`}`
+    pair. Testing the whole command text instead (after quote-stripping,
+    before fragment-splitting/word-splitting) avoids this, since the space
+    inside the quotes never breaks the brace pair apart at that
+    granularity."""
+    command = 'tee ~/.claude/code-review-markers/{"a b",forged}'
+    strip_harness = f'. {_LIB_SH}; _lib_strip_shell_quotes "$(cat)"'
+    stripped = subprocess.run(
+        ["bash", "-c", strip_harness],
+        input=command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(os.environ),
+    ).stdout
+    result = _run_redirect_candidates(stripped)
+    assert result.returncode == _LIB_BRACE_EXPANSION_BYPASS_STATUS, result.stdout + result.stderr
+
+
+@pytest.mark.timing
+def test_lib_redirect_candidates_large_comma_list_returns_promptly() -> None:
+    """A detection predicate, not an expander: cost is one regex pass
+    regardless of list size. Asserts the call returns at all within a
+    generous bound, not a tight wall-clock threshold, so this isn't flaky
+    on a loaded machine."""
+    items = ",".join(f"item{i}" for i in range(200_000))
+    command = f"tee /tmp/{{{items}}}"
+    started = time.monotonic()
+    result = _run_redirect_candidates(command)
+    elapsed = time.monotonic() - started
+    assert result.returncode == _LIB_BRACE_EXPANSION_BYPASS_STATUS, result.stdout + result.stderr
+    assert elapsed < 5.0, f"a 200,000-item comma list took {elapsed:.2f}s -- should return promptly"
+
+
+# --- _lib_brace_flatten ------------------------------------------------
+#
+# Flattens a brace-expansion construct to its first alternative via a fixed
+# 16-pass sed -E mechanism, so a caller can re-scan the flattened text for a
+# write-utility/path match a literal scan of the original, unexpanded text
+# would miss.
+
+
+def _run_brace_flatten(text: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Delivers TEXT over stdin, via `"$(cat)"`, matching
+    _run_redirect_candidates's own rationale: a literal `$`/`"` in the
+    test's own text then reaches _lib_brace_flatten as data instead of
+    being expanded by the harness's own invoking bash -c shell."""
+    harness = f'. {_LIB_SH}; _lib_brace_flatten "$(cat)"'
+    return subprocess.run(
+        ["bash", "-c", harness],
+        input=text,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        pytest.param("t{ee,ee}", "tee", id="comma"),
+        pytest.param("t{e,{e,x}}", "te", id="nested"),
+        pytest.param("t{,ee}foo{,bar}", "tfoo", id="empty-alternative"),
+        pytest.param("{t,X}{e,Y}{e,Z}", "tee", id="sibling-group"),
+        pytest.param("a{1..3,x}", "a1..3", id="mixed-comma-range"),
+        pytest.param("a{x,1..3}", "ax", id="mixed-range-comma"),
+        pytest.param("t{e}e", "t{e}e", id="singleton-unchanged"),
+    ],
+)
+def test_lib_brace_flatten_shapes(text: str, expected: str) -> None:
+    """Every shape row 50 verified against real bash: comma precedence over
+    an embedded `..` (mixed-comma-range, mixed-range-comma), correct
+    innermost-first resolution of nesting (nested), and a `{e}` group with
+    neither a comma nor a `..` left untouched (singleton-unchanged) since
+    it is not a construct real bash itself would expand specially."""
+    result = _run_brace_flatten(text)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == expected, result.stdout + result.stderr
+
+
+def test_lib_brace_flatten_step_range_pinned_current_behavior() -> None:
+    """Pinning test, not a correctness assertion: the three-field step-range
+    form (`{0..10..2}`) is an unhandled shape -- real bash's first
+    alternative is `0`, but the second sed pass's greedy match backtracks
+    to the LAST `..` in the body, folding the `..2` segment into the output
+    instead. Pins the current (safe-but-wrong) output so a future change to
+    the regex doesn't silently drift the value again; does not assert this
+    is correct. See _lib_brace_flatten's own header for why this is not a
+    bypass risk."""
+    result = _run_brace_flatten("{0..10..2}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "0..10", result.stdout + result.stderr
+
+
+# The true in-budget maximum (16 levels of real nesting) and the true
+# minimum over-budget depth (17 levels) -- the tightest possible pair to
+# discriminate "gate fired" from "gate no-op," verified this session
+# against real bash to resolve to `ls`/require exactly 16 and 17 passes
+# respectively (see row 52's own citation of that verification). Copied
+# verbatim from the plan text, not hand-retyped, since a single dropped or
+# added brace changes the required pass count.
+_BRACE_FLATTEN_16_LEVEL_NESTED = (
+    "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}} /tmp/dest"
+)
+_BRACE_FLATTEN_17_LEVEL_NESTED = (
+    "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}} /tmp/dest"
+)
+
+
+def test_lib_brace_flatten_resolves_at_the_16_pass_budget() -> None:
+    """16 levels of real nesting resolve within the fixed 16-pass budget --
+    the tightest fixture that still fully resolves, so a future off-by-one
+    undercount in the pass loop would fail this before any 17-level case
+    catches it."""
+    result = _run_brace_flatten(_BRACE_FLATTEN_16_LEVEL_NESTED)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ls /tmp/dest", result.stdout + result.stderr
+
+
+def test_lib_brace_flatten_fails_closed_past_the_16_pass_budget() -> None:
+    """17 levels of real nesting -- one level past the budget -- fails
+    closed (exit 2) regardless of what the fully-resolved name would have
+    been, rather than returning a partially-flattened result."""
+    result = _run_brace_flatten(_BRACE_FLATTEN_17_LEVEL_NESTED)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == "", result.stdout + result.stderr
+
+
+def test_lib_brace_flatten_sed_absent_returns_nonzero(tmp_path: Path) -> None:
+    """The fixture must itself contain a `{...,...}`/`{X..Y}` group -- a
+    brace-free fixture would short-circuit before the sed fork and never
+    exercise this failure path at all."""
+    farm_dir = tmp_path / "path-without-sed"
+    farm_dir.mkdir()
+    restricted_path = build_path_without("sed", farm_dir)
+    env = {"PATH": restricted_path, "HOME": str(tmp_path)}
+    result = _run_brace_flatten("t{ee,ee}", env=env)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout == "", result.stdout + result.stderr
+
+
+def _many_parallel_depth_16_chains(total_bytes: int = 550_000) -> str:
+    """Builds many side-by-side (not mutually nested) depth-16 brace chains
+    -- the adversarial shape row 50 benchmarked at ~0.96s for ~550KB. A
+    single deeply-nested chain collapses to almost nothing after pass one;
+    many parallel chains instead keep the sed pass's text volume elevated
+    across close to all 16 passes, since each pass strips only one level
+    per chain."""
+    unit = "x" + ("{y," * 16) + "y" + ("}" * 16)
+    chain_count = -(-total_bytes // (len(unit) + 1))  # ceil division
+    return " ".join([unit] * chain_count)
+
+
+@pytest.mark.timing
+def test_lib_brace_flatten_many_parallel_chains_return_promptly() -> None:
+    """DoS-regression guard, not the gate-fired/gate-no-op discriminator --
+    that job belongs to the pass-budget boundary tests above. Asserts the
+    call returns at all within a generous bound, not a tight wall-clock
+    threshold, matching
+    test_lib_redirect_candidates_large_comma_list_returns_promptly's own
+    stated convention, so this isn't flaky on a loaded machine."""
+    text = _many_parallel_depth_16_chains()
+    started = time.monotonic()
+    result = _run_brace_flatten(text)
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert elapsed < 5.0, (
+        f"~{len(text) // 1000}KB of parallel depth-16 chains took {elapsed:.2f}s "
+        "-- should return promptly"
+    )
 
 
 # --- _lib_shape_match: $HOME/$CLAUDE_CONFIG_DIR expansion and the

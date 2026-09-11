@@ -414,9 +414,8 @@ fi
 
 # Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
 # which doesn't exist yet at this point in a fresh install (this repo isn't
-# stowed yet). Deletes the inline $CLAUDE_CONFIG_DIR resolver this script
-# used to carry -- _lib_config_dir is now the single bash definition of
-# config-dir resolution, shared with every hook via _lib.sh.
+# stowed yet). _lib_config_dir is the single bash definition of config-dir
+# resolution, shared with every hook via _lib.sh.
 # shellcheck source=claude/.claude/hooks/_config.sh
 . "$REPO_DIR/claude/.claude/hooks/_config.sh"
 
@@ -430,6 +429,17 @@ fi
 # Writes via _config_set to the resolved config dir for every promptable
 # key. KEY is a config-keys.psv key name, not a caller-supplied path, so no
 # path-confinement check is needed.
+# Display-only gap, not an enforcement bypass: this function's own
+# `current=$(_config_value "$key") || current="false"` line folds
+# _config_value's exit code 3 (config-keys.psv unreadable) into the same
+# "currently disabled" display as every other nonzero exit, so a prompt
+# for worktree_required under that condition could mislabel its current
+# state. worktree_required's actual enforcement runs through
+# _lib_worktree_enforcement_active, whose own exit-3 handling is
+# independently and directly tested by
+# test_lib.py's TestWorktreeEnforcementActive.test_active_when_config_keys_psv_unreadable
+# -- that test sources _lib.sh and calls the function directly, with no
+# dependency on this file's own display path.
 _prompt_sentinel_opt_in() {
   local key="$1" human_name="$2" description="$3" answer current
   current=$(_config_value "$key") || current="false"
@@ -532,17 +542,15 @@ configure_machine_level_opt_ins() {
 # their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: sentinel-inventory — start
 # The four repo-scope committed markers only -- every machine/account-scope
-# row moved to config-keys.psv (see the Context section of
-# .claude/plans/sentinel-config-migration.md for why: a committed file is
-# the git-native idiom for a repo-level toggle, and moving these into the
-# per-machine state file would break exactly the property they exist for).
-# Flat, pipe-delimited rows rather than an associative array: the system
-# bash on macOS (and this machine's default) is 3.2, which has no
-# `declare -A`. Schema (no surrounding whitespace around any `|` --
-# IFS='|' read -r would otherwise bake leading/trailing spaces into every
-# field): path-template|human-name|docs-anchor. Every row's default state
-# is "disabled" (presence-enables) -- no row here carries the opt-out
-# polarity account-scope rows used to need.
+# row moved to config-keys.psv: a committed file is the git-native idiom
+# for a repo-level toggle, and moving these into the per-machine state file
+# would break exactly the property they exist for. Flat, pipe-delimited
+# rows rather than an associative array: the system bash on macOS (and this
+# machine's default) is 3.2, which has no `declare -A`. Schema (no
+# surrounding whitespace around any `|` -- IFS='|' read -r would otherwise
+# bake leading/trailing spaces into every field): path-template|human-name|
+# docs-anchor. Every row defaults to `disabled` (presence-enables); no
+# opt-out-polarity row exists in this array.
 REPO_MARKER_INVENTORY=(
   ".claude/worktree-required|Worktree enforcement (committed, this repo)|README.md § Worktree enforcement"
   ".claude/worktree-optout|Worktree enforcement opt-out (this repo)|README.md § Worktree enforcement"
@@ -619,6 +627,13 @@ _report_config_key() {
   local key="$1" human_name="$2" docs_anchor="$3" resolution="$4"
   local value status
   value=$(_config_value "$key") && status=0 || status=$?
+  if [ "$status" -eq 3 ]; then
+    # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
+    # unexpanded here, naming the literal env var in the diagnostic message.
+    printf '  %s: could not resolve (config-keys.psv is missing or unreadable — a partial stow-relink or interrupted git pull, not a CLAUDE_CONFIG_DIR/$HOME problem)\n' "$human_name"
+    printf '    docs: %s\n' "$docs_anchor"
+    return 0
+  fi
   if [ "$status" -ne 0 ]; then
     # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
     # unexpanded here, naming the literal env var in the diagnostic message.
