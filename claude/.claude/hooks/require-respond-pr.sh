@@ -353,7 +353,7 @@ fi
 # never a write -- see "Second bypass path" above for what posting a
 # `gh pr review` through review-pr-post.sh instead guarantees.
 if [ "$GATED_WRITE" -eq 1 ]; then
-  emit_deny "PR/issue comment write blocked by respond-pr gate. Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh comment|request-changes instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
+  emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh comment|request-changes instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0
 fi
 

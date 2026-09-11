@@ -95,15 +95,24 @@ _resolve_session_id() {
   printf '%s' "$sid"
 }
 
-_resolve_claude_pid() {
-  # The live Claude main-process PID for this session — the ancestor whose
-  # session file the walk matched. Written into the active-bypass marker so
-  # require-*.sh hooks can liveness-check it with kill -0. Resolving it from
-  # the ancestor walk (not by content-scanning ~/.claude/sessions/) keeps it
-  # immune to stale per-session files left behind after a crash.
-  local out
+# _resolve_session_and_pid
+# Every `activate` arm below needs both SESSION_ID and CLAUDE_PID.
+# _resolve_session_id alone only returns the session id.
+# Getting the PID too would need a second independent call to
+# _walk_session's ps(1)-based ancestor walk.
+# This function resolves once and sets both as globals, matching this
+# script's existing SESSION_ID/CLAUDE_PID call-site convention.
+_resolve_session_and_pid() {
+  local out sid
   out=$(_walk_session) || return 2
-  printf '%s' "${out##* }"
+  sid="${out%% *}"
+  # Same chokepoint as _resolve_session_id above.
+  if ! _lib_valid_session_id_component "$sid"; then
+    printf 'marker.sh: SESSION_ID %s is not a valid path component. Abort without writing a marker.\n' "$sid" >&2
+    return 2
+  fi
+  SESSION_ID="$sid"
+  CLAUDE_PID="${out##* }"
 }
 
 _refuse_main_tree_under_enforcement() {
@@ -704,8 +713,7 @@ case "$SUBCOMMAND" in
   activate)
     case "$SKILL" in
       plan-review)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        _resolve_session_and_pid || exit 2
         mkdir -p "$CONFIG_DIR/.plan-review-active.d"
         printf '%s\n' "$CLAUDE_PID" | _write_marker_no_follow "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID" \
           || { printf 'marker.sh: could not write the active-bypass marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
@@ -721,36 +729,31 @@ case "$SUBCOMMAND" in
         fi
         ;;
       ready-for-review)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        _resolve_session_and_pid || exit 2
         mkdir -p "$CONFIG_DIR/.ready-for-review-active.d"
         printf '%s\n' "$CLAUDE_PID" | _write_marker_no_follow "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID" \
           || { printf 'marker.sh: could not write the active-bypass marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       respond-pr)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        _resolve_session_and_pid || exit 2
         mkdir -p "$CONFIG_DIR/.respond-pr-active.d"
         printf '%s\n' "$CLAUDE_PID" | _write_marker_no_follow "$CONFIG_DIR/.respond-pr-active.d/$SESSION_ID" \
           || { printf 'marker.sh: could not write the active-bypass marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       memory-skill)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        _resolve_session_and_pid || exit 2
         mkdir -p "$CONFIG_DIR/.memory-skill-active.d"
         printf '%s\n' "$CLAUDE_PID" | _write_marker_no_follow "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID" \
           || { printf 'marker.sh: could not write the active-bypass marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       handoff)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        _resolve_session_and_pid || exit 2
         mkdir -p "$CONFIG_DIR/.handoff-active.d"
         printf '%s\n' "$CLAUDE_PID" | _write_marker_no_follow "$CONFIG_DIR/.handoff-active.d/$SESSION_ID" \
           || { printf 'marker.sh: could not write the active-bypass marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       review-pr)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
+        _resolve_session_and_pid || exit 2
         mkdir -p "$CONFIG_DIR/.review-pr-active.d"
         printf '%s\n' "$CLAUDE_PID" | _write_marker_no_follow "$CONFIG_DIR/.review-pr-active.d/$SESSION_ID" \
           || { printf 'marker.sh: could not write the active-bypass marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }

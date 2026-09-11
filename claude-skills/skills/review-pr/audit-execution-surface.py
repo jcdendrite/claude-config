@@ -57,7 +57,10 @@ def _classify(path: str) -> str | None:
         return "CLAUDE.md is loaded as standing instructions by the reviewing harness"
 
     if segments[-1] == "claude.local.md":
-        return "CLAUDE.local.md is concatenated into the same standing-instructions load as CLAUDE.md (claude/.claude/rules/claude-md-conventions.md's precedence list)"
+        return (
+            "CLAUDE.local.md is concatenated into the same standing-instructions load as "
+            "CLAUDE.md (claude/.claude/rules/claude-md-conventions.md's precedence list)"
+        )
 
     if segments[-1] == "skill.md" and (
         lower.startswith(".claude/skills/") or "/.claude/skills/" in lower

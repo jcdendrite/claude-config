@@ -85,7 +85,21 @@ LABEL="${LABEL##*/}"
 # neither timeout nor gtimeout is on PATH. PostToolUse runs synchronously, so
 # a wedged marker.sh call under that gap blocks the whole turn with no retry
 # path.
-if ! _lib_capped_for 2 "$CONFIG_DIR/scripts/marker.sh" activate handoff >/dev/null 2>&1; then
+# 10s, not the shared 5s _lib_capped/_lib_jq default.
+# `activate handoff` runs three sequential steps, each already capped at 5s
+# internally by _lib_capped:
+#   - _lib_resolve_claude_pid's ps(1) ancestor-walk, documented at
+#     _lib.sh:1674-1678 to run two hops for this call site's documented
+#     two-hop case
+#   - marker.sh's _write_marker_no_follow O_NOFOLLOW-write python3(1) spawn
+# A genuinely hung single step aborts the whole chain at its own 5s cap via
+# _resolve_session_and_pid's `|| return 2` propagation.
+# So this outer cap needs headroom over realistic non-hung latency across
+# the three steps, not the theoretical hung-worst-case sum of 3x5s=15s.
+# 10s (2x the per-step default) covers three steps completing in the
+# ~1.5-2s range each under heavy host contention, while still leaving hang
+# detection to each step's own 5s cap.
+if ! _lib_capped_for 10 "$CONFIG_DIR/scripts/marker.sh" activate handoff >/dev/null 2>&1; then
   # Observability only, same posture as the schema-drift signal above: a
   # per-session-deduped log line under a distinct tag distinguishes a
   # marker.sh failure or cap-timeout from every other silent exit-0 path.
