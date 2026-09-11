@@ -4034,7 +4034,7 @@ class TestReviewTrace:
         records = [
             _hook_deny_current(
                 "Skill length gate: one or more SKILL.md files grew past their "
-                "per-skill limit. Reduce to the limit or fewer lines before committing."
+                "per-skill limit. Reduce to the limit before committing."
             ),
         ]
         data = _mod._compute_deny_summary_data([("sess.jsonl", records)])
@@ -16123,6 +16123,8 @@ class TestDenialHookLabelEnumeration:
         ("enforce-marker-script-shape.sh:353",
          "marker.sh invocation denied. Command (truncated): ~/.claude/scripts/marker.sh bogus",
          "marker.sh"),
+        # These two rows must land unedited: they pin legacy pre-DENY_GATE_LABEL wording,
+        # not today's hooks/*.sh text (see TestDenialHookLabelEnumerationRealHooks for that).
         ("check-claude-md-length.sh:85",
          "CLAUDE.md/AGENTS.md length gate: one or more files grew past the 200-line limit. "
          "Reduce to the limit or fewer lines before committing.",

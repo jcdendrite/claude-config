@@ -209,7 +209,7 @@ Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
 ## `paths:` glob-dialect conventions
 
 Source for `claude/.claude/rules/rule-authoring-conventions.md`. Verified
-against `code.claude.com/docs/en/memory` §"Path-specific rules", fetched
+against `code.claude.com/docs/en/memory` § "Path-specific rules", fetched
 2026-09-03. Single-sourced deliberately, not by omission: the `paths:`
 glob dialect is Claude Code's own closed-source, single-vendor behavior,
 with no second independent first-tier origin (spec, standards body, or

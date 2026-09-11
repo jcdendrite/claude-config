@@ -11,7 +11,6 @@ import json
 import os
 import pty
 import re
-import shlex
 import shutil
 import subprocess
 import textwrap
@@ -25,6 +24,10 @@ from .conftest import (
     _commit,
     _curated_path_without_direnv,
     _dead_pid,
+    _direnv_shim_source_exits_nonzero_with_unset_payload,
+    _direnv_shim_source_reads_stdin,
+    _direnv_shim_source_static_export,
+    _direnv_shim_source_unconditional_unset,
     _init_repo,
     _make_feature_branch,
     _make_repo_with_remote,
@@ -226,64 +229,6 @@ def _direnv_shim_source_by_cwd(exports_by_cwd: dict[str, dict[str, str]]) -> str
         if args[:2] == ["export", "bash"]:
             for name, value in EXPORTS_BY_CWD.get(os.getcwd(), {{}}).items():
                 print(f"export {{name}}={{shlex.quote(value)}}")
-        sys.exit(0)
-    """)
-
-
-def _direnv_shim_source_static_export(name: str, value: str) -> str:
-    """direnv shim that unconditionally exports one NAME=VALUE on `export
-    bash`, regardless of cwd — for tests that only need one export to
-    reach (or be safely rejected by) the calling shell."""
-    quoted_value = shlex.quote(value)
-    return textwrap.dedent(f"""\
-        #!/usr/bin/env python3
-        import sys
-        args = sys.argv[1:]
-        if args[:2] == ["export", "bash"]:
-            print("export {name}={quoted_value}")
-        sys.exit(0)
-    """)
-
-
-def _direnv_shim_source_unconditional_unset(name: str) -> str:
-    """direnv shim that unconditionally emits `unset NAME` on `export
-    bash`, regardless of cwd — models direnv leaving a container's
-    identity behind when the current directory has no matching .envrc."""
-    return textwrap.dedent(f"""\
-        #!/usr/bin/env python3
-        import sys
-        args = sys.argv[1:]
-        if args[:2] == ["export", "bash"]:
-            print("unset {name}")
-        sys.exit(0)
-    """)
-
-
-def _direnv_shim_source_exits_nonzero_with_unset_payload() -> str:
-    """direnv shim modeling a non-`allow`ed .envrc: `export bash` exits 1
-    but still writes an unset payload to stdout — the exit-status guard in
-    load_repo_environment must discard this cleanly."""
-    return textwrap.dedent("""\
-        #!/usr/bin/env python3
-        import sys
-        args = sys.argv[1:]
-        if args[:2] == ["export", "bash"]:
-            print("unset GH_TOKEN")
-            sys.exit(1)
-        sys.exit(0)
-    """)
-
-
-def _direnv_shim_source_reads_stdin() -> str:
-    """direnv shim modeling an .envrc that reads stdin — if
-    load_repo_environment omitted `</dev/null`, this call would hang
-    waiting for input that never comes."""
-    return textwrap.dedent("""\
-        #!/usr/bin/env python3
-        import sys
-        args = sys.argv[1:]
-        if args[:2] == ["export", "bash"]:
-            sys.stdin.read()
         sys.exit(0)
     """)
 

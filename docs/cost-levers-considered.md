@@ -34,10 +34,9 @@ vars exposes this field" claim above is outdated — `ENABLE_PROMPT_CACHING_1H`
 and `FORCE_PROMPT_CACHING_5M` are real, documented environment variables
 (`code.claude.com/docs/en/prompt-caching`) that select TTL per session.
 Verdict unchanged (rejected): main-thread 5-minute-tier writes are 96–97%
-concentrated in idle gaps under 5 minutes on every account checked (personal-
-subscription, small-subscription-client, API-key-client), where the pricier
-1-hour breakpoint adds cost with no avoided-rebuild benefit — do not set
-either variable.
+concentrated in idle gaps under 5 minutes across the corpus, where the
+pricier 1-hour breakpoint adds cost with no avoided-rebuild benefit — do not
+set either variable.
 
 ## From `absolute-token-handoff-threshold.md` (PR #593) — "Re-unit the handoff nudge"
 
@@ -315,6 +314,23 @@ Breakdown for the global-file row above:
 
 Saving is session-shape-split, not uniform, because idle-gap rebuild cost scales with rebuild magnitude (byte count), not frequency — see "Context cost root cause" above.
 
+**Second pass: `claude-md-audience-restructure.md` (2026-09-03).** By the time this plan started, the global file had regrown to 178 lines / 31,515 bytes (`git show a3b74ce7^:claude/.claude/CLAUDE.md | wc -lc`) — up from the 146-line landing the first pass measured. That regrowth went unnoticed by the line-only gate. It motivated a second, narrower pass:
+
+- A behavior-test audit of that delta.
+- One exact-trigger relocation (settings.json conventions) into a new user-scope `.claude/rules/` file.
+- Moving Safety to the file head for attention.
+- A byte-size ratchet so the next regrowth doesn't repeat silently.
+
+Landed at 177 lines / 30,969 bytes — still over the new byte limit, by design: the ratchet is relief-on-shrink (denies a commit only when the staged file is both over the limit and larger than its predecessor), so an already-over file can keep shrinking commit by commit without being blocked outright.
+
+Six unrelated upstream commits merged to `main` while `claude-md-audience-restructure.md`'s work was in review, growing the file further before this branch's own merge. As of `0ac48138` it measures 183 lines / 31,908 bytes (`git show 0ac48138:claude/.claude/CLAUDE.md | wc -lc`) — still under the 200-line cap but 24.6% over the 25,600-byte ratchet. Tracked in [GH-885](https://github.com/jcdendrite/claude-config/issues/885) rather than trimmed here; trimming is out of scope for the ratchet-mechanism pass.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Byte-size ratchet added to `check-claude-md-length.sh` (25,600 bytes, extrapolated from Anthropic's `MEMORY.md` "25KB" load-window figure — `claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md` § "Cross-vendor size table"), applying to every stow consumer's CLAUDE.md/AGENTS.md alongside the existing 200-line cap | Adopted | Closes the exact gap the regrowth exposed: the file was already over the new byte figure (30,969 > 25,600) while still under the 200-line cap, so line count alone was not catching cumulative growth. Implemented as an opt-in third parameter on the shared `_lib_staged_length_gate` helper rather than a widen of its two-arg contract, so `check-skill-length.sh`'s call site and behavior are unchanged. |
+| `SessionStart` + `additionalContext` per-subagent injection of the orchestrator-only CLAUDE.md block, to spare the 28.6%-of-dollars subagent slice the block's context cost | Declined, not deferred | - Converts a vendor-guaranteed load into a locally-scripted one that fails silently.<br>- Moves rules onto an unmeasured-adherence surface to improve adherence.<br>- Saving lands in the smaller cost slice (main thread carries 71.4% of dollar cost, §22 in `design-decisions.md`, and would keep the block).<br>- Its premise (`SessionStart` not firing for subagents) was not settled during the plan's own investigation.<br><br>Full reasoning and the lighter alternatives considered instead: [`design-decisions/declined-sessionstart-additionalcontext-injection.md`](design-decisions/declined-sessionstart-additionalcontext-injection.md). |
+| Further in-place compression of `claude/.claude/CLAUDE.md` | Near-exhausted | Two consecutive passes at this lever both landed short of their targets:<br>- Pass 1: +1,118 chars against a projected cut (row above).<br>- This pass: a 546-byte cut (31,515 → 30,969) against a stated 3,811-byte regrowth delta (`claude-md-audience-restructure.md:31`).<br><br>The durable deliverable from this pass is the byte-size ratchet, not the trim. |
+
 ## From `disable-artifact-workflow-default.md` — "Disable Artifact/Workflow by default, with per-session opt-back-in" (2026-08-25)
 
 | Lever | Verdict | Measured reason |
@@ -510,3 +526,47 @@ Full empirical record: [`case-studies/handoff-hard-block-position.md`](case-stud
 | Does cost per shipped PR improve? | Yes — a clean win | Mean $/PR fell 47.5% ($49.55→$26.01, pooled n=19 before / n=49 after); both machines' own after-era medians sit at or below the before-era median |
 | Does handoff/continuation overhead fall, and does deep-tail spend absorb some of the savings? | Both, in the predicted direction | Startup-burn share 3.6%→2.1–2.3% (both machines); share of session dollars past the advisory threshold 57.6%→77.3% (pooled) |
 | Does review quality decline under the raised floor? | No | Reviewer dispatch/finding volume roughly doubled between checkpoints against a ~1.45x rise in active branches on the one machine where both eras are directly comparable — engagement outpaced corpus growth |
+
+## From a 2026-09-07 session measurement — "`review-round-cost`: first cross-machine run"
+
+Whether the plan-review/code-review/ready-for-review loop itself is a
+worthwhile cost-reduction target, now that PR #914 shipped a subcommand to
+measure it directly.
+
+Figures are from `review-round-cost`, run 2026-09-07, at default
+machine-wide scope — every declared account, not one repo — on each of two
+machines. The two machines' output is pooled into one total. Per-account
+splits and branch identities are withheld here for the same reason cited in
+the
+`subagent-idle-gap-cache-rebuild-split.md` section above: the corpus mixes
+private-project and public transcripts, and any more granular figure would
+inherit the private half's composition. The pooled ratio below is not
+subject to that withholding, since it never surfaces any single account's
+share.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Treat the review loop as a standalone cost-reduction target | No lever identified yet, measured baseline only | Round-window spend is 30.3% of tracked branch dollars pooled across both machines (460 branches, 3,626 rounds) — the majority, ≈70%, falls outside every round window entirely, i.e. ordinary implementation work, not review overhead. |
+
+The tool's own `main $` column conflates a round's skill cost with
+same-window fix-application turns, since no fresh user prompt separates
+them under autonomous shipping. A hand-sum of the cleaner
+reviewer-dispatch-only figure (`agent $`) across a handful of branches is
+not a computed corpus total; treat its precision accordingly. It ran
+roughly 10–15% of total spend, well under the 30.3% round-window figure.
+Nothing in
+the toolkit decomposes the non-round ≈70% without double-counting round
+windows, so chasing that split further isn't productive.
+
+**Qualitative follow-up on the round-count tail.** A branch reaching 19
+review-loop invocations turned out, on a close read of its
+`review-trace` output, to be genuine multi-session iterative work with real
+reviewer fan-out at nearly every round. The branch's round-based
+review-escalation gate fired exactly as designed. The branch also carried a real vein of
+wasted spend: the same denial fired verbatim more than half a dozen times
+in one session before the ordinary per-round review gate underneath it was
+actually satisfied. High
+round counts on this one sample are not attributable to a single cause;
+genuine convergence difficulty and denial-retry churn coexist on the same
+branch. Reading further branches in the tail, rather than pooled statistics
+alone, is the next step if this is revisited.
