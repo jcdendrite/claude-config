@@ -2238,6 +2238,9 @@ _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=
 # nothing and returns non-zero, so a caller's `[ -n "$result" ]` guard
 # treats "redaction failed" the same as "nothing to act on" rather than
 # silently passing the unredacted input through.
+# Invoked by redact-credential-values.sh, which runs on every
+# Bash|Read|WebFetch|Grep|Task PostToolUse -- cost scales with how many
+# custom patterns a user has added to credential-value-patterns.md.
 _lib_redact_credential_shaped_strings() {
   local json="$1"
 
@@ -2253,6 +2256,7 @@ _lib_redact_credential_shaped_strings() {
   fi
   if [ -f "$credential_value_patterns_file" ] && [ -r "$credential_value_patterns_file" ]; then
     local addition_lineno line addition_value
+    local -a addition_linenos=() addition_values=()
     while IFS=$'\t' read -r addition_lineno line; do
       case "$line" in
         *:*) ;;
@@ -2263,15 +2267,70 @@ _lib_redact_credential_shaped_strings() {
       addition_value="${addition_value#"${addition_value%%[![:space:]]*}"}"
       [ -n "$addition_value" ] || continue
 
-      # Skip (don't apply) a pattern that fails to compile under jq's regex engine -- one bad addition would otherwise break the single combined gsub call below for the whole invocation, including the built-in redaction.
-      # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
-      if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
-        printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
-          "$credential_value_patterns_file" "$addition_lineno" >&2
-        continue
-      fi
-      credential_value_pattern="${credential_value_pattern}|${addition_value}"
+      addition_linenos+=("$addition_lineno")
+      addition_values+=("$addition_value")
     done < <(_lib_config_lines "$credential_value_patterns_file")
+
+    if [ "${#addition_values[@]}" -gt 0 ]; then
+      local batch_i batch_rows batch_status batch_output
+      batch_rows=""
+      batch_i=0
+      while [ "$batch_i" -lt "${#addition_values[@]}" ]; do
+        batch_rows="${batch_rows}${addition_linenos[$batch_i]}"$'\t'"${addition_values[$batch_i]}"$'\n'
+        batch_i=$((batch_i + 1))
+      done
+
+      # Validates every addition in one jq call instead of one fork per
+      # pattern: an unparseable pattern makes jq's test() throw, caught
+      # per-row via try/catch so one bad line can't fail the whole
+      # invocation the way it would fail the combined gsub call below.
+      # Reads "<lineno>\t<pattern>" rows from stdin (the same tab-delimited
+      # shape _lib_config_lines produces) and emits "1\t<pattern>" for a
+      # pattern that compiles or "0\t<lineno>" for one that doesn't.
+      # shellcheck disable=SC2016 # single-quoted on purpose: $p and $l are jq variable bindings, not shell variables; double-quoting would expand them in the shell before jq sees them.
+      batch_output=$(printf '%s' "$batch_rows" | _lib_jq -R -n -r '
+        [inputs | select(length > 0) | {lineno: .[0:(index("\t"))], pattern: .[(index("\t")+1):]}]
+        | .[]
+        | .pattern as $p
+        | .lineno as $l
+        | if (try (("" | test($p)) | true) catch false)
+          then "1\t\($p)"
+          else "0\t\($l)"
+          end
+      ' 2>/dev/null)
+      batch_status=$?
+
+      if [ "$batch_status" -eq 0 ]; then
+        local valid_flag payload
+        while IFS=$'\t' read -r valid_flag payload; do
+          [ -z "$valid_flag" ] && continue
+          if [ "$valid_flag" = "1" ]; then
+            credential_value_pattern="${credential_value_pattern}|${payload}"
+          else
+            printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
+              "$credential_value_patterns_file" "$payload" >&2
+          fi
+        done <<< "$batch_output"
+      else
+        # The batched call itself failed (jq crashed, timed out, or errored
+        # outright), not just one pattern failing to compile within it --
+        # fall back to validating each addition individually so only the
+        # malformed pattern(s) are skipped, not every custom addition.
+        batch_i=0
+        while [ "$batch_i" -lt "${#addition_values[@]}" ]; do
+          addition_value="${addition_values[$batch_i]}"
+          addition_lineno="${addition_linenos[$batch_i]}"
+          # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+          if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
+            printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
+              "$credential_value_patterns_file" "$addition_lineno" >&2
+          else
+            credential_value_pattern="${credential_value_pattern}|${addition_value}"
+          fi
+          batch_i=$((batch_i + 1))
+        done
+      fi
+    fi
   fi
 
   local redacted

@@ -21,8 +21,11 @@ Synthetic values used in these tests — all invented, none a real secret:
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 
+import pytest
 from helpers import HOOKS_DIR, NO_UPDATED_OUTPUT, run_hook_updated_output
 
 REDACT_CREDENTIAL_VALUES_HOOK = HOOKS_DIR / "redact-credential-values.sh"
@@ -291,6 +294,49 @@ class TestRedactCredentialValues:
         assert updated["stdout"] == f"a={REDACTED} b={REDACTED}"
         assert "credential-value-patterns.md line 1" in result.stderr
         assert "unaffected" in result.stderr
+
+    def test_batched_validation_call_failure_falls_back_without_tripping_pipefail(
+        self, isolated_home, tmp_path
+    ):
+        """When the single batched jq validation call fails outright (not
+        just one addition failing to compile within it), the hook -- which
+        runs under `set -uo pipefail`, not `set -e` -- must still complete
+        the fallback and emit the redacted output rather than aborting the
+        whole tool call. Forces the batch-call shape (`jq -R ...`) to fail
+        while leaving every other jq invocation (the per-line fallback, the
+        final combined gsub) pointed at the real binary."""
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        fake_jq = shim_dir / "jq"
+        fake_jq.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "-R" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        fake_jq.chmod(0o755)
+
+        additions_file = isolated_home / ".claude" / "credential-value-patterns.md"
+        additions_file.write_text("Bad line: [unterminated(\nInternal deploy token: dpl_[A-Za-z0-9]{10,}\n")
+        response = {
+            "stdout": f"a={GHP_TOKEN} b=dpl_abcdefghijklmno",
+            "stderr": "",
+            "exit_code": 0,
+        }
+        result = run_hook_updated_output(
+            REDACT_CREDENTIAL_VALUES_HOOK,
+            _posttooluse_input("Bash", response),
+            home=isolated_home,
+            extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+        )
+        assert result is not None
+        assert GHP_TOKEN not in result["stdout"]
+        assert "dpl_abcdefghijklmno" not in result["stdout"]
+        assert result["stdout"] == f"a={REDACTED} b={REDACTED}"
 
     def test_additions_file_armed_at_config_dir_only_redacted(self, isolated_home, tmp_path):
         """Additions file armed only at the resolved CLAUDE_CONFIG_DIR

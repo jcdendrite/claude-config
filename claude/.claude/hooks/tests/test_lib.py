@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -4405,6 +4406,44 @@ def _redact_credential_shaped_strings(
 
 
 class TestRedactCredentialShapedStrings:
+    @pytest.fixture
+    def jq_invocation_counter(self, tmp_path: Path):
+        """`install(match_condition)` writes a `jq` shim that always execs
+        the real binary, but first appends one line to a counter file for
+        every invocation matching `match_condition` -- same conditional-
+        match, PATH-override idiom as conftest.py's git_timeout_shim/
+        gh_timeout_shim, counting invocations instead of sleeping past a
+        timeout. Class-local (not conftest.py) since only one test here
+        uses it.
+
+        `match_condition` is a `[ ... ]`/`[[ ... ]]` test expression
+        evaluated against the shim's own positional args, e.g.
+        `[ "$1" = "-R" ]` to count only the batched-validation call shape.
+
+        `install` returns `(path_env, counter_file)`: the PATH-override
+        dict, and the Path whose line count is the invocation count.
+        """
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+
+        counter_file = tmp_path / "jq-invocations.count"
+        counter_file.write_text("")
+
+        def install(match_condition: str) -> tuple[dict[str, str], Path]:
+            fake_binary = tmp_path / "jq"
+            fake_binary.write_text(
+                f"#!/bin/bash\n"
+                f"if {match_condition}; then\n"
+                f"  echo x >> {shlex.quote(str(counter_file))}\n"
+                f"fi\n"
+                f'exec {real_jq} "$@"\n'
+            )
+            fake_binary.chmod(0o755)
+            return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}, counter_file
+
+        return install
+
     def test_credential_shaped_string_is_redacted(self, tmp_path: Path) -> None:
         token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
         payload = json.dumps(f"token={token}")
@@ -4500,6 +4539,113 @@ class TestRedactCredentialShapedStrings:
         assert token not in result.stdout
         assert "dpl_abcdefghijklmno" not in result.stdout
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+
+    def test_multiple_malformed_addition_lines_each_reported_individually(
+        self, tmp_path: Path
+    ) -> None:
+        """Two or more unparseable regexes in the additions file are each
+        attributed to their own line by the single batched validation call
+        -- per-addition fate, not one aggregate pass/fail for the whole
+        file."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad one: [unterminated(\n"
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+            "Bad two: (unterminated\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+        assert "credential-value-patterns.md line 1" in result.stderr
+        assert "credential-value-patterns.md line 3" in result.stderr
+
+    def test_batched_call_failure_falls_back_to_per_line_validation(
+        self, tmp_path: Path
+    ) -> None:
+        """When the single batched jq invocation itself fails outright
+        (jq crashing, timing out, or erroring on the call as a whole) --
+        not merely one addition failing to compile within it -- the
+        function falls back to validating each addition individually, so
+        only the genuinely malformed pattern is skipped and the rest still
+        apply, rather than the batch failure silently dropping every
+        custom pattern for the invocation."""
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        fake_jq = shim_dir / "jq"
+        fake_jq.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "-R" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        fake_jq.chmod(0o755)
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad line: [unterminated(\nInternal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(
+            payload, home, extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}"}
+        )
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+        assert "credential-value-patterns.md line 1" in result.stderr
+
+    def test_additions_file_only_comments_and_blanks_builtin_still_applies(
+        self, tmp_path: Path
+    ) -> None:
+        """An additions file present but empty after comment/blank
+        filtering must not spuriously warn, and built-in redaction still
+        applies -- there is nothing to batch-validate, so the validator
+        must not fire (and fail) on an empty candidate set."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text("# just a comment\n\n   \n")
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"token={token}")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert _REDACTED in result.stdout
+        assert result.stderr == ""
+
+    def test_batched_validation_makes_exactly_one_jq_call_with_multiple_additions(
+        self, tmp_path: Path, jq_invocation_counter
+    ) -> None:
+        """Directly pins the fork-count reduction this phase exists to
+        deliver: two or more valid addition lines still validate through
+        exactly one jq invocation, not one fork per pattern. Counts only
+        the batched-validation call shape (`jq -R ...`), distinguishing it
+        from the always-present final combined gsub call (`jq -c ...`)."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+            "Another internal token: xyz_[A-Za-z0-9]{8,}\n"
+        )
+        path_env, counter_file = jq_invocation_counter('[ "$1" = "-R" ]')
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno c=xyz_12345678")
+        result = _redact_credential_shaped_strings(payload, home, extra_env=path_env)
+        assert result.returncode == 0
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert "xyz_12345678" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED} c={_REDACTED}")
+        assert len(counter_file.read_text().splitlines()) == 1
 
 
 # --- _lib_config_lines -------------------------------------------------
