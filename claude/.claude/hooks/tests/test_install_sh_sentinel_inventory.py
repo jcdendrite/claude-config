@@ -93,6 +93,25 @@ def _run_report(env: dict) -> subprocess.CompletedProcess:
     )
 
 
+def _run_report_config_key_directly(
+    env: dict, config_sh_path: Path, args: str
+) -> subprocess.CompletedProcess:
+    """Calls _report_config_key directly, bypassing report_sentinel_inventory's
+    own outer `while read < "$_CONFIG_SCHEMA_FILE"` loop -- that loop's own
+    redirection fails outright (under `set -e`) when config-keys.psv is
+    missing, before ever reaching a per-key _report_config_key call, so
+    testing _report_config_key's OWN schema-unreadable branch needs a direct
+    call, not a report_sentinel_inventory run."""
+    script = f'. "{config_sh_path}"\n' + _extract_inventory_block() + f"\n_report_config_key {args}\n"
+    return subprocess.run(
+        [_BASH, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
 class TestBlockOrderingDependency:
     def test_config_sh_sourced_before_configure_call_site_in_file_order(self) -> None:
         """configure_machine_level_opt_ins's body reads $_CONFIG_SCHEMA_FILE
@@ -492,6 +511,32 @@ class TestReportSentinelInventory:
             "Autonomous shipping: could not resolve (CLAUDE_CONFIG_DIR is a "
             "relative path, or $HOME is unset/empty)" in result.stdout
         )
+
+    def test_unreadable_schema_reports_schema_specific_message(self, tmp_path: Path) -> None:
+        """_report_config_key's exit-3 branch (config-keys.psv itself
+        missing or unreadable) must not reuse exit 2's CLAUDE_CONFIG_DIR/
+        $HOME message -- the two failure modes have different causes and
+        different fixes. Mirrors test_config_parser_parity.py's
+        TestMissingSchemaFile isolation: symlink only _config.sh into a
+        directory with no config-keys.psv sibling."""
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = _base_env(home, repo)
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+
+        result = _run_report_config_key_directly(
+            env,
+            isolated_hooks_dir / "_config.sh",
+            'autonomous_shipping "Autonomous shipping" "docs/x.md#y" "config-dir"',
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "Autonomous shipping: could not resolve (config-keys.psv is missing or unreadable" in result.stdout
+        assert "CLAUDE_CONFIG_DIR is a relative path" not in result.stdout
 
     def test_worktree_required_falls_back_to_home_legacy_probe_on_resolution_failure(
         self, tmp_path: Path

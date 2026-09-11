@@ -133,12 +133,27 @@ _migrate_add_record() {
 # from running `rm` on a legacy sentinel directly.
 _migrate_prompt_delete_legacy_file() {
   local path="$1" key="$2" value="$3" outcome="$4" answer
-  printf '  %s -- %s = %s (%s)\n' "$path" "$key" "$value" "$outcome"
+  # `|| true` on every bare echo/printf below: the same structural-sibling
+  # bug shape rm -f had (a failed write -- e.g. a broken stdout pipe --
+  # would otherwise abort the remaining records under `set -e`), applied
+  # to every status line this function prints, not just the file removal.
+  printf '  %s -- %s = %s (%s)\n' "$path" "$key" "$value" "$outcome" || true
   read -r -p "  delete $path now that its value is durably imported? [y/N] " answer || answer=""
   case "$answer" in
-    [Yy]*) rm -f -- "$path" && echo "  → deleted $path" ;;
-    *) echo "  ✓ leaving $path in place" ;;
+    [Yy]*)
+      if rm -f -- "$path"; then
+        echo "  → deleted $path" || true
+      else
+        echo "  ✗ could not delete $path -- leaving it in place" >&2 || true
+      fi
+      ;;
+    *) echo "  ✓ leaving $path in place" || true ;;
   esac
+  # Explicit, not left to the case statement's own truth value -- same
+  # rationale as _migrate_process_key's own explicit `return 0`: this
+  # function is called bare inside main's delete-confirmation loop under
+  # `set -e`, and a failed `rm -f` must not abort the remaining records.
+  return 0
 }
 
 # _migrate_process_key KEY TYPE LEGACY_IMPORT LEGACY_FILENAME LEGACY_POLARITY HUMAN_NAME

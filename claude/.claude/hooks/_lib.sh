@@ -293,13 +293,18 @@ _lib_strip_trailing_path_components() {
 #       check indefinitely. A fully hung (D-state) mount is unaffected
 #       either way -- a `timeout`-wrapped external process cannot interrupt
 #       a kernel-blocked process.
-#   (c) _lib_strip_shell_quotes/_lib_split_fragments's sed/tr calls, on the
-#       unconditional hot path of every Bash tool call for both hooks, also
-#       have no _lib_capped wrapper -- a stuck subprocess there blocks the
-#       hook until an unstated harness-level hook timeout (if any)
-#       terminates it. Total forks per ordinary Bash call across both hooks
-#       (jq, quote-strip, hook-specific sed/grep) is an unmeasured estimate,
-#       not verified against the harness's own hook-latency budget.
+#   (c) _lib_strip_shell_quotes/_lib_split_fragments/_lib_brace_flatten's
+#       sed/tr calls, on the unconditional hot path of every Bash tool call
+#       for both hooks, also have no _lib_capped wrapper -- a stuck
+#       subprocess there blocks the hook until an unstated harness-level
+#       hook timeout (if any) terminates it. _lib_brace_flatten's own fixed
+#       16-pass loop plus each consumer hook's doubled (raw + flattened)
+#       redirect-candidate scan raises the per-fire fork count in this
+#       family from ~4 (quote-strip's sed+tr, split-fragments' 2x sed) to as
+#       many as ~20 in the worst case. Total forks per ordinary Bash call
+#       across both hooks (jq, quote-strip, hook-specific sed/grep) remains
+#       an unmeasured estimate, not verified against the harness's own
+#       hook-latency budget.
 #
 # This engine has no per-fire cap on `-ef` calls; the added cost is
 # accepted as low in practice for an ordinary Bash command's candidate
@@ -1330,6 +1335,13 @@ done
 unset _lib_write_utility
 
 # _lib_command_has_write_construct COMMAND_TEXT
+# This function and _lib_redirect_candidates, the candidate-extraction
+# mechanism it fast-rejects for, both scan bash command TEXT, not the argv
+# a real shell resolves. Any of
+# bash's seven word-expansion types (Bash manual §3.5) that the executing
+# shell resolves but this text scan doesn't could hide a real write
+# target -- see docs/bash-word-expansion-coverage.md for which types are
+# covered, which are open, and which are still unaudited.
 # True (exit 0) iff COMMAND_TEXT could contain a `>`-family redirect
 # operator or an invocation of one of _LIB_WRITE_UTILITIES's names, tested
 # via `case`/`[[ =~ ]]` pattern matching only -- no subprocess. Every
@@ -1407,6 +1419,7 @@ _lib_command_word_matches() {
 # closing that whole bypass class at once. Over-emission is safe — each
 # candidate is independently shape-tested by the caller. Sole caller:
 # _lib_redirect_candidates below.
+#
 _lib_fragment_candidates() {
   local fragment="$1"
   local saved_opts=$-
@@ -1496,12 +1509,139 @@ _lib_fragment_candidates() {
   done
 }
 
+# Status _lib_redirect_candidates returns when
+# _lib_command_has_brace_expansion_bypass below detects a live
+# brace-expansion construct in the command text. Chosen not to collide
+# with _lib_split_fragments's own (sed's) exit codes, which never reach
+# this high -- see both consumer hooks' status checks for the deny branch
+# this feeds.
+_LIB_BRACE_EXPANSION_BYPASS_STATUS=40
+
+# Core shape a live, still-processable brace-expansion group has: a
+# `{`...`}` pair, containing no nested brace, whose body has a `,` or a
+# `..`. Escaped as `\{`/`\}` -- POSIX ERE reads a bare `{` as the start of
+# an interval expression (`a{2,3}` = "aa or aaa"), confirmed this session
+# as a hard parse error on GNU sed 4.9 for the unescaped form; bash's own
+# [[ =~ ]] regex engine requires the same escaping. Shared by
+# _lib_command_has_brace_expansion_bypass (which adds its own `/`
+# requirement) and _lib_brace_flatten's own pass-budget termination check
+# below, so the two functions can never silently disagree on what counts
+# as a live construct.
+_LIB_BRACE_GROUP_WITH_COMMA_OR_RANGE_REGEX='\{[^{}]*(,|\.\.)[^{}]*\}'
+
+# Number of _lib_brace_flatten passes before failing closed. Each pass
+# resolves exactly one level of brace nesting across the whole text, so
+# this doubles as the deepest nesting level the function will resolve --
+# a second, independent depth-cap constant would only re-ground the same
+# bound under a different name.
+_LIB_BRACE_FLATTEN_MAX_PASSES=16
+
+# _lib_brace_flatten TEXT
+# Flattens every `{comma,list}`/`{X..Y}` brace-expansion construct in TEXT
+# to its first alternative, so a caller can re-scan the flattened text for
+# a write-utility/path match a scan of the original, unexpanded text would
+# miss (a brace-split `t{ee,ee}` or `marker.s{h,h}` reaches a literal
+# command-text scan as one token matching no recognized name, even though
+# the real shell executing it brace-expands to `tee`/`marker.sh`).
+#
+# Comma precedence: a group's body is tested for a comma before a `..`, so
+# `{1..3,x}` flattens to `1..3` (the substring up to the first comma),
+# never to `1` -- matching real bash, which treats any comma-bearing body
+# as a comma list regardless of an embedded `..`. Range form (`{X..Y}`, no
+# comma anywhere in the body) flattens to `X`. A group shaped like neither
+# (`{e}`, no comma or `..`) is left untouched -- it is not a construct real
+# bash itself would expand specially.
+#
+# Three-field step-range (`{X..Y..Z}`, e.g. `{0..10..2}`) is an unhandled,
+# undefined-output shape: the second sed pass's greedy match backtracks to
+# the LAST `..` in the body rather than the first, folding the `..step`
+# segment into the output instead of resolving to bash's own first
+# alternative (`0`, not `0..10`). Not a bypass risk -- the categorical
+# _lib_command_has_brace_expansion_bypass predicate fires on the construct's
+# shape independently of this function's accuracy, and a step-range's
+# single-character/integer endpoints cannot splice an arbitrary literal
+# substring the way a comma list can.
+#
+# Fixed 16-pass sed -E loop, each pass flattening every innermost
+# (non-nested) `{...}` group across the whole text in one sed invocation
+# (regex backtracking finds the innermost group by construction, since the
+# body class excludes brace characters) -- a construct nested N levels deep
+# resolves one level per pass, so it needs exactly N passes. Exits 0, with
+# the flattened text on stdout, once no `{...}` pair with a `,` or `..`
+# remains anywhere in the text. Exits 2 (budget exhausted, fail closed) if
+# 16 passes still leave such a pair -- callers must treat exit 2 as a deny,
+# not as a partial result. No length gate and no separate nesting-depth
+# constant: the pass count above is the only bound this function needs.
+#
+# Exit 1 if the underlying sed pipeline itself fails (missing, killed, or
+# erroring) -- every call site must capture and check the exit status
+# immediately and fail closed on non-zero, the same discipline
+# _lib_strip_shell_quotes's own header documents for its callers.
+#
+# Fork-free fast path: TEXT containing no `{` at all short-circuits before
+# any sed fork.
+#
+# Untested on BSD/macOS sed -- see
+# docs/design-decisions/no-op-dispatch-hook-gate.md's disclosure
+# convention; this repo's CI and every known consumer run GNU sed.
+_lib_brace_flatten() {
+  local text="$1"
+  case "$text" in
+    *'{'*) ;;
+    *) printf '%s' "$text"; return 0 ;;
+  esac
+
+  local pass flattened flattened_exit
+  for ((pass = 0; pass < _LIB_BRACE_FLATTEN_MAX_PASSES; pass++)); do
+    [[ "$text" =~ $_LIB_BRACE_GROUP_WITH_COMMA_OR_RANGE_REGEX ]] || break
+    flattened=$(printf '%s' "$text" | sed -E \
+      -e 's/\{([^{},]*),[^{}]*\}/\1/g' \
+      -e 's/\{([^{}]*)\.\.[^{}]*\}/\1/g')
+    flattened_exit=$?
+    [ "$flattened_exit" -eq 0 ] || return 1
+    text="$flattened"
+  done
+
+  if [[ "$text" =~ $_LIB_BRACE_GROUP_WITH_COMMA_OR_RANGE_REGEX ]]; then
+    return 2
+  fi
+  printf '%s' "$text"
+  return 0
+}
+
+# _lib_command_has_brace_expansion_bypass COMMAND_UNQUOTED
+# True (exit 0) iff COMMAND_UNQUOTED contains a `{`...`}` pair with a `,`
+# or `..` in its body, plus at least one `/` anywhere in the command -- a
+# construct _lib_fragment_candidates's own runtime word-splitting
+# (`for word in $fragment`, never re-brace-expanded by bash) can miss,
+# reaching _lib_shape_match as one literal token matching no real path.
+# A detection predicate, not an expander: tests only the construct's
+# SHAPE and denies on a match, so it costs one regex pass regardless of
+# list size -- the alternatives this rejects (re-implementing bash's own
+# brace grammar, a narrower shape test) are analyzed in
+# .claude/plans/sentinel-config-migration.md row 49, not restated here.
+# The `/` requirement is sound, not heuristic: brace expansion invents no
+# new characters, so a protected path's `/` must already be present in
+# the source word. Deliberately over-matches -- a construct present
+# anywhere in a write-shaped command denies whether or not it resolves to
+# a protected path -- see both consumer hooks' own header disclosures.
+_lib_command_has_brace_expansion_bypass() {
+  local text="$1"
+  case "$text" in
+    *'/'*) ;;
+    *) return 1 ;;
+  esac
+  [[ "$text" =~ $_LIB_BRACE_GROUP_WITH_COMMA_OR_RANGE_REGEX ]]
+}
+
 # _lib_redirect_candidates COMMAND_UNQUOTED
 # Splits COMMAND_UNQUOTED into fragments (the same split _lib_split_fragments
 # gives deny-network-installs.sh) and emits every fragment's candidate
 # write-target words (via _lib_fragment_candidates above), one per line.
-# Returns _lib_split_fragments's own exit status on failure -- the caller
-# checks it and denies at the top level; see the comment below for why this
+# Returns _lib_split_fragments's own exit status on failure, or
+# _LIB_BRACE_EXPANSION_BYPASS_STATUS if
+# _lib_command_has_brace_expansion_bypass matches -- the caller checks
+# both and denies at the top level; see the comment below for why this
 # function cannot emit_deny itself. Shared by every Bash-arm redirect/
 # utility-write scan: enforce-marker-script-shape.sh and
 # enforce-config-write-shape.sh both call this rather than each maintaining
@@ -1514,6 +1654,13 @@ _lib_redirect_candidates() {
   # see _lib_command_has_write_construct's own comment for why this is a
   # superset test by construction, not by coincidence.
   _lib_command_has_write_construct "$command_unquoted" || return 0
+  # Runs on the whole command text, ahead of fragment-splitting: a brace
+  # group can straddle what would become a fragment boundary once split,
+  # and testing here needs no reordering of the split/extract sequence
+  # below since it operates at whole-command, not fragment, granularity.
+  if _lib_command_has_brace_expansion_bypass "$command_unquoted"; then
+    return "$_LIB_BRACE_EXPANSION_BYPASS_STATUS"
+  fi
   # Checked and fail-closed, matching deny-network-installs.sh's
   # FRAGMENTS_SPLIT_EXIT pattern. Surfaced via return rather than emit_deny:
   # this function is invoked inside the caller's own $(...) command
@@ -1929,13 +2076,20 @@ _lib_worktree_enforcement_active() {
   local repo_root="$1"
   [ -n "$repo_root" ] || return 1                                     # degenerate: no repo, never enforce
   [ -f "$repo_root/.claude/worktree-required" ] && return 0           # committed requirement (opt-out has no effect)
-  # Machine default, minus per-repo opt-out. Union/legacy-probe logic now
-  # lives in _config_enabled itself (worktree_required's schema row), not
-  # here — an unresolvable config dir propagates as exit 2, which this
-  # function treats the same as "not enforced" per the `*)` arm below.
+  # Machine default, minus per-repo opt-out. Union/legacy-probe logic lives
+  # in _config_enabled itself, via worktree_required's own schema row — an
+  # unresolvable config dir propagates as exit 2, which this function treats
+  # the same as "not enforced" per the `*)` arm below (an accepted,
+  # pre-existing tradeoff, unlike exit 3 immediately below).
   _config_enabled worktree_required
   case "$?" in
     0) ;;
+    # config-keys.psv itself unreadable: worktree_required's own safe
+    # direction is enforced, not disarmed, so this falls through to the
+    # same opt-out check as the enabled arm above rather than "not
+    # enforced" — a transiently unreadable schema file must not silently
+    # disable worktree enforcement.
+    3) ;;
     *) return 1 ;;
   esac
   [ ! -f "$repo_root/.claude/worktree-optout" ] && return 0
@@ -1954,10 +2108,12 @@ _lib_worktree_enforcement_active() {
 # Zero-arity: _config_enabled resolves and unions both locations itself, so
 # there is no CONFIG_DIR argument to thread through. Propagates
 # _config_enabled's exit code unchanged, including its exit code 2
-# (config-dir resolution failure) — this function has no `case` of its own
-# to fold that into 1. Harmless because every caller
-# (_lib_autonomous_shipping_active, advance-past-commit-stall.sh) treats
-# any nonzero exit identically via `||`.
+# (config-dir resolution failure) and exit code 3 (config-keys.psv
+# unreadable) — this function has no `case` of its own to fold either into
+# 1. Harmless because every caller (_lib_autonomous_shipping_active,
+# advance-past-commit-stall.sh) treats any nonzero exit identically via
+# `||`, and autonomous_shipping's own documented safe direction is NOT
+# shipping regardless of which failure caused it.
 _lib_autonomous_shipping_sentinel_present() {
   _config_enabled autonomous_shipping
 }
@@ -3333,13 +3489,17 @@ _lib_reviewer_round_state_value() {
 # _lib_permission_prompt_tracking_active above. Zero-arity: this sentinel is
 # machine-global with nothing repo- or session-scoped to look up. Fails
 # toward NOT disabled (i.e. the gate stays armed) on _config_enabled's exit
-# code 2 (unresolvable config dir), matching every other opt-in-sentinel
-# check in this file's fail direction.
+# code 2 (unresolvable config dir) or exit code 3 (config-keys.psv
+# unreadable), matching every other opt-in-sentinel check in this file's
+# fail direction -- round_consult_gate's own safe direction is armed, so a
+# transiently unreadable schema must not silently disable it either.
 _lib_round_consult_gate_disabled() {
-  # Not a bare `! _config_enabled ...`: `!` collapses exit codes 1
-  # (disabled) and 2 (unresolvable) into the same negated-true result, but
-  # this function must return 1 (not disabled, gate stays armed) for 2 and
-  # 0 (disabled) only for 1 -- an explicit case distinguishes them.
+  # Not a bare `! _config_enabled ...`: `!` collapses every nonzero exit
+  # code (1 disabled, 2 unresolvable config dir, 3 unreadable schema) into
+  # the same negated-true result, but this function must return 1 (not
+  # disabled, gate stays armed) for every code except 1, and 0 (disabled)
+  # only for 1 -- an explicit case distinguishes them, and the `*)` arm
+  # below already covers 2 and 3 identically with no separate case needed.
   _config_enabled round_consult_gate
   case "$?" in
     1) return 0 ;;

@@ -77,6 +77,31 @@ class TestRestoreAuthorizationBoundaryOnCompact:
         assert isinstance(ctx, str)
         assert "not engineer authorization" in ctx
 
+    def test_emits_output_when_config_keys_psv_unreadable(self, isolated_home, tmp_path):
+        """Cumulative-review finding: an unreadable config-keys.psv must not
+        silently suppress this advisory restatement --
+        authorization_boundary_restore's own safe direction is enforced (the
+        boundary text still gets restated), unlike the accepted exit-2
+        (config-dir-unresolvable) no-op this hook's own header already
+        documents. Mirrors test_lib.py's _lib_sh_with_unreadable_schema
+        technique: symlink the hook and _lib.sh/_config.sh into a dir with
+        no config-keys.psv sibling."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "restore-authorization-boundary-on-compact.sh").symlink_to(RESTORE_BOUNDARY_HOOK)
+        (isolated_hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+        (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+        result = subprocess.run(
+            [str(isolated_hooks_dir / "restore-authorization-boundary-on-compact.sh")],
+            input=json.dumps({"source": "compact"}).encode(),
+            capture_output=True,
+            env={**os.environ, "HOME": str(isolated_home)},
+            check=False,
+        )
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in ctx
+
     @pytest.mark.parametrize("token", _NAMED_TOKENS)
     def test_named_shape_token_present(self, isolated_home, token):
         """Each illustrative shape is named by its literal command/verb

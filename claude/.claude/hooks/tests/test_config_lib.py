@@ -96,7 +96,7 @@ class TestDefaultResolution:
 
 
 # ---------------------------------------------------------------------------
-# _config_enabled's three-way exit code contract
+# _config_enabled's four-way exit code contract
 # ---------------------------------------------------------------------------
 
 
@@ -106,6 +106,27 @@ class TestExitCodeContract:
         result = _run("_config_enabled round_consult_gate")
         assert result.returncode == 2
         assert result.stdout == ""
+
+    def test_unreadable_schema_returns_exit_3(self, tmp_path):
+        """config-keys.psv itself missing/unreadable must propagate exit 3
+        unchanged from both _config_value and _config_enabled, not collapse
+        into exit 1 ("KEY has no schema row") -- the two mean different
+        things to an enforcement-critical caller (see _config_value's own
+        exit-3 comment). Mirrors test_config_parser_parity.py's
+        TestMissingSchemaFile isolation technique, lighter than
+        _lib_sh_with_unreadable_schema's since _config_value/_config_enabled
+        need only _config.sh itself, not _lib.sh's own sourcing chain:
+        symlink _config.sh alone into a directory with no config-keys.psv
+        sibling."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert value_result.returncode == 3
+        assert value_result.stdout == ""
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
+        assert enabled_result.returncode == 3
+        assert enabled_result.stdout == ""
 
 
 # ---------------------------------------------------------------------------

@@ -1142,6 +1142,165 @@ def test_raw_command_detection_checks_read_unquoted_copy(hook: Path) -> None:
         )
 
 
+# COMMAND_UNQUOTED/COMMAND_FLATTENED raw||flattened pairing (row 50/52,
+# .claude/plans/sentinel-config-migration.md): a brace-split write-utility
+# name or `_config_set`/`marker.sh` token evades a raw-text scan unless
+# that scan is also run against the flattened companion COMMAND_FLATTENED.
+# Scoped to the two hooks row 50 names -- the shared _lib_redirect_candidates/
+# _lib_shape_match engine's own alternation-check pairing happens at each
+# hook's own call site into that engine, not inside the engine's body, so
+# no other hook or _lib.sh itself carries this invariant today.
+_BRACE_PAIRING_HOOKS = [
+    h for h in GATE_HOOKS
+    if h.name in ("enforce-config-write-shape.sh", "enforce-marker-script-shape.sh")
+]
+
+# A "raw-text sentinel scan": a grep-family call, a `[[ ... =~ ... ]]` test,
+# or a _lib_command_invokes_*_subcmd call, whose line ALSO names one of
+# this scan family's own detection targets (`_config_set`, `marker.sh`) --
+# narrower than "any grep against COMMAND_UNQUOTED", so this does not also
+# flag an unrelated pre-existing scan that happens to share the same
+# variable (e.g. enforce-config-write-shape.sh's "does the command also
+# name claude-config.toml" directory-match gate, which shares neither
+# target name).
+# Each operator class is its own detection call with its own match
+# semantics -- a grep-family substring/regex scan and a
+# _lib_command_invokes_*_subcmd command-word resolution are deliberately
+# independent, non-substitutable detectors (see
+# enforce-marker-script-shape.sh's gate-release-authority arm header:
+# "neither subsumes the other"), so a flattened companion only pairs a raw
+# scan when it is the SAME operator class, not merely any flattened
+# reference nearby.
+_BRACE_SCAN_GREP_RE = re.compile(r"\bgrep\b|\begrep\b|\bfgrep\b")
+_BRACE_SCAN_TILDE_RE = re.compile(r"=~")
+_BRACE_SCAN_SUBCMD_RE = re.compile(r"_lib_command_invokes_\w+_subcmd")
+_BRACE_SCAN_OPERATOR_CLASSES: list[tuple[str, re.Pattern[str]]] = [
+    ("grep", _BRACE_SCAN_GREP_RE),
+    ("tilde", _BRACE_SCAN_TILDE_RE),
+    ("subcmd", _BRACE_SCAN_SUBCMD_RE),
+]
+_BRACE_SCAN_SENTINEL_RE = re.compile(r"_config_set|marker\\?\.sh")
+_BRACE_SCAN_RAW_VAR_RE = re.compile(r"\$COMMAND_UNQUOTED\b|_lib_command_invokes_\w+_subcmd\s+\"\$COMMAND\"\b")
+_BRACE_SCAN_FLATTENED_VAR_RE = re.compile(r"\$COMMAND_FLATTENED\b")
+
+# How far (in lines) a raw-text sentinel scan's flattened companion of the
+# SAME operator class may sit from it -- covers this diff's own widest gap
+# (the gate-release check's grep-family raw substring detector and its
+# grep-family flattened companion, 2 lines apart) with a generous margin,
+# without being so wide it stops meaning anything.
+_BRACE_SCAN_PAIRING_WINDOW = 20
+
+
+def _brace_scan_operator_class(code: str) -> str | None:
+    """Which operator class (grep-family, `=~`, or *_subcmd) a detection
+    line uses, or None if it uses none of them."""
+    for label, pattern in _BRACE_SCAN_OPERATOR_CLASSES:
+        if pattern.search(code):
+            return label
+    return None
+
+
+def _brace_scan_line_indices(
+    code_lines: list[str], var_re: re.Pattern[str]
+) -> list[tuple[int, str]]:
+    """(0-based index, operator class) for every line that is a raw-text
+    sentinel scan against the variable var_re names."""
+    hits = []
+    for i, line in enumerate(code_lines):
+        code = _strip_comment(line)
+        if not code.strip():
+            continue
+        operator_class = _brace_scan_operator_class(code)
+        if (
+            operator_class is not None
+            and _BRACE_SCAN_SENTINEL_RE.search(code)
+            and var_re.search(code)
+        ):
+            hits.append((i, operator_class))
+    return hits
+
+
+def _unpaired_raw_brace_scans(lines: list[str]) -> list[str]:
+    """Every raw-text sentinel scan line with no same-operator-class
+    COMMAND_FLATTENED-referencing companion scan within
+    _BRACE_SCAN_PAIRING_WINDOW lines. A companion of a DIFFERENT operator
+    class (e.g. a raw grep paired only with a nearby flattened *_subcmd
+    call) does not count -- the two are independent, non-substitutable
+    detectors, so one cannot cover the other's gap."""
+    raw_hits = _brace_scan_line_indices(lines, _BRACE_SCAN_RAW_VAR_RE)
+    flattened_hits = _brace_scan_line_indices(lines, _BRACE_SCAN_FLATTENED_VAR_RE)
+    unpaired = []
+    for i, operator_class in raw_hits:
+        if not any(
+            operator_class == flattened_class and abs(i - j) <= _BRACE_SCAN_PAIRING_WINDOW
+            for j, flattened_class in flattened_hits
+        ):
+            unpaired.append(f"{i + 1}: {lines[i].strip()!r}")
+    return unpaired
+
+
+@pytest.mark.parametrize("hook", _BRACE_PAIRING_HOOKS, ids=[h.name for h in _BRACE_PAIRING_HOOKS])
+def test_raw_brace_scan_has_flattened_companion(hook: Path) -> None:
+    """Every `_config_set`/`marker.sh` raw-text sentinel scan against
+    COMMAND_UNQUOTED (or, for a _lib_command_invokes_*_subcmd call, raw
+    $COMMAND) has a same-operator-class companion scan against
+    COMMAND_FLATTENED nearby, so a sixth scan added later to either hook
+    inherits row 50's brace-split fix by construction instead of becoming a
+    future review finding. See _unpaired_raw_brace_scans for the detector's
+    remaining line-distance blind spot.
+    """
+    hits = _unpaired_raw_brace_scans(hook.read_text().splitlines())
+    assert not hits, (
+        f"{hook.name}: raw-text sentinel scan with no COMMAND_FLATTENED "
+        f"companion within {_BRACE_SCAN_PAIRING_WINDOW} lines:\n" + "\n".join(hits)
+    )
+
+
+def test_unpaired_raw_brace_scan_detector_flags_a_missing_companion() -> None:
+    """Meta-test: a raw scan with no COMMAND_FLATTENED companion anywhere
+    in the fixture is flagged."""
+    fixture = [
+        "#!/bin/bash",
+        "printf '%s' \"$COMMAND_UNQUOTED\" | grep -qF '_config_set' && emit_deny x",
+    ]
+    hits = _unpaired_raw_brace_scans(fixture)
+    assert len(hits) == 1, hits
+
+
+def test_unpaired_raw_brace_scan_detector_allows_a_paired_companion() -> None:
+    """Meta-test: the same raw scan, paired with a COMMAND_FLATTENED
+    companion within the window, is not flagged -- and an unrelated raw
+    grep sharing $COMMAND_UNQUOTED but naming neither sentinel target
+    (the claude-config.toml directory-match gate's own shape) is not
+    flagged either, confirming the sentinel-name narrowing avoids that
+    false positive."""
+    fixture = [
+        "#!/bin/bash",
+        "printf '%s' \"$COMMAND_UNQUOTED\" | grep -qF '_config_set' \\",
+        "  || printf '%s' \"$COMMAND_FLATTENED\" | grep -qF '_config_set'; then emit_deny x; fi",
+        "! printf '%s' \"$COMMAND_UNQUOTED\" | grep -qFi 'claude-config.toml'",
+    ]
+    assert _unpaired_raw_brace_scans(fixture) == []
+
+
+def test_unpaired_raw_brace_scan_detector_rejects_a_different_operator_class_companion() -> None:
+    """Meta-test: a grep-family raw scan with only a nearby
+    _lib_command_invokes_*_subcmd COMMAND_FLATTENED companion is still
+    flagged, since the two operator classes have different match semantics
+    and neither substitutes for the other. This is the exact shape that let
+    enforce-marker-script-shape.sh's gate-release raw substring check ship
+    with no working flattened companion: the line-distance-only heuristic
+    credited a nearby subcmd-family flattened call as pairing it."""
+    fixture = [
+        "#!/bin/bash",
+        "printf '%s' \"$COMMAND_UNQUOTED\" | grep -qEi 'marker\\.sh[[:space:]]+(write|activate)' \\",
+        "  && MATCHED=true",
+        "_lib_command_invokes_tool_subcmd \"$COMMAND_FLATTENED\" marker.sh write",
+    ]
+    hits = _unpaired_raw_brace_scans(fixture)
+    assert len(hits) == 1, hits
+
+
 # ------------------------------------------------------------------ #
 # Layer 2 — Behavior checks                                          #
 # ------------------------------------------------------------------ #

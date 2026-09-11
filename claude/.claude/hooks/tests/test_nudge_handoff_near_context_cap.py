@@ -269,6 +269,22 @@ def _base_payload(
     }
 
 
+def _isolated_hooks_dir(tmp_path: Path) -> Path:
+    """Symlink the nudge hook plus its _lib.sh/_config.sh dependencies into
+    a directory with no config-keys.psv sibling, so _config_schema_field sees
+    an absent (unreadable) schema and _config_enabled handoff_nudge returns
+    exit 3 at both of the hook's own case-statement call sites. Mirrors
+    test_advance_past_commit_stall.py's
+    test_unreadable_config_keys_psv_does_not_fire technique. Returns the
+    isolated hook's own path."""
+    isolated = tmp_path / "isolated-hooks"
+    isolated.mkdir()
+    (isolated / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
+    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    return isolated / NUDGE_HOOK.name
+
+
 def _interleaved_median_seconds(
     small_transcript: Path, large_transcript: Path, tmp_path: Path, runs: int = 3
 ) -> tuple[float, float]:
@@ -1626,6 +1642,31 @@ class TestNudgeHandoffNearContextCap:
         assert result.stdout.strip() != ""
         assert "HANDOFF_NUDGE_BLOCK_AFTER is set" not in result.stderr
 
+    def test_unreadable_config_keys_psv_keeps_nudge_enabled(self, tmp_path):
+        """The top-level kill-switch check's own fail direction (comment
+        above its _config_enabled call): exit 3 (config-keys.psv unreadable)
+        falls through the same `case` as exit 2, leaving the nudge enabled
+        rather than silently suppressed -- the opposite fail direction from
+        commit_stall_block's own schema-unreadable handling, since an
+        unresolvable kill switch here is treated as absent, not as denied.
+        A schema-unreadable hook that stayed silent here would be
+        indistinguishable from a correctly-suppressed one without this test."""
+        isolated_hook = _isolated_hooks_dir(tmp_path)
+        transcript = tmp_path / "t.jsonl"
+        _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
+        env = {**os.environ, "HOME": str(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        result = subprocess.run(
+            [str(isolated_hook)],
+            input=json.dumps(_base_payload(transcript)),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", "schema-unreadable must not suppress the nudge"
+
     def test_killswitch_suppresses(self, tmp_path):
         """Presence of ~/.claude/.handoff-nudge-disabled suppresses nudge and produces no log line."""
         transcript = tmp_path / "t.jsonl"
@@ -2726,6 +2767,26 @@ class TestCheckMode:
         _seed_session(config_dir, os.getpid())
         _seed_transcript(config_dir, [_record_totalling(total, model=model)])
         return config_dir
+
+    def test_unreadable_config_keys_psv_still_reports(self, tmp_path):
+        """run_check_mode's own inline _config_enabled handoff_nudge call
+        site is distinct from the top-level kill-switch check's -- same
+        `case` shape, same fail direction, but a separate code path that
+        needs its own independent coverage, not a shared test that would
+        leave one site's regression undetected. --check must still report a
+        normal estimate, not refuse, when config-keys.psv is unreadable."""
+        isolated_hook = _isolated_hooks_dir(tmp_path)
+        self._seeded(tmp_path, total=ABOVE_LARGE)
+        result = subprocess.run(
+            [str(isolated_hook), "--check"],
+            capture_output=True,
+            text=True,
+            env=_check_env(tmp_path),
+            check=False,
+        )
+        payload = _check_json(result)
+        assert payload["status"] == "ok"
+        assert payload["over_threshold"] is True
 
     # -- side-effect freedom ------------------------------------------------
 

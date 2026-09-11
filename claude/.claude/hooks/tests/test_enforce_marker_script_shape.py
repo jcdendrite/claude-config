@@ -1197,6 +1197,205 @@ class TestGateReleaseAuthority:
         assert "could not determine whether" in reason
         assert "invokes marker.sh write/activate" in reason
 
+    def test_command_flattened_sed_failure_denied(self, tmp_path):
+        """Isolates _lib_brace_flatten's own sed call, distinct from the
+        sed-absent test above, which is caught first by this hook's
+        earlier, unconditional COMMAND_UNQUOTED quote-strip check.
+        _lib_brace_flatten's sed invocation carries the literal substring
+        `\\{` in its own pattern arguments, which none of
+        _lib_strip_shell_quotes's three sed patterns do (they use `\\$`
+        and `\\(` instead), so a shim keyed on that substring lets
+        COMMAND_UNQUOTED's strip succeed via the real sed while
+        _lib_brace_flatten's own sed call fails on its own, reaching this
+        hook's own $COMMAND_FLATTENED_EXIT check in isolation. The fixture
+        must itself contain a brace group -- _lib_brace_flatten's
+        fork-free fast path would otherwise never reach the sed call at
+        all."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-on-brace-flatten-pattern-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            for arg in "$@"; do
+              case "$arg" in
+                *'\\{{'*) exit 1 ;;
+              esac
+            done
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{MARKER} write cod{{e,e}}-review", agent_type="code-writer"),
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None
+        assert "could not flatten brace-expansion constructs" in reason
+
+    def test_pass_budget_exceeded_denied(self):
+        """Hook-level counterpart to test_lib.py's
+        test_lib_brace_flatten_fails_closed_past_the_16_pass_budget: 17
+        levels of real nesting -- one past _lib_brace_flatten's fixed
+        16-pass budget -- denies via this hook's own COMMAND_FLATTENED_EXIT
+        -eq 2 branch, not just at the isolated _lib_brace_flatten unit.
+        Fixture copied verbatim from test_lib.py's
+        _BRACE_FLATTEN_17_LEVEL_NESTED, since a single dropped or added
+        brace changes the required pass count."""
+        seventeen_level_nested = (
+            "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}}"
+        )
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(
+                f"{MARKER} write code-review {seventeen_level_nested}",
+                agent_type="code-writer",
+            ),
+        )
+        assert reason is not None
+        assert "16-pass flattening budget" in reason
+
+    @pytest.mark.timing
+    def test_sixteen_level_nested_brace_returns_promptly(self):
+        """End-to-end latency of the brace-flatten pass plus the doubled
+        (raw + flattened) redirect-candidate scan this diff adds, driven
+        through the real hook binary rather than the isolated
+        _lib_brace_flatten unit test_lib.py's own timing test covers.
+        `tee` (a recognized write utility, unaffected by flattening) keeps
+        the doubled pipeline from fast-rejecting on either pass, so both
+        passes' full fragment-split/extraction/shape-match cost is paid, on
+        top of _lib_brace_flatten's own 16-pass cost. No `/` anywhere in the
+        command, so `_lib_command_has_brace_expansion_bypass`'s categorical
+        write-construct+brace+slash predicate doesn't fire and mask the
+        timing measurement behind an early deny. Generous bound, not a
+        tight wall-clock threshold, matching this repo's own stated
+        timing-test convention -- so this isn't flaky on a loaded machine,
+        but still catches a future regression to the doubled-scan wrapper
+        or the pass count."""
+        sixteen_level_nested = (
+            "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}"
+        )
+        started = time.monotonic()
+        result = run_hook(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"tee destfile {sixteen_level_nested}", agent_type="code-writer"),
+        )
+        elapsed = time.monotonic() - started
+        assert result == "allow"
+        assert elapsed < 5.0, f"16-level nested brace fixture took {elapsed:.2f}s -- should return promptly"
+
+
+class TestBraceSplitCallSitesClosed:
+    """row 50/52: a brace-split `marker.sh` token (`marker.s{h,h}`) reaches
+    a raw-text scan as a literal that matches nothing, even though bash
+    itself brace-expands it before executing, unless the scan is also run
+    against the flattened companion COMMAND_FLATTENED. One deny-path test
+    per shape (comma, range) at each call site, each paired with an
+    "ordinary command still allows" control at the same call site.
+    Stage 1's own fast-reject fix is a prerequisite every case here also
+    exercises (an unfixed Stage 1 would fast-exit as "allow" before any
+    later check ever ran), so it is not isolated as a separate case."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("marker.s{h,h} write code-review", id="gate-release-comma"),
+            pytest.param("marker.s{h..h} write code-review", id="gate-release-range"),
+        ],
+    )
+    def test_bare_invocation_denied_for_no_gate_release_agent(self, command):
+        """Bare (no `~/.claude/scripts/` path prefix) form: Stage 2's
+        anchor never matches this shape either way (fixed or not), so a
+        denial here isolates the gate-release-authority arm's own fix
+        specifically."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    def test_bare_ordinary_command_still_allowed_for_no_gate_release_agent(self):
+        assert (
+            run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input("echo hi", agent_type="code-writer"))
+            == "allow"
+        )
+
+    def test_bash_c_wrapper_with_brace_split_marker_token_denied(self):
+        """Crosses the two dimensions test_bash_c_wrapper_denied_via_raw_text_arm
+        and test_bare_invocation_denied_for_no_gate_release_agent each test
+        separately: a `bash -c` wrapper AND a brace-split `marker.sh` token,
+        together. Stage 1's fast-reject passes because COMMAND_FLATTENED
+        contains `marker.sh`, so the wrapped text reaches the gate-release-
+        authority arm; the raw-text substring check's own COMMAND_FLATTENED
+        companion is what denies it there, since
+        _lib_command_invokes_tool_subcmd's command-word resolution treats
+        `bash` (not `marker.sh`) as the fragment's command word regardless
+        of flattening."""
+        cmd = 'bash -c "marker.s{h,h} write code-review"'
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(cmd, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("~/.claude/scripts/marker.s{h,h} write code-review", id="stage2-anchor-comma"),
+            pytest.param("~/.claude/scripts/marker.s{h..h} write code-review", id="stage2-anchor-range"),
+        ],
+    )
+    def test_anchored_invocation_denied_for_full_tool_set_agent(self, command):
+        """Anchored (`~/.claude/scripts/` path prefix present) form, run
+        for an agent that COULD release a gate (no agent_type -- main
+        session): the gate-release-authority arm is skipped entirely for
+        this agent type, so a denial here isolates Stage 2's anchor fix --
+        an unfixed anchor would fast-exit as "allow", deferring to
+        permissions.allow, rather than routing into this hook's own deep
+        VALID_PATTERN validation, which then denies since the still-braced
+        text never matches VALID_PATTERN's own literal `marker.sh`."""
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "deny"
+
+    def test_anchored_ordinary_command_still_allowed_for_full_tool_set_agent(self):
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(f"{MARKER} status")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
+                "t{ee,ee} ~/.claude/code-review-markers/forged", id="alternation-comma"
+            ),
+            pytest.param(
+                "t{e..e}e ~/.claude/code-review-markers/forged", id="alternation-range"
+            ),
+        ],
+    )
+    def test_write_utility_name_brace_split_denied(self, command):
+        """Pre-Stage-1 redirect/utility-write scan: the write-utility name
+        itself is brace-split, so `marker.sh` is never mentioned anywhere
+        in the command at all -- distinct from every other case in this
+        class, which brace-splits `marker.sh` itself."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    def test_ordinary_command_still_allowed_at_alternation(self):
+        assert (
+            run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input("echo hi", agent_type="code-writer"))
+            == "allow"
+        )
+
 
 class TestGateReleaseAuthorityBashRedirectAndUtility:
     """The pre-Stage-1 scan: a Bash write to a marker path via a redirect or
@@ -2326,6 +2525,133 @@ class TestGateReleaseAuthorityBashArmConfigDirShapeHasNoBudgetCliff:
                 bash_input(f"tee {padding} {forged}", agent_type="general-purpose"),
                 home=home,
                 extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+
+class TestGateReleaseAuthorityBraceExpansionBypassClosed:
+    """HIGH-severity review finding: bash brace-expands
+    `pre{a,b}post` into one word per component at PARSE time, but
+    _lib_fragment_candidates only ever sees a fragment's words AFTER
+    runtime word-splitting (`for word in $fragment`), which bash never
+    re-brace-expands -- so an unexpanded `{,x}`-shaped literal token
+    reached _lib_shape_match unmatched, even though the real shell that
+    executes the command DOES brace-expand it into the real marker-
+    directory target. `_lib.sh`'s `_lib_command_has_brace_expansion_bypass`
+    closes this by detecting the construct's shape on the whole command
+    text and denying outright, rather than expanding it into candidates --
+    see test_lib.py's own `_lib_redirect_candidates` brace-expansion-bypass
+    tests for the shared predicate's full shape matrix; this class pins only
+    this hook's own wiring of that shared mechanism."""
+
+    def test_comma_list_glued_to_a_marker_directory_denied(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "tee ~/.claude/code-review-markers{,x}/forged", agent_type="code-writer"
+                ),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_full_tool_set_agent_also_denied_for_the_same_brace_shape(self, tmp_path):
+        """Unlike every other Bash-arm candidate check in this file, the
+        brace-expansion-bypass predicate runs inside _lib_redirect_candidates
+        itself, ahead of the per-candidate no-gate-release check, so it
+        denies before the agent-type distinction is ever reached -- even an
+        agent that could have run the review is denied for this shape."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "tee ~/.claude/code-review-markers{,x}/forged", agent_type="general-purpose"
+                ),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_quoted_space_containing_component_denied(self, tmp_path):
+        """Testing a post-quote-strip, post-word-split candidate would let a
+        quoted, space-containing brace component get re-split by `for word
+        in $fragment` into two half-tokens, neither carrying a complete
+        `{`...`}` pair. Testing the whole command text instead (after
+        quote-stripping, before fragment-splitting/word-splitting) avoids
+        this."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    'tee ~/.claude/code-review-markers/{"a b",forged}', agent_type="general-purpose"
+                ),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_denial_message_names_the_brace_expansion_reason(self, tmp_path):
+        """Distinguishes this deny from the generic "could not split the
+        command into fragments" message a real sed/fragment-splitting
+        failure would produce -- both share a non-zero
+        _lib_redirect_candidates status, so the caller's status-check must
+        branch on _LIB_BRACE_EXPANSION_BYPASS_STATUS specifically rather
+        than falling into the generic branch."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input("tee ~/.claude/code-review-markers{,x}/forged", agent_type="code-writer"),
+            home=home,
+        )
+        assert reason is not None
+        assert "brace-expansion" in reason
+
+    def test_dollar_brace_shaped_command_denied(self, tmp_path):
+        """A `${...}` parameter expansion whose body has a `,` (`${x:-a,b}`)
+        denies, because real bash cannot distinguish "just a parameter
+        expansion" from "a parameter expansion that also brace-expands"
+        from command text alone. Writes to `/tmp/x`, not a marker path, so
+        the deny is attributable only to the brace-bypass status, not to an
+        actual marker-path candidate match."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("tee /tmp/x ${x:-a,b}", agent_type="code-writer"),
+                home=home,
+            )
+            == "deny"
+        )
+
+    def test_ordinary_dollar_brace_command_still_allowed(self, tmp_path):
+        """Control for the test above -- a solitary `${x}` parameter
+        expansion with no comma or `..` in its body is not a brace-
+        expansion construct at all, so it allows. Writes to `/tmp/x`, not a
+        marker path, so this is a genuine allow control rather than a
+        marker-write deny for an unrelated reason."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude" / "code-review-markers").mkdir(parents=True)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("tee /tmp/x ${x}", agent_type="code-writer"),
+                home=home,
             )
             == "allow"
         )

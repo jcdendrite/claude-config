@@ -390,6 +390,43 @@ def test_config_dir_kill_switch_disables(isolated_home, dirty_repo, tmp_path):
     assert result is None
 
 
+def test_unreadable_config_keys_psv_does_not_fire(armed_home, dirty_repo, tmp_path):
+    """commit_stall_block's own fail direction (advance-past-commit-stall.sh's
+    own comment above the _config_enabled call): exit 3 (config-keys.psv
+    unreadable) falls through the same `|| exit 0` as exit 1 (disabled), so
+    a broken schema must not turn into a stuck-forever commit-stall block.
+    Mirrors test_lib.py's _lib_sh_with_unreadable_schema technique and
+    test_restore_authorization_boundary_on_compact.py's own exit-3 test for
+    authorization_boundary_restore: symlink the hook plus _lib.sh/_config.sh
+    into a directory with no config-keys.psv sibling, so _config_schema_field
+    sees an absent (unreadable) schema file. All the other fire conditions
+    hold (armed machine sentinel, dirty repo, a bare commit-stall question),
+    so a firing hook here would mean the fail-closed schema-unreadable
+    direction regressed."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
+    (isolated_hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    # Distinct prompt_ids: STATE_DIR dedup is keyed on session_id+prompt_id
+    # and shares the same armed_home across both calls below, so reusing one
+    # prompt_id would make the second call's silence ambiguous between
+    # "schema unreadable" and "already-seen prompt_id."
+    result = _fire(
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    isolated_result = run_hook_stop(
+        isolated_hooks_dir / ADVANCE_HOOK.name,
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p2", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=armed_home,
+    )
+    assert result is not None, "sanity check: the unmodified hook must fire under these conditions"
+    assert isolated_result is None
+
+
 def test_legacy_home_claude_sentinel_fires_via_fast_path_union(
     armed_home, dirty_repo, tmp_path
 ):

@@ -519,6 +519,16 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 pattern=r"non-interactive import for all\W+(\w+)\W+keys, then schema-default scaffold",
                 description="migrate-legacy-config.sh: non-interactive import for all N keys",
             ),
+            Occurrence(
+                rel_path="docs/config-file.md",
+                pattern=r"For each of\s+the (\d+) keys",
+                description="docs/config-file.md: For each of the N keys",
+            ),
+            Occurrence(
+                rel_path="docs/config-file.md",
+                pattern=r"none exist among today's (\d+) keys",
+                description="docs/config-file.md: none exist among today's N keys",
+            ),
         ],
     ),
 ]

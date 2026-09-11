@@ -56,7 +56,10 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # to _config_enabled's commit_stall_block schema row (presence-disables).
 # Exit code 2 (unresolvable) falls through to the same `|| exit 0` as
 # disabled; safe here because step 1 already exited on a resolution
-# failure.
+# failure. Exit code 3 (config-keys.psv unreadable) falls through the
+# same `|| exit 0` too: this line's own exit status doesn't distinguish
+# reason codes 1/2/3, so a broken schema exits here and never reaches
+# step 3's own autonomous_shipping check at all.
 _config_enabled commit_stall_block || exit 0
 
 # 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
