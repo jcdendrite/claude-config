@@ -1063,6 +1063,44 @@ class TestRequireSkillReview:
             f"copy — plugin: {plugin_result.stdout!r}, stowed: {stowed_result.stdout!r}"
         )
 
+    def test_plugin_lib_sh_repo_hash_fails_closed_like_stowed_lib_sh_on_broken_sha256sum(
+        self, tmp_path, monkeypatch
+    ):
+        """_marker_lib_repo_hash must return the same nonzero exit code (and
+        empty stdout) from both copies when sha256sum is broken.
+
+        The stowed copy delegates to _lib_hash_diff_text, which returns 1 on
+        an empty digest; the plugin copy duplicates that check inline rather
+        than sourcing it (plugin boundary — see this file's header). Only
+        asserting stdout equality on a happy-path input (the test above)
+        would miss a divergence confined to this failure path, so this pins
+        exit-code parity on a broken-sha256sum input directly.
+        """
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        fake_sha256sum = fake_bin / "sha256sum"
+        fake_sha256sum.write_text("#!/bin/bash\nexit 1\n")
+        fake_sha256sum.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+        harness = '. "{lib}"; _marker_lib_repo_hash "/some/repo/toplevel"'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.returncode == stowed_result.returncode, (
+            "plugins/skill-management/hooks/_lib.sh's _marker_lib_repo_hash "
+            "returns a different exit code than the stowed "
+            "claude/.claude/hooks/_lib.sh copy on a broken sha256sum — "
+            f"plugin: {plugin_result.returncode!r}, stowed: {stowed_result.returncode!r}"
+        )
+        assert plugin_result.returncode != 0
+        assert plugin_result.stdout == stowed_result.stdout == ""
+
     def test_plugin_lib_sh_marker_value_present_matches_stowed_lib_sh(self, tmp_path):
         """_lib_marker_value_present must behave identically in the plugin's
         trimmed _lib.sh and the stowed copy.
