@@ -203,21 +203,24 @@ Every condition below must hold.
   withholds.
 
 **Own-history counts were never inside this class.** The test is
-content, not account count. A count with no private-engagement records
-anywhere in its scope — this repo's own history, or the owner's other
-personal, non-client repositories — was never a mixed-corpus figure.
-This carve-out's conditions don't apply to it, however many accounts
-or machines that scope unions. A `--this-repo` measurement that pools
-several roots stays outside this class for the same reason: every
-record it counts is this repo's own activity, not an engagement's, so
-unioning more roots discloses more of the same thing, not a new one.
-Examples: branch, PR, review-finding, hook-denial, and log-line
-counts. Doubt about whether an account or repository genuinely carries
-no private-engagement data goes to the owner, same as doubt about pool
-diversity below — not a reason to publish anyway. This exemption
-covers what a figure is, not whether it can combine with an
-already-published Count-bin to complete a reconstruction — see the
-Count-bin bullet below on narrowing an outstanding bin's residual.
+content, not account count.
+
+- A count with no private-engagement records anywhere in its scope —
+  this repo's own history, or the owner's other personal, non-client
+  repositories — was never a mixed-corpus figure. Examples: branch,
+  PR, review-finding, hook-denial, and log-line counts.
+- This holds however many accounts or machines the scope unions. A
+  `--this-repo` measurement that pools several roots stays outside
+  this class for the same reason: every record it counts is this
+  repo's own activity, not an engagement's. Unioning more roots
+  therefore discloses more of the same thing, not a new one.
+- Doubt about whether an account or repository genuinely carries no
+  private-engagement data goes to the owner, same as doubt about pool
+  diversity below. Doubt is never a reason to publish anyway.
+- This exemption covers what a figure is, not whether it can combine
+  with an already-published Count-bin to complete a reconstruction —
+  see the Count-bin bullet below on narrowing an outstanding bin's
+  residual.
 
 **Account and machine scope.** Every reporting mode in both lists
 above defaults to a single `CLAUDE_CONFIG_DIR` account and machine —
@@ -230,54 +233,54 @@ a shared account.
 
 **Count bin, a narrow exception to the account/machine default.** A
 pooled Count total — tool calls, sessions, or agent dispatches, nothing
-else on the closed list above — that crosses the account/machine
-boundary may be published with an order-of-magnitude label in place of
-the exact figure. This exception reaches Counts only. Cost and Duration
-stay exactly as stated above. Cost may be a rate or a share, never a
-total or a range. Duration may never cross the boundary at all.
+else — that crosses the account/machine boundary may publish as an
+order-of-magnitude label instead of an exact figure. Cost and Duration
+are unaffected: Cost stays a rate or a share, never a total or a
+range; Duration never crosses the boundary at all.
 
-- **Fixed bins, never chosen per figure:** below 10, the label is
-  "fewer than 10"; 10–99 is "dozens"; 100–999 is "hundreds"; 1,000–9,999
-  is "thousands"; 10,000 or more is "tens of thousands." The ladder
-  covers every count, so no figure falls outside it and a declined
-  label can't itself become a signal — whether to publish at all is
-  still the approval gate's call, not this bullet's.
-- **No narrowing a published bin.** A quantity and any sub-period or
-  sub-scope slice of it may not both be binned, in either order —
-  publishing the narrower slice first and the superset later leaks the
-  same subtraction as the reverse.
-- **Don't pair a bin with its own exact count in the same artifact.**
-  This bullet is a deliberate, narrow exception to the composition bar
-  above, which otherwise treats cross-artifact composition — however
-  far apart in time — as reaching the same line a single artifact
-  would. A Count-bin publication and an exact own-scope publication of
-  the same quantity, in the same proposal or artifact, let a reader
-  subtract one from the other directly, so same-artifact pairing stays
-  barred. A quantity's exact figure can still appear separately in an
-  unrelated artifact — `pr-cost-section.sh`'s automated per-PR session
-  counts, for one. That exposure is an accepted cost of this
-  carve-out; this bullet alone does not track it. The pool-diversity
-  check at proposal time below is where that residual is actually
-  weighed. The subtraction only resolves to one engagement when the
-  pool is thin, and grows weaker as the pool spans more accounts.
+- **Fixed bins, never chosen per figure.** Below 10 is "fewer than
+  10"; 10–99 is "dozens"; 100–999 is "hundreds"; 1,000–9,999 is
+  "thousands"; 10,000 or more is "tens of thousands." Every count maps
+  to exactly one label, so a missing one can't itself be a signal.
+- **Whether to publish at all is the approval gate's call**, not a
+  consequence of which bin a figure falls into.
+- **No narrowing an already-published bin.** A quantity and any
+  sub-period or sub-scope slice of it are never both binned —
+  narrower-first or superset-first leaks the same subtraction either
+  way.
+- **No pairing a bin with its own exact count in the same artifact.**
+  The composition bar above treats cross-artifact composition, however
+  far apart in time, as the same violation a single artifact would be.
+  This bullet is a deliberate, narrow exception to that bar for
+  same-artifact pairing specifically. Pairing a bin with an exact
+  own-scope count of the same quantity, in the same proposal or
+  artifact, lets a reader subtract one from the other directly.
+- **The same exact figure can still surface separately, in an
+  unrelated artifact** — `pr-cost-section.sh`'s automated per-PR
+  session counts, for one. That exposure is an accepted cost this
+  bullet doesn't track. The pool-diversity check below is where it's
+  actually weighed: the subtraction only resolves to one engagement
+  when the pool is thin, and grows weaker as the pool spans more
+  accounts.
 - **An own-history figure that would narrow an outstanding bin's
-  residual — directly or through a published rate — needs the owner's
-  word first.** As above, this reaches any own-history figure
-  regardless of its own quantity type or scope shape: a same-quantity
-  restatement, a `--this-repo` measurement pooled across several roots,
-  or a figure that only narrows the bin once combined with an
-  already-published rate. An outstanding bin is one the owner hasn't
-  since refreshed or retracted. Before publishing such a figure, the
-  agent checks prior publications under this carve-out — this repo's
-  own history, prior PR bodies, and other artifacts — for an
-  outstanding bin, the same search the Approval gate below already
-  requires for its own proposals. If one exists, the agent tells the
-  owner what the combination would newly disclose and asks in the
-  session. An ordinary in-session answer
-  satisfies this, not the durable citation the Approval gate below
-  requires, since the own-history figure was never inside that gate.
-  Absent an answer, the agent holds the figure rather than publishing
-  it.
+  residual needs the owner's word first.** This reaches any own-history
+  figure, regardless of its own quantity type or scope shape — for
+  example:
+  - a same-quantity restatement,
+  - a `--this-repo` measurement pooled across several roots,
+  - a figure that only narrows the bin once combined with an
+    already-published rate.
+- **An outstanding bin is one the owner hasn't since refreshed or
+  retracted.**
+- **Before publishing such a figure, the agent checks for an
+  outstanding bin**, searching this repo's own history, prior PR
+  bodies, and other artifacts. That is the same search the Approval
+  gate below already requires. If one exists, the agent tells the
+  owner what the combination would newly disclose and asks for a
+  decision in the session.
+- **An ordinary in-session answer is enough**, since own-history
+  figures sit outside the Approval gate's durable-citation
+  requirement. No answer means no publication.
 
 **Approval gate.** An agent never publishes a figure under this
 carve-out on its own judgment. It proposes the figure, the exact
