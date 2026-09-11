@@ -114,6 +114,29 @@ class TestLibAppendJsonLineLocked:
             "projection must dedup, not append a third line"
         )
 
+    def test_malformed_dedup_filter_fails_open_and_logs_the_failure(self, tmp_path):
+        """A DEDUP_KEY_JQ_FILTER that isn't valid jq must not silently
+        disable dedup nor block the append: the append still succeeds (fail
+        open, same fallback as a genuine lock-race duplicate), but the
+        failure is distinguishable on stderr from a jq call that actually
+        resolved "not a duplicate"."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        _append_json_line_locked(
+            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', "{round, disposition}",
+        )
+
+        result = _append_json_line_locked(
+            target, lock_file, '{"round":2,"disposition":"ADDRESS"}', "{round,",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == [
+            '{"round":1,"disposition":"ADDRESS"}',
+            '{"round":2,"disposition":"ADDRESS"}',
+        ], "the append must still succeed when the dedup check itself fails"
+        assert "dedup check failed" in result.stderr
+
     def test_malformed_neighbor_line_does_not_blind_dedup_against_the_rest(self, tmp_path):
         """A non-JSON line anywhere in the file (e.g. a partial write from a
         crash) must not fail the whole dedup check -- a candidate matching a

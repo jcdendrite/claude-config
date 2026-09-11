@@ -643,6 +643,43 @@ class TestRoundNumberMismatchIntegration:
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
 
+    def test_two_worktrees_of_one_session_id_trigger_the_mismatch_exclusion(self, fake_projects):
+        """Accepted risk (docs/transcript-analysis.md's author-outcome
+        section): a session spanning more than one worktree writes one
+        ledger file per repo-hash under the same session id, but
+        _ledger_path_for_session's sorted-first glob picks only one of
+        them. Here the picked file (repo_hash "0"*64, sorts first) covers
+        only round 1 of the session's two code-review rounds, while the
+        other worktree's file (repo_hash "1"*64, never read) covers both --
+        pinning that the round-number-mismatch exclusion this design
+        already relies on for a same-worktree gap also fires for a genuine
+        cross-worktree collision, dropping the session's dispatches from
+        `outcomes`."""
+        session_id = "sess-multi-worktree"
+        config_dir_root = _config_dir_root(fake_projects)
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=1, disposition="ADDRESS")],
+            repo_hash="0" * 64,
+        )
+        _write_ledger_file(
+            config_dir_root, session_id,
+            [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=2, disposition="DEFER")],
+            repo_hash="1" * 64,
+        )
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s2", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        # a1's attributed round (round 1, ADDRESS from the picked file)
+        # would otherwise be a FAILURE -- excluded by the mismatch instead.
+        assert sum(result["outcomes"].values()) == 0
+
 
 class TestBuildParserWiring:
     """build_parser() as a testable seam -- the argparse layer without

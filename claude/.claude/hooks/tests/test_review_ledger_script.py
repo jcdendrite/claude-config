@@ -17,6 +17,7 @@ from helpers import (
     git_toplevel,
     plant_traversal_canary,
 )
+from transcript_analysis import author_outcome as ao
 
 from .conftest import _dead_pid, _seed_session
 
@@ -291,6 +292,50 @@ class TestReviewLedgerAppendHappyPath:
         _seed_session(isolated_home, SID)
         args = ["append", "code-review", "--finding", "x", "--disposition", "ADDRESS"]
         result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+
+class TestReviewLedgerAuthoringAgentEnum:
+    """The `--authoring-agent` enum review-ledger.sh validates against must
+    equal the enum author_outcome.py's transcript-side classifier compares
+    declared values against -- a drift here would let review-ledger.sh
+    accept a value author_outcome.py silently never treats as consistent.
+
+    Drives the actual CLI rather than scanning either file's source text: a
+    source-scanning version of this test broke on a behavior-preserving
+    shell case-pattern reorder even though the script's real behavior was
+    unchanged (test-conventions §9)."""
+
+    @pytest.mark.parametrize(
+        "authoring_agent",
+        [
+            ao._AUTHORING_AGENT_CODE_WRITER,
+            ao._AUTHORING_AGENT_INLINE,
+            ao._AUTHORING_AGENT_MIXED,
+            ao._AUTHORING_AGENT_UNKNOWN,
+        ],
+    )
+    def test_each_author_outcome_constant_is_accepted(self, isolated_home, git_repo, authoring_agent):
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent=authoring_agent), cwd=git_repo, home=isolated_home
+        )
+        assert result.returncode == 0, (
+            f"review-ledger.sh must accept --authoring-agent {authoring_agent!r} "
+            f"(an author_outcome.py _AUTHORING_AGENT_* constant): {result.stderr}"
+        )
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["authoring_agent"] == authoring_agent
+
+    def test_value_outside_author_outcome_constants_is_rejected(self, isolated_home, git_repo):
+        """A value not among author_outcome.py's own constants must be
+        rejected -- accepting it would let review-ledger.sh log an
+        authoring_agent author_outcome.py's classifier can never match."""
+        _seed_session(isolated_home, SID)
+        result = _run(
+            _append_args(authoring_agent="not-a-real-agent"), cwd=git_repo, home=isolated_home
+        )
         assert result.returncode == 2
         assert not _ledger_path(isolated_home, git_repo).exists()
 

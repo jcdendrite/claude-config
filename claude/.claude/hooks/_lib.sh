@@ -2677,6 +2677,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # _lib_acquire_append_lock LOCK_FILE
 # Shared lock-acquisition/dead-holder-eviction/retry logic behind
 # _lib_append_line_locked and _lib_append_json_line_locked below.
+# Acquires via the same noclobber idiom as _lib_worktree_collision_guard.
+# Evicts a dead lock holder via the same PID-liveness check as
+# _lib_active_bypass_marker_live.
 # Sets a bare `trap ... EXIT` to release the lock, which per this repo's
 # shell-script-conventions rule silently clobbers any other EXIT trap
 # already registered in the calling process -- a future caller sharing
@@ -2686,8 +2689,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # _LIB_APPEND_LOCK_RETRIES failed acquisitions, the caller proceeds
 # unlocked, trading a low-consequence duplicate line for never blocking.
 # See docs/transcript-analysis-architecture.md's ledger append-lock
-# section for the dead-holder-eviction mechanism and why it matters more
-# at one caller than the other.
+# section for how review-ledger.sh specifically consumes this primitive,
+# including why dead-holder eviction matters more at one of its callers
+# than the other.
 _lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
@@ -2738,6 +2742,10 @@ _lib_append_line_locked() {
 # _lib_acquire_append_lock but dedups via DEDUP_KEY_JQ_FILTER (caller-
 # supplied, e.g. '{round, finding, disposition}' -- never hardcoded here)
 # instead of a whole-line match.
+# DEDUP_KEY_JQ_FILTER is spliced directly into the jq program text below,
+# bypassing the --arg/--argjson data/code separation this file uses for
+# every other jq input. It MUST therefore be a static, developer-authored
+# jq literal, never derived from session- or user-controlled data.
 # A duplicate is a no-op but still touches FILE's mtime, per
 # _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
 # above.
@@ -2758,11 +2766,22 @@ _lib_append_json_line_locked() {
     # file's parse and silently disabling dedup for every future append.
     dup_check_program=$(printf '($candidate | %s) as $key | any(inputs | fromjson?; (. | %s) == $key)' \
       "$dedup_filter" "$dedup_filter")
+    local dup_check_exit
     is_duplicate=$(_lib_jq -R -n --argjson candidate "$line" \
       "$dup_check_program" -- "$file" 2>/dev/null)
+    dup_check_exit=$?
     if [ "$is_duplicate" = "true" ]; then
       touch -- "$file" 2>/dev/null
       return 0
+    fi
+    # A non-zero exit, or output other than the two expected literals, means
+    # the dedup check itself failed rather than genuinely resolving "not a
+    # duplicate". Causes: a missing jq, the _lib_jq 5s timeout firing, or a
+    # malformed DEDUP_KEY_JQ_FILTER. This line is the stderr signal that
+    # distinguishes that failure case. The fallback itself (append anyway)
+    # is unchanged either way.
+    if [ "$dup_check_exit" -ne 0 ] || [ "$is_duplicate" != "false" ]; then
+      printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
     fi
   fi
   printf '%s\n' "$line" >> "$file"

@@ -522,38 +522,6 @@ class TestReviewLedgerAuthoringEffortLiteral:
         )
 
 
-class TestReviewLedgerAuthoringAgentEnum:
-    """The `--authoring-agent` enum review-ledger.sh validates against must
-    equal the enum author_outcome.py's transcript-side classifier compares
-    declared values against -- a drift here would let review-ledger.sh
-    accept a value author_outcome.py silently never treats as consistent."""
-
-    def test_authoring_agent_enum_matches_author_outcome_constants(self):
-        review_ledger_source = (SCRIPTS_DIR / "review-ledger.sh").read_text()
-
-        author_outcome_source = (SCRIPTS_DIR / "transcript_analysis" / "author_outcome.py").read_text()
-        author_outcome_values = re.findall(
-            r'^_AUTHORING_AGENT_\w+ = "([^"]+)"', author_outcome_source, re.MULTILINE,
-        )
-
-        # Exact-substring check, not a regex extraction of the shell case
-        # block -- a comment inserted between `case ... in` and the pattern
-        # arm makes a multi-line case-block regex capture garbage instead of
-        # failing cleanly (test-conventions §9). The case pattern's closing
-        # paren immediately follows its last accepted value, so an extra
-        # value review-ledger.sh accepts breaks this exact substring, and a
-        # missing one does too -- a per-value substring loop would be
-        # satisfiable by unrelated text (review-ledger.sh's own "unknown
-        # argument"/"unknown subcommand" error messages already contain the
-        # literal substring "unknown").
-        expected_case_pattern = '""|' + "|".join(author_outcome_values) + ")"
-        assert expected_case_pattern in review_ledger_source, (
-            f"review-ledger.sh's --authoring-agent case pattern must be exactly "
-            f"{expected_case_pattern!r} (no values beyond author_outcome.py's "
-            f"_AUTHORING_AGENT_* constants)"
-        )
-
-
 class TestMemorySkillSectionOrdinalCrossReferences:
     """Pin every cross-reference this repo rewrote when
     ai-instruction-and-memory-files/SKILL.md's sections were renumbered
