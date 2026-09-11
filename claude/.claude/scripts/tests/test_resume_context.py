@@ -453,6 +453,7 @@ class TestModelFlag:
             {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
         )
         assert result.returncode == 0, result.stderr
+        assert "opus" not in result.stderr
         moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
         assert len(moved) == 1
         recorded_args = recorder.read_text().splitlines()
@@ -478,9 +479,9 @@ class TestModelFlag:
         assert "--model" not in recorded_args
 
     def test_model_flag_with_consume_only_is_rejected(self, tmp_path: Path) -> None:
-        """--model only matters for launch mode; combined with --consume-only
+        """--model only matters for launch mode. Combined with --consume-only
         (which never launches) it would silently do nothing, so reject the
-        combination explicitly, mirroring the --cwd + --consume-only check."""
+        combination explicitly — mirrors the --cwd + --consume-only check."""
         stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "foo-task.md"
         src.write_text("hello brief\n")
@@ -570,7 +571,7 @@ class TestModelFlag:
         "--consume-only", leaves CONSUME_ONLY at 0, and proceeds to move the
         file and forward "--model" "--consume-only" to the launcher verbatim.
         This mirrors test_cwd_flag_not_a_directory_channel_preserves_bidi_override_as_accepted_residual
-        above; a future change narrowing or widening this residual should
+        above. A future change narrowing or widening this residual should
         show up as a visible diff here."""
         stub, recorder = _install_recorder(tmp_path)
         src = tmp_path / "foo-handoff.md"

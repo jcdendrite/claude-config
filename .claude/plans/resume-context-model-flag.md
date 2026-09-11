@@ -40,13 +40,13 @@ Alternatives weighed for edit 3. Unquoted `${LAUNCH_MODEL:+--model "$LAUNCH_MODE
 - **G1** — `claude` owns model-name validation and alias resolution; this script cannot know the valid set. Reason: upstream vendor CLI owns it.
 - **G2** — the launcher may be an arbitrary user-supplied wrapper, not `claude` itself (`RESUME_CONTEXT_LAUNCHER`, documented at lines 30-35 as a production seam). Reason: the wrapper's own flag handling is that script's contract, not this one's.
 
-(A third candidate given — what `/handoff`/`/brief` embed in a continuity file's resume command — was dropped from this list on plan-review: `claude-skills/skills/handoff/SKILL.md` and `brief/SKILL.md` are in-repo, editable artifacts, not a condition beyond this design's reach. It's recorded once, under **Out of scope**, with its reason.)
+(`claude-skills/skills/handoff/SKILL.md` and `brief/SKILL.md` are in-repo, editable artifacts, so a third candidate Given — what `/handoff`/`/brief` embed in a continuity file's resume command — is not a condition beyond this design's reach. It's recorded once, under **Out of scope**, with its reason.)
 
 **Rows.**
 
 Row 1 [engineer-verified]: the flag is space-separated `--model <value>`, with no `--model=value` form — anchors: root.
 
-Row 2 [verified: `claude/.claude/scripts/claude-auto.sh:21`]: the Step 4 evidence statement ("grepped the repo's scripts for that syntax and found no precedent anywhere") is inaccurate as written — `--model | --model=*)` does appear there. It is a *detection* pattern for deferring to a caller-supplied flag, never parsed into a variable, so no script under `claude/.claude/scripts/` parses `--model=value`; Row 1's conclusion stands on the corrected evidence — anchors: row1.
+Row 2 [verified: `claude/.claude/scripts/claude-auto.sh:21`]: `--model | --model=*)` appears there, but only as a *detection* pattern for deferring to a caller-supplied flag — it is never parsed into a variable there, so no script under `claude/.claude/scripts/` actually parses `--model=value`. Row 1's conclusion stands — anchors: row1.
 
 Row 3 [verified: `resume-context.sh:219-222`]: `--model=opus` therefore falls to the `-*` catch-all and exits 1 with usage, pre-move. Identical to `--cwd=/x` today, so the rejection is consistent rather than a new asymmetry — anchors: row1.
 
