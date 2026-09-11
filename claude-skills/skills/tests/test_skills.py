@@ -2936,6 +2936,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
         "docs/cost-levers-considered.md",
         "docs/design-decisions/schedulewakeup-misapplied-documented.md",
         "docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md",
+        ".claude/skills/code-review-claude-config/SKILL.md",
     ],
 )
 def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
@@ -2948,7 +2949,14 @@ def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
     `docs/*.md` sits outside `_all_skill_md_files`'s scanned corpus (SKILL.md
     plus its REFERENCES.md/ROUTING.md siblings only), so
     test_skill_citations_resolve_to_real_headings never sees these citations
-    — targeted narrowly here instead of widening that corpus.
+    — targeted narrowly here instead of widening that corpus. The
+    `.claude/skills/code-review-claude-config/SKILL.md` entry differs:
+    that file is inside the scanned corpus, so this entry positively pins
+    the citation's presence via the function's own `assert citations`
+    check. If the quoted heading is ever re-wrapped across multiple
+    lines, the citation would become invisible to both this test and the
+    corpus-wide one without either failing — this entry guards against
+    that.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / relative_path,
