@@ -6,7 +6,7 @@ argument-hint: "[branch-name | sweep] [output-path]"
 
 ## Step 0 — Scope and safety
 
-Quote the resolved-scope header verbatim for every `transcript-analysis.py` subcommand run below, per `transcript-analysis/SKILL.md` § "Scope confirmation" — report a zero-match run with its header, never as a bare absence. Before trusting any figure, cross-check a `--this-repo` run against `cost --summary`: `--this-repo` does not imply single-account scope, so this confirms no cross-account pooling before any number here is used. `cost --summary` is scoped to the active account only, stated on its own `Scope:` line.
+Quote the resolved-scope header verbatim for every `transcript-analysis.py` subcommand run below, per `transcript-analysis/SKILL.md` § "Scope confirmation". Report a zero-match run with its header, never as a bare absence. Before trusting any figure, cross-check a `--this-repo` run against `cost --summary`, since `--this-repo` does not imply single-account scope. `cost --summary` is scoped to the active account only, on its own `Scope:` line.
 
 This skill never invokes `marker.sh` and never invokes a review skill, directly or by dispatching a subagent to do either on its behalf.
 
@@ -22,7 +22,7 @@ No argument, or `sweep` → sweep mode (Step 2). An explicit branch name → dee
 python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo
 ```
 
-Read each branch's reconciliation line (`round $ X of Y branch $ (Z%)`) and rank by `Y`, the branch total — already a complete per-branch dollar ranking, so no session/turn-count screening is needed. Default cut is the top 20 branches by rank, not a dollar threshold, so the cut ports to a repo of any corpus size; when the caller instead gives an absolute minimum, use that.
+Read each branch's reconciliation line (`round $ X of Y branch $ (Z%)`) and rank by `Y`, the branch total — already a complete per-branch dollar ranking, so no session/turn-count screening is needed. Default cut is the top 20 branches by rank, not a dollar threshold, so the cut ports to a repo of any corpus size. When the caller instead gives an absolute minimum, use that.
 
 Cross-check completeness:
 
@@ -57,11 +57,11 @@ python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo -
 ```
 
 **(c) Resolve code-churn dates, tiered.**
-- **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `git log --reverse --date=short --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`) (keep this to one statement, no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline).
-- **Tier 2** — no local ref: resolve the PR number with `pr-link --repo owner/repo --this-repo --branches <branch>`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>` — a named ref, not `FETCH_HEAD`, since `FETCH_HEAD` is repo-global and a concurrent fetch from another worktree clobbers it.
-- **Tier 3** — both unavailable: stop and report the churn signal as unavailable, with the outside-review-window share — the % of the branch's review-round dollars, from `review-round-cost`'s table, falling outside its dated round windows — labeled non-diagnostic. This is a real, printed outcome, not a fallback to a weaker proxy.
+- **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `git log --reverse --date=short --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
+- **Tier 2** — no local ref: resolve the PR number with `pr-link --repo owner/repo --this-repo --branches <branch>`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>`. Use a named ref, not `FETCH_HEAD`. `FETCH_HEAD` is repo-global, so a concurrent fetch from another worktree can clobber it.
+- **Tier 3** — both unavailable: stop and report the churn signal as unavailable. Label the outside-review-window share — the % of the branch's review-round dollars (from `review-round-cost`'s table) that falls outside its dated round windows — as non-diagnostic. This is a real, printed outcome, not a fallback to a weaker proxy.
 
-**(d) Classify commits and take the freeze date.** Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default); accept an explicit glob argument to extend it. The **code-freeze date** is the last code-bearing commit's date. A branch whose commits are one squashed WIP commit carries no usable per-commit date series — return **Inconclusive** (Step 4) rather than reading a single commit as an immediate freeze.
+**(d) Classify commits and take the freeze date.** Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. The **code-freeze date** is the last code-bearing commit's date. A branch whose commits are one squashed WIP commit carries no usable per-commit date series — return **Inconclusive** (Step 4) rather than reading a single commit as an immediate freeze.
 
 **(e) Partition.** Split Step (b)'s round table at the code-freeze date and report the rounds and dollars that fall after it.
 
