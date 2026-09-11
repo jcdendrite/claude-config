@@ -139,12 +139,14 @@ extends by analogy:
       before value and an after value either side of a pivot. The pivot
       must be a commit in this repository's own public history, cited by
       SHA or merge date. It must be named before the figure is computed.
-      A date the owner nominates, a date read off the data, or a date
-      tied to an engagement is not a pivot, whatever corpus it is
-      applied to. The proposal cites the transcript turn where the pivot
-      was named, using the same session-identifier-and-turn-index/
-      timestamp precision as the pivot citation. That turn must precede
-      the turn where the split-producing command ran.
+      Any date not independently readable from this repository's own
+      commit history — owner-nominated, read off the data, or tied to
+      an engagement — is not a pivot, whatever corpus it is applied to.
+      The proposal cites the transcript turn where the pivot was named
+      — a session identifier plus turn index or timestamp — with the
+      same locatable, independently-checkable precision the pivot's own
+      SHA-or-merge-date citation has. That turn must precede the turn
+      where the split-producing command ran.
     - Both sides report the same statistic, in whatever form that
       statistic is otherwise permitted (a share, a rate, or a
       median). Together they exhaustively partition the period the
@@ -164,16 +166,21 @@ extends by analogy:
     successive artifacts are the time series the bullet above bars.
     Once a split is published, nothing further may be published that,
     combined with it, recovers how much of the pool fell on either
-    side of the pivot or extends the split into a series. A ratio or
-    relative-proportion statement between the two sides recovers
-    exactly that, the same as an absolute count would. This holds in
-    this artifact or any other, at any time, and turns on what the
-    further figure yields, not on how it is labelled. The statistic's
-    whole-period value, its complement within a fixed-sum partition, a
-    rescaling of it, and a split at a second pivot each recover one of
-    those two outcomes. This repository's history offers a commit near
-    any date a reader would want. The Counts bullet permits the pooled
-    total the arithmetic needs. The figure that completes the
+    side of the pivot, extends the split into a series, or adds a
+    second pivot to the set of dates figures published under this
+    carve-out are split at. A statement of the pool's relative
+    proportion across the two sides — how much of it fell before the
+    pivot versus after — recovers exactly that, the same as an
+    absolute count would. This holds in this artifact or any other, at
+    any time, and turns on what the further figure yields, not on how
+    it is labelled. The statistic's whole-period value, its complement
+    within a fixed-sum partition, and a rescaling of it each recover
+    one of the first two outcomes. A second split reaches the third
+    whatever statistic it reports — what a pivot discloses is a
+    boundary date, and the date carries the same weight whichever
+    figure is split at it. This repository's history offers a commit
+    near any date a reader would want. The Counts bullet permits the
+    pooled total the arithmetic needs. The figure that completes the
     reconstruction is the one that crosses the line.
 
 These two lists govern the mixed-corpus figure "What it permits" opens
@@ -214,10 +221,13 @@ public-repo artifact. The disclosure travels through a non-public
 channel, regardless of which channel carries the approval citation.
 
 Doubt about pool diversity goes to the owner as part of the proposal,
-not a reason to publish anyway. The proposal also names any prior
-publication of the same or a composing statistic that the agent found,
-and where it looked. That is input to the owner's decision, not a
-clearance. Finding nothing is not approval to publish. The
+not a reason to publish anyway. The proposal also names where the
+agent looked and what it found: any prior publication of the same or
+a composing statistic, and — when the proposal is a before/after split
+under the time-series bullet's permitted exception — every prior split
+published under this carve-out, with the pivot it used, whatever
+statistic that split reported. That is input to the owner's decision,
+not a clearance. Finding nothing is not approval to publish. The
 composition bar above holds regardless of what the search surfaced.
 Closed by default, same as the blocklist tier's "if in doubt, strip
 it."

@@ -3080,20 +3080,10 @@ def test_unextracted_citation_candidate_report_cases(
 
 
 def test_pooled_tooling_measurement_code_review_skill_citation_survives_rewrap() -> None:
-    """`code-review-claude-config/SKILL.md`'s `docs/private-project-redaction.md`
-    § "Publishing a pooled tooling measurement" citation is still present.
-
-    Unlike the `docs/*.md` sites above, this SKILL.md file is inside
-    `_all_skill_md_files`'s scanned corpus, so
-    test_skill_citations_resolve_to_real_headings already covers its
-    resolution correctness. But that corpus-wide test only validates
-    citations it manages to extract. It never asserts that a specific
-    one is present. If the quoted heading is ever re-wrapped across
-    multiple lines, extraction would silently stop seeing the citation
-    and the corpus-wide test would pass regardless. This test pins the
-    citation's presence via `_assert_citation_resolves_to_heading`'s own
-    `assert citations` check, so a re-wrap that breaks extraction fails
-    loudly here instead.
+    """Pins presence of this citation specifically: the corpus-wide
+    test_skill_citations_resolve_to_real_headings only validates
+    citations it manages to extract, so a silent re-wrap that breaks
+    extraction would pass that test but should fail here.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / ".claude/skills/code-review-claude-config/SKILL.md",
