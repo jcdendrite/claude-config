@@ -8197,6 +8197,7 @@ def _cache_rebuild_args(
     threshold: int | None = None,
     no_redact: bool = False,
     extra_config_dirs: list[str] | None = None,
+    ttl_verdict: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -8205,6 +8206,7 @@ def _cache_rebuild_args(
         "threshold": threshold,
         "no_redact": no_redact,
         "extra_config_dirs": extra_config_dirs,
+        "ttl_verdict": ttl_verdict,
     })()
 
 
@@ -8278,6 +8280,45 @@ def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
         "uncovered_w5m": int(uncovered.group(1).replace(",", "")),
         "pooled_subagent_w5m": int(uncovered.group(2).replace(",", "")),
     }
+
+
+def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
+    """Read --ttl-verdict's own per-bucket summary line ('main: populated
+    5m-tier roots=N  populated 1h-tier roots=N  excluded (mixed-or-
+    unpopulated) roots=N  verdict=...') for one bucket."""
+    match = re.search(
+        rf"^{re.escape(origin)}: populated 5m-tier roots=(\d+)  populated 1h-tier roots=(\d+)"
+        r"  excluded \(mixed-or-unpopulated\) roots=(\d+)  verdict=(.+)$",
+        out, re.MULTILINE,
+    )
+    assert match is not None, f"ttl-verdict summary line not found for origin {origin!r}"
+    return {
+        "populated_5m": match.group(1),
+        "populated_1h": match.group(2),
+        "excluded": match.group(3),
+        "verdict": match.group(4),
+    }
+
+
+def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dict[str, str]:
+    """Read one per-root row from --ttl-verdict's own per-bucket table (the
+    '### {origin}' section) by its leading account label -- _table_cols
+    can't be reused directly since this section's header repeats once per
+    origin, and matching on the exact leading token (not a startswith
+    prefix) avoids "account-1" matching "account-10"."""
+    lines = out.splitlines()
+    section_start = lines.index(f"### {origin}")
+    section_end = len(lines)
+    for i in range(section_start + 1, len(lines)):
+        if lines[i].startswith("### ") or lines[i].startswith(f"{origin}: populated"):
+            section_end = i
+            break
+    section_lines = lines[section_start:section_end]
+    header_line = next(ln for ln in section_lines if ln.startswith("Root"))
+    labels = header_line.split()
+    rows = [ln for ln in section_lines if ln.split() and ln.split()[0] == root_label]
+    assert len(rows) == 1, f"row not found for {root_label!r} in {origin!r} section: {rows!r}"
+    return dict(zip(labels, rows[0].split(), strict=False))
 
 
 def _tool_result_record(tool_id: str, *, ts: str, text: str = "ok") -> dict:
@@ -10060,6 +10101,28 @@ class TestCacheRebuildNoRedactMultiRootRefusal:
             _mod._cache_rebuild_report(_cache_rebuild_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
 
+    def test_no_redact_refused_with_ttl_verdict_and_multi_root(self, tmp_path, capsys):
+        """--ttl-verdict's own accumulation family is keyed on
+        (origin, root_ordinal), carrying the identical multi-root +
+        --no-redact leak risk as the pooled figures the sibling test above
+        covers -- pinned to the --ttl-verdict code path specifically, since
+        ttl_verdict defaults to False on _cache_rebuild_args and every
+        other test in this class leaves it there."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
+        with pytest.raises(SystemExit) as exc_info:
+            _mod._cache_rebuild_report(
+                _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[root_a, root_b],
+            )
+        assert exc_info.value.code == 2
+        out = capsys.readouterr().out
+        assert "acct-a" not in out
+        assert "acct-b" not in out
+        assert str(root_a) not in out
+        assert str(root_b) not in out
+
 
 class TestCacheRebuildArgparseWiring:
     def test_parses_since_threshold_and_extra_config_dirs(self):
@@ -10081,6 +10144,785 @@ class TestCacheRebuildArgparseWiring:
         assert args.since == "7d"
         assert args.threshold == 50_000
         assert args.extra_config_dirs == ["/tmp/acct-b"]
+
+
+class TestCacheRebuildTtlVerdictArgparseWiring:
+    def test_ttl_verdict_flag_defaults_false_and_parses_true(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["cache-rebuild"])
+        assert args.ttl_verdict is False
+
+        args = parser.parse_args(["cache-rebuild", "--ttl-verdict"])
+        assert args.ttl_verdict is True
+
+
+class TestClassifyCacheRebuildCauseIdle5mBoundaryOverride:
+    """Direct edge-value coverage for _classify_cache_rebuild_cause's
+    idle_5m_boundary_seconds override, at its own exact boundary --
+    exercised only indirectly elsewhere (via --ttl-verdict's sensitivity
+    accumulation), matching this function's own pre-existing convention of
+    no other direct unit tests."""
+
+    def test_gap_at_the_overridden_boundary_classifies_idle(self):
+        assert _mod._classify_cache_rebuild_cause(
+            is_first_call=False, gap_seconds=60, model_changed=False, pure_1h_tier_write=False,
+            idle_5m_boundary_seconds=60,
+        ) == _mod._CAUSE_IDLE_5M_1H
+
+    def test_gap_one_second_under_the_overridden_boundary_does_not_classify_idle(self):
+        assert _mod._classify_cache_rebuild_cause(
+            is_first_call=False, gap_seconds=59, model_changed=False, pure_1h_tier_write=False,
+            idle_5m_boundary_seconds=60,
+        ) == _mod._CAUSE_UNEXPLAINED
+
+
+class TestCacheRebuild1hTo5mDeltaPricing:
+    """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars,
+    mirroring TestCacheRebuildSwitchDeltaPricing's three cases for the
+    sibling 5m-to-1h formula -- fast-mode/US-geo multiplier parity, the
+    unpriced-model sentinel, and the reduced-cache-read-rate coefficient
+    are exercised nowhere else."""
+
+    def test_fast_mode_multiplier_applies_to_the_expiry_leg(self):
+        """A wholly idle-5m-1h-cause call (eph_1h=0, all read tokens) nets
+        1,000,000/1e6*(2.5-0.2) = $2.30 at the default rate; fast mode
+        doubles every dollar class, so this call's own delta doubles too."""
+        usage = _priced("claude-sonnet-5", cache_read=1_000_000, speed="fast")["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(4.60)
+        assert unpriced_tokens == 0
+
+    def test_unpriced_model_returns_none_delta_not_a_silent_zero(self):
+        """Mirrors the sibling's own unpriced-model contract: None, not a
+        silently priced $0, so callers can distinguish the two."""
+        usage = _priced("claude-unknown-model", ephemeral_1h=1_000_000, input=10, output=5)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-unknown-model", usage, is_idle_5m_1h_cause=False
+        )
+        assert delta is None
+        assert unpriced_tokens > 0
+
+    def test_fable_5_1_uses_reduced_cache_read_multiplier_not_hardcoded_1_15(self):
+        """A hardcoded (1.25 - 0.1) = 1.15 coefficient would price this
+        call's expiry leg at 1,000,000/1e6 * (12.5 - 1.0) = $11.50; the
+        correct, per-model-resolved coefficient uses Fable 5.1's own
+        reduced 0.025x cache-read multiplier (read rate $0.25, expiry
+        coefficient 12.5-0.25=12.25), giving $12.25 instead."""
+        usage = _priced("claude-fable-5-1", cache_read=1_000_000)["message"]["usage"]
+        delta, unpriced_tokens = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
+        )
+        assert delta == pytest.approx(12.25)
+        assert unpriced_tokens == 0
+
+
+class TestCacheRebuild1hTo5mDeltaArithmetic:
+    """Direct unit coverage for _cache_rebuild_1h_to_5m_delta_dollars' own
+    per-call arithmetic at, above, and below its algebraic break-even
+    (Z/W1h = 0.75/(1.25-r) ~= 0.6522 at the default rate) -- the mirror of
+    TestCacheRebuildSwitchDeltaArithmetic's own coverage for the sibling
+    5m-to-1h formula. W1h=1,150,000 (one session-start call, contributing
+    only the always-on base term) pairs with a second, idle-5m-1h-cause
+    call's own read tokens (Z) at each of the three points."""
+
+    def test_below_break_even_z_favors_dropping_to_5m(self):
+        """Z=500,000: 500,000/1,150,000 = 0.435 is well under 0.6522, so
+        dropping to 5m nets a savings (a negative, switch-cost-positive
+        sum)."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=500_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(-0.575)
+
+    def test_exact_rational_break_even_nets_exactly_zero(self):
+        """Z=750,000 is the exact rational break-even (750,000/1,150,000 =
+        15/23 = 0.75/1.15), not the rounded 0.6522 display figure."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=750_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(0.0, abs=1e-9)
+
+    def test_above_break_even_z_disfavors_dropping_to_5m(self):
+        """Z=1,000,000: 1,000,000/1,150,000 = 0.870 clears 0.6522, so
+        dropping to 5m nets a cost (a positive, switch-cost-positive
+        sum)."""
+        base_usage = _priced("claude-sonnet-5", ephemeral_1h=1_150_000)["message"]["usage"]
+        idle_usage = _priced("claude-sonnet-5", cache_read=1_000_000)["message"]["usage"]
+        base_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", base_usage, is_idle_5m_1h_cause=False
+        )
+        idle_delta, _unpriced = _mod._cache_rebuild_1h_to_5m_delta_dollars(
+            "claude-sonnet-5", idle_usage, is_idle_5m_1h_cause=True
+        )
+        assert base_delta + idle_delta == pytest.approx(0.575)
+
+
+class TestCacheRebuildMarginClears:
+    """Direct unit coverage for _cache_rebuild_margin_clears -- shared by
+    both directions' own per-root check, at, above, and below the plan's
+    10% margin threshold (_CACHE_REBUILD_TTL_MARGIN_FRACTION)."""
+
+    def test_exactly_at_the_margin_threshold_clears(self):
+        assert _mod._cache_rebuild_margin_clears(10.0, 100.0) is True
+
+    def test_above_the_margin_threshold_clears(self):
+        assert _mod._cache_rebuild_margin_clears(50.0, 100.0) is True
+
+    def test_below_the_margin_threshold_does_not_clear(self):
+        assert _mod._cache_rebuild_margin_clears(5.0, 100.0) is False
+
+    def test_non_positive_volume_never_clears(self):
+        """A root with zero (or, degenerately, negative) dollar-equivalent
+        volume never clears, rather than dividing by zero or by a negative
+        number."""
+        assert _mod._cache_rebuild_margin_clears(0.0, 0.0) is False
+        assert _mod._cache_rebuild_margin_clears(5.0, -1.0) is False
+
+
+class TestCacheRebuildTokenTiebreakerFavors5m:
+    """Direct unit coverage for _cache_rebuild_token_tiebreaker_favors_5m --
+    the raw-token, zero-price, zero-tolerance sign check, exercised
+    independently of any verdict-decision branch test."""
+
+    def test_z_below_w1h_favors_dropping_to_5m(self):
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(5, 10) is True
+
+    def test_z_above_w1h_disfavors_dropping_to_5m(self):
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(15, 10) is False
+
+    def test_z_equal_to_w1h_is_a_disagreement_not_a_favorable_tie(self):
+        """Z == W1h counts as a disagreement, never a wash --
+        including the degenerate 0 == 0 case (a root with neither
+        direction populated never reaches this function in the report's
+        own per-root reduction, but the function itself must not
+        special-case zero)."""
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10) is None
+        assert _mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0) is None
+
+
+class TestCacheRebuildRootVerdictInput:
+    """Direct unit coverage for _cache_rebuild_root_verdict_input -- the
+    per-root reduction the report's own per-bucket loop calls once per
+    5m-tier root and once per 1h-tier root, always with a tiebreaker; the
+    raw-token tiebreaker runs for every populated root regardless of
+    tier."""
+
+    def test_5m_tier_root_favors_1h_and_clears_when_tiebreaker_agrees(self):
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "1h", "clears": True}
+
+    def test_5m_tier_root_favoring_5m_when_net_primary_is_non_positive(self):
+        """A 5m-tier root whose own net$ is non-positive (no savings from
+        adopting 1h) favors staying at 5m, never clearing -- even with an
+        agreeing tiebreaker, isolating that the margin failure alone is
+        what fails it here."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=-1.0, net_sensitivity=-1.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_5m_tier_root_declines_on_tiebreaker_disagreement_despite_clearing_margin(self):
+        """A 5m-tier root's own dollar margin clears comfortably at both
+        boundaries, favoring a switch to 1h, but its raw-token tiebreaker
+        disagrees -- declines rather than adopting."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "1h", "clears": False}
+
+    def test_5m_tier_root_declines_on_tiebreaker_wash(self):
+        """A 5m-tier root's W1h is always 0 (the population test forces the
+        opposite accumulator to zero), so its most common tiebreaker
+        outcome is Z == W1h == 0 -- a wash, which counts as a
+        disagreement, never a favorable tie, even when the dollar margin
+        clears comfortably."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
+        )
+        assert root_input == {"favors": "1h", "clears": False}
+
+    def test_1h_tier_root_declines_when_sensitivity_boundary_fails_margin(self):
+        """Clears at the primary boundary's own margin but not at the
+        sensitivity boundary's -- the two-point AND-gate fails the
+        whole root even with a tiebreaker that agrees."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=-1.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_on_tiebreaker_disagreement_despite_clearing_margin(self):
+        """A dollar margin that clears comfortably at both boundaries
+        still declines when the raw-token tiebreaker disagrees with the
+        dollar accounting's own sign."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_adopts_when_margin_clears_and_tiebreaker_agrees(self):
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "5m", "clears": True}
+
+
+class TestCacheRebuildTtlVerdictDecision:
+    """Direct unit coverage for _cache_rebuild_ttl_verdict's own four-way
+    reduction, with hand-fed per-root {"favors", "clears"} inputs -- one
+    test per branch."""
+
+    def test_zero_populated_roots_is_no_verdict(self):
+        assert _mod._cache_rebuild_ttl_verdict([]) == _mod._TTL_VERDICT_NO_VERDICT
+
+    def test_single_direction_all_clearing_is_adopt(self):
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "1h", "clears": True},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_ADOPT
+
+    def test_single_direction_one_not_clearing_is_decline(self):
+        """A margin/boundary miss on one otherwise-agreeing root declines
+        the whole bucket, even though every root points the same way."""
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "1h", "clears": False},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_DECLINE
+
+    def test_dollar_vs_token_tiebreaker_disagreement_declines(self):
+        """A root whose dollar accounting and raw-token tiebreaker
+        disagree never clears, regardless of its own dollar margin --
+        modeled here by resolving "clears" through the tiebreaker exactly
+        as the report's own per-root reduction does, then feeding the
+        result into the pure verdict function."""
+        dollar_favors_5m = True
+        tiebreaker_favors_5m = _mod._cache_rebuild_token_tiebreaker_favors_5m(900_000, 100_000)
+        assert tiebreaker_favors_5m is False  # Z > W1h disfavors 5m
+        tiebreaker_agrees = tiebreaker_favors_5m is not None and tiebreaker_favors_5m == dollar_favors_5m
+        root_inputs = [{"favors": "5m", "clears": tiebreaker_agrees}]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_DECLINE
+
+    def test_differing_favored_directions_is_roots_disagree(self):
+        root_inputs = [
+            {"favors": "1h", "clears": True},
+            {"favors": "5m", "clears": True},
+        ]
+        assert _mod._cache_rebuild_ttl_verdict(root_inputs) == _mod._TTL_VERDICT_ROOTS_DISAGREE
+
+
+class TestCacheRebuildTtlVerdictPerRootAccumulation:
+    """Full-report coverage of --ttl-verdict's own per-(origin, root_ordinal)
+    accumulation and reduction, on synthetic corpora built via fake_projects/
+    fake_config_dir_factory."""
+
+    def test_main_bucket_5m_tier_root_reaches_adopt(self, fake_projects, capsys):
+        """A clean 5m-tier main-thread root (W5m=1,000,000, X=500,000,
+        comfortably clearing margin) reaches 'adopt' for the main bucket.
+        A third, idle-gap warm read (300,000 tokens, no write at all) gives
+        the raw-token tiebreaker non-wash evidence -- Z=300,000 against
+        this root's own W1h=0 disfavors 5m, agreeing with the dollar
+        accounting's own "favors 1h" direction -- since a wash would
+        otherwise force a disagreement regardless of margin."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="m2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=300_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="m3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["populated_5m"] == "1"
+        assert summary["populated_1h"] == "0"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "500,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "True"
+
+    def test_main_bucket_5m_tier_root_declines_on_tiebreaker_wash(self, fake_projects, capsys):
+        """The same clean 5m-tier root as above (W5m=1,000,000, X=500,000,
+        comfortably clearing margin), but with no idle-gap read at all: Z
+        stays 0, tying its own W1h=0 -- a wash, which counts as
+        a disagreement, never a favorable tie, so this root declines
+        rather than adopting even though its dollar margin clears."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["populated_5m"] == "1"
+        assert summary["verdict"] == "decline"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "False"
+
+    def test_subagent_bucket_1h_tier_root_reaches_adopt(self, fake_projects, capsys):
+        """A clean 1h-tier subagent-origin root (W1h populated from a
+        single session-start write, Z=0) reaches 'adopt' for the subagent
+        bucket, favoring a drop to 5m."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="s1"),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "subagent")
+        assert summary["populated_1h"] == "1"
+        assert summary["verdict"] == "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "0"
+        assert root_row["Favors"] == "5m"
+        assert root_row["Clears"] == "True"
+
+    def test_per_root_w5m_cells_sum_to_the_pooled_per_origin_w5m_row(self, tmp_path, capsys):
+        """Reconciliation guard (plan Verification section): the new
+        per-(origin, root_ordinal) W5m accumulator must never drift from
+        the existing pooled w5m_by_origin figure it duplicates at finer
+        grain -- reuses the dispersion coverage-disclosure extractor's own
+        "sum the parts, compare to the pooled row" pattern
+        (TestCacheRebuildSubagentDispersion, around line 9549)."""
+        session_id = "sess-reconcile-root"
+        proj_slug = "-home-user-repo"
+        root_x = _write_cost_root(tmp_path, "acct-x", proj_slug, session_id, [])
+        root_y = _write_cost_root(tmp_path, "acct-y", proj_slug, session_id, [])
+
+        records_x = [
+            _priced("claude-sonnet-5", ephemeral_5m=100_000, ts="2026-08-01T10:00:00.000Z", request_id="x-1"),
+        ]
+        for rec in records_x:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(root_x / proj_slug, session_id, "agent-x", records_x)
+
+        records_y = [
+            _priced("claude-sonnet-5", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="y-1"),
+        ]
+        for rec in records_y:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(root_y / proj_slug, session_id, "agent-y", records_y)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_x, root_y])
+        out = capsys.readouterr().out
+
+        pooled_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        pooled_w5m = int(pooled_row["W5m"].replace(",", ""))
+
+        root_1 = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
+        root_2 = _extract_ttl_verdict_root_row(out, "subagent", "account-2")
+        per_root_sum = int(root_1["W5m/W1h"].replace(",", "")) + int(root_2["W5m/W1h"].replace(",", ""))
+
+        assert per_root_sum == pooled_w5m == 350_000
+        # Redacted by default: the raw account names/paths never leak into
+        # the per-root table, matching this file's own convention for every
+        # other redacted per-account table.
+        assert "acct-x" not in out
+        assert "acct-y" not in out
+        assert str(root_x) not in out
+        assert str(root_y) not in out
+
+    def test_hand_computed_w1h_and_z_totals_match_known_fixture(self, fake_projects, capsys):
+        """A small, hand-computed 1h-tier fixture: call1 (session start)
+        writes 200,000 ephemeral_1h tokens (W1h only -- session start is
+        never idle-gap-caused); call2, a 6-minute-gap warm read of
+        150,000 tokens with no write at all, is idle 5m-1h under a live
+        1h tier (W1h unchanged, Z += 150,000); call3, a further 6-minute-
+        gap PURE ephemeral_1h-tier write of 100,000 tokens, reclassifies
+        unexplained (the 1h cache can't have expired inside 6 minutes), so
+        it adds to W1h but not Z. Expected totals -- W1h=300,000,
+        Z=150,000 -- are known in advance, not derived from the code under
+        test."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=200_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
+            _priced(
+                "claude-sonnet-5", cache_read=150_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w2",
+            ),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=100_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="w3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "300,000"
+        assert root_row["X/Z"] == "150,000"
+
+    def test_root_with_both_w5m_and_w1h_populated_contributes_no_verdict_for_that_bucket(
+        self, fake_projects, capsys
+    ):
+        """A root paying both tiers simultaneously in this window (mixed
+        evidence) is excluded from the bucket's verdict entirely, the same
+        as a root with neither populated -- the break-even algebra
+        assumes a single live tier per root per window."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="mix-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_1h=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="mix-2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["populated_5m"] == "0"
+        assert summary["populated_1h"] == "0"
+        assert summary["excluded"] == "1"
+        assert summary["verdict"] == "no verdict"
+
+    def test_zero_populated_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
+        """A corpus with cache activity but no cache-write/read tokens
+        crossing either direction's own accumulation gate (plain
+        input/output tokens only) populates neither direction -- 'no
+        verdict', never a vacuous 'adopt'."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for origin in ("main", "subagent"):
+            summary = _extract_ttl_verdict_summary(out, origin)
+            assert summary["populated_5m"] == "0"
+            assert summary["populated_1h"] == "0"
+            assert summary["verdict"] == "no verdict"
+
+    def test_no_redact_single_root_shows_real_path_not_account_ordinal(self, fake_projects, capsys):
+        """root_label's own redact branch prints "account-N"; the
+        --no-redact branch must print scan_roots[0]'s own real parent path
+        instead -- no prior test pinned this for the per-root table."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="nr1"),
+        ])
+        _mod._cache_rebuild_report(
+            _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[fake_projects.parent],
+        )
+        out = capsys.readouterr().out
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", str(fake_projects.parent.parent))
+        assert root_row["W5m/W1h"] == "500,000"
+        assert "account-1" not in out
+
+    def test_empty_corpus_reaches_no_verdict_without_crashing(self, fake_projects, capsys):
+        """--ttl-verdict against zero in-scope calls prints clean
+        no-verdict output for both buckets rather than crashing (e.g. a
+        division by zero in the margin check, already guarded by
+        _cache_rebuild_margin_clears' own non-positive-volume branch)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        for origin in ("main", "subagent"):
+            summary = _extract_ttl_verdict_summary(out, origin)
+            assert summary["verdict"] == "no verdict"
+
+
+class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
+    """Full-pipeline coverage that the per-root tiebreaker reduction reads
+    z_by_origin_root (accumulated at the primary, 300s boundary), never
+    the 60s sensitivity boundary -- mutation testing found that gating
+    z_by_origin_root's own increment on the sensitivity boundary instead of
+    the primary one failed no existing test, because every prior fixture's
+    idle-gap reads landed in the same idle band at both boundaries, so the
+    two boundaries always agreed. Each fixture below adds a read call idle
+    only at the 60s sensitivity boundary (gap in [60s, 300s)) alongside one
+    idle at both boundaries, so the primary and sensitivity Z totals
+    genuinely differ -- gating on the wrong boundary here would flip the
+    5m-tier root's own verdict (its own X/Z column shows X, not Z, so the
+    swap is only observable through Clears/verdict there) or print a
+    different Z figure in the 1h-tier root's own X/Z column."""
+
+    def test_5m_tier_root_declines_on_a_wash_only_the_primary_boundary_sees(self, fake_projects, capsys):
+        """W5m=1,000,000/X=500,000 clears margin comfortably (identical
+        call1/call2 to test_main_bucket_5m_tier_root_reaches_adopt above),
+        but the only idle-gap read (call3, 300,000 tokens) falls in the
+        90s gap after call2 -- idle at the 60s sensitivity boundary but not
+        the 300s primary one. The primary Z therefore stays 0, tying this
+        5m-tier root's own W1h=0 -- a wash, which declines regardless of
+        the clearing margin. Gating Z's own increment on the sensitivity
+        boundary instead of the primary one would see Z=300,000 > W1h=0,
+        disfavor 5m, agree with the dollar accounting's own "favors 1h"
+        direction, and clear -- flipping the
+        verdict to adopt instead of declining (the 5m-tier row's own X/Z
+        column prints X, not Z, so this mutation surfaces only through
+        Clears/verdict, never through a printed number)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w5m-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="w5m-2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=300_000,
+                ts="2026-08-01T10:07:30.000Z", request_id="w5m-3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["verdict"] == "decline"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "500,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "False"
+
+    def test_1h_tier_root_declines_on_a_non_wash_disagreement(self, fake_projects, capsys):
+        """W1h=1,000,000 (call1, session start). call2 reads 800,000
+        tokens at a 400s gap (idle at both boundaries); call3 reads a
+        further 400,000 at a 100s gap after call2 (idle only at the 60s
+        sensitivity boundary). The primary Z is 800,000 -- nonzero, unequal
+        to W1h, and (0.8 < the 1.0 tiebreaker threshold) favors dropping to
+        5m, disagreeing with the dollar accounting's own "favors 1h" sign
+        (0.8 exceeds the ~0.652 dollar break-even, so net$ is negative here
+        too -- this ratio band structurally always fails the margin
+        alongside the tiebreaker, since the break-even sits below the
+        tiebreaker's own threshold). Gating Z's own increment on the
+        sensitivity boundary instead of the primary one would total
+        1,200,000, a different printed X/Z figure than the 800,000
+        asserted below."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
+            _priced(
+                "claude-sonnet-5", cache_read=800_000,
+                ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=400_000,
+                ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["verdict"] == "decline"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["W5m/W1h"] == "1,000,000"
+        assert root_row["X/Z"] == "800,000"
+        assert root_row["Favors"] == "1h"
+        assert root_row["Clears"] == "False"
+
+
+class TestCacheRebuildTtlVerdictSensitivityBoundary:
+    def test_clears_margin_at_300s_but_fails_at_60s_never_adopts(self, fake_projects, capsys):
+        """A 1h-tier root whose margin clears using the primary
+        (300s-boundary) accumulation but fails once a gap in [60s, 300s)
+        is also reclassified idle at the 60s sensitivity boundary -- the
+        two-point check is an explicit AND-gate, so this must
+        decline, never adopt, even though the primary boundary alone
+        clears comfortably.
+
+        call1 (session start) writes 1,150,000 ephemeral_1h tokens (W1h),
+        contributing only the always-on base term (-$1.725) at both
+        boundaries. call2, a 100s gap, reads 900,000 tokens: at the 300s
+        boundary this call is unexplained (gap < 300) and never touches Z
+        or the expiry term, leaving net$ = +$1.725 (margin 1.725/4.6 =
+        37.5%, clears); at the 60s boundary the same call is idle 5m-1h,
+        adding a +$2.07 expiry term that flips the total to -$0.345
+        (a negative margin, failing)."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_150_000, ts="2026-08-01T10:00:00.000Z", request_id="b1"),
+            _priced(
+                "claude-sonnet-5", cache_read=900_000,
+                ts="2026-08-01T10:01:40.000Z", request_id="b2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["populated_1h"] == "1"
+        assert summary["verdict"] != "adopt"
+
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["Clears"] == "False"
+
+
+class TestCacheRebuildTtlVerdictUnpricedDisclosure:
+    """--ttl-verdict's own unpriced-model disclosure (pooled across both
+    directions and every root) -- mirrors the sibling
+    unpriced_switch_delta_turns disclosure's own coverage
+    (TestCacheRebuildSubagentDispersion, around line 9593)."""
+
+    def test_unpriced_model_call_prints_the_disclosure_line_once_not_twice(self, fake_projects, capsys):
+        """A single unpriced-model call is priced once per record, before
+        either the W5m or W1h branch runs, rather than once per boundary
+        iteration -- the disclosure count must reflect the one underlying
+        call, not the two boundaries (primary and sensitivity) it would
+        otherwise be priced at."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-unknown-model", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(
+            r"\((\d[\d,]*) calls / (\d[\d,]*) tokens excluded from every Net\$ figure", out,
+        )
+        assert match is not None, "unpriced ttl-verdict disclosure line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "250,000"
+
+    def test_unpriced_mixed_tier_write_prints_the_disclosure_line_once_not_twice(self, fake_projects, capsys):
+        """A single unpriced-model call carrying both ephemeral_1h and
+        ephemeral_5m tokens (a mixed-tier write) enters both the W5m and
+        the W1h branch, but must be counted once, not twice, since both
+        branches price the same underlying call."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced(
+                "claude-unknown-model", ephemeral_1h=100_000, ephemeral_5m=150_000,
+                ts="2026-08-01T10:00:00.000Z", request_id="u2",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(
+            r"\((\d[\d,]*) calls / (\d[\d,]*) tokens excluded from every Net\$ figure", out,
+        )
+        assert match is not None, "unpriced ttl-verdict disclosure line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "250,000"
+
+
+class TestCacheRebuildTtlVerdictCacheMissReasonValidator:
+    """Cross-tab the gap-derived idle-5m-1h cause against
+    pricing._cache_miss_reason's own model_changed signal -- disclosed
+    only, never overriding the gap-derived accumulation."""
+
+    def test_agreeing_cache_miss_reason_prints_no_discrepancy_line(self, fake_projects, capsys):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2",
+            ),
+        ]
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "excessive_gap", "cache_missed_input_tokens": 200_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        assert "cache-miss-reason cross-tab" not in out
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+
+    def test_disagreeing_cache_miss_reason_prints_discrepancy_but_never_overrides_the_accumulator(
+        self, fake_projects, capsys
+    ):
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="r1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=200_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="r2",
+            ),
+        ]
+        records[1]["message"]["diagnostics"] = {
+            "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 200_000},
+        }
+        _write_jsonl(fake_projects / "sess.jsonl", records)
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        match = re.search(r"cache-miss-reason cross-tab: (\d+) of (\d+)", out)
+        assert match is not None, "cache-miss-reason cross-tab discrepancy line not found in output"
+        assert match.group(1) == "1"
+        assert match.group(2) == "1"
+
+        # The gap-derived classification still governs the cause breakdown
+        # and the per-root accumulator, never pricing._cache_miss_reason's
+        # own signal.
+        assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 1
+        root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_row["X/Z"] == "200,000"
+
+
+class TestCacheRebuildTtlVerdictDefaultPathRegression:
+    def test_output_without_the_flag_is_unchanged_and_omits_the_new_section(self, fake_projects, capsys):
+        """Same fixture and assertions as
+        TestCacheRebuildSwitchDeltaArithmetic.test_default_rate_model_break_even_arithmetic
+        -- every pre-existing row is untouched, and the new TTL-verdict
+        section never appears, when --ttl-verdict is omitted (this
+        subcommand's own byte-identical-default-path regression guard)."""
+        records = [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="sub-2",
+            ),
+        ]
+        for rec in records:
+            rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
+
+        _mod._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        out = capsys.readouterr().out
+
+        subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
+        assert subagent_row["W5m"] == "1,000,000"
+        assert subagent_row["X"] == "500,000"
+        assert subagent_row["Net$"] == "0.40"
+        assert "## TTL-verdict" not in out
 
 
 def _reviewer_dispatch_records(
