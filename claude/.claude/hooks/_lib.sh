@@ -739,6 +739,39 @@ _lib_cumulative_diff_hash() {
   _lib_hash_diff_text "$diff_output"
 }
 
+# _lib_head_tree_hash CAP_MODE REPO_ROOT
+# Prints `git rev-parse HEAD^{tree}` for REPO_ROOT -- the content-address of
+# the tree ready-for-review step 2 actually executes, used by the
+# `verification` marker kind's write, check, and status paths. CAP_MODE is
+# "capped" to run the git call through _lib_capped's 5s timeout, or
+# "uncapped" to run it directly, mirroring _hash_staged_diff's mode-argument
+# shape in marker.sh.
+# git's own exit status must be checked, not just stdout emptiness: on a
+# commit-less repo (unborn HEAD), `git rev-parse HEAD^{tree}` exits 128 but
+# still prints the literal argument "HEAD^{tree}" to stdout as its
+# unresolved-revision fallback -- an emptiness-only check would misread that
+# echoed literal as a real tree hash. This is a different failure shape than
+# _hash_staged_diff's "succeeded but hashed empty input" case, but the same
+# need to gate on git's exit status rather than stdout alone.
+# Two-outcome contract (same failure shape as _lib_repo_root):
+#   - exit 0, non-empty stdout: the tree hash.
+#   - exit 1, empty stdout: not inside a git repository, no commit exists yet
+#     (no HEAD), git is absent, or the call timed out.
+_lib_head_tree_hash() {
+  local cap_mode="$1" repo_root="$2"
+  local hash git_exit
+  case "$cap_mode" in
+    capped) hash=$(_lib_capped git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
+    uncapped) hash=$(git -C "$repo_root" rev-parse 'HEAD^{tree}' 2>/dev/null); git_exit=$? ;;
+    *)
+      printf '_lib_head_tree_hash: invalid cap_mode %s (want capped or uncapped)\n' "$cap_mode" >&2
+      return 1
+      ;;
+  esac
+  [ "$git_exit" -eq 0 ] && [ -n "$hash" ] || return 1
+  printf '%s' "$hash"
+}
+
 # _lib_default_branch_from_origin_head REPO_ROOT
 # Resolve REPO_ROOT's default branch from the local symbolic ref
 # refs/remotes/origin/HEAD alone, verifying the target actually resolves to
