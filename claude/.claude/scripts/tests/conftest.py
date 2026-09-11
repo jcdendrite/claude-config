@@ -476,6 +476,7 @@ def _cost_args(
     by_project: bool = False,
     branches: str | None = None,
     summary: bool = False,
+    share_only: bool = False,
 ) -> object:
     return type("A", (), {
         "projects": projects,
@@ -487,6 +488,7 @@ def _cost_args(
         "by_project": by_project,
         "branches": branches,
         "summary": summary,
+        "share_only": share_only,
     })()
 
 

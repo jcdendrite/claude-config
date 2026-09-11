@@ -129,8 +129,7 @@ Explore/general-purpose split as Codebase discovery above. Pass an explicit
 > "Diagnose why [test/check] fails; report root cause + minimal evidence
 > + proposed fix."
 
-The parent reasons over the returned diagnosis, designs the fix, applies
-the edit, and re-runs the check inline.
+The parent reasons over the returned diagnosis, designs the fix, applies the edit, and re-runs the check inline. Designing the fix while reading the diagnosis normally fails the decision-made test's condition (1) — the fix is not yet decided before that read — so the edit normally stays inline, unlike the review-round default under `subagent-delegation/SKILL.md` § "Implementation work → `code-writer`". See under `docs/design-decisions/debug-investigation-read-only-probe.md` § "Debug-investigation delegation: read-only probe over debug-and-fix agent" for why the parent retains the edit in that case.
 
 See `root-cause-analysis` for the diagnosis discipline (establish the full symptom
 before forming a hypothesis). A CI-failure diagnosis dispatches the whole skill instead
@@ -177,7 +176,7 @@ commit, the `/code-review` re-run, and the marker. Two further carve-outs, neith
 - Not code (a `## Deferred review findings` block, a `respond-pr` reply, a plan-file edit) — stays inline.
 - Still being re-decided — fails condition (1), stays inline.
 
-A finding surviving a second dispatch stops being delegated — it is now a design question, not a fix.
+A finding surviving a second dispatch stops being delegated — it is now a design question, not a fix. This is not the inverse of the debug-probe carve-out above: a fix the parent designs itself while reading a debug probe's diagnosis fails condition (1) and stays inline. A diagnosis the parent has already fully specified before the locating read still satisfies condition (1) and routes by the ordinary two-condition test, same as any other change — see under this file's § "Debug-investigation probe → `general-purpose` or `Explore`".
 
 ### Everything else → `general-purpose`
 

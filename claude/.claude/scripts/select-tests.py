@@ -50,6 +50,10 @@ CLAUDE_TOP_LEVEL_DIR = "claude"
 # role in the repo-wide-scan predicate below (see root CLAUDE.md's repo-layout
 # bullet for why it's a separate package).
 CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
+# Directory name .gitignore excludes at both worktree roots. pyproject.toml's
+# norecursedirs prunes it from collection, so no test under one is ever
+# collected.
+WORKTREES_DIR_NAME = "worktrees"
 
 # test_transcript_analysis.py and its two siblings shell into specific hook
 # scripts and read specific SKILL.md files by path, not by import.
@@ -336,10 +340,12 @@ def _is_py_source_under_claude_or_plugins(path: str) -> bool:
 # a test_*.py file directly inside a tests/ directory under claude/ or
 # plugins/. A stricter subset of _is_py_source_under_claude_or_plugins,
 # since only a test file can introduce a new module-level repo-path
-# constant for that scanner to miss.
+# constant for that scanner to miss. Excludes any path under a worktrees/
+# directory, since no test corpus root ever resolves into one.
 def _is_test_source_change(path: str) -> bool:
     return (
         _is_py_source_under_claude_or_plugins(path)
+        and WORKTREES_DIR_NAME not in Path(path).parts
         and Path(path).parent.name == "tests"
         and Path(path).name.startswith("test_")
     )
