@@ -92,10 +92,50 @@ def _env_with_gh_shim_and_failing_mv(tmp_path: Path, base_ref: str | None, fail_
     return env
 
 
+def _git_diff_shim_source(fail_when_args_contain: str) -> str:
+    """Return source for a `git` shim that fails only a `git diff` call
+    whose arguments contain fail_when_args_contain, delegating to the real
+    git otherwise -- lets a test force one git-diff call to fail (merge-base
+    resolution, checkouts, and the fixture's own setup calls all still hit
+    the real git)."""
+    real_git = shutil.which("git")
+    assert real_git is not None
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import subprocess
+        import sys
+        args = sys.argv[1:]
+        if args and args[0] == "diff" and any({fail_when_args_contain!r} in a for a in args):
+            sys.exit(1)
+        sys.exit(subprocess.run([{real_git!r}] + args).returncode)
+    """)
+
+
+def _env_with_gh_shim_and_failing_git_diff(tmp_path: Path, base_ref: str | None, fail_when_args_contain: str) -> dict:
+    """_env_with_gh_shim plus a PATH-prepended `git` shim that fails only
+    the `git diff` call whose arguments contain fail_when_args_contain."""
+    env = _env_with_gh_shim(tmp_path, base_ref)
+    git_shim_dir = tmp_path / "git_shim"
+    git_shim_dir.mkdir()
+    git_shim = git_shim_dir / "git"
+    git_shim.write_text(_git_diff_shim_source(fail_when_args_contain))
+    git_shim.chmod(0o755)
+    env["PATH"] = os.pathsep.join([str(git_shim_dir), env["PATH"]])
+    return env
+
+
 def _run_script(
-    repo: Path, env: dict, *, record: bool = False, diff_file: bool = False, extra_args: list[str] | None = None
+    repo: Path,
+    env: dict,
+    *,
+    staged: bool = False,
+    record: bool = False,
+    diff_file: bool = False,
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     args = [str(_SCRIPT)]
+    if staged:
+        args.append("--staged")
     if record:
         args.append("--record")
     if diff_file:
@@ -132,6 +172,15 @@ def _diff_artifact_path(env: dict, repo: Path, session_id: str) -> Path:
     artifacts have independent lifecycles."""
     config_dir = Path(env["CLAUDE_CONFIG_DIR"])
     return config_dir / "cumulative-review-diff-markers" / f"{_repo_hash(repo)}.{session_id}"
+
+
+def _staged_diff_artifact_path(env: dict, repo: Path, session_id: str) -> Path:
+    """The diff-file artifact path --staged --diff-file writes -- same
+    repo-hash recipe as _diff_artifact_path above, keyed into its own
+    directory so a staged write never collides with the cumulative
+    --diff-file artifact at the same repo-hash-and-session-id."""
+    config_dir = Path(env["CLAUDE_CONFIG_DIR"])
+    return config_dir / "code-review-diff-markers" / f"{_repo_hash(repo)}.{session_id}"
 
 
 def _diff_file_announced_path(stderr: str) -> str:
@@ -250,6 +299,28 @@ class TestMergeBaseFailure:
         assert result.returncode == 1
         assert result.stdout == ""
         assert "origin/nonexistent-base" in result.stderr
+
+
+class TestCumulativeDiffFailure:
+    def test_diff_against_merge_base_failure_produces_curated_message(self, tmp_path):
+        """A `git diff` failure after merge-base resolution already
+        succeeded must produce this script's own curated message and exit
+        1, not a bare set -e abort surfacing git's own stderr and exit
+        status."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/diff-failure")
+        subprocess.run(["git", "checkout", "-q", "feat/diff-failure"], cwd=local, check=True)
+        merge_base = subprocess.run(
+            ["git", "merge-base", "origin/main", "HEAD"], cwd=local,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        env = _env_with_gh_shim_and_failing_git_diff(tmp_path, "main", "...HEAD")
+
+        result = _run_script(local, env)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == f"pr-diff-against-base.sh: could not compute the diff against {merge_base}\n"
 
 
 class TestCandidateLoopFallback:
@@ -942,6 +1013,248 @@ class TestDiffFileFlagWithoutASession:
         assert "--diff-file could not resolve the repo root, config directory, or session id" in result.stderr
         assert "DIFF_FILE:" not in result.stderr
         diff_dir = Path(env["CLAUDE_CONFIG_DIR"]) / "cumulative-review-diff-markers"
+        assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
+
+
+class TestStagedMode:
+    """--staged's own behavior: DIFF_TEXT comes from `git diff --cached`
+    instead of the merge-base diff, and the `gh pr view`/merge-base block is
+    skipped entirely. Cases below cover:
+    - the success path on a fixture where the cumulative path provably
+      cannot resolve
+    - artifact supersession at a fixed path
+    - the empty-stage early return
+    - directory isolation from the cumulative --diff-file artifact, in
+      both write orders
+    - dirty-index isolation of the non-staged modes
+    - the --record mutual exclusion, in both flag orders
+    - the `git diff --cached` failure branch"""
+
+    SID = "test-session-staged-mode"
+
+    @pytest.fixture(autouse=True)
+    def _seeded_session(self, tmp_path):
+        # Same isolated CLAUDE_CONFIG_DIR _isolate_transcript_corpus_lookups
+        # pins for this whole test tree, matching TestDiffFileFlag's own fixture.
+        _seed_session(tmp_path / "isolated-claude-config", self.SID)
+
+    def test_staged_diff_file_succeeds_where_merge_base_resolution_cannot(self, tmp_path):
+        """A fixture with no origin remote at all guarantees the cumulative
+        path cannot resolve a base, which the bare run's assertion pins.
+        That guarantee makes the --staged run's absence of any
+        merge-base-failure text a non-vacuous proof that the gh pr
+        view/merge-base block was never reached."""
+        local = tmp_path / "no-remote"
+        _init_repo(local)
+        _commit(local, "init")
+        env = _env_with_gh_shim(tmp_path, None)
+
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        bare_result = _run_script(local, env)
+        assert bare_result.returncode == 1
+        assert "no default branch resolved from origin" in bare_result.stderr
+
+        result = _run_script(local, env, staged=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+
+        raw_diff = subprocess.run(
+            ["git", "diff", "--cached"], cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert result.stdout == raw_diff.rstrip("\n") + "\n"
+
+        announced_path = _diff_file_announced_path(result.stderr)
+        expected_path = _staged_diff_artifact_path(env, local, self.SID)
+        assert announced_path == str(expected_path)
+        assert expected_path.exists()
+        assert "gh pr view failed; defaulting base to" not in result.stderr
+        assert "no default branch resolved" not in result.stderr
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_staged_diff_file_artifact_mode_is_0600(self, tmp_path):
+        """Mirrors test_diff_file_artifact_mode_is_0600 for the --staged
+        artifact: the same mktemp-then-mv path gives it mode 0o600."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, env, staged=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+
+        artifact = _staged_diff_artifact_path(env, local, self.SID)
+        assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+
+    def test_staged_diff_file_rerun_supersedes_prior_artifact_at_same_path(self, tmp_path):
+        """Mirrors test_diff_file_rerun_supersedes_prior_artifact_at_same_path
+        for the --staged artifact: two runs against different staged
+        content leave one file at one path holding the second run's
+        bytes."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        (local / "first.txt").write_text("first staged content\n")
+        subprocess.run(["git", "add", "first.txt"], cwd=local, check=True)
+
+        first = _run_script(local, env, staged=True, diff_file=True)
+        assert first.returncode == 0, first.stderr
+        artifact = _staged_diff_artifact_path(env, local, self.SID)
+        first_content = artifact.read_bytes()
+
+        subprocess.run(["git", "reset", "-q"], cwd=local, check=True)
+        (local / "second.txt").write_text("second staged content\n")
+        subprocess.run(["git", "add", "second.txt"], cwd=local, check=True)
+
+        second = _run_script(local, env, staged=True, diff_file=True)
+        assert second.returncode == 0, second.stderr
+
+        assert artifact.read_bytes() == second.stdout.encode()
+        assert artifact.read_bytes() != first_content
+        assert list(artifact.parent.iterdir()) == [artifact]
+
+    def test_staged_nothing_staged_on_diverged_branch_reports_diff_empty(self, tmp_path):
+        """The diverged-branch fixture is what gives result.stdout == "" its
+        teeth: had merge-base resolution run instead of --staged's early
+        return, stdout would carry the feature branch's own committed
+        diff."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/staged-empty")
+        subprocess.run(["git", "checkout", "-q", "feat/staged-empty"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        result = _run_script(local, env, staged=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+        assert "DIFF_EMPTY: no staged changes" in result.stderr
+        diff_dir = Path(env["CLAUDE_CONFIG_DIR"]) / "code-review-diff-markers"
+        assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
+
+    def test_staged_and_cumulative_diff_file_artifacts_do_not_clobber_each_other(self, tmp_path):
+        """The likelier collision scenario is cumulative-then-staged
+        (/ready-for-review then a fix-commit /code-review), but a
+        commit-gate /code-review pass followed later in the same session by
+        /ready-for-review is the reverse and equally plausible -- both
+        orders are exercised rather than assuming order-independence."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/dual-artifact")
+        subprocess.run(["git", "checkout", "-q", "feat/dual-artifact"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        cumulative_artifact = _diff_artifact_path(env, local, self.SID)
+        staged_artifact = _staged_diff_artifact_path(env, local, self.SID)
+
+        (local / "staged-one.txt").write_text("staged one\n")
+        subprocess.run(["git", "add", "staged-one.txt"], cwd=local, check=True)
+
+        cumulative_first = _run_script(local, env, diff_file=True)
+        assert cumulative_first.returncode == 0, cumulative_first.stderr
+        staged_first = _run_script(local, env, staged=True, diff_file=True)
+        assert staged_first.returncode == 0, staged_first.stderr
+
+        assert cumulative_artifact.exists()
+        assert staged_artifact.exists()
+        assert cumulative_artifact.read_bytes() != staged_artifact.read_bytes()
+        assert list(cumulative_artifact.parent.iterdir()) == [cumulative_artifact]
+        assert list(staged_artifact.parent.iterdir()) == [staged_artifact]
+
+        subprocess.run(["git", "reset", "-q"], cwd=local, check=True)
+        (local / "staged-two.txt").write_text("staged two\n")
+        subprocess.run(["git", "add", "staged-two.txt"], cwd=local, check=True)
+
+        staged_second = _run_script(local, env, staged=True, diff_file=True)
+        assert staged_second.returncode == 0, staged_second.stderr
+        cumulative_second = _run_script(local, env, diff_file=True)
+        assert cumulative_second.returncode == 0, cumulative_second.stderr
+
+        assert cumulative_artifact.exists()
+        assert staged_artifact.exists()
+        assert cumulative_artifact.read_bytes() != staged_artifact.read_bytes()
+        assert list(cumulative_artifact.parent.iterdir()) == [cumulative_artifact]
+        assert list(staged_artifact.parent.iterdir()) == [staged_artifact]
+
+    def test_staged_only_content_never_affects_non_staged_invocation(self, tmp_path):
+        """The cumulative mode reads merge-base...HEAD regardless of what is
+        staged -- a dirty index must not leak into either the bare or
+        --diff-file cumulative output."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/dirty-index")
+        subprocess.run(["git", "checkout", "-q", "feat/dirty-index"], cwd=local, check=True)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        (local / "staged-only.txt").write_text("staged-only marker text\n")
+        subprocess.run(["git", "add", "staged-only.txt"], cwd=local, check=True)
+
+        bare_result = _run_script(local, env)
+        assert bare_result.returncode == 0, bare_result.stderr
+        assert "+work on feat/dirty-index" in bare_result.stdout
+        assert "staged-only marker text" not in bare_result.stdout
+
+        diff_file_result = _run_script(local, env, diff_file=True)
+        assert diff_file_result.returncode == 0, diff_file_result.stderr
+        assert "+work on feat/dirty-index" in diff_file_result.stdout
+        assert "staged-only marker text" not in diff_file_result.stdout
+
+    def test_staged_diff_cached_failure_produces_curated_message(self, tmp_path):
+        """A `git diff --cached` failure must produce this script's own
+        curated message and exit 1, not a bare set -e abort surfacing
+        git's own stderr and exit status."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim_and_failing_git_diff(tmp_path, "main", "--cached")
+
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, env, staged=True)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == "pr-diff-against-base.sh: --staged could not compute the staged diff\n"
+
+    def test_staged_record_combination_rejected_before_any_git_work(self, tmp_path):
+        """Mirrors test_unknown_argument_exits_before_any_git_work: run from
+        a non-repo tmp_path so the absence of git-originated stderr text
+        pins that the exclusion check fires before any git call, in both
+        flag orders."""
+        forward = _run_script(tmp_path, dict(os.environ), staged=True, record=True)
+        assert forward.returncode == 2
+        assert forward.stdout == ""
+        assert "--staged cannot be combined with --record" in forward.stderr
+        assert "git" not in forward.stderr.lower()
+
+        reversed_result = subprocess.run(
+            [str(_SCRIPT), "--record", "--staged"], cwd=str(tmp_path), env=dict(os.environ),
+            capture_output=True, text=True, check=False,
+        )
+        assert reversed_result.returncode == 2
+        assert reversed_result.stdout == ""
+        assert "--staged cannot be combined with --record" in reversed_result.stderr
+        assert "git" not in reversed_result.stderr.lower()
+
+
+class TestStagedModeWithoutASession:
+    """Mirrors TestDiffFileFlagWithoutASession: no test in this class seeds
+    a session file, exercising --staged --diff-file's session-id-resolution
+    failure branch specifically."""
+
+    def test_staged_diff_file_prints_before_session_resolution_failure(self, tmp_path):
+        """Stages a file first so DIFF_TEXT is non-empty and the run
+        actually reaches the writer block -- staging nothing would hit the
+        DIFF_EMPTY: early return instead, before the writer block's session
+        resolution ever runs, passing vacuously for the wrong reason."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, env, staged=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+        assert "diff --git a/staged.txt b/staged.txt" in result.stdout
+        assert "--diff-file could not resolve the repo root, config directory, or session id" in result.stderr
+        assert "DIFF_FILE:" not in result.stderr
+        diff_dir = Path(env["CLAUDE_CONFIG_DIR"]) / "code-review-diff-markers"
         assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
 
 
