@@ -144,6 +144,16 @@ extends by analogy:
     The figure that completes the reconstruction is the one that
     crosses the line.
 
+**Account and machine scope, independent of the two lists above.**
+Every reporting mode covered by either list defaults to a single
+`CLAUDE_CONFIG_DIR` account and machine. A dimensionless share — Cost's
+share-of-spend mode or Counts' share mode — is the one exception: it
+may pool across multiple accounts or machines. A total, a rate, or a
+median stays scoped to one account and machine — a pooled absolute
+crossing that boundary can be inverted against another publication of
+one account's own absolute, by subtraction, to reveal a private
+engagement's own activity on a shared account.
+
 These two lists govern the mixed-corpus figure "What it permits" opens
 with, and nothing else. A figure the repo-root `CLAUDE.md` rule's own
 per-project, per-account, or per-engagement exclusion already places
