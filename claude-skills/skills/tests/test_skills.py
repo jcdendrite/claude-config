@@ -2996,15 +2996,23 @@ def _unextracted_citation_candidate_report(paths: Iterable[Path], *, repo_root: 
 
 def test_every_citation_shaped_construct_is_extracted() -> None:
     """Asserts every `` `target` § "Heading" `` (or bare `§ "Heading"`)
-    construct in the skill/doc corpus was recognized by `_extract_citations`,
-    catching a hard-wrapped or no-space citation that
-    `_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` silently miss and that
-    test_skill_citations_resolve_to_real_headings and
-    test_pooled_tooling_measurement_citation_resolves_to_real_heading never
-    see. Scanned corpus: `_citation_sources_for_skill_md`'s expansion of
-    every `_all_skill_md_files()` entry, plus every path `_all_doc_paths()`
-    covers — the same two named helpers the resolution tests above draw
-    from.
+    construct in the skill/doc corpus was recognized by `_extract_citations`.
+
+    Catches a hard-wrapped or no-space citation that
+    `_CITATION_WITH_TARGET_RE`/`_BARE_CITATION_RE` silently miss.
+
+    Complements test_skill_citations_resolve_to_real_headings and
+    test_pooled_tooling_measurement_citation_resolves_to_real_heading, which
+    never see such a construct since it was never extracted as a citation in
+    the first place.
+
+    Scanned corpus:
+
+    - `_citation_sources_for_skill_md`'s expansion of every
+      `_all_skill_md_files()` entry.
+    - Every path `_all_citation_extraction_doc_paths()` covers:
+      `_all_doc_paths()`'s corpus, plus both CLAUDE.md files, plus every
+      `.claude/rules/*.md`/`claude/.claude/rules/*.md` file.
 
     This checks extraction only — the `docs/rules-references.md`
     external-URL citation is intentionally never asserted to resolve here.
@@ -3015,7 +3023,7 @@ def test_every_citation_shaped_construct_is_extracted() -> None:
         skill_md_sources.extend(_citation_sources_for_skill_md(skill_md_path))
 
     violations = _unextracted_citation_candidate_report(
-        skill_md_sources + _all_doc_paths(), repo_root=repo_root
+        skill_md_sources + _all_citation_extraction_doc_paths(), repo_root=repo_root
     )
     assert not violations, (
         "Citation-shaped construct not recognized by "
@@ -4414,6 +4422,34 @@ def _all_doc_paths() -> list[Path]:
     evals_readme = repo_root / "evals" / "README.md"
     if evals_readme.exists():
         paths.append(evals_readme)
+    return paths
+
+
+def _all_citation_extraction_doc_paths() -> list[Path]:
+    """`_all_doc_paths()`'s corpus, plus the always-loaded instruction files
+    and lazy-loaded rule files where a citation-shaped construct could also
+    hide unextracted: the repo-root CLAUDE.md, `_GLOBAL_CLAUDE_MD`
+    (`claude/.claude/CLAUDE.md`), every `.claude/rules/*.md` file, and every
+    `claude/.claude/rules/*.md` file. Kept separate from `_all_doc_paths()`
+    so this wider corpus doesn't also widen TestPerAccountStatePathContract's
+    scope, which parametrizes directly off that helper."""
+    paths = list(_all_doc_paths())
+    repo_root = REPO_ROOT
+    root_claude_md = repo_root / "CLAUDE.md"
+    if root_claude_md.exists():
+        paths.append(root_claude_md)
+    if _GLOBAL_CLAUDE_MD.exists():
+        paths.append(_GLOBAL_CLAUDE_MD)
+    project_rules_dir = repo_root / ".claude" / "rules"
+    project_rules = sorted(project_rules_dir.glob("*.md"))
+    assert project_rules, f"{project_rules_dir}/*.md matched no *.md files — this glob root is wrong"
+    paths += project_rules
+
+    global_rules_dir = CLAUDE_DIR / "rules"
+    global_rules = sorted(global_rules_dir.glob("*.md"))
+    assert global_rules, f"{global_rules_dir}/*.md matched no *.md files — this glob root is wrong"
+    paths += global_rules
+
     return paths
 
 
