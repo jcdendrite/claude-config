@@ -4375,11 +4375,12 @@ class TestNormalizedAnchorText:
 
 _CACHE_RULE_ANCHOR_RE = re.compile(r"<!-- CACHE_RULE:(\S+) (start|end) -->")
 
-# The one anchor region the cumulative-diff review cache introduced.
+# Each anchor region a review-cache feature introduced.
 # Asserted as an exact set for the same reason as _EXPECTED_SCOPE_ANCHORS: a
-# corpus scan alone passes vacuously if the anchor pair is deleted.
+# corpus scan alone passes vacuously if an anchor pair is deleted.
 _EXPECTED_CACHE_ANCHORS = {
     ("ready-for-review", "CACHE_RULE:ready-for-review-cumulative-diff-cache"),
+    ("ready-for-review", "CACHE_RULE:ready-for-review-verification-cache"),
 }
 
 
@@ -4422,6 +4423,17 @@ _PINNED_CACHE_CLAUSES: dict[tuple[str, str], str] = {
         "Completion summary, and continue to step 4. Content type is never a "
         "skip reason on its own — on `historical` or `absent`, markdown, skill, "
         "and config diffs get the same pass as everything else."
+    ),
+    ("ready-for-review", "CACHE_RULE:ready-for-review-verification-cache"): (
+        "Before selecting any commands, run `~/.claude/scripts/marker.sh check "
+        "verification`. `match` means this exact tree already passed a clean "
+        "verification pass inside the freshness window. On a match: skip the "
+        "commands below, report the cache hit in the Completion summary, and "
+        "continue to step 3. On `no-match`, run the step normally, then write "
+        "`~/.claude/scripts/marker.sh write verification` only after every "
+        "selected command has run and passed. Do not write it after the "
+        "scope-exception skip below — that path runs no commands, so nothing "
+        "has passed."
     ),
 }
 
