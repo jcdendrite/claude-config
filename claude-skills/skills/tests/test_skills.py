@@ -4453,6 +4453,28 @@ def _all_citation_extraction_doc_paths() -> list[Path]:
     return paths
 
 
+def test_all_citation_extraction_doc_paths_raises_when_project_rules_dir_empty(tmp_path, monkeypatch):
+    """Guards the `assert project_rules, ...` non-emptiness check itself — a
+    typo checking an always-truthy variable (e.g. `project_rules_dir`
+    instead of the glob result `project_rules`) would otherwise never fire
+    under test."""
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path)
+    with pytest.raises(AssertionError, match="matched no"):
+        _all_citation_extraction_doc_paths()
+
+
+def test_all_citation_extraction_doc_paths_raises_when_global_rules_dir_empty(tmp_path, monkeypatch):
+    """Same guard as above, for the sibling `assert global_rules, ...` check
+    over `CLAUDE_DIR / "rules"`."""
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "CLAUDE_DIR", tmp_path)
+    with pytest.raises(AssertionError, match="matched no"):
+        _all_citation_extraction_doc_paths()
+
+
 class TestPerAccountStatePathContract:
     """No SKILL.md body, agent body, prose doc, or claude/.claude/CLAUDE.md
     may hold a literal ~/.claude (or $HOME/.claude, ${HOME}/.claude)

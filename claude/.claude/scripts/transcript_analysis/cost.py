@@ -565,9 +565,16 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             sys.exit(2)
 
     if share_only:
-        # Each refusal names its own reason, following --summary's own
-        # exit-2-on-stderr precedent above -- these are dead or hazardous
-        # combinations, not scope narrowing --share-only itself performs.
+        # Each refusal names its own reason, following --summary's own exit-2-on-stderr precedent above.
+        # These are dead or hazardous combinations, not scope narrowing --share-only itself performs.
+        if getattr(args, "projects", None) not in (None, "*"):
+            print(
+                "cost: --share-only refuses a non-default --projects glob — a percentage-share"
+                " profile computed over one project is a per-project figure by construction,"
+                " barred regardless of dollar/token content",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if bool(getattr(args, "by_project", False)):
             print(
                 "cost: --share-only refuses --by-project — the Cost share bullet permits a split"
@@ -895,6 +902,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # Guards the accumulator split (double-count/drop/misroute), not _price_turn's math — a wrong
     # price would move both sides together. Tolerance is float64 noise, not rounding slack.
     if abs(main_total + subagent_total - grand_total) > 1e-6:
+        if share_only:
+            raise AssertionError(
+                "cost: main+subagent spend does not equal the grand total — the isSidechain"
+                " split is out of sync with the token-class totals"
+            )
         raise AssertionError(
             f"cost: main ({main_total:.6f}) + subagent ({subagent_total:.6f}) spend"
             f" does not equal the grand total ({grand_total:.6f}) — the isSidechain"
@@ -914,6 +926,11 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         per_account_class_total = sum(sum(acct["class_totals"].values()) for acct in per_account.values())
         per_account_model_total = sum(sum(acct["model_totals"].values()) for acct in per_account.values())
         if abs(per_account_class_total - grand_total) > 1e-6 or abs(per_account_model_total - grand_total) > 1e-6:
+            if share_only:
+                raise AssertionError(
+                    "cost: per-account totals do not both equal the grand total — the"
+                    " per-account accumulator is out of sync with the global token-class/model totals"
+                )
             raise AssertionError(
                 f"cost: per-account totals (class {per_account_class_total:.6f}, model"
                 f" {per_account_model_total:.6f}) do not both equal the grand total"
@@ -974,10 +991,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     _print_excluded_spend_banner(unpriced_tokens, total_unpriced_tokens, markdown=summary_mode, share_only=share_only)
 
-    # Early return, not a suppression flag threaded through the printers below:
-    # a dollar- or token-emitting print site added to this function later stays
-    # unreachable under --share-only only because it never runs past this point.
-    # Keep this the first line after the last share-only-safe print above.
+    # Early return, not a flag threaded through the printers below — keep this immediately after the
+    # last share-only-safe print so any dollar/token print added later stays unreachable under --share-only.
     if share_only:
         _print_share_only_tables(class_totals, model_totals, main_total, subagent_total, bucket_totals, grand_total)
         return

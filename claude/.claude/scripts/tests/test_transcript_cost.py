@@ -818,6 +818,25 @@ class TestCostResolveRoots:
         roots = _mod._resolve_cost_roots(_cost_args(summary=True, extra_config_dirs=[str(acct_b)]))
         assert roots == [default_dir / "projects"]
 
+    def test_share_only_returns_full_multi_root_union_not_narrowed(
+        self, tmp_path, monkeypatch, fake_config_dir_factory
+    ):
+        """Unlike --summary above, --share-only exists to serve a pooled/
+        multi-root corpus, so this narrowing check must stay gated on
+        args.summary alone -- pins that _resolve_cost_roots called with
+        share_only=True still returns the full declared/--config-dir union,
+        not a single root. Guards against a future `or args.share_only`
+        added to the summary-only narrowing check above."""
+        default_dir = tmp_path / "default"
+        (default_dir / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        declared = tmp_path / "declared-account"
+        (declared / "projects").mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [declared])
+        acct_b = fake_config_dir_factory("acct-b")
+        roots = _mod._resolve_cost_roots(_cost_args(share_only=True, extra_config_dirs=[str(acct_b)]))
+        assert roots == [default_dir / "projects", declared / "projects", acct_b / "projects"]
+
     def test_declared_roots_union_unaffected_for_non_cost_subcommand(self, tmp_path, monkeypatch):
         """Mechanism 1 narrows _resolve_cost_roots only for subcommand ==
         "cost" -- a populated declared-roots file still unions for every
@@ -1539,6 +1558,30 @@ class TestCostByAccount:
         with pytest.raises(AssertionError, match="per-account"):
             _mod._cost_report(_cost_args(), date(2026, 8, 2), roots=[root_a, root_b])
 
+    def test_per_account_missing_turn_assertion_omits_raw_dollars_under_share_only(self, tmp_path, monkeypatch):
+        """Same fault injection as the test above, under --share-only: the
+        raised message must state the mismatch without the raw dollar totals
+        --share-only's whole design keeps out of stderr."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+
+        original = _mod._accumulate_per_account_turn
+        calls = {"n": 0}
+
+        def flaky_accumulate(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return  # drop the first turn's per-account contribution
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(_mod.cost, "_accumulate_per_account_turn", flaky_accumulate)
+
+        with pytest.raises(AssertionError, match="per-account") as exc:
+            _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        assert not re.search(r"\d", str(exc.value))
+
     def test_cost_by_account_section_absent_at_single_root(self, fake_projects, capsys):
         """No --config-dir (single root): the '## Cost by account' section
         must not appear at all -- promoted from the plan's manual
@@ -1703,6 +1746,46 @@ class TestCostThreadSplit:
             "| main | 3.00 | 75.0% |\n"
             "| subagent | 1.00 | 25.0% |\n"
         )
+
+    def test_main_subagent_missing_turn_assertion_omits_raw_dollars_under_share_only(
+        self, fake_projects, monkeypatch
+    ):
+        """Fault injection for the main+subagent cross-check's share_only branch,
+        mirroring TestCostByAccount's per-account version. The main/subagent split
+        has no separately-extracted accumulator to monkeypatch -- it's derived
+        inline from each turn's isSidechain flag inside the per-class token loop,
+        which reads dollars_by_class[cls] twice (once into class_totals, once into
+        turn_total). Wrapping _price_turn's return value in a dict that answers a
+        class's first read truthfully and every later read with 0.0 sends
+        turn_total to 0 while class_totals (and so grand_total) keeps the real
+        dollars, desyncing main+subagent from the grand total."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        class _OnceThenZero(dict):
+            def __init__(self, data):
+                super().__init__(data)
+                self._read: set = set()
+
+            def __getitem__(self, key):
+                if key in self._read:
+                    return 0.0
+                self._read.add(key)
+                return super().__getitem__(key)
+
+        original_price_turn = _mod.pricing._price_turn
+
+        def faulty_price_turn(model, usage):
+            dollars_by_class, context_at_turn, unpriced = original_price_turn(model, usage)
+            if dollars_by_class is None:
+                return dollars_by_class, context_at_turn, unpriced
+            return _OnceThenZero(dollars_by_class), context_at_turn, unpriced
+
+        monkeypatch.setattr(_mod.pricing, "_price_turn", faulty_price_turn)
+
+        with pytest.raises(AssertionError) as exc:
+            _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2))
+        assert "main+subagent" in str(exc.value)
+        assert not re.search(r"\d", str(exc.value))
 
 
 class TestCostMarkdownTablePrinters:
@@ -2607,13 +2690,13 @@ class TestCostShareOnly:
     model, thread, context bucket) and nothing else -- never a dollar
     figure, a token count, or a grand total.
 
-    The structural assertions below -- exact two-column header sets, and
-    every non-label cell matching a percentage shape (`\\d+\\.\\d%`), never a
-    raw-float shape -- are the actual leak check, not a `$`/`Tokens`
-    substring-absence check: this codebase's table renderers never attach
-    `$` or `Tokens` to a data cell, only to a header. Extend these
-    structural assertions if a fifth share-only table or a
-    differently-labeled column is ever added.
+    The structural assertions below check exact two-column header sets, and
+    that every non-label cell matches a percentage shape (`\\d+\\.\\d%`),
+    never a raw-float shape. This is the real leak check, not a `$`/`Tokens`
+    substring check, because this codebase's renderers never attach `$` or
+    `Tokens` to a data cell -- only to a header. Extend these structural
+    assertions if a fifth share-only table or a differently-labeled column
+    is ever added.
     """
 
     @staticmethod
@@ -2646,6 +2729,16 @@ class TestCostShareOnly:
         raise AssertionError("EXCLUDED SPEND banner not found in output")
 
     # -- Refusals --------------------------------------------------------
+
+    def test_refuses_non_default_projects_glob(self, fake_projects, capsys):
+        """A percentage-share profile computed over one project (a non-default
+        --projects glob) is a per-project figure by construction -- barred
+        regardless of dollar/token content, since --share-only's whole safety
+        argument depends on always rendering over a pooled/mixed corpus."""
+        with pytest.raises(SystemExit) as exc:
+            _mod._cost_report(_cost_args(share_only=True, projects="-home-user-repo-a*"), date(2026, 8, 2))
+        assert exc.value.code == 2
+        assert "--share-only refuses a non-default --projects glob" in capsys.readouterr().err
 
     def test_refuses_by_project(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -2749,6 +2842,21 @@ class TestCostShareOnly:
         assert "## Cost by account" not in out
         assert "## Top" not in out
         self._assert_share_table_structure(out, "token class", "Class")
+
+    def test_multi_root_per_root_scan_summary_line_still_prints(self, tmp_path, capsys):
+        """The per-root `cost: {root}: scanned N transcripts, M skipped
+        (unreadable)` diagnostic is gated only on `not summary_mode`
+        (mirrors TestCostResolveRoots's test_scan_summary_line_printed_per_root
+        under the plain report) -- --share-only never touches summary_mode,
+        so this line renders unchanged under --share-only too."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+                                   [_priced("claude-sonnet-5", input=1_000_000)])
+        _mod._cost_report(_cost_args(share_only=True), date(2026, 8, 2), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 1 transcripts, 0 skipped (unreadable)" in out
+        assert "cost: account-2: scanned 1 transcripts, 0 skipped (unreadable)" in out
 
     def test_branch_exclusion_diagnostic_suppressed(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
