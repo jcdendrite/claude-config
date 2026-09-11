@@ -23,7 +23,9 @@
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --dry-run)",
       "Bash(cleanup-merged-branches --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh --dry-run)",
-      "Bash(cleanup-idle-open-pr-worktrees --dry-run)"
+      "Bash(cleanup-idle-open-pr-worktrees --dry-run)",
+      "Bash(~/.claude/scripts/worktree-removal-status.sh)",
+      "Bash(worktree-removal-status)"
     ],
     "ask": [
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",

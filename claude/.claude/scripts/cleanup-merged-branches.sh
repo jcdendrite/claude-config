@@ -873,6 +873,12 @@ for BRANCH in "${TO_DELETE[@]}"; do
       if [ -n "$WORKTREE_REMOVE_OUTPUT" ]; then
         printf '%s\n' "$WORKTREE_REMOVE_OUTPUT" | sed 's/^/                    /'
       fi
+      # --no-optional-locks: git's own remove refusal already names which
+      # rule fired (dirty/locked/submodules); this adds what is dirty.
+      WORKTREE_STATUS_OUTPUT=$(git --no-optional-locks -C "$WORKTREE_PATH" status --porcelain 2>&1) || true
+      if [ -n "$WORKTREE_STATUS_OUTPUT" ]; then
+        printf '%s\n' "$WORKTREE_STATUS_OUTPUT" | sed 's/^/                    /'
+      fi
       continue
     fi
   else

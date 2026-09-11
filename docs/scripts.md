@@ -84,6 +84,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - Tier B (reachability-only) prompts per-branch before deleting — `[y/N]` on a TTY, skipped with a warning when stdin is not a TTY — since reachability alone doesn't prove no active work exists.
   - Each repo's cleanup runs in its own subshell, so one repo's early exit or unhandled error doesn't end the sweep; a per-repo failure is warned to stderr with a nonzero exit at the end if anything failed.
   - Finding zero repos across every configured root is a no-op (exit 0), not an error.
+  - When `git worktree remove` refuses a worktree, the script also prints that worktree's `git --no-optional-locks status --porcelain` output alongside git's own refusal message, so the operator sees what is dirty without a separate manual inspection step.
 
   ```bash
   cleanup-merged-branches                             # run cleanup
@@ -106,6 +107,20 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   cleanup-idle-open-pr-worktrees                    # run cleanup, default 4-hour idle threshold
   cleanup-idle-open-pr-worktrees --dry-run          # preview without acting
   cleanup-idle-open-pr-worktrees --idle-hours=8     # use an 8-hour idle threshold
+  ```
+
+- **`worktree-removal-status.sh`** — read-only report, per linked worktree (the main worktree is excluded), of whether `git worktree remove` (no `--force`) would succeed, and why not when it wouldn't. Never mutates git state: every working-tree check runs `git --no-optional-locks status --porcelain`, so a concurrent session in the same worktree is never blocked or has its index touched. Per `git worktree remove --help`, a plain `remove` refuses a worktree that is dirty, locked, or has initialized submodules — this script checks all three and reports the exact reason(s) in its `Verdict` line, rather than only dirty/locked. It also checks for a live process cwd'd into the worktree (the same `/proc`/`lsof` detection `cleanup-merged-branches.sh` uses) and folds that into the verdict: a worktree a live process is working inside is reported "do not remove" even when otherwise clean, since `--force` does not itself check for this. A worktree whose directory was deleted out from under git (not via `git worktree remove`) shows up as prunable — its remedy is `git worktree prune`, not `--force`, and is reported as its own distinct verdict. Positional arguments filter the report:
+
+  - No arguments: every linked worktree is reported.
+  - An argument matching a worktree by exact branch name or exact path: only matching worktrees are reported.
+  - An argument matching neither: a trailing `No worktree found for: <args>` line is produced.
+
+  The worktree the script is invoked from, if it's one of the ones being reported on, is tagged `(current)`. A one-line tally closes the report. No `--porcelain`/JSON output mode and no flag that itself invokes `--force` — this script only ever reports, it never removes anything. Only the bare, no-argument invocation is auto-approved via `permissions.allow`; a filtered invocation prompts, matching `cleanup-idle-open-pr-worktrees --idle-hours=N`'s precedent above.
+
+  ```bash
+  worktree-removal-status                                    # report on every linked worktree
+  worktree-removal-status feat/my-branch                     # report on the worktree checked out to this branch
+  worktree-removal-status ~/repo/.claude/worktrees/my-branch  # report on the worktree at this path
   ```
 
 - **`claude-auto.sh`** — starts an interactive Claude Code session in auto mode on a model auto mode accepts. Auto mode anchors a session to one concrete model for its whole lifetime, so `opusplan` (a plan-mode/execution pair) is not a valid session model for it — resolving that mismatch, for whoever has `opusplan` set as their own default, is the script's job; the repo's own default, `sonnet`, is already valid. It takes the same `--model` flag as `claude` and passes a caller-supplied one through untouched rather than injecting a competing second flag; with no flag it uses `ANTHROPIC_MODEL`, and with neither it falls back to `sonnet`, whose alias resolves to a model every provider accepts for auto mode. That final fallback is flat rather than a compatibility check — the script cannot read which model the user's settings resolve to, so it also fires when the configured default was already eligible. Scanning stops at a literal `--`, since everything after it is positional text rather than a flag to defer to. See [`docs/auto-mode.md`](auto-mode.md) for the eligible-model set and the rest of auto mode's setup.
