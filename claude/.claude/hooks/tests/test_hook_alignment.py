@@ -397,6 +397,66 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     )
 
 
+def _pretooluse_matcher_groups_for(hook: Path) -> list[str]:
+    """The `matcher` string of every PreToolUse group containing an entry
+    wired to `hook` -- one entry per matcher group, using the same
+    exact-last-shell-word match _pretooluse_entries_for uses."""
+    if hook.parent == _MAIN_HOOKS_DIR:
+        config_path = _SETTINGS_PATH
+        expected_invocation = f"~/.claude/hooks/{hook.name}"
+    else:
+        config_path = hook.parent / "hooks.json"
+        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
+    config = json.loads(config_path.read_text())
+    matchers: list[str] = []
+    for group in config.get("hooks", {}).get("PreToolUse", []):
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("hooks", []):
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command", "")
+            tokens = shlex.split(command)
+            if tokens and tokens[-1] == expected_invocation:
+                matchers.append(group.get("matcher", ""))
+    return matchers
+
+
+# enforce-config-write-shape.sh and enforce-marker-script-shape.sh each
+# declare, in their own header comments, that closing their bypass class
+# requires being wired on both the Bash and an Edit|Write|MultiEdit
+# PreToolUse matcher -- gating only the shell leaves a direct file write as
+# an open path to the same state. test_gate_hook_registered_in_pretooluse_matcher
+# above only proves "wired into at least one matcher," not both surfaces.
+_DUAL_SURFACE_WRITE_GATE_HOOKS: tuple[str, ...] = (
+    "enforce-config-write-shape.sh",
+    "enforce-marker-script-shape.sh",
+)
+
+
+@pytest.mark.parametrize("hook_name", _DUAL_SURFACE_WRITE_GATE_HOOKS)
+def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: str) -> None:
+    """Both dual-surface write-gate hooks must carry a bare `Bash` PreToolUse
+    entry AND an Edit|Write|MultiEdit-shaped one -- a settings.json edit
+    that drops either surface would still pass
+    test_gate_hook_registered_in_pretooluse_matcher (which only checks "at
+    least one") while silently reopening the direct-file-write or
+    shell-command bypass each hook's header names as the reason the second
+    surface exists.
+    """
+    hook = _MAIN_HOOKS_DIR / hook_name
+    matchers = _pretooluse_matcher_groups_for(hook)
+    assert "Bash" in matchers, f"{hook_name}: not wired on a bare 'Bash' PreToolUse matcher"
+    edit_write_multiedit_matchers = [
+        matcher for matcher in matchers if {"Edit", "Write", "MultiEdit"} <= set(matcher.split("|"))
+    ]
+    assert edit_write_multiedit_matchers, (
+        f"{hook_name}: no PreToolUse matcher spanning Edit|Write|MultiEdit "
+        f"found -- closing this hook's file-write bypass class requires "
+        f"both surfaces"
+    )
+
+
 def test_plan_mode_entry_paths_stay_closed_in_settings() -> None:
     """The two config-value declarations backing plan-mode-entry discipline.
 
@@ -571,6 +631,8 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-private-project-refs.sh",
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
+    "enforce-config-write-shape.sh",
+    "enforce-marker-script-shape.sh",
 )
 
 
@@ -1142,11 +1204,11 @@ def test_raw_command_detection_checks_read_unquoted_copy(hook: Path) -> None:
         )
 
 
-# COMMAND_UNQUOTED/COMMAND_FLATTENED raw||flattened pairing (row 50/52,
-# .claude/plans/sentinel-config-migration.md): a brace-split write-utility
-# name or `_config_set`/`marker.sh` token evades a raw-text scan unless
-# that scan is also run against the flattened companion COMMAND_FLATTENED.
-# Scoped to the two hooks row 50 names -- the shared _lib_redirect_candidates/
+# COMMAND_UNQUOTED/COMMAND_FLATTENED raw||flattened pairing: a brace-split
+# write-utility name or `_config_set`/`marker.sh` token evades a raw-text
+# scan unless that scan is also run against the flattened companion
+# COMMAND_FLATTENED. Scoped to enforce-config-write-shape.sh and
+# enforce-marker-script-shape.sh -- the shared _lib_redirect_candidates/
 # _lib_shape_match engine's own alternation-check pairing happens at each
 # hook's own call site into that engine, not inside the engine's body, so
 # no other hook or _lib.sh itself carries this invariant today.
@@ -1245,7 +1307,7 @@ def test_raw_brace_scan_has_flattened_companion(hook: Path) -> None:
     COMMAND_UNQUOTED (or, for a _lib_command_invokes_*_subcmd call, raw
     $COMMAND) has a same-operator-class companion scan against
     COMMAND_FLATTENED nearby, so a sixth scan added later to either hook
-    inherits row 50's brace-split fix by construction instead of becoming a
+    inherits the brace-split fix by construction instead of becoming a
     future review finding. See _unpaired_raw_brace_scans for the detector's
     remaining line-distance blind spot.
     """

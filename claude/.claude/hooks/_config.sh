@@ -430,6 +430,28 @@ _config_location_value() {
       printf 'false'
       return 0
       ;;
+    "")
+      # An empty legacy-polarity means KEY has no legacy file to protect.
+      # Fall through to the schema default below with no warning.
+      ;;
+    *)
+      # A non-empty legacy-polarity value outside the three literals above
+      # is config-keys.psv corruption, since this git-tracked,
+      # code-reviewed file has no other writer.
+      # Warn loudly rather than silently trusting the schema default below.
+      # worktree_required's own default ("false") is the permissive
+      # direction for this enforcement-critical key, so this case fails
+      # closed to "true" instead.
+      # The other four enforcement-critical keys' schema defaults are
+      # already their own fail-closed direction, so they fall through
+      # unchanged.
+      printf '_config.sh: warning: unrecognized legacy-polarity value for %s: %s -- falling back to schema default\n' \
+        "$key" "$legacy_polarity" >&2
+      if [ "$key" = "worktree_required" ]; then
+        printf 'true'
+        return 0
+      fi
+      ;;
   esac
   _config_schema_field "$key" default
 }

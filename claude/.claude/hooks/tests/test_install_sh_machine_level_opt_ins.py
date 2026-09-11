@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pty
 import shutil
 import subprocess
 from pathlib import Path
@@ -356,6 +357,74 @@ class TestRealSentinelPaths:
         assert (
             home / ".claude" / "claude-config.toml"
         ).read_text() == "cost_ledger_recording = true\n"
+
+
+def _run_configure_machine_level_opt_ins_with_real_pty_stdin(
+    env: dict, stdin_responses: str
+) -> subprocess.CompletedProcess:
+    """Runs configure_machine_level_opt_ins with stdin connected to an
+    actual pseudo-terminal (pty.openpty()'s slave side), not a pipe -- the
+    genuine `[ -t 0 ]`-satisfying shape a self-allocated pty
+    (`script -qc ... /dev/null`) produces, mirroring
+    test_migrate_legacy_config.py's _run_main_with_real_pty_stdin for this
+    file's own sibling writer path. `stdin_responses` is written to the
+    master side before the function runs, queued in the pty's own input
+    buffer for the schema-driven loop's six sequential `read -r -p` calls."""
+    master_fd, slave_fd = pty.openpty()
+    try:
+        script = "set -e\n" + _config_sh_prelude() + _extract_opt_ins_block() + "\nconfigure_machine_level_opt_ins\n"
+        proc = subprocess.Popen(
+            [_BASH, "-c", script],
+            stdin=slave_fd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        os.write(master_fd, stdin_responses.encode())
+        stdout, stderr = proc.communicate(timeout=10)
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+    finally:
+        if slave_fd != -1:
+            os.close(slave_fd)
+        os.close(master_fd)
+
+
+class TestRealPtyTTYSpoofCanary:
+    """The accepted, disclosed residual (docs/design-decisions/
+    sentinel-config-consolidation.md: "`install.sh`'s own interactive
+    opt-in prompts ... are equally pty-spoofable") has a hardened regression
+    test on migrate-legacy-config.sh's sibling writer path
+    (test_real_pty_stdin_still_defers_a_permissive_direction_value) but none
+    here -- this pins the currently-accepted (spoofable) outcome so a future
+    change to this path's trust model is a deliberate, reviewed diff rather
+    than a silent behavior change."""
+
+    def test_real_pty_stdin_enables_both_enforcement_critical_keys(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        # Six promptable keys prompt in config-keys.psv row order (worktree_required,
+        # autonomous_shipping, permission_prompt_tracking, error_mode_nudge,
+        # cost_ledger_recording, pr_cost_recording); "y" answers the first two,
+        # a bare Enter (default N, no-op) answers the rest so the loop
+        # completes without blocking on unanswered input.
+        result = _run_configure_machine_level_opt_ins_with_real_pty_stdin(env, "y\ny\n\n\n\n\n")
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        state = (home / ".claude" / "claude-config.toml").read_text()
+        assert state == "worktree_required = true\nautonomous_shipping = true\n", (
+            "a real pty as stdin must still let a scripted 'y' answer enable "
+            "worktree_required and autonomous_shipping, the same accepted "
+            "spoofing residual migrate-legacy-config.sh's own import path "
+            "already discloses -- exact equality so a routing bug that writes "
+            "a spurious extra key can't slip past a substring check"
+        )
 
 
 class TestDisableStillEnabledReport:

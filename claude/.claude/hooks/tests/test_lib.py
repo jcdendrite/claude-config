@@ -49,6 +49,16 @@ def _lib_sh_with_unreadable_schema(tmp_path: Path) -> Path:
     (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
     return isolated_hooks_dir / "_lib.sh"
 
+
+def _lib_sh_with_missing_config_sh(tmp_path: Path) -> Path:
+    """Symlink only _lib.sh into an isolated directory with no _config.sh
+    sibling at all, simulating a partial stow-relink or interrupted git pull
+    that drops _config.sh out from under an already-present _lib.sh."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks-no-config"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+    return isolated_hooks_dir / "_lib.sh"
+
 # Shell harness: define emit_deny BEFORE sourcing _lib.sh (canonical pattern),
 # call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success, followed by
 # the four newly-folded fields and the field-shift overflow variable, each
@@ -529,7 +539,11 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     # Also symlink standard commands needed by the harness.
-    for cmd in ["head", "tail", "cat", "cut", "printf"]:
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname"]:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
@@ -560,7 +574,11 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     # Symlink jq and bash into tmp_path but intentionally omit timeout.
     (tmp_path / "jq").symlink_to(jq_path)
     (tmp_path / "bash").symlink_to(bash_path)
-    for cmd in ["head", "tail", "cat", "cut", "printf"]:
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    for cmd in ["head", "tail", "cat", "cut", "printf", "dirname"]:
         cmd_path = shutil.which(cmd)
         if cmd_path:
             (tmp_path / cmd).symlink_to(cmd_path)
@@ -585,10 +603,18 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     sleep_path = shutil.which("sleep")
     if not sleep_path:
         pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     start = time.monotonic()
@@ -613,12 +639,20 @@ def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: 
     sleep_path = shutil.which("sleep")
     if not sleep_path:
         pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     # Alias the real timeout binary under the gtimeout name and omit timeout
     # from PATH entirely, simulating a Homebrew-coreutils-only machine.
     (tmp_path / "gtimeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     start = time.monotonic()
@@ -641,9 +675,17 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     sleep_path = shutil.which("sleep")
     if not sleep_path:
         pytest.skip("sleep not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "sleep").symlink_to(sleep_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     start = time.monotonic()
@@ -674,10 +716,18 @@ def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path
     printf_path = shutil.which("printf")
     if not printf_path:
         pytest.skip("printf not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
 
     (tmp_path / "timeout").symlink_to(timeout_path)
     (tmp_path / "bash").symlink_to(bash_path)
     (tmp_path / "printf").symlink_to(printf_path)
+    # dirname is required too: _lib.sh's own sourcing of _config.sh
+    # resolves its path via `$(dirname "${BASH_SOURCE[0]}")`, and a failed
+    # source now aborts _lib.sh's own sourcing entirely (see _lib.sh's
+    # header comment on that source line).
+    (tmp_path / "dirname").symlink_to(dirname_path)
 
     fake_gtimeout = tmp_path / "gtimeout"
     fake_gtimeout.write_text("#!/bin/bash\nprintf 'GTIMEOUT_WAS_USED'\nexit 99\n")
@@ -3572,6 +3622,42 @@ class TestWorktreeEnforcementActive:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
 
 
+def test_sourcing_lib_sh_fails_when_config_sh_is_missing(tmp_path: Path) -> None:
+    """A missing _config.sh must make _lib.sh's own sourcing fail (non-zero),
+    the same as a syntax-broken _lib.sh already does, so the standard
+    `if ! . ".../_lib.sh"; then exit 0/deny; fi` guard every hook uses trips
+    instead of _lib.sh silently defining every function against a
+    _config_*-namespace that no longer exists."""
+    isolated_lib_sh = _lib_sh_with_missing_config_sh(tmp_path)
+    result = subprocess.run(
+        ["bash", "-c", f'. "{isolated_lib_sh}"'],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    assert result.returncode != 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+def test_standard_hook_guard_trips_when_config_sh_is_missing(tmp_path: Path) -> None:
+    """The idiom every hook uses (`if ! . ".../_lib.sh"; then exit 0; fi`)
+    must actually take its failure branch when _config.sh is missing,
+    matching how it already behaves for a syntax-broken _lib.sh."""
+    isolated_lib_sh = _lib_sh_with_missing_config_sh(tmp_path)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'if ! . "{isolated_lib_sh}" 2>/dev/null; then echo GUARD_TRIPPED; exit 0; fi; echo GUARD_NOT_TRIPPED',
+        ],
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+        check=False,
+    )
+    assert result.stdout.strip() == "GUARD_TRIPPED", f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
 # _lib_autonomous_shipping_sentinel_present — direct unit coverage for its
 # sentinel-presence check only, not the full autonomous-shipping-active
 # verdict. Zero-arity: delegates to _config_enabled's autonomous_shipping
@@ -5417,8 +5503,8 @@ def _run_brace_flatten(text: str, env: dict | None = None) -> subprocess.Complet
     ],
 )
 def test_lib_brace_flatten_shapes(text: str, expected: str) -> None:
-    """Every shape row 50 verified against real bash: comma precedence over
-    an embedded `..` (mixed-comma-range, mixed-range-comma), correct
+    """Every shape empirically verified against real bash: comma precedence
+    over an embedded `..` (mixed-comma-range, mixed-range-comma), correct
     innermost-first resolution of nesting (nested), and a `{e}` group with
     neither a comma nor a `..` left untouched (singleton-unchanged) since
     it is not a construct real bash itself would expand specially."""
@@ -5443,11 +5529,11 @@ def test_lib_brace_flatten_step_range_pinned_current_behavior() -> None:
 
 # The true in-budget maximum (16 levels of real nesting) and the true
 # minimum over-budget depth (17 levels) -- the tightest possible pair to
-# discriminate "gate fired" from "gate no-op," verified this session
-# against real bash to resolve to `ls`/require exactly 16 and 17 passes
-# respectively (see row 52's own citation of that verification). Copied
-# verbatim from the plan text, not hand-retyped, since a single dropped or
-# added brace changes the required pass count.
+# discriminate "gate fired" from "gate no-op." Empirically verified against
+# real bash: 16 and 17 real nesting levels are the tightest in-budget/
+# over-budget pair, resolving to `ls`/requiring exactly 16 and 17 passes
+# respectively. Must be copied exactly, not hand-retyped -- a single
+# dropped or added brace changes the required pass count.
 _BRACE_FLATTEN_16_LEVEL_NESTED = (
     "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}} /tmp/dest"
 )
@@ -5490,8 +5576,8 @@ def test_lib_brace_flatten_sed_absent_returns_nonzero(tmp_path: Path) -> None:
 
 def _many_parallel_depth_16_chains(total_bytes: int = 550_000) -> str:
     """Builds many side-by-side (not mutually nested) depth-16 brace chains
-    -- the adversarial shape row 50 benchmarked at ~0.96s for ~550KB. A
-    single deeply-nested chain collapses to almost nothing after pass one;
+    -- empirically benchmarked at ~0.96s for ~550KB. A single deeply-nested
+    chain collapses to almost nothing after pass one;
     many parallel chains instead keep the sed pass's text volume elevated
     across close to all 16 passes, since each pass strips only one level
     per chain."""
@@ -5563,16 +5649,12 @@ def test_lib_shape_match_claude_config_dir_variable_reference_expanded(tmp_path:
 def test_lib_shape_match_glued_short_flag_prefix_stripped_with_no_dotclaude_segment(
     tmp_path: Path,
 ) -> None:
-    """CRITICAL bypass (round 4 finding): a glued short-option token (e.g.
-    curl -so<path>, no space or '=') reaches this function as a single word
-    with the flag letters still attached to the front of the real path.
-    Pass 1's exact-match branch and passes 2-4's `-ef` calls all compare
-    from the candidate's own position 0, so the glued prefix defeated every
-    one of them whenever the resolved config dir has no literal '.claude'
-    segment -- only pass 1's wildcard branch tolerated it, and only because
-    of its own leading '*'. Uses a CLAUDE_CONFIG_DIR with no '.claude'
-    segment specifically, so the wildcard branch cannot incidentally cover
-    for a still-broken exact-match branch."""
+    """Regression test for the same glued short-option bypass -- see
+    TestGluedShortFlagBypassClosed in test_enforce_config_write_shape.py for
+    the full bug mechanism, the empirical curl/wget/openssl findings, and
+    the parametrization rationale. Uses a CLAUDE_CONFIG_DIR with no
+    '.claude' segment specifically, so the wildcard branch cannot
+    incidentally cover for a still-broken exact-match branch."""
     config_dir = tmp_path / "profile"
     config_dir.mkdir()
     env = dict(os.environ)

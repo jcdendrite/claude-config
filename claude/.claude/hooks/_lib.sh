@@ -11,7 +11,13 @@
 # _lib.sh via `bash -c ". <path>; ..."` carries no meaningful $0). Every
 # hook that already sources _lib.sh gets these transitively, with no
 # per-hook edit needed.
-. "$(dirname "${BASH_SOURCE[0]}")/_config.sh"
+# _lib.sh has no `set -e`, so without this explicit check a missing/broken
+# _config.sh would let sourcing continue silently instead of tripping every
+# hook's own `if ! . ".../_lib.sh"; then exit 0/deny; fi` guard the same way
+# a syntax-broken _lib.sh itself already does.
+if ! . "$(dirname "${BASH_SOURCE[0]}")/_config.sh"; then
+  return 1
+fi
 
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.
@@ -1617,9 +1623,11 @@ _lib_brace_flatten() {
 # reaching _lib_shape_match as one literal token matching no real path.
 # A detection predicate, not an expander: tests only the construct's
 # SHAPE and denies on a match, so it costs one regex pass regardless of
-# list size -- the alternatives this rejects (re-implementing bash's own
-# brace grammar, a narrower shape test) are analyzed in
-# .claude/plans/sentinel-config-migration.md row 49, not restated here.
+# list size. Two rejected alternatives: no sound narrowing exists between
+# "deny nothing extra" and re-implementing bash's own combinatorial brace
+# grammar, and delegating to bash's real expansion engine has no cost cap
+# of its own and no safe non-eval primitive to invoke it against untrusted
+# data.
 # The `/` requirement is sound, not heuristic: brace expansion invents no
 # new characters, so a protected path's `/` must already be present in
 # the source word. Deliberately over-matches -- a construct present

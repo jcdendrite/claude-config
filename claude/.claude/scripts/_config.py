@@ -50,12 +50,16 @@ class SchemaRow:
 
 
 def schema() -> dict[str, SchemaRow]:
-    """Parse config-keys.psv into {key: SchemaRow}. Skips blank lines and
-    leading-'#' comments, matching _config.sh's _config_schema_field /
-    install.sh:479's own IFS='|' read -r idiom. A row with fewer than 11
-    fields is padded with empty strings, and one with more has its trailing
-    pipes absorbed into the last field -- the same leniency bash's own
-    `IFS='|' read -r` gives a schema row with the wrong field count.
+    """Parse config-keys.psv into {key: SchemaRow}. Skips blank lines,
+    leading-'#' comments, and a row whose parsed key field is itself empty
+    (e.g. a stray leading pipe), matching _config.sh's _config_schema_field /
+    _config_schema_known_keys's `case "$row_key" in ''|'#'*) continue ;;
+    esac` / install.sh:479's own IFS='|' read -r idiom. A row with fewer
+    than 11 fields is padded with empty strings, and one with more has its
+    trailing pipes absorbed into the last field -- the same leniency bash's
+    own `IFS='|' read -r` gives a schema row with the wrong field count. A
+    duplicate key row keeps its first occurrence, matching
+    _config_schema_field's own first-match `return 0` inside its read loop.
 
     Returns an empty dict, after printing a distinct stderr warning naming
     the schema file, when config-keys.psv itself is missing or unreadable --
@@ -91,6 +95,8 @@ def schema() -> dict[str, SchemaRow]:
             docs_anchor,
             prompt_description,
         ) = fields
+        if not key or key in rows:
+            continue
         rows[key] = SchemaRow(
             key=key,
             type=type_,
@@ -253,6 +259,26 @@ def _location_value(key: str, row: SchemaRow, directory: Path, known_keys: froze
             if mode == expected:
                 return expected
         return "false"
+    if not row.legacy_polarity:
+        # An empty legacy-polarity means KEY has no legacy file to protect.
+        # Fall through to the schema default below with no warning.
+        return row.default
+    # A non-empty legacy-polarity value outside the three literals above is
+    # config-keys.psv corruption, since this git-tracked, code-reviewed file
+    # has no other writer.
+    # Warn loudly rather than silently trusting the schema default below.
+    # worktree_required's own default ("false") is the permissive direction
+    # for this enforcement-critical key, so this case fails closed to
+    # "true" instead.
+    # The other four enforcement-critical keys' schema defaults are already
+    # their own fail-closed direction, so they fall through unchanged.
+    print(
+        f"_config.py: warning: unrecognized legacy-polarity value for {key}: "
+        f"{row.legacy_polarity} -- falling back to schema default",
+        file=sys.stderr,
+    )
+    if key == "worktree_required":
+        return "true"
     return row.default
 
 
