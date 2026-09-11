@@ -153,6 +153,15 @@ outside this class is not reached by any condition below.
 --summary`, and `--summary` exits non-zero unless the scope resolves to
 this repository and one account.
 
+**Account and machine scope.** Every reporting mode in both lists
+above defaults to a single `CLAUDE_CONFIG_DIR` account and machine —
+a total, a rate, and a median all stay there. A dimensionless share
+is the one exception: Cost's share-of-spend mode and Counts' share
+mode may span accounts or machines. A pooled absolute that crosses
+the boundary can be subtracted against another publication of one
+account's own absolute, exposing a private engagement's activity on
+a shared account.
+
 **Approval gate.** An agent never publishes a figure under this
 carve-out on its own judgment. It proposes the figure, the exact
 command or script that produced it, and the artifact the figure would
