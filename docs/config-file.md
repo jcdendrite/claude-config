@@ -198,7 +198,13 @@ It runs two phases, always in this order:
 writing verb — it is read-only, full stop, so shipping it to every stow
 consumer opens no new write path. The only two sanctioned writers are
 `install.sh`'s interactive `[y/N]` opt-in prompt (for the six promptable
-keys) and `migrate-legacy-config.sh`'s import phase, described above.
+keys) and `migrate-legacy-config.sh`'s import phase, described above. These
+two writers are not equally trusted for the five enforcement-critical keys:
+`migrate-legacy-config.sh`'s import phase is direction-aware (it only
+auto-imports a legacy value that already matches the fail-closed direction),
+while `install.sh`'s interactive prompt is not — see
+[`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)
+for that asymmetry and why it's accepted.
 `enforce-config-write-shape.sh` (see [`hooks.md`](hooks.md)) denies every
 Claude-Code-tool-mediated `Write`/`Edit`/`MultiEdit` targeting
 `claude-config.toml`, and every `Bash` command invoking `_config_set` by
@@ -241,6 +247,26 @@ autonomous shipping, PR-cost disclosure mode, and every advisory nudge
 kill switch together, defeating the per-account isolation each of those
 features is designed around. Create each account's `claude-config.toml`
 as its own regular file — never a symlink to another account's copy.
+
+## Performance
+
+Each `_config_value`/`_config_enabled` call resolves through several
+subshell-forking layers (`_config_schema_field`, `_config_location_value`,
+`_config_read_key_from_file`, a `while read` loop over a process
+substitution), roughly doubling for a `config-dir-or-home` union key
+(`worktree_required`, `autonomous_shipping`), which walks that chain twice.
+Measured directly (real `bash script.sh` subprocess invocations, 20
+iterations each, otherwise-idle machine): a bare `. _lib.sh` with no config
+call costs ~16ms; adding one `_config_enabled` call brings that to ~38ms;
+two calls in the same fire (`advance-past-commit-stall.sh`'s shape, which
+checks `commit_stall_block` then `autonomous_shipping`) cost ~61ms.
+Eleven hook files call into this resolution path today, several on the
+highest-frequency PreToolUse gates in the repo (every `Edit`/`Write`/
+`MultiEdit`, every git write) — see `_config.sh`'s own callers. This is
+judged tolerable against the repo's stated <100ms-per-fire hook budget for
+a single- or double-key check, but a hook checking three or more keys in
+one fire should measure its own total against that budget rather than
+assume it stays under it.
 
 ## A hand-edit-loss fragility for enforcement-critical keys
 

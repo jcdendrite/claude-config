@@ -159,7 +159,7 @@ class TestBashNameScanArm:
 
 
 class TestBraceSplitCallSitesClosed:
-    """row 50/52: a brace-split write-utility name or `_config_set` token
+    """A brace-split write-utility name or `_config_set` token
     (`t{ee,ee}`, `_config_s{et,et}`) reaches a raw-text scan as a literal
     that matches nothing, even though bash itself brace-expands it before
     executing -- unless the scan is also run against the flattened
@@ -403,8 +403,8 @@ class TestBraceFlattenTiming:
 
 class TestBashRedirectScanArm:
     def test_raw_append_to_state_file_denied(self, tmp_path):
-        """Closes round 1's gap: a plain redirect reaching the state file
-        with no _config_set substring anywhere in the command."""
+        """Closes the raw-redirect gap: a plain redirect reaching the state
+        file with no _config_set substring anywhere in the command."""
         home = tmp_path / "home"
         home.mkdir()
         target = home / ".claude" / "claude-config.toml"
@@ -738,25 +738,28 @@ class TestReAddedWriteUtilitiesDenyExplicitDestinations:
 
 
 class TestGluedShortFlagBypassClosed:
-    """CRITICAL bypass (round 4 finding): _lib_fragment_candidates emits a
-    glued short-option token (curl -so<path>, wget -O<path>/-qO<path> --
-    flag and value in one word, no space or '=') verbatim. _lib_shape_match's
+    """Regression test for a glued short-option bypass: _lib_fragment_candidates
+    emits a glued short-option token (curl -so<path>, wget -O<path>/-qO<path>
+    -- flag and value in one word, no space or '=') verbatim. _lib_shape_match's
     pass-1 exact-match branch and passes 2-4's `-ef` calls all compare from
     the candidate's own position 0, so the glued flag prefix defeated every
     one of them whenever the resolved config dir has no literal '.claude'
     path segment -- this repo's own documented
     ~/.local/state/claude-accounts/<account>/ multi-account layout is
     exactly that shape. Only pass 1's wildcard branch happened to tolerate
-    the prefix, and only because of its own leading '*'. Empirically
-    confirmed against real curl 8.5.0 and wget binaries: both accept a
-    glued short-option value with no separator; openssl's own option parser
-    does not (verified: 'openssl rand -out/tmp/x 8' errors 'Unknown
-    option'), but _lib_fragment_candidates emits every fragment word as a
-    candidate regardless of what the specific utility's own parser would
-    accept, so the shape-match fix must still close this word shape for
-    openssl too. Parametrized across both a default (.claude-segment-
-    present) and a .claude-segment-free CLAUDE_CONFIG_DIR to prove the fix
-    isn't itself keyed off the '.claude' substring."""
+    the prefix, and only because of its own leading '*'.
+
+    Empirically confirmed against real curl 8.5.0 and wget binaries: both
+    accept a glued short-option value with no separator. openssl's own
+    option parser does not (verified: 'openssl rand -out/tmp/x 8' errors
+    'Unknown option'), but _lib_fragment_candidates emits every fragment
+    word as a candidate regardless of what the specific utility's own
+    parser would accept, so the shape-match fix must still close this word
+    shape for openssl too.
+
+    Parametrized across both a default (.claude-segment-present) and a
+    .claude-segment-free CLAUDE_CONFIG_DIR to prove the fix isn't itself
+    keyed off the '.claude' substring."""
 
     @pytest.fixture(params=[True, False], ids=["default-dotclaude-segment", "dotclaude-free-config-dir"])
     def config_dir_topology(self, request, tmp_path):

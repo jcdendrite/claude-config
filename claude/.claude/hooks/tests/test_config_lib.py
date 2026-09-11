@@ -27,6 +27,7 @@ from helpers import HOOKS_DIR
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
+_CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 
 
 def _run(script: str) -> subprocess.CompletedProcess:
@@ -58,6 +59,26 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
         capture_output=True,
         text=True,
     )
+
+
+def _isolated_hooks_dir_with_legacy_polarity_override(tmp_path: Path, key: str, polarity: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, replacing
+    KEY's own legacy-polarity column (field 8 of 11) with POLARITY --
+    every other row and field is left untouched, so this exercises the
+    corrupted-single-row shape a config-keys.psv typo would produce, not a
+    wholly synthetic schema."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = []
+    for line in _CONFIG_KEYS_PSV.read_text().splitlines():
+        if line.startswith(f"{key}|"):
+            fields = line.split("|")
+            fields[7] = polarity
+            line = "|".join(fields)
+        lines.append(line)
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
 
 
 def _write_write_attempt_shims(bin_dir: Path, marker: Path) -> None:
@@ -309,6 +330,60 @@ class TestLegacyPolarity:
         finally:
             sentinel_path.chmod(0o644)
         assert result.stdout == "false"
+
+
+class TestUnrecognizedLegacyPolarityFallback:
+    """An unrecognized config-keys.psv legacy-polarity value (a schema-file
+    typo, since this column has no other writer) falls through to the
+    key's schema default for four of the five enforcement-critical keys --
+    already that key's fail-closed direction, pinned here explicitly.
+    worktree_required is the one exception: its schema default ("false") is
+    the permissive direction, so _config_location_value fails closed to
+    "true" instead, per its own comment on that arm."""
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            ("worktree_required", "true"),
+            ("autonomous_shipping", "false"),
+            ("commit_stall_block", "true"),
+            ("round_consult_gate", "true"),
+            ("authorization_boundary_restore", "true"),
+        ],
+    )
+    def test_enforcement_critical_key_resolves_fail_closed(self, tmp_path, key, expected):
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(
+            tmp_path, key, "not-a-real-polarity"
+        )
+        target_dir = tmp_path / "cfgdir"
+        target_dir.mkdir()
+        result = _run_with_schema(isolated_hooks_dir, f'_config_location_value {key} "{target_dir}"')
+        assert result.stdout == expected
+        assert "unrecognized legacy-polarity value" in result.stderr
+
+    @pytest.mark.parametrize(
+        "key,schema_default",
+        [
+            ("worktree_required", "false"),
+            ("autonomous_shipping", "false"),
+            ("commit_stall_block", "true"),
+            ("round_consult_gate", "true"),
+            ("authorization_boundary_restore", "true"),
+        ],
+    )
+    def test_empty_legacy_polarity_falls_through_silently(self, tmp_path, key, schema_default):
+        """An empty legacy-polarity is the pre-existing, tested schema shape
+        for a plain key with no legacy file to protect (see
+        TestConfigScaffold::test_plain_key_with_no_legacy_polarity_still_gets_its_default_row),
+        not a corrupted schema value -- it must resolve to the key's own
+        schema default with no warning, even for worktree_required, whose
+        fail-closed override applies only to a non-empty unrecognized value."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_legacy_polarity_override(tmp_path, key, "")
+        target_dir = tmp_path / "cfgdir"
+        target_dir.mkdir()
+        result = _run_with_schema(isolated_hooks_dir, f'_config_location_value {key} "{target_dir}"')
+        assert result.stdout == schema_default
+        assert result.stderr == ""
 
 
 class TestPrCostDisclosureDoesNotUnion:

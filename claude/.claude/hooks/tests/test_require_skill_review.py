@@ -1192,7 +1192,10 @@ class TestRequireSkillReview:
             pytest.skip("jq or bash not found in PATH")
         (tmp_path / "jq").symlink_to(jq_path)
         (tmp_path / "bash").symlink_to(bash_path)
-        for cmd in ["head", "tail", "cat", "cut", "printf"]:
+        # dirname is required too: the stowed _lib.sh's own sourcing of
+        # _config.sh resolves its path via `$(dirname "${BASH_SOURCE[0]}")`,
+        # and a failed source now aborts _lib.sh's own sourcing entirely.
+        for cmd in ["head", "tail", "cat", "cut", "printf", "dirname"]:
             cmd_path = shutil.which(cmd)
             if cmd_path:
                 (tmp_path / cmd).symlink_to(cmd_path)

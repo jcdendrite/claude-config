@@ -1289,15 +1289,15 @@ class TestGateReleaseAuthority:
 
 
 class TestBraceSplitCallSitesClosed:
-    """row 50/52: a brace-split `marker.sh` token (`marker.s{h,h}`) reaches
-    a raw-text scan as a literal that matches nothing, even though bash
-    itself brace-expands it before executing, unless the scan is also run
-    against the flattened companion COMMAND_FLATTENED. One deny-path test
-    per shape (comma, range) at each call site, each paired with an
-    "ordinary command still allows" control at the same call site.
-    Stage 1's own fast-reject fix is a prerequisite every case here also
-    exercises (an unfixed Stage 1 would fast-exit as "allow" before any
-    later check ever ran), so it is not isolated as a separate case."""
+    """A brace-split `marker.sh` token (`marker.s{h,h}`) reaches a raw-text
+    scan as a literal that matches nothing, even though bash itself
+    brace-expands it before executing, unless the scan is also run against
+    the flattened companion COMMAND_FLATTENED. One deny-path test per shape
+    (comma, range) at each call site, each paired with an "ordinary command
+    still allows" control at the same call site. Stage 1's own fast-reject
+    fix is a prerequisite every case here also exercises (an unfixed
+    Stage 1 would fast-exit as "allow" before any later check ever ran), so
+    it is not isolated as a separate case."""
 
     @pytest.mark.parametrize(
         "command",
@@ -2017,7 +2017,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
 
 
 class TestGateReleaseAuthorityGluedShortFlagBypassClosed:
-    """CRITICAL bypass (round 4 finding) -- see
+    """Regression test for the same glued short-option bypass -- see
     TestGluedShortFlagBypassClosed in test_enforce_config_write_shape.py for
     the shared _lib_shape_match root cause and the curl/wget/openssl
     empirical verification of which of these three actually accept a glued

@@ -871,6 +871,41 @@ class TestPerKeyFailureIsolation:
 
 
 # ---------------------------------------------------------------------------
+# claude-config.toml already malformed before migration runs -- both
+# _config_set's per-key write refusal and _config_scaffold's final refusal
+# must surface, not silently succeed on a broken state file.
+# ---------------------------------------------------------------------------
+
+
+class TestStateFileMalformedBeforeMigrationRuns:
+    def test_pre_existing_malformed_line_fails_the_whole_migration(self, tmp_path: Path) -> None:
+        """A pre-existing malformed line (e.g. a hand-edit typo) makes every
+        _config_set call in _migrate_process_key refuse to write
+        (test_config_lib.py's own test_refuses_to_write_when_file_contains_a_malformed_line
+        pins that refusal at the unit level), and the final _config_scaffold
+        call in main() must then also refuse and exit non-zero with its
+        "could not scaffold" message, aborting before the delete-confirmation
+        phase runs -- rather than continuing past a state file it never
+        managed to write to."""
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        original = "handoff_nudge = false\nthis line has no equals sign\n"
+        _state_file(config_dir).write_text(original)
+
+        result = _run(_env(home, config_dir=config_dir), stdin="")
+
+        assert result.returncode != 0
+        assert "could not scaffold" in result.stderr
+        assert _state_file(config_dir).read_text() == original, (
+            "a refused write must leave the malformed file untouched, not partially written"
+        )
+        assert "=== Legacy config files still present ===" not in result.stdout, (
+            "a scaffold failure must abort before the delete-confirmation phase runs"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Schema-row validation: an out-of-subset legacy-import-locations value is
 # rejected loudly, not silently defaulted
 # ---------------------------------------------------------------------------

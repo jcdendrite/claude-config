@@ -363,6 +363,60 @@ class TestConfigDirOverrideEmptyString:
         assert bash_value == python_value == "false"
 
 
+class TestSchemaRowParsingEdgeCases:
+    """config-keys.psv is read by two independently-implemented parsers --
+    _config_schema_field (bash) and schema() (Python) -- so a malformed row
+    shape must degrade identically in both, not just for a well-formed file."""
+
+    def test_duplicate_key_row_first_occurrence_wins_in_both_readers(self, tmp_path, monkeypatch):
+        """Two rows sharing a key: _config_schema_field returns on the first
+        matching row inside its read loop; schema() must agree rather than
+        letting a dict-building last-wins default silently diverge."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+        fixture_schema = (
+            "handoff_nudge|bool|false|config-dir|false||||Handoff nudge||\n"
+            "handoff_nudge|bool|true|config-dir|false||||Handoff nudge (duplicate)||\n"
+        )
+        (isolated_hooks_dir / "config-keys.psv").write_text(fixture_schema)
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_schema_field handoff_nudge default'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 0, bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        python_default = _config.schema()["handoff_nudge"].default
+
+        assert bash_result.stdout == python_default == "false"
+
+    def test_blank_key_row_invisible_to_both_readers(self, tmp_path, monkeypatch):
+        """A row with an empty key field (a stray leading pipe) must be
+        skipped by both readers -- not indexed under the key "" in Python
+        only, the one shape _config_schema_known_keys'/_config_schema_field's
+        `case "$row_key" in ''|'#'*) continue ;; esac` already guards against."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text("|bool|false|config-dir|false||||Blank key row||\n")
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_schema_known_keys'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode != 0
+        assert "no recognized key rows" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        assert _config.schema() == {}
+
+
 class TestMissingSchemaFile:
     def test_missing_schema_file_fails_clearly_in_both_readers(self, tmp_path, monkeypatch, capsys):
         """config-keys.psv itself absent (a partial stow-relink, an

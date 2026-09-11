@@ -271,6 +271,68 @@ class TestSchemaTypeValidationOnRead:
         assert "worktree_required = notabool" in err
 
 
+class TestUnrecognizedLegacyPolarityFallback:
+    """An unrecognized config-keys.psv legacy-polarity value (a schema-file
+    typo, since this column has no other writer) falls through to the
+    key's schema default for four of the five enforcement-critical keys --
+    already that key's fail-closed direction, pinned here explicitly.
+    worktree_required is the one exception: its schema default ("false") is
+    the permissive direction, so _location_value fails closed to "true"
+    instead, matching _config.sh's own mirrored fallback."""
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            ("worktree_required", "true"),
+            ("autonomous_shipping", "false"),
+            ("commit_stall_block", "true"),
+            ("round_consult_gate", "true"),
+            ("authorization_boundary_restore", "true"),
+        ],
+    )
+    def test_enforcement_critical_key_resolves_fail_closed(self, tmp_path, key, expected, capsys):
+        import dataclasses
+
+        from _config import _location_value
+
+        all_keys = schema()
+        row = dataclasses.replace(all_keys[key], legacy_polarity="not-a-real-polarity")
+        directory = tmp_path / "cfgdir"
+        directory.mkdir()
+
+        assert _location_value(key, row, directory, frozenset(all_keys)) == expected
+        err = capsys.readouterr().err
+        assert "unrecognized legacy-polarity value" in err
+
+    @pytest.mark.parametrize(
+        "key,schema_default",
+        [
+            ("worktree_required", "false"),
+            ("autonomous_shipping", "false"),
+            ("commit_stall_block", "true"),
+            ("round_consult_gate", "true"),
+            ("authorization_boundary_restore", "true"),
+        ],
+    )
+    def test_empty_legacy_polarity_falls_through_silently(self, tmp_path, key, schema_default, capsys):
+        """An empty legacy-polarity is the pre-existing, tested schema shape
+        for a plain key with no legacy file to protect, not a corrupted
+        schema value -- it must resolve to the key's own schema default with
+        no warning, even for worktree_required, whose fail-closed override
+        applies only to a non-empty unrecognized value."""
+        import dataclasses
+
+        from _config import _location_value
+
+        all_keys = schema()
+        row = dataclasses.replace(all_keys[key], legacy_polarity="")
+        directory = tmp_path / "cfgdir"
+        directory.mkdir()
+
+        assert _location_value(key, row, directory, frozenset(all_keys)) == schema_default
+        assert capsys.readouterr().err == ""
+
+
 # ---------------------------------------------------------------------------
 # config-get.sh: four-way exit-code contract, no writing verb
 # ---------------------------------------------------------------------------
