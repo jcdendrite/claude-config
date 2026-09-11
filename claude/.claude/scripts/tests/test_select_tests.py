@@ -325,7 +325,9 @@ class TestCrossDomainReadCompleteness:
     """Derives CROSS_DOMAIN_EXCEPTIONS' required entries by scanning every
     test file in _test_corpus() for module-level repo-path constants, so a
     new undeclared cross-domain read fails here instead of depending on
-    manual audit of the header comment."""
+    manual audit of the header comment. Also pins _test_corpus() and
+    _is_test_source_change()'s mutual consistency, including path segments
+    (e.g. worktrees/) that must never satisfy the predicate."""
 
     def test_test_corpus_has_a_minimum_size(self):
         """Floors _test_corpus()'s size well below its real count (~128
@@ -376,6 +378,40 @@ class TestCrossDomainReadCompleteness:
             test_relpath = str(path.relative_to(_REPO_ROOT))
             if _mod._is_test_source_change(test_relpath):
                 assert test_relpath in corpus, test_relpath
+
+    def test_nested_worktree_fixture_shape_is_not_a_test_source_change(self):
+        """Shape written by test_pytest_collection_config.py's
+        TestNestedWorktreeExcludedFromCollection for the duration of its
+        subprocess pytest run; must never satisfy the predicate regardless
+        of timing."""
+        assert not _mod._is_test_source_change(
+            "claude/.claude/worktrees/12345/sub/tests/test_should_never_collect.py"
+        )
+
+    def test_stale_nested_checkout_shape_is_not_a_test_source_change(self):
+        """A corpus-shaped tail nested under a worktrees/ ancestor segment
+        still doesn't match, proving the guard fires on the ancestor rather
+        than the tail."""
+        assert not _mod._is_test_source_change(
+            "claude/.claude/worktrees/some-branch/claude/.claude/hooks/tests/test_select_tests.py"
+        )
+
+    def test_worktrees_prefixed_directory_name_still_matches(self):
+        """Component match, not substring: a directory merely prefixed with
+        'worktrees' is not the worktrees/ directory itself."""
+        assert _mod._is_test_source_change(
+            "claude/.claude/scripts/worktrees-helpers/tests/test_example.py"
+        )
+
+    def test_plugin_nested_worktree_shape_is_not_a_test_source_change(self):
+        """The guard is scoped repo-wide rather than under claude/, so a
+        plugin nesting its own worktrees/ directory is excluded too. This
+        path reaches _is_py_source_under_claude_or_plugins through its
+        PLUGINS_DIR disjunct, a distinct code path from the claude/ cases
+        above."""
+        assert not _mod._is_test_source_change(
+            "plugins/some-plugin/worktrees/tests/test_x.py"
+        )
 
 
 class TestSelectPytestTargets:
@@ -1357,6 +1393,18 @@ class TestRuleTablePathFidelity:
             targets.update(exception_targets)
         return targets
 
+    def test_worktrees_dir_name_is_pruned_by_norecursedirs(self):
+        """Pins WORKTREES_DIR_NAME against pyproject.toml's norecursedirs
+        entry, so a future rename of the worktree-directory convention fails
+        deterministically here instead of surfacing as a returning
+        intermittent failure in the cross-domain read-completeness tests."""
+        import tomllib
+
+        with (_REPO_ROOT / "pyproject.toml").open("rb") as f:
+            config = tomllib.load(f)
+        norecursedirs = config["tool"]["pytest"]["ini_options"]["norecursedirs"]
+        assert _mod.WORKTREES_DIR_NAME in norecursedirs
+
     def test_every_directory_target_exists_on_disk(self):
         directory_targets = [
             t for t in self._all_targets()
@@ -1398,7 +1446,7 @@ class TestRuleTablePathFidelity:
         claude_claude_dir = _REPO_ROOT / "claude" / ".claude"
         real_dirs = {
             d.name for d in claude_claude_dir.iterdir()
-            if d.is_dir() and d.name != "worktrees"  # gitignored, not a tracked domain
+            if d.is_dir() and d.name != _mod.WORKTREES_DIR_NAME  # gitignored, not a tracked domain
         }
         unmapped = real_dirs - _mod.MAPPED_TOP_LEVEL_DIRS
         assert not unmapped, (
@@ -1429,7 +1477,7 @@ class TestRuleTablePathFidelity:
         root_claude_dir = _REPO_ROOT / ".claude"
         real_dirs = {
             d.name for d in root_claude_dir.iterdir()
-            if d.is_dir() and d.name != "worktrees"  # gitignored, not a tracked domain
+            if d.is_dir() and d.name != _mod.WORKTREES_DIR_NAME  # gitignored, not a tracked domain
         }
         unmapped = real_dirs - _mod.MAPPED_ROOT_CLAUDE_DIRS
         assert not unmapped, (
