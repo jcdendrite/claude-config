@@ -119,9 +119,13 @@ _lib_parse_tool_input_or_deny() {
 # Compute the marker repo-hash for an absolute repo-toplevel path.
 # Input must have no trailing newline -- printf '%s' omits one, so the SHA
 # covers exactly the bytes of $1.
+# Exit 1, empty stdout: sha256sum/awk produced no output (tool misbehavior).
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
-  printf '%s' "$1" | sha256sum | awk '{print $1}'
+  local digest
+  digest=$(printf '%s' "$1" | sha256sum | awk '{print $1}')
+  [ -n "$digest" ] || return 1
+  printf '%s\n' "$digest"
 }
 
 # _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
