@@ -15,18 +15,25 @@ set -u
 _LEDGER_FINDING_MAX_CHARS=200
 _LEDGER_RATIONALE_MAX_CHARS=300
 _LEDGER_SOURCE_MAX_CHARS=200
+# 4 digits (max round 9999) is generous for a session-scoped invocation counter.
+_LEDGER_ROUND_MAX_DIGITS=4
 
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/review-ledger.sh <subcommand> [args]
 
 Subcommands:
-  append code-review --finding <text> --disposition ADDRESS|DEFER \
-      --rationale <text> [--source <file:line>] \
+  append code-review --disposition ADDRESS|DEFER|CLEAN --round <N> \
+      [--finding <text> --rationale <text>] [--source <file:line>] \
       [--authoring-agent code-writer|inline|mixed|unknown] \
       [--authoring-effort low|medium|high|xhigh]
              Append one finding-disposition event to this session's ledger.
-             No-ops (exit 0) if the identical line already exists, or if
+             --finding/--rationale are required for ADDRESS|DEFER and must
+             be omitted for CLEAN. --round is the 1-based review round
+             number for this /code-review run in this session.
+             No-ops (exit 0) if the identical line (by round, finding,
+             disposition, rationale, source, authoring_agent,
+             authoring_effort) already exists, or if
              ~/.claude/.review-narrative-ledger-disabled is present.
              --authoring-agent and --authoring-effort are optional; an
              absent flag never aborts the append, but an invalid value does.
@@ -67,6 +74,34 @@ _resolve_repo_root() {
     return 2
   fi
   printf '%s' "$root"
+}
+
+# _reject_missing_round [BAD_VALUE]
+# Prints the --round error text and returns; caller still exits 2.
+# - No argument: --round was never passed (drops the "or invalid" clause
+#   and the value).
+# - BAD_VALUE given: --round was passed but failed validation.
+_reject_missing_round() {
+  local bad_value="${1:-}"
+  if [ -n "$bad_value" ]; then
+    printf "review-ledger.sh: --round <N> is required and missing (or invalid: got '%s').\n" "$bad_value" >&2
+  else
+    printf 'review-ledger.sh: --round <N> is required and missing.\n' >&2
+  fi
+  cat >&2 <<'EOF'
+
+--round is the 1-based review round number for *this* /code-review run in
+this session: 1 for the first round, incrementing once per subsequent
+/code-review invocation you've made. This flag is new -- if your
+understanding of this command predates it, retry with --round added:
+
+  ~/.claude/scripts/review-ledger.sh append code-review --finding "<summary>" \
+    --disposition ADDRESS|DEFER --rationale "<one line>" --round <N> \
+    --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high
+
+Required so two rounds raising an identical finding don't collapse into one
+ledger line under this script's round-scoped dedup key. Abort without writing.
+EOF
 }
 
 # _sweep_stale_ledger_files LEDGER_DIR DRY_RUN REPORT
@@ -142,12 +177,13 @@ case "$SUBCOMMAND" in
     DISPOSITION=""
     RATIONALE=""
     SOURCE="n/a"
+    ROUND=""
     # Empty means the caller omitted --authoring-agent/--authoring-effort ("not declared"), not that it declared and confirmed empty.
     AUTHORING_AGENT=""
     AUTHORING_EFFORT=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --finding|--disposition|--rationale|--source|--authoring-agent|--authoring-effort)
+        --finding|--disposition|--rationale|--source|--round|--authoring-agent|--authoring-effort)
           if [ $# -lt 2 ]; then
             printf "review-ledger.sh: %s requires a value\n" "$1" >&2
             exit 2
@@ -159,6 +195,7 @@ case "$SUBCOMMAND" in
         --disposition) DISPOSITION="$2"; shift 2 ;;
         --rationale) RATIONALE="$2"; shift 2 ;;
         --source) SOURCE="$2"; shift 2 ;;
+        --round) ROUND="$2"; shift 2 ;;
         --authoring-agent) AUTHORING_AGENT="$2"; shift 2 ;;
         --authoring-effort) AUTHORING_EFFORT="$2"; shift 2 ;;
         # Unrecognized flags hard-reject (exit 2): this repo's stow model
@@ -172,12 +209,43 @@ case "$SUBCOMMAND" in
       esac
     done
 
-    [ -n "$FINDING" ] || { printf 'review-ledger.sh: --finding is required\n' >&2; exit 2; }
-    case "$DISPOSITION" in
-      ADDRESS|DEFER) ;;
-      *) printf "review-ledger.sh: --disposition must be ADDRESS or DEFER, got '%s'\n" "$DISPOSITION" >&2; exit 2 ;;
+    case "$ROUND" in
+      '')
+        _reject_missing_round
+        exit 2
+        ;;
+      *[!0-9]*)
+        _reject_missing_round "$ROUND"
+        exit 2
+        ;;
+      [1-9]*)
+        ;;
+      *)
+        # All-digit but not led by a nonzero digit: "0", "00", "000", etc.
+        _reject_missing_round "$ROUND"
+        exit 2
+        ;;
     esac
-    [ -n "$RATIONALE" ] || { printf 'review-ledger.sh: --rationale is required\n' >&2; exit 2; }
+    if [ "${#ROUND}" -gt "$_LEDGER_ROUND_MAX_DIGITS" ]; then
+      printf 'review-ledger.sh: --round exceeds %d digits (got %d) — a session-scoped round counter should never need this many.\n' "$_LEDGER_ROUND_MAX_DIGITS" "${#ROUND}" >&2
+      exit 2
+    fi
+
+    case "$DISPOSITION" in
+      ADDRESS|DEFER)
+        [ -n "$FINDING" ] || { printf 'review-ledger.sh: --finding is required for --disposition ADDRESS|DEFER\n' >&2; exit 2; }
+        [ -n "$RATIONALE" ] || { printf 'review-ledger.sh: --rationale is required for --disposition ADDRESS|DEFER\n' >&2; exit 2; }
+        ;;
+      CLEAN)
+        [ -z "$FINDING" ] || { printf 'review-ledger.sh: --finding must be omitted for --disposition CLEAN\n' >&2; exit 2; }
+        [ -z "$RATIONALE" ] || { printf 'review-ledger.sh: --rationale must be omitted for --disposition CLEAN\n' >&2; exit 2; }
+        [ "$SOURCE" = "n/a" ] || { printf 'review-ledger.sh: --source must be omitted for --disposition CLEAN\n' >&2; exit 2; }
+        ;;
+      *)
+        printf "review-ledger.sh: --disposition must be ADDRESS, DEFER, or CLEAN, got '%s'\n" "$DISPOSITION" >&2
+        exit 2
+        ;;
+    esac
     # Absent (empty) never aborts -- only a present-but-invalid value does,
     # consistent with --disposition above but optional rather than required.
     case "$AUTHORING_AGENT" in
@@ -215,22 +283,42 @@ case "$SUBCOMMAND" in
     LEDGER_FILE="$LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl"
     LOCK_FILE="$LEDGER_FILE.lock"
 
-    # jq -nc rather than hand-escaping free text: already this repo's
-    # convention for untrusted/free-form strings. -c keeps each record on
-    # one line, well under PIPE_BUF, so the O_APPEND write below is atomic.
+    # Captured once here, before the dedup check inside
+    # _lib_append_json_line_locked, and never recomputed on a lock retry --
+    # event_time varies on every call, so it is excluded from the dedup key
+    # filter below rather than baked into LINE per attempt.
+    # event_time is for a human reading `review-ledger.sh show` to
+    # reconstruct the review's own narrative timeline; no code reader
+    # branches on it.
+    EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # jq -nc (one record per line) for an atomic O_APPEND write below. See
+    # docs/transcript-analysis-architecture.md's ledger append-lock section
+    # for why and its local-filesystem-only caveat.
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
+    # schema_version carries no reader that branches on it today -- it's
+    # for a future migration to distinguish row shapes without re-deriving
+    # them from which optional keys are present or absent.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
       --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \
-      '{finding: $finding, disposition: $disposition, rationale: $rationale, source: $source,
-        authoring_agent: $authoring_agent, authoring_effort: $authoring_effort}')
+      --argjson round "$ROUND" --argjson schema_version 2 --arg event_time "$EVENT_TIME" \
+      '{schema_version: $schema_version, round: $round, finding: $finding, disposition: $disposition,
+        rationale: $rationale, source: $source, authoring_agent: $authoring_agent,
+        authoring_effort: $authoring_effort, event_time: $event_time}')
     if [ -z "$LINE" ]; then
       printf 'review-ledger.sh: could not build the ledger line (jq missing, failed, or timed out). Abort without writing.\n' >&2
       exit 2
     fi
 
-    _lib_append_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE"
+    # Dedup key excludes schema_version (a constant) and event_time (varies
+    # on every call, including an otherwise-identical retry) -- two rounds
+    # raising a textually identical finding must both land, which whole-line
+    # dedup would otherwise collapse to one line now that event_time differs
+    # per call.
+    _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
+      '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}'
 
     # Best-effort retention sweep on every append — see _sweep_stale_ledger_files.
     _sweep_stale_ledger_files "$LEDGER_DIR" 0 0

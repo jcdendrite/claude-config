@@ -11854,8 +11854,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "For each --agent-typed dispatch (default code-writer), what share of the code-review"
             " rounds that judged its diff recorded a must-fix (ADDRESS) finding -- the numerator"
-            " issue #800 defines. Reads only the transcript, matching commands by argv shape. Corpus-wide,"
-            " no gh calls."
+            " issue #800 defines. Reads the transcript for round/dispatch structure and each"
+            " session's own review-narrative-ledger file for disposition. Corpus-wide, no gh calls."
         ),
     )
     _add_project_scope_args(p_author_outcome)

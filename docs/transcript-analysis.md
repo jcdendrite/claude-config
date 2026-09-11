@@ -1093,65 +1093,72 @@ Unpriced turns inside round windows: 0
 
 ## author-outcome
 
-**Purpose.** For each `--agent`-typed dispatch (default `code-writer`), did the `code-review` round that judged its diff record a must-fix (`ADDRESS`) finding -- the numerator GitHub issue #800 asks for, so a later measurement can compute what share of `code-writer` dispatches fail their own downstream `/code-review` check. Reads only the transcript: argv on the `review-ledger.sh append`/`marker.sh write` Bash calls, no ledger file, no `gh` calls.
+**Purpose.** For each `--agent`-typed dispatch (default `code-writer`), did the `code-review` round that judged its diff record a must-fix (`ADDRESS`) finding -- the numerator GitHub issue #800 asks for, so a later measurement can compute what share of `code-writer` dispatches fail their own downstream `/code-review` check. Reads the transcript for round/dispatch structure and each session's own review-narrative-ledger file for disposition; no `gh` calls.
 
 **Flags.**
-- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above). The whole join reads only the transcript, so this flag governs the entire join, not just one side of it.
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above). Each in-scope transcript's own ledger file is located by session-id glob, so this flag governs the transcript side; the ledger side follows automatically, one file per session.
 - `--agent NAME` -- the `subagent_type` to join dispatches against (default: `code-writer`). The mechanism is not hardcoded to `code-writer`; every other reviewer-agent type is a legal (if less meaningful) value.
 - `--since Nd` -- limit to dispatches with a timestamp in the last N days (e.g. `30d`); default: all time.
   - Compares against the dispatch's own `Agent`/`Task` tool_use record (its *start* position), not its completion -- distinct from the completion index the failure definition below uses for round attribution.
   - Filters which *dispatches* enter "Dispatches in scope" and the reported outcome buckets.
-  - Does not filter which rounds are detected or which append/marker calls are read -- a round's own signals are evaluated without regard to `--since` at all (see the `authoring_agent inconsistent` counter below for why this distinction matters).
+  - Does not filter which rounds are detected or which ledger rows are read -- a round's own signals are evaluated without regard to `--since` at all (see the `authoring_agent inconsistent` counter below for why this distinction matters).
 
-**Failure definition.** A dispatch's completion index is the position of its paired `tool_result` record, not its `Agent`/`Task` tool_use's own start position, because the `code-writer` dispatch being classified can legitimately still be running when a round opens: a round that opened before the dispatch's own output existed cannot have reviewed that output, so only the completion-keyed attribution can be correct. A dispatch's **attributed round** is the `code-review` round with the smallest `open_idx` strictly greater than that completion index. Its **outcome span** is `[open_idx, open_idx of the next code-review round)`, or `[open_idx, end of records)` for the last round in the session. Within that span, scan every Bash `tool_use` command:
+**Ledger lookup.** Each transcript's own session id (the same id its filename is stem-named after) is globbed directly against `<config_dir_root>/review-narrative-ledger/*.<session_id>.jsonl`, taking the first match -- correct only under the precondition that at most one repo-hash writes a ledger file for a given session id (see the "Accepted risk" entry below for what happens when a session violates it). A session with no matching ledger file (the kill switch was on for its whole lifetime, the session predates `review-ledger.sh`, or its ledger was already swept) reads as zero rows; every round in that session falls straight to the marker-write fallback below.
 
-- **append call** -- a Bash `tool_use` command whose `&&`/`||`/`;`/`|`-split segments include a `review-ledger.sh append code-review` invocation; `--disposition` and `--authoring-agent` are read off that segment's argv.
-- **clean-marker call** -- a command containing a segment matching the hook-allowlisted `marker.sh write code-review` shape.
+**Failure definition.** A dispatch's completion index is the position of its paired `tool_result` record, not its `Agent`/`Task` tool_use's own start position, because the `code-writer` dispatch being classified can legitimately still be running when a round opens: a round that opened before the dispatch's own output existed cannot have reviewed that output, so only the completion-keyed attribution can be correct. A dispatch's **attributed round** is the `code-review` round with the smallest `open_idx` strictly greater than that completion index, and that round's own **round ordinal** is its 1-indexed position in the transcript's own code-review-open sequence for that session. A ledger row is **matched** to a round when its own `round` field equals that round's ordinal exactly; a row with no `round` key at all (a row predating this field) never matches any round, since `None` can't equal an int.
 
 Each dispatch classifies by walking three tests against its attributed round, in order:
 
 1. No attributed round exists -> **UNRESOLVED**.
-2. The span contains >=1 append call with `--disposition ADDRESS` -> **FAILURE**. ADDRESS presence decides this regardless of whether a marker write or another append call also appears in the same span -- the finding was raised against that diff, and a same-span fix does not undo that.
-3. Otherwise, the round concluded clean and the dispatch is a **PASS** iff the span contains either >=1 append call (necessarily all DEFER) or a `marker.sh write code-review` call; **UNATTRIBUTED** if it contains neither.
+2. The round has >=1 matching ledger row with `disposition: ADDRESS` -> **FAILURE**. ADDRESS presence decides this regardless of whether a marker write or another matching row also exists -- the finding was raised against that diff, and a same-round fix does not undo that.
+3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
 
-A matched append call is excluded from classification if its paired `tool_result` has `is_error: true` (`review-ledger.sh append` can be invoked and rejected at runtime, on an invalid `--disposition`/`--authoring-agent` enum or an over-cap value, and a rejected attempt wrote nothing to the real ledger), and counted under "append calls rejected by review-ledger.sh (skipped)" instead. A segment matching the append shape but yielding no `--disposition` value is likewise excluded from classification, and counted under "append calls with unparseable flags (skipped)" instead.
+A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS -- this covers the review-narrative-ledger kill switch (on for that round, so nothing was appended) and any append that errored before landing -- and is counted separately under "rounds with a marker write but no ledger row (kill-switch inferred clean)".
 
 A precondition sits before Test 1: a dispatch whose paired `tool_result` record is absent from the main-thread records has no completion index to compute an attributed round from, and is classified **UNDECIDABLE** rather than entering the three-test walk at all -- counted only under Data quality, never in "Dispatches in scope".
 
 Two non-failure buckets, each of which would bias the share if collapsed into PASS:
 
 - **UNRESOLVED** -- no `code-review` round after the dispatch at all (typically the last dispatch of a session). Excluded from the failure-share denominator.
-- **UNATTRIBUTED** -- a round ran and left neither an append call naming a disposition nor a clean-marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade.
+- **UNATTRIBUTED** -- a round ran and left neither a matching ledger row nor a marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade.
+
+**Accepted regression: a kill-switch round with a real finding is indistinguishable from UNATTRIBUTED.** A round that both had the ledger kill switch on and raised a genuine `ADDRESS` finding leaves no ledger row (kill switch) and no marker write (the review wasn't clean), so it reads identically to a round nothing happened in at all. This is accepted as narrow -- the kill switch is a manual, rare operator toggle.
+
+**Accepted risk: a round straddling a live mid-session schema flip can read as a false PASS.** This repo's own `claude/.claude/**` goes live on `git pull` mid-session (root `CLAUDE.md`). A round whose own `review-ledger.sh append` calls straddle a live pull that flips the script from pre-schema-v2 to schema-v2 can land some pre-flip rows carrying no `round` key at all (never matched by `_classify_round`, since `None` can't equal an int) alongside some post-flip rows that do carry the correct `round` key. If the unmatched pre-flip rows are the ones carrying a real `ADDRESS` and the matched post-flip rows are all `DEFER`, the round reads as a ledger-backed PASS instead of the FAILURE it should be. This is a one-time, self-expiring artifact bounded by the ledger's own 30-day sweep -- it can only occur in sessions that straddle this schema's own rollout -- and per this design's own Verification step, no failure-share number is published from the early post-merge corpus anyway.
+
+**Accepted risk: a deploy-boundary or compaction can mislabel a session's round sequence.** A second, distinct trigger for the same underlying round-tracking fragility: a mid-session deploy boundary or compaction can desynchronize a session's own round-open count from its ledger's `round` sequence in ways the round-number-sequence check above is built to catch. Unlike the schema-flip case above, this one is not merely accepted -- it is bounded by the round-number-mismatch exclusion above, which removes an affected session's dispatches from the headline aggregate entirely rather than leaving them to bias it silently.
+
+**Accepted risk: a session spanning multiple worktrees of the same repo can silently drop one worktree's ledger rows.** A third trigger for the same round-tracking fragility: `review-ledger.sh` names each ledger file `<repo_hash>.<session_id>.jsonl`, and `_ledger_path_for_session` takes the sorted-first glob match for a session id rather than unioning every match. A session whose cwd anchor moves between two worktrees of the same repo mid-session -- a normal workflow this repo's own `CLAUDE.md` documents -- produces two ledger files matching the same session-id glob, and any rounds recorded in the file that doesn't sort first are silently absent from the rows this lookup returns. Like the deploy-boundary/compaction case above, this is bounded rather than merely accepted: `round` is a session-global counter independent of which worktree each round ran in, so a dropped worktree's rows break the exact `1..N` sequence the round-number-mismatch check above requires, and the affected session's dispatches are excluded from the headline aggregate the same way.
 
 **Co-authored rounds.** When several dispatches precede one round, the round's outcome fans out to each -- each contributed bytes to a diff that failed or passed together. The count of such rounds prints as its own Data quality counter.
 
-**Unenforced append-call shape match.** The append-call match (`review-ledger.sh append code-review`, matched by literal basename and subcommand) has no hook-level enforcement, unlike the marker-write shape, which `enforce-marker-script-shape.sh`'s allowlist enforces. If the orchestrator ever invokes the append call through indirection -- a wrapper, a differently-resolving path -- the match silently fails and is indistinguishable from no append call at all. None of the five named data-quality counters catch this, unlike every other named bias in this section.
+**Round-number-sequence check.** A session's ledger `round` values, taken in file order and restricted to rows that carry the `round` key at all, must form the exact `1..N` sequence for `N` code-review rounds the transcript's own detector found in that session -- a gap (a round-open with no ledger row), a ledger round number with no corresponding round-open, or rows recorded out of sequence, all count under "sessions whose ledger round sequence doesn't match the transcript's round-opens". A session whose ledger is entirely legacy rows (no row carries a `round` key) or has no ledger file at all is not evaluated by this check. A session that fails this check has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
 
-**The `authoring_agent inconsistent` counter's own denominator.** Each append call's `--authoring-agent` token (when present -- an append call from a pre-migration transcript, or one that simply omitted the flag, is skipped rather than miscounted) is compared against the transcript-derived determination for that round -- whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still ran its append/marker steps without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
+**The `authoring_agent inconsistent` counter's own denominator.** Each matching ledger row's `authoring_agent` field (when non-empty and not `unknown` -- a row from a pre-migration transcript, or one that simply never declared the flag, is skipped rather than miscounted) is compared against the transcript-derived determination for that round -- whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
 
 **Sample output.**
 ```
 AUTHOR OUTCOME SOURCES (this repo (N project dirs); 1 root)
 agent=code-writer  window=last 30d
 
-Dispatches in scope                             20
-  FAILURE      (round had >=1 ADDRESS)          10
-  PASS         (round concluded clean)           6
-  UNRESOLVED   (no subsequent round)             3
-  UNATTRIBUTED (round ran, no append, no marker) 1
+Dispatches in scope                                 20
+  FAILURE      (round had >=1 ADDRESS)              10
+  PASS         (round concluded clean)               6
+  UNRESOLVED   (no subsequent round)                 3
+  UNATTRIBUTED (round ran, no ledger row, no marker)   1
 Failure share: 10 of 16 resolved dispatches (62.5%)
 
 Data quality
-  rounds co-authored by >1 dispatch                     3
-  append calls with unparseable flags (skipped)         0
-  append calls rejected by review-ledger.sh (skipped)   0
-  dispatches with no paired tool_result (undecidable)   0
-  authoring_agent inconsistent with the transcript join 1
+  rounds co-authored by >1 dispatch                                                 3
+  rounds with a marker write but no ledger row (kill-switch inferred clean)         0
+  sessions whose ledger round sequence doesn't match the transcript's round-opens   0
+  dispatches with no paired tool_result (undecidable)                               0
+  authoring_agent inconsistent with the transcript join                             1
 ```
 
 `Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. Output carries no per-project, per-branch, or per-session dimension by construction: one aggregate table plus counters, so there is nothing for redaction to pseudonymize and no figure that could carry a per-engagement dimension.
 
-**Do not publish a failure-share figure computed before the corpus has accumulated.** No historical transcript carries `--authoring-agent` on its append calls -- the measurement starts only once `review-ledger.sh` and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate.
+**Do not publish a failure-share figure computed before the corpus has accumulated.** No historical ledger row carries a `round` field or `authoring_agent` -- the measurement starts only once `review-ledger.sh`'s schema v2 and this subcommand are both live. A number computed over a near-empty numerator is statistically unreliable, not just premature -- wait for the corpus to accumulate before citing a rate. Old (schema v1) ledger rows are never backfilled with a `round` value; they simply never match a round and fall through to the marker-write fallback or UNATTRIBUTED.
 
 **When to reach for it.** Answer "what share of `code-writer`'s own diffs failed their own downstream review" -- no other subcommand joins the review's own structured disposition back to the dispatch that authored the reviewed diff. `reviewer-yield` classifies a *reviewer's* own verdict shape (findings-found/zero-finding/unclassified), not whether the diff under review passed; `review-round-cost` prices a round's dollars with no pass/fail axis at all.
 

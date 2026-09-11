@@ -2668,45 +2668,36 @@ _lib_round_consult_gate_disabled() {
   return 0
 }
 
-# Shared bounded-retry count for _lib_append_line_locked below, used by both
-# review-ledger.sh and log-reviewer-round.sh. Small and fixed: this runs
-# synchronously inside a hook or CLI script, so the worst-case added latency
-# is bounded retries * the sleep below.
+# Shared bounded-retry count for _lib_acquire_append_lock below, used by
+# both review-ledger.sh and log-reviewer-round.sh. Small and fixed: this
+# runs synchronously inside a hook or CLI script, so the worst-case added
+# latency is bounded retries * the sleep below.
 _LIB_APPEND_LOCK_RETRIES=5
 
-# _lib_append_line_locked FILE LOCK_FILE LINE
-# Sets a bare `trap ... EXIT` to release its lock, which per this repo's
+# _lib_acquire_append_lock LOCK_FILE
+# Shared lock-acquisition/dead-holder-eviction/retry logic behind
+# _lib_append_line_locked and _lib_append_json_line_locked below.
+# Sets a bare `trap ... EXIT` to release the lock, which per this repo's
 # shell-script-conventions rule silently clobbers any other EXIT trap
-# already registered in the calling process -- a future caller sharing this
-# primitive must ensure no other EXIT trap is active in the same process.
-# Shared by review-ledger.sh and log-reviewer-round.sh, which each need the
-# identical check-then-append critical section against a different state
-# file. Acquires a same-directory noclobber lock
-# (bash `set -o noclobber`, the idiom _lib_worktree_collision_guard already
-# establishes in this repo) around the check-then-append: no-ops if LINE
-# already exists verbatim in FILE, else appends it. The lock file's content
-# is the holder's PID. A lock whose PID is dead is evicted and retried
-# immediately, rather than waiting out every retry against a crashed
-# holder. This is the same PID-liveness eviction _lib_active_bypass_marker_live
-# uses for its own markers. It matters more here than at review-ledger.sh's
-# own call site, since a PostToolUse hook is more exposed to being killed
-# mid-lock by the harness's own hook timeout than a skill-invoked CLI
-# script. Falls through to an unlocked append after
-# _LIB_APPEND_LOCK_RETRIES failed acquisitions rather than blocking -- a
-# duplicate line from a lost race is a low-consequence outcome (an inflated
-# round count), not data loss. The lock is released via the EXIT trap noted
-# above, so it clears whether the append succeeds or fails.
-_lib_append_line_locked() {
-  local file="$1" line="$3"
+# already registered in the calling process -- a future caller sharing
+# either primitive must ensure no other EXIT trap is active in the same
+# process.
+# Always returns (never blocks indefinitely): after
+# _LIB_APPEND_LOCK_RETRIES failed acquisitions, the caller proceeds
+# unlocked, trading a low-consequence duplicate line for never blocking.
+# See docs/transcript-analysis-architecture.md's ledger append-lock
+# section for the dead-holder-eviction mechanism and why it matters more
+# at one caller than the other.
+_lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
   # `local` binding of the same name would be out of scope by then.
-  _LIB_APPEND_LOCK_PATH="$2"
+  _LIB_APPEND_LOCK_PATH="$1"
   local attempt=0 stored_pid
   while [ "$attempt" -lt "$_LIB_APPEND_LOCK_RETRIES" ]; do
     if (set -o noclobber; printf '%s\n' "$$" > "$_LIB_APPEND_LOCK_PATH") 2>/dev/null; then
       trap 'rm -f "$_LIB_APPEND_LOCK_PATH"' EXIT
-      break
+      return 0
     fi
     stored_pid=$(cat "$_LIB_APPEND_LOCK_PATH" 2>/dev/null | tr -d '[:space:]')
     if [[ "$stored_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$stored_pid" 2>/dev/null; then
@@ -2720,12 +2711,59 @@ _lib_append_line_locked() {
     attempt=$((attempt + 1))
     sleep 0.05
   done
+}
+
+# _lib_append_line_locked FILE LOCK_FILE LINE
+# Used by log-reviewer-round.sh for the check-then-append critical section
+# against its own state file with whole-line dedup: no-ops if LINE already
+# exists verbatim in FILE, else appends it. review-ledger.sh's own append
+# uses the JSON-projection sibling below instead, since its schema carries
+# a field (event_time) that varies on every call. See
+# _lib_acquire_append_lock above for the locking half of this primitive.
+_lib_append_line_locked() {
+  local file="$1" line="$3"
+  _lib_acquire_append_lock "$2"
   if [ -f "$file" ] && grep -qFx -e "$line" -- "$file" 2>/dev/null; then
     # A dedup no-op must still count as activity on this file's own mtime,
     # or a long-running branch's later no-op append leaves a stale mtime
     # for a directory-wide 30-day sweep to delete out from under it.
     touch -- "$file" 2>/dev/null
     return 0
+  fi
+  printf '%s\n' "$line" >> "$file"
+}
+
+# _lib_append_json_line_locked FILE LOCK_FILE LINE DEDUP_KEY_JQ_FILTER
+# Sibling to _lib_append_line_locked, sharing its lock/retry logic via
+# _lib_acquire_append_lock but dedups via DEDUP_KEY_JQ_FILTER (caller-
+# supplied, e.g. '{round, finding, disposition}' -- never hardcoded here)
+# instead of a whole-line match.
+# A duplicate is a no-op but still touches FILE's mtime, per
+# _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
+# above.
+# See docs/transcript-analysis-architecture.md's ledger append-lock
+# section for why whole-line dedup doesn't work for this schema and
+# which callers use which primitive.
+_lib_append_json_line_locked() {
+  local file="$1" line="$3" dedup_filter="$4"
+  _lib_acquire_append_lock "$2"
+  if [ -f "$file" ] && [ -s "$file" ]; then
+    local dup_check_program is_duplicate
+    # shellcheck disable=SC2016 # single-quoted on purpose: $candidate is
+    # jq's own --argjson-bound variable, meant to expand inside the jq
+    # program this builds, not in this bash string.
+    # -R/inputs/fromjson? reads FILE one raw line at a time rather than
+    # --slurpfile parsing it as one JSON array, so one malformed line (a
+    # partial write from a crash) is skipped instead of failing the whole
+    # file's parse and silently disabling dedup for every future append.
+    dup_check_program=$(printf '($candidate | %s) as $key | any(inputs | fromjson?; (. | %s) == $key)' \
+      "$dedup_filter" "$dedup_filter")
+    is_duplicate=$(_lib_jq -R -n --argjson candidate "$line" \
+      "$dup_check_program" -- "$file" 2>/dev/null)
+    if [ "$is_duplicate" = "true" ]; then
+      touch -- "$file" 2>/dev/null
+      return 0
+    fi
   fi
   printf '%s\n' "$line" >> "$file"
 }

@@ -11,10 +11,12 @@ from .conftest import (
     _agent_use,
     _asst,
     _bash_use,
+    _ledger_row,
     _skill_block,
     _tool_result,
     _user_msg,
     _write_jsonl,
+    _write_ledger_file,
 )
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -32,21 +34,16 @@ def _session_iter(fake_projects):
     return corpus.iter_sessions(fake_projects.parent, "*")
 
 
-def _append_use(
-    tool_id: str,
-    disposition: str,
-    *,
-    authoring_agent: str | None = None,
-    authoring_effort: str | None = None,
-    finding: str = "some finding",
-) -> dict:
-    agent_flag = f" --authoring-agent {authoring_agent}" if authoring_agent is not None else ""
-    effort_flag = f" --authoring-effort {authoring_effort or 'high'}"
-    command = (
-        f'review-ledger.sh append code-review --finding "{finding}" --disposition {disposition}'
-        f' --rationale "why" --source n/a{agent_flag}{effort_flag}'
-    )
-    return _bash_use(tool_id, command)
+def _config_dir_root(fake_projects: Path) -> Path:
+    """fake_projects (the conftest fixture) returns the single project
+    directory <config_dir_root>/projects/-home-user-testrepo -- two parents
+    up is the config-dir root author_outcome.py's own
+    _config_dir_root_for_session derives from a transcript path."""
+    return fake_projects.parent.parent
+
+
+def _seed_ledger(fake_projects: Path, session_id: str, rows: list[dict]) -> Path:
+    return _write_ledger_file(_config_dir_root(fake_projects), session_id, rows)
 
 
 def _marker_write_use(tool_id: str) -> dict:
@@ -61,77 +58,6 @@ def _dispatch_complete(tool_id: str, ts: str) -> dict:
     return _user_msg([_tool_result(tool_id, "done")], branch="feat", ts=ts)
 
 
-class TestParseLedgerAppendFlags:
-    """_parse_ledger_append_flags against one already-tokenized segment --
-    the load-bearing boundary between the shell command shape and the
-    disposition/authoring-agent values the classifier reads."""
-
-    def _segment(self, command: str) -> list[str]:
-        segments = corpus.split_command_segments(command)
-        assert len(segments) == 1
-        return segments[0]
-
-    def test_append_segment_yields_disposition_and_authoring_agent(self):
-        segment = self._segment(
-            'review-ledger.sh append code-review --finding "fix the bug"'
-            ' --disposition ADDRESS --authoring-agent code-writer --rationale "why"'
-        )
-        assert ao._parse_ledger_append_flags(segment) == {"disposition": "ADDRESS", "authoring_agent": "code-writer"}
-
-    def test_append_segment_with_authoring_agent_absent_omits_the_key(self):
-        """Entirely absent (not merely empty) -- the shape every
-        pre-migration transcript has."""
-        segment = self._segment('review-ledger.sh append code-review --finding "x" --disposition DEFER --rationale "why"')
-        assert ao._parse_ledger_append_flags(segment) == {"disposition": "DEFER"}
-
-    def test_unrelated_segment_returns_empty_dict_not_none(self):
-        """An ordinary segment that isn't an append call at all is not a
-        parse failure -- None is reserved for a segment that matches the
-        append shape but fails to yield a --disposition value."""
-        assert ao._parse_ledger_append_flags(["git", "status"]) == {}
-
-    def test_append_shaped_segment_missing_disposition_returns_none(self):
-        segment = self._segment('review-ledger.sh append code-review --finding "x" --rationale "why"')
-        assert ao._parse_ledger_append_flags(segment) is None
-
-    def test_finding_value_containing_a_dollar_var_does_not_affect_parsing(self):
-        """This module never invokes a shell, so a `--finding "$VAR"` value
-        is read back as the literal token "$VAR" -- irrelevant here, since
-        only --disposition/--authoring-agent are read."""
-        segment = self._segment('review-ledger.sh append code-review --finding "$FINDING_VAR" --disposition ADDRESS')
-        assert ao._parse_ledger_append_flags(segment) == {"disposition": "ADDRESS"}
-
-    def test_append_call_inside_a_shell_and_chain_is_matched(self):
-        segments = corpus.split_command_segments(
-            'cd worktree && review-ledger.sh append code-review --finding "fix the bug"'
-            ' --disposition ADDRESS --rationale "why"'
-        )
-        matched = [flags for seg in segments if (flags := ao._parse_ledger_append_flags(seg))]
-        assert matched == [{"disposition": "ADDRESS"}]
-
-    def test_path_qualified_append_command_still_matches_via_basename(self):
-        """Every other fixture in this class uses a bare command name --
-        this is the only case proving os.path.basename()'s path-stripping
-        step, not just the literal "review-ledger.sh" comparison, is
-        load-bearing."""
-        segment = self._segment(
-            '~/.claude/scripts/review-ledger.sh append code-review --finding "x" --disposition ADDRESS'
-        )
-        assert ao._parse_ledger_append_flags(segment) == {"disposition": "ADDRESS"}
-
-    def test_full_six_flag_invocation_shape_from_skill_md_still_parses(self):
-        """Mirrors code-review/SKILL.md's own real six-flag order --
-        --finding, --disposition, --rationale, --source, --authoring-agent,
-        --authoring-effort -- distinct from every other fixture in this
-        class, which omits --source/--authoring-effort or uses a different
-        flag order."""
-        segment = self._segment(
-            'review-ledger.sh append code-review --finding "fix the bug" --disposition ADDRESS'
-            ' --rationale "why" --source "file.py:10" --authoring-agent code-writer --authoring-effort high'
-        )
-        assert ao._parse_ledger_append_flags(segment) == {"disposition": "ADDRESS", "authoring_agent": "code-writer"}
-
-
 class TestIsCleanMarkerWrite:
     def test_marker_write_chained_with_git_commit_is_matched(self):
         assert ao._is_clean_marker_write("marker.sh write code-review && git commit -m wip") is True
@@ -140,24 +66,146 @@ class TestIsCleanMarkerWrite:
         assert ao._is_clean_marker_write("git status") is False
 
     def test_path_qualified_marker_write_still_matches_via_basename(self):
-        """Mirrors TestParseLedgerAppendFlags' own path-qualified case --
-        every other fixture in this class uses a bare command name."""
         assert ao._is_clean_marker_write("~/.claude/scripts/marker.sh write code-review") is True
 
 
-class TestIsAppendCallRejected:
-    def test_true_when_paired_tool_result_is_error(self):
-        records = [_user_msg([{"type": "tool_result", "tool_use_id": "b1", "content": "invalid enum", "is_error": True}])]
-        tool_result_index = ao._build_tool_result_index_map(records)
-        assert ao._is_append_call_rejected(tool_result_index, "b1") is True
+class TestLedgerPathForSession:
+    def test_finds_ledger_file_by_session_id_glob(self, tmp_path):
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        expected = ledger_dir / ("a" * 64 + ".sess-1.jsonl")
+        expected.write_text("")
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
 
-    def test_false_when_paired_tool_result_is_not_error(self):
-        records = [_user_msg([_tool_result("b1", "ok")])]
-        tool_result_index = ao._build_tool_result_index_map(records)
-        assert ao._is_append_call_rejected(tool_result_index, "b1") is False
+        assert ao._ledger_path_for_session(jsonl) == expected
 
-    def test_false_when_no_paired_tool_result_exists(self):
-        assert ao._is_append_call_rejected(ao._build_tool_result_index_map([]), "b1") is False
+    def test_returns_none_when_no_ledger_file_exists(self, tmp_path):
+        jsonl = tmp_path / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        assert ao._ledger_path_for_session(jsonl) is None
+
+
+class TestReadLedgerRowsForSession:
+    """_write_ledger_file/_ledger_row (the conftest fixtures every other
+    test in this file uses) can only ever produce valid-JSON lines, so they
+    can't exercise the malformed-line/unreadable-file tolerance
+    _read_ledger_rows_for_session's own docstring claims -- these write the
+    ledger file directly instead."""
+
+    def test_malformed_line_is_skipped_not_fatal(self, tmp_path):
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        ledger_path = ledger_dir / ("a" * 64 + ".sess-1.jsonl")
+        ledger_path.write_text(
+            '{"round":1,"disposition":"ADDRESS"}\n'
+            "this is not json at all\n"
+            '{"round":2,"disposition":"DEFER"}\n'
+        )
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        rows = ao._read_ledger_rows_for_session(jsonl)
+
+        assert [r["round"] for r in rows] == [1, 2], (
+            "the malformed line must be dropped, and the surrounding valid "
+            "rows must still be returned in file order"
+        )
+
+    def test_unreadable_ledger_path_returns_empty_list(self, tmp_path):
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        # A directory where a ledger file is expected raises OSError
+        # (IsADirectoryError) on open() -- the same branch a permission
+        # error or other unreadable-file condition would hit.
+        (ledger_dir / ("a" * 64 + ".sess-1.jsonl")).mkdir()
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+
+        assert ao._read_ledger_rows_for_session(jsonl) == []
+
+
+class TestRoundNumberMismatch:
+    def test_matching_sequence_is_not_a_mismatch(self):
+        rows = [
+            _ledger_row(round=1, disposition="DEFER"),
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=2, disposition="DEFER"),
+            _ledger_row(round=3, disposition="DEFER"),
+        ]
+        assert ao._round_number_mismatch(rows, round_open_count=3) is False
+
+    def test_gap_in_sequence_is_a_mismatch(self):
+        """Round 2 opened in the transcript but never got a ledger row --
+        a gap between the ledger's own round 1 and round 3."""
+        rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=3, disposition="DEFER")]
+        assert ao._round_number_mismatch(rows, round_open_count=3) is True
+
+    def test_ledger_round_with_no_corresponding_open_is_a_mismatch(self):
+        rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=5, disposition="DEFER")]
+        assert ao._round_number_mismatch(rows, round_open_count=1) is True
+
+    def test_legacy_only_ledger_is_not_a_mismatch(self):
+        """Every row predates the round field -- nothing to evaluate a
+        sequence against, so this must not flag every pre-migration
+        session as a mismatch."""
+        rows = [_ledger_row(round=None, disposition="ADDRESS"), _ledger_row(round=None, disposition="DEFER")]
+        assert ao._round_number_mismatch(rows, round_open_count=2) is False
+
+    def test_empty_ledger_is_not_a_mismatch(self):
+        assert ao._round_number_mismatch([], round_open_count=3) is False
+
+
+class TestClassifyRound:
+    def test_address_row_is_failure_even_with_other_defer_rows_present(self):
+        data_quality = ao.Counter()
+        rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=1, disposition="ADDRESS")]
+        classification, matching = ao._classify_round(1, rows, has_marker_write=True, data_quality=data_quality)
+        assert classification == ao._OUTCOME_FAILURE
+        assert len(matching) == 2
+
+    def test_defer_only_rows_are_pass(self):
+        data_quality = ao.Counter()
+        rows = [_ledger_row(round=1, disposition="DEFER")]
+        classification, _matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_PASS
+
+    def test_clean_disposition_row_is_pass(self):
+        data_quality = ao.Counter()
+        rows = [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")]
+        classification, _matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_PASS
+
+    def test_no_matching_rows_but_marker_write_is_pass_and_counts_kill_switch_inferred(self):
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        classification, matching = ao._classify_round(1, [], has_marker_write=True, data_quality=data_quality)
+        assert classification == ao._OUTCOME_PASS
+        assert matching == []
+        assert data_quality[ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
+
+    def test_no_matching_rows_and_no_marker_write_is_unattributed(self):
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        classification, _matching = ao._classify_round(1, [], has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_UNATTRIBUTED
+        assert data_quality[ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 0
+
+    def test_legacy_row_without_round_key_never_matches_any_round(self):
+        """A legacy row's round is absent (None), which can never equal an
+        int round_ordinal -- it must not accidentally satisfy round 1's
+        match, even though it's the only row in the ledger."""
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        rows = [_ledger_row(round=None, disposition="ADDRESS")]
+        classification, matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_UNATTRIBUTED
+        assert matching == []
 
 
 class TestComputeAuthorOutcomesBuckets:
@@ -165,18 +213,11 @@ class TestComputeAuthorOutcomesBuckets:
 
     def test_dispatch_is_failure_when_its_attributed_round_has_an_address_finding(self, fake_projects):
         session_id = "sess-1"
-        chained_append = _bash_use(
-            "b1",
-            'cd worktree && review-ledger.sh append code-review --finding "fix the bug"'
-            ' --disposition ADDRESS --rationale "why"',
-        )
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), chained_append],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -185,23 +226,33 @@ class TestComputeAuthorOutcomesBuckets:
 
     def test_dispatch_is_pass_when_its_attributed_round_has_only_defer_findings(self, fake_projects):
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
 
-    def test_dispatch_is_pass_when_its_attributed_round_is_clean_with_no_findings(self, fake_projects):
-        """A zero-append round -- review found nothing -- is a PASS when the
-        marker-write call is present, never inferred from the absence of
-        an ADDRESS finding alone."""
+    def test_dispatch_is_pass_when_its_attributed_round_has_a_clean_disposition_row(self, fake_projects):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+
+    def test_dispatch_is_pass_when_marker_write_present_with_no_ledger_row_at_all(self, fake_projects):
+        """The review-narrative-ledger kill switch was on for this round --
+        no ledger file exists for the session at all -- but the round's
+        own marker.sh write code-review call still ran."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
@@ -211,11 +262,9 @@ class TestComputeAuthorOutcomesBuckets:
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
 
-    def test_dispatch_is_unattributed_when_its_last_round_has_no_append_and_no_marker(self, fake_projects):
-        """A round that ran (opened) but left neither an append call nor a
-        clean-marker write -- both prose steps skipped -- even when it is
-        the session's own last round."""
+    def test_dispatch_is_unattributed_when_no_ledger_row_and_no_marker_write(self, fake_projects):
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
@@ -224,19 +273,18 @@ class TestComputeAuthorOutcomesBuckets:
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+        assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 0
 
     def test_task_tool_name_dispatch_is_picked_up_identically_to_agent_tool_name(self, fake_projects):
         """pricing._SPAWN_TOOL_NAMES covers both "Agent" and "Task" --
         a dispatch spawned via the "Task" tool must classify the same as
         every other fixture in this class, which all use "Agent"."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z", tool_name="Task"),
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -260,6 +308,16 @@ class TestOrderingAndUndecidable:
         returns must not claim that dispatch -- attribution is keyed on
         completion index, not start index."""
         session_id = "sess-1"
+        # round=1 has its own row too (unrelated to this test's own focus)
+        # so the session's ledger round sequence is the exact [1, 2] the
+        # transcript's two round-opens expect -- round1 would otherwise
+        # read as a round-number mismatch (no round-keyed row at all) and
+        # have its own session's dispatches excluded from the headline
+        # outcomes this test asserts on.
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="DEFER"),
+            _ledger_row(round=2, disposition="DEFER"),
+        ])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),  # idx0: a1 dispatch starts
             _asst(  # idx1: round1 opens while a1 is still running
@@ -269,13 +327,13 @@ class TestOrderingAndUndecidable:
             _dispatch_complete("a1", "2026-08-01T10:00:20.000Z"),  # idx2: a1 completes
             _asst(  # idx3: round2 opens
                 "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:30.000Z",
-                content=[_skill_block("s2", "code-review"), _append_use("b1", "DEFER")],
+                content=[_skill_block("s2", "code-review")],
             ),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
-        # Attributed to round2 (PASS, its own DEFER call) -- if round1 had
-        # wrongly claimed it, round1's own zero-append/no-marker span would
+        # Attributed to round2 (PASS, its own DEFER row) -- if round1 had
+        # wrongly claimed it, round1's own zero-row/no-marker span would
         # instead classify it UNATTRIBUTED.
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 0
@@ -309,15 +367,13 @@ class TestOrderingAndUndecidable:
 
 class TestInlineAndCoAuthored:
     def test_session_with_no_agent_dispatch_contributes_zero_dispatches(self, fake_projects):
-        """A zero-Agent-record session: the round's own append call is real
+        """A zero-Agent-record session: the round's own ledger row is real
         (and attributable), but no code-writer dispatch exists to charge
         it to -- the "inline" case."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS", authoring_agent="inline")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS", authoring_agent="inline")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -328,15 +384,13 @@ class TestInlineAndCoAuthored:
 
     def test_two_dispatches_attributed_to_the_same_round_are_a_co_authored_fan_out(self, fake_projects):
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS", authoring_agent="mixed")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
             _dispatch_start("a2", "2026-08-01T10:00:20.000Z"),
             _dispatch_complete("a2", "2026-08-01T10:00:30.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS", authoring_agent="mixed")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -351,11 +405,9 @@ class TestInlineAndCoAuthored:
         test above covers only the consistent side (two dispatches,
         transcript_side "code-writer")."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS", authoring_agent="mixed")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS", authoring_agent="mixed")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -363,13 +415,11 @@ class TestInlineAndCoAuthored:
 
     def test_authoring_agent_inline_declared_against_a_code_writer_round_is_inconsistent(self, fake_projects):
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="inline")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="inline")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -380,13 +430,11 @@ class TestInlineAndCoAuthored:
         completed code-writer dispatch -- skipped like an absent flag,
         not counted as inconsistent."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="unknown")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="unknown")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -397,11 +445,9 @@ class TestInlineAndCoAuthored:
         dispatches (transcript_side "inline") -- still skipped, the skip
         does not depend on which transcript_side the round has."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="unknown")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="unknown")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
@@ -412,51 +458,107 @@ class TestInlineAndCoAuthored:
         round genuinely authored by a completed code-writer dispatch:
         consistent, not counted."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="code-writer")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="code-writer")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
 
+    def test_transcript_side_uses_the_actual_agent_type_not_a_hardcoded_code_writer(self, fake_projects):
+        """A non-default --agent run must compare against its own agent_type,
+        not a hardcoded "code-writer" literal -- a round attributed to a
+        "some-other-agent" dispatch with "code-writer" declared in the ledger
+        is inconsistent, which a hardcoded transcript_side would have missed
+        (it would have read "code-writer" too and reported consistent)."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="code-writer")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z", agent_type="some-other-agent"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), agent_type="some-other-agent")
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
+
     def test_authoring_agent_code_writer_declared_against_a_zero_dispatch_round_is_inconsistent(self, fake_projects):
         """declared "code-writer" against a round with zero attributing
         dispatches (transcript_side "inline") -- inconsistent."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="code-writer")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="code-writer")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
 
     def test_authoring_agent_absent_is_skipped_not_miscounted(self, fake_projects):
-        """--authoring-agent entirely absent (not merely empty), with
-        --authoring-effort present at its default value, is skipped by the
-        cross-check rather than treated as an inconsistency. Only
-        --authoring-agent's absence is under test here; authoring_effort
-        isn't parsed by the classifier, so its value is irrelevant."""
+        """authoring_agent recorded as the empty string (review-ledger.sh's
+        own "not declared" sentinel, or a pre-migration row entirely
+        missing the key) is skipped by the cross-check rather than treated
+        as an inconsistency."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+
+    def test_legacy_row_without_round_key_is_skipped_by_authoring_agent_cross_check(self, fake_projects):
+        """A legacy row never matches any round (see TestClassifyRound), so
+        it never enters a round's own matching_ledger_rows list and can't
+        reach the authoring_agent cross-check at all -- this must not
+        crash, and must not count anything."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=None, disposition="ADDRESS", authoring_agent="mixed")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+
+
+class TestSinceFilterMainline:
+    def test_since_filter_counts_the_in_window_dispatch_and_excludes_the_out_of_window_one(self, fake_projects):
+        """The ordinary, most-common --since shape: two dispatches in one
+        session, each attributed normally to its own round -- one before
+        since_ts, one after. The in-window dispatch (a2, PASS) must be
+        counted in "Dispatches in scope" and its own outcome bucket; the
+        out-of-window dispatch (a1, would-be FAILURE) must be excluded from
+        both, not merely from the outcome label."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=2, disposition="DEFER"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _dispatch_start("a2", "2026-08-01T10:02:00.000Z"),
+            _dispatch_complete("a2", "2026-08-01T10:02:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:03:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:04:00.000Z"),
+        ])
+        since_ts = corpus._parse_ts("2026-08-01T10:01:30.000Z")
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), since_ts=since_ts)
+        assert sum(result["outcomes"].values()) == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
 
 
 class TestSinceFilterBifurcation:
@@ -469,13 +571,11 @@ class TestSinceFilterBifurcation:
         round, so the cross-check's own transcript_side must still read
         "code-writer", not silently fall back to "inline"."""
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="inline")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "DEFER", authoring_agent="inline")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         since_ts = corpus._parse_ts("2026-08-01T10:00:30.000Z")
@@ -484,83 +584,64 @@ class TestSinceFilterBifurcation:
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
 
 
-class TestUnparseableAppend:
-    def test_round_with_only_unrelated_bash_commands_does_not_increment_unparseable(self, fake_projects):
+class TestRoundNumberMismatchIntegration:
+    def test_ledger_missing_a_round_between_two_present_rounds_increments_the_counter(self, fake_projects):
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="DEFER"),
+            _ledger_row(round=3, disposition="DEFER"),
+        ])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), _bash_use("b1", "git status")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s3", "code-review")]),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
-        assert result["data_quality"][ao._DQ_UNPARSEABLE_APPEND] == 0
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
 
-    def test_append_shaped_segment_missing_disposition_increments_unparseable(self, fake_projects):
+    def test_ledger_matching_every_round_open_does_not_increment_the_counter(self, fake_projects):
         session_id = "sess-1"
-        bad_append = _bash_use("b1", 'review-ledger.sh append code-review --finding "x" --rationale "why"')
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review"), bad_append],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
-        assert result["data_quality"][ao._DQ_UNPARSEABLE_APPEND] == 1
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
 
-
-class TestRejectedAppend:
-    def test_append_call_rejected_by_review_ledger_is_excluded_and_counted(self, fake_projects):
-        session_id = "sess-1"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+    def test_mismatched_sessions_dispatches_excluded_from_headline_outcomes(self, fake_projects):
+        """A round-number-mismatched session's own dispatches must not
+        pollute the headline outcomes/"Dispatches in scope" aggregate --
+        the session still counts toward _DQ_ROUND_NUMBER_MISMATCH itself.
+        A clean session's dispatch in the same run is unaffected."""
+        mismatched_session_id = "sess-mismatched"
+        _seed_ledger(fake_projects, mismatched_session_id, [
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=3, disposition="DEFER"),
+        ])
+        _write_jsonl(fake_projects / f"{mismatched_session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS")],
-            ),
-            _user_msg(
-                [{"type": "tool_result", "tool_use_id": "b1", "content": "invalid enum", "is_error": True}],
-                branch="feat", ts="2026-08-01T10:01:10.000Z",
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:03:00.000Z", content=[_skill_block("s3", "code-review")]),
         ])
+
+        clean_session_id = "sess-clean"
+        _seed_ledger(fake_projects, clean_session_id, [_ledger_row(round=1, disposition="DEFER")])
+        _write_jsonl(fake_projects / f"{clean_session_id}.jsonl", [
+            _dispatch_start("b1", "2026-08-01T11:00:00.000Z"),
+            _dispatch_complete("b1", "2026-08-01T11:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T11:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T11:02:00.000Z"),
+        ])
+
         result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        # a1's round (round 1, ADDRESS) would otherwise be a FAILURE -- excluded.
+        # b1's round (round 1, DEFER, from the clean session) is still a PASS.
+        assert sum(result["outcomes"].values()) == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["outcomes"][ao._OUTCOME_FAILURE] == 0
-        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
-        assert result["data_quality"][ao._DQ_REJECTED_APPEND] == 1
-
-
-class TestCoOccurrencePrecedence:
-    """Pins the Failure-definition's stated precedence rule: ADDRESS
-    presence decides FAILURE regardless of what else co-occurs in the
-    same span."""
-
-    def test_address_append_and_marker_write_in_same_span_is_failure_not_pass(self, fake_projects):
-        session_id = "sess-1"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
-            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS"), _marker_write_use("m1")],
-            ),
-        ])
-        result = ao.compute_author_outcomes(_session_iter(fake_projects))
-        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
-        assert result["outcomes"][ao._OUTCOME_PASS] == 0
-
-    def test_two_append_calls_address_and_defer_in_same_span_is_failure(self, fake_projects):
-        session_id = "sess-1"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
-            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS"), _append_use("b2", "DEFER")],
-            ),
-        ])
-        result = ao.compute_author_outcomes(_session_iter(fake_projects))
-        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
 
 
 class TestBuildParserWiring:
@@ -594,13 +675,11 @@ class TestCmdAuthorOutcomeReport:
 
     def test_report_prints_header_and_bucket_lines(self, fake_projects, capsys):
         session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
-            _asst(
-                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
-                content=[_skill_block("s1", "code-review"), _append_use("b1", "ADDRESS")],
-            ),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
         ])
         _mod.cmd_author_outcome(self._args())

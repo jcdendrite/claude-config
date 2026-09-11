@@ -30,9 +30,8 @@ transcript file). No dependency on scope resolution, redaction, or pricing — e
 (and the shim) builds on this one.
 
 Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
-as the single source of truth for three consumers: (1) the shim's own mutating-git classifier,
-(2) `author_outcome.py`'s ledger-append matcher (`_parse_ledger_append_flags`), and (3) its
-clean-marker-write matcher (`_is_clean_marker_write`).
+as the single source of truth for two consumers: the shim's own mutating-git classifier, and
+`author_outcome.py`'s clean-marker-write matcher (`_is_clean_marker_write`).
 
 ### `scope.py`
 
@@ -118,18 +117,32 @@ window's own `open_idx`/`skill`.
 The author-outcome command family: `cmd_author_outcome` and every helper used only by it —
 for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code-review` round
 that judged its diff (`compute_author_outcomes`), by completion-index ordering against
-`review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by matching that
-round's own `review-ledger.sh append code-review`/`marker.sh write code-review` Bash `tool_use`
-commands directly, by argv shape. It reads only the transcript — no review-narrative-ledger file
-is ever opened. The Bash `tool_use` record of that call is the primary record of "the orchestrator
-asserted disposition X for finding Y"; the ledger file on disk is a lossy downstream derivative of
-it, not an equivalent source:
+`review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by reading that
+session's own review-narrative-ledger file directly. `_ledger_path_for_session` locates the file
+by a session-id glob under `<config_dir_root>/review-narrative-ledger/`, correct only under the
+precondition that at most one repo-hash writes a ledger file for a given session id (see
+`docs/transcript-analysis.md`'s author-outcome section for the "Accepted risk" this precondition's
+violation currently falls back on). Ledger rows are
+matched to a round by exact `round`-field equality against that round's own 1-indexed position in
+the transcript's round-open sequence. The transcript is still the sole source for round-open
+positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`
+fallback signal used only when a round has no ledger row at all (`_is_clean_marker_write`).
 
-- it dedups verbatim-duplicate lines
-- it no-ops entirely under the kill switch
-- it rejects over-cap fields
-- it sweeps entries after 30 days
-- its record carries no timestamp or session id
+**Ledger append-lock primitives (`claude/.claude/hooks/_lib.sh`).** Every `review-ledger.sh append` call
+writes its line via `_lib_append_json_line_locked`, which dedups by projecting each line through a
+caller-supplied jq filter (here, `{round, finding, disposition, rationale, source, authoring_agent,
+authoring_effort}`) rather than matching whole lines, because `event_time` varies on every call and
+would otherwise defeat whole-line dedup entirely. `review-ledger.sh` is this primitive's only
+caller; `log-reviewer-round.sh` is the only caller left on its sibling, `_lib_append_line_locked`'s
+whole-line `grep -qFx` dedup. Both siblings share one lock/dead-holder-eviction/retry primitive,
+`_lib_acquire_append_lock`, whose dead-PID eviction is the same pattern
+`_lib_active_bypass_marker_live` uses for its own markers; eviction matters more at
+`log-reviewer-round.sh`'s `PostToolUse`-hook call site than at `review-ledger.sh`'s own CLI
+invocation, since a hook is more exposed to being killed mid-lock by the harness's own timeout than
+a skill-invoked script. `review-ledger.sh` builds each line with `jq -nc` (one record per line), so
+its own `>>` append is atomic via the kernel's own inode locking on a local filesystem — distinct
+from PIPE_BUF, which governs pipe/FIFO writes, not a file append, and not guaranteed at all over a
+network-mounted `$HOME`/`CLAUDE_CONFIG_DIR` (NFS).
 
 Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
 (attribute access), matching `review_rounds.py`'s own convention. See

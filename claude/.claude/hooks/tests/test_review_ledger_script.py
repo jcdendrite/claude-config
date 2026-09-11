@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -64,6 +65,7 @@ def _append_args(
     disposition: str = "ADDRESS",
     rationale: str = "fixed inline",
     source: str | None = None,
+    round: str | None = "1",
     authoring_agent: str | None = None,
     authoring_effort: str | None = None,
 ) -> list[str]:
@@ -79,6 +81,8 @@ def _append_args(
     ]
     if source is not None:
         args += ["--source", source]
+    if round is not None:
+        args += ["--round", round]
     if authoring_agent is not None:
         args += ["--authoring-agent", authoring_agent]
     if authoring_effort is not None:
@@ -149,7 +153,10 @@ class TestReviewLedgerAppendHappyPath:
         lines = ledger.read_text().splitlines()
         assert len(lines) == 1
         record = json.loads(lines[0])
+        event_time = record.pop("event_time")
         assert record == {
+            "schema_version": 2,
+            "round": 1,
             "finding": "Missing error handling in foo()",
             "disposition": "ADDRESS",
             "rationale": "fixed inline",
@@ -157,6 +164,8 @@ class TestReviewLedgerAppendHappyPath:
             "authoring_agent": "",
             "authoring_effort": "",
         }
+        # UTC, second-resolution, Z-suffixed -- e.g. 2026-08-01T10:00:00Z.
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", event_time), event_time
 
     def test_append_defaults_source_to_n_a(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -284,6 +293,144 @@ class TestReviewLedgerAppendHappyPath:
         result = _run(args, cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
         assert not _ledger_path(isolated_home, git_repo).exists()
+
+
+class TestReviewLedgerRoundValidation:
+    def test_missing_round_rejected_with_exact_error_text(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round=None), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "review-ledger.sh: --round <N> is required and missing.\n" in result.stderr
+        assert "got '" not in result.stderr, "the missing-flag branch must not print a 'got' value"
+
+    def test_non_numeric_round_rejected_with_offending_value_shown(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="not-a-number"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "got 'not-a-number'" in result.stderr
+
+    def test_zero_round_rejected(self, isolated_home, git_repo):
+        """0 is not a 1-based round number."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="0"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "got '0'" in result.stderr
+
+    @pytest.mark.parametrize("round_value", ["00", "000"])
+    def test_zero_padded_round_rejected(self, isolated_home, git_repo, round_value):
+        """jq normalizes "00"/"000" to round:0 -- reject before that happens."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round=round_value), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert f"got '{round_value}'" in result.stderr
+
+    def test_negative_round_rejected(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="-1"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_valid_round_accepted_and_recorded(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="3"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["round"] == 3
+
+    def test_over_cap_round_rejected_with_no_partial_write(self, isolated_home, git_repo):
+        """--round has no digit-count ceiling other than this cap -- a
+        value beyond it must be rejected the same way an over-cap
+        --finding/--rationale/--source is."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="99999"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "--round exceeds 4 digits" in result.stderr
+
+    def test_at_cap_round_accepted(self, isolated_home, git_repo):
+        """The boundary itself (exactly 4 digits) must not be rejected --
+        only strictly-over-cap values are."""
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(round="9999"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+
+
+class TestReviewLedgerCleanDisposition:
+    def test_clean_disposition_accepted_without_finding_or_rationale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(_ledger_path(isolated_home, git_repo).read_text().splitlines()[0])
+        assert record["disposition"] == "CLEAN"
+        assert record["finding"] == ""
+        assert record["rationale"] == ""
+
+    def test_clean_disposition_rejects_a_present_finding(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--finding", "x"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_clean_disposition_rejects_a_present_rationale(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--rationale", "why"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_clean_disposition_rejects_a_present_source(self, isolated_home, git_repo):
+        """CLEAN carries no per-finding location, so --source must be
+        rejected the same way --finding/--rationale are."""
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1", "--source", "foo.py:12"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_address_disposition_still_requires_finding_and_rationale(self, isolated_home, git_repo):
+        """CLEAN's relaxed requirements must not leak into ADDRESS|DEFER."""
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "ADDRESS", "--round", "1"]
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_invalid_disposition_message_lists_clean(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        result = _run(_append_args(disposition="MAYBE"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        assert "must be ADDRESS, DEFER, or CLEAN" in result.stderr
+
+
+class TestReviewLedgerRoundScopedDedup:
+    def test_identical_finding_in_two_different_rounds_both_land(self, isolated_home, git_repo):
+        """Two rounds raising a textually identical finding/disposition/
+        rationale must not collapse into one ledger line under the
+        round-scoped dedup key -- the bug this schema revision fixes, since
+        whole-line dedup alone would have collapsed them once event_time
+        stopped being the only varying field."""
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="2"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 2, f"identical finding in a different round must not dedup, got: {lines}"
+        rounds = {json.loads(line)["round"] for line in lines}
+        assert rounds == {1, 2}
+
+    def test_retried_identical_call_within_same_round_still_dedups(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
+        result = _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical retry within the same round must dedup, got: {lines}"
 
 
 class TestReviewLedgerFieldCaps:

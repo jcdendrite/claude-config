@@ -1,6 +1,11 @@
-"""Unit tests for _lib.sh's _lib_append_line_locked, the shared
-noclobber-lock / dead-PID-eviction / bounded-retry / dedup-then-append
-primitive both review-ledger.sh and log-reviewer-round.sh call.
+"""Unit tests for _lib.sh's _lib_append_line_locked, the
+noclobber-lock / dead-PID-eviction / bounded-retry / whole-line-dedup-then-
+append primitive log-reviewer-round.sh calls. review-ledger.sh's own
+append uses the JSON-projection sibling, _lib_append_json_line_locked,
+instead -- see test_review_ledger_script.py's TestReviewLedgerRoundScopedDedup
+class for that primitive's own dedup-key coverage. Both share
+_lib_acquire_append_lock's lock-acquisition/eviction/retry logic, exercised
+here only through this function's own call path.
 
 These call the function directly against a bare tmp_path file -- no git
 repo, no JSON payload, no hook invocation -- mirroring

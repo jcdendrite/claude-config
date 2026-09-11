@@ -22,7 +22,9 @@ Apply the **Base checklist** always. Apply each **Domain checklist** only when a
 
 ## Step 0.1 — Short-circuit already-reviewed diff
 
-Run `~/.claude/scripts/marker.sh check code-review`. Exit 0 means the staged diff's hash matches a clean code-review marker written within the freshness bound. Its stdout carries `match age_seconds=<N>`. Report "the staged diff already matches a clean code-review marker written <age> ago — skipping" (substituting a human-readable age for `<age>`) and stop, skipping every step below. Any other exit means proceed to Step 0.5.
+Before anything else, track this invocation's **round number**: the 1-based count of `/code-review` invocations you've made in this session, counting this one and every prior Step 0.1 short-circuit — 1 for the first invocation, incrementing by one on each subsequent one. Every `review-ledger.sh append` call this round, including this step's own below, uses that same number, so the ledger's own round sequence never drifts from how many times this skill actually ran.
+
+Run `~/.claude/scripts/marker.sh check code-review`. Exit 0 means the staged diff's hash matches a clean code-review marker written within the freshness bound. Its stdout carries `match age_seconds=<N>`. Call `~/.claude/scripts/review-ledger.sh append code-review --disposition CLEAN --round <N> --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high` (this round's number) — the diff already passed review, so this short-circuit is itself a clean-round event, not an un-reviewed one. Report "the staged diff already matches a clean code-review marker written <age> ago — skipping" (substituting a human-readable age for `<age>`) and stop, skipping every step below. Any other exit means proceed to Step 0.5.
 
 ## Step 0.5 — Load project-specific layer
 
@@ -378,14 +380,16 @@ If you find yourself tagging 3+ findings DEFER in a single review, re-read the c
 
 ## Review-narrative ledger
 
-Immediately once dispositions are finalized — before DEFER persistence below — call `~/.claude/scripts/review-ledger.sh append code-review --finding "<summary>" --disposition ADDRESS|DEFER --rationale "<one line>" [--source "<file:line>"] --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high` once per finding, on every invocation, regardless of whether the disposition step used inline `ADDRESS:`/`DEFER (<criterion>):` tags (≤2 findings) or the four-column table (3+). `--authoring-effort` is always `high`: `code-writer`'s effort is a per-agent-definition constant, not a per-dispatch parameter, until a future issue builds an override. `--authoring-agent` names whichever authored the diff under review:
+Immediately once dispositions are finalized — before DEFER persistence below — call `~/.claude/scripts/review-ledger.sh append code-review --finding "<summary>" --disposition ADDRESS|DEFER --rationale "<one line>" --round <N> [--source "<file:line>"] --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high` once per finding, on every invocation, regardless of whether the disposition step used inline `ADDRESS:`/`DEFER (<criterion>):` tags (≤2 findings) or the four-column table (3+). `--round <N>` is this round's own number, tracked per Step 0.1's convention — the same number for every append this round. `--authoring-effort` is always `high`: `code-writer`'s effort is a per-agent-definition constant, not a per-dispatch parameter, until a future issue builds an override. `--authoring-agent` names whichever authored the diff under review:
 
 - `code-writer` — a diff written by that subagent
 - `inline` — one written directly in this session
 - `mixed` — both contributed
 - `unknown` — cannot be determined (e.g. a handoff from a prior session)
 
-Unlike the marker write at the end of this skill, this runs whether or not the review is clean — a mid-loop review that is not yet clean is exactly the case this ledger exists to preserve across a compaction or session resume. A finding rejected by the script for an over-length `--finding`/`--rationale`, or for an invalid `--authoring-agent`/`--authoring-effort` value, should be summarized more tightly (or corrected) and retried, not skipped.
+If the review is clean — zero findings — call `~/.claude/scripts/review-ledger.sh append code-review --disposition CLEAN --round <N> --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high` instead (no `--finding`/`--rationale`: the script rejects them for `CLEAN`), in addition to, not instead of, the marker write at the end of this skill. This guarantees the ledger records one event per round-open regardless of outcome, matching Step 0.1's own CLEAN append for its short-circuit path.
+
+Unlike the marker write at the end of this skill, this runs whether or not the review is clean — a mid-loop review that is not yet clean is exactly the case this ledger exists to preserve across a compaction or session resume. A finding rejected by the script for an over-length `--finding`/`--rationale`, or for an invalid `--authoring-agent`/`--authoring-effort`/`--round` value, should be summarized more tightly (or corrected) and retried, not skipped.
 
 ## DEFER persistence
 
