@@ -186,9 +186,9 @@ Every condition below must hold.
   independently named.
 - **Same statistic, already-permitted form.** Both sides report the
   same statistic — a label match, not an algebraically derivable
-  equivalent — in a form the lists above already permit for that
-  statistic. A raw total is never a valid split form, for any
-  statistic, Counts included, even where the base list permits a
+  equivalent. That statistic is reported in a form the lists above
+  already permit for it. A raw total is never a valid split form, for
+  any statistic, Counts included, even where the base list permits a
   total outside a split. The split adds a second point in time, never
   a new form.
 - **One account, one machine.** Both sides resolve to a single
@@ -218,9 +218,10 @@ land in. The owner approves that figure for that artifact before it
 ships. Approval for one artifact does not cover a different one — a
 changed destination needs a fresh proposal. Cite the approval as a
 durable, independently-checkable record from the owner's own account —
-a link to the approving comment or message — tied to the exact figure
-and artifact. A citation to anyone else's comment, however definitive
-it reads, does not satisfy this gate. A narrative claim that approval
+e.g., a link to the approving comment or message. The citation must
+tie to the exact figure and artifact it approves. A citation to
+anyone else's comment, however definitive it reads, does not satisfy
+this gate. A narrative claim that approval
 occurred is not a citation either. Absent that citation, don't publish.
 
 For a split under "The one permitted split" above, the proposal

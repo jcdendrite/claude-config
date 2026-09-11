@@ -3083,7 +3083,7 @@ def test_pooled_tooling_measurement_code_review_skill_citation_is_still_present(
     """Pins presence of this specific citation: no other test asserts
     that this SKILL.md still cites this heading at all, only that any
     citation it does carry resolves correctly. A re-wrap that breaks
-    extraction is already caught by
+    extraction is also caught by
     test_every_citation_shaped_construct_is_extracted; this test's own
     unique coverage is the citation being deleted or paraphrased away
     with no `§ "..."` construct left for either test to see.
