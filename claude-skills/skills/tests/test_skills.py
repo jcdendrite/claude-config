@@ -601,6 +601,9 @@ class TestCodeWriterSelfReviewScope:
         assert "Never use `git diff HEAD`" in self._body()
 
 
+_TEST_TO_FIT_RULE = "fix the code, not the test"
+
+
 class TestCodeWriterTestToFitRule:
     """Pin code-writer's Charter bullet on fixing a red check.
 
@@ -618,11 +621,11 @@ class TestCodeWriterTestToFitRule:
 
     def test_states_fix_the_code_not_the_test(self):
         """The Charter must carry the canonical rule statement verbatim."""
-        assert "fix the code, not the test" in self._body()
+        assert _TEST_TO_FIT_RULE in self._body()
 
     def test_ready_for_review_shares_the_same_literal(self):
         """ready-for-review/SKILL.md must carry the identical literal, pinning the cross-file duplication."""
-        assert "fix the code, not the test" in _skill_body("ready-for-review")
+        assert _TEST_TO_FIT_RULE in _skill_body("ready-for-review")
 
 
 class TestSkillFidelityReviewerUndecidableDismissal:
