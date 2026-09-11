@@ -176,6 +176,21 @@ hands step 4's `skill-fidelity-reviewer` dispatch a file path instead,
 which is the same handle `/code-review`'s own Step 0, Step 0.6, and item 9d
 truncation-degradation logic needs to recover from a truncated diff.
 
+**2026-09-11 follow-up:** the **File-path handoff of diff text to the
+reviewers that lack `Bash`** row above is adopted for
+`comment-discipline-reviewer`, on correctness grounds rather than cost. That
+reviewer carries no `Bash`, so a prose description of changed line ranges
+leaves it inferring scope by correlating file content. Left to that
+inference, it flags pre-existing prose the diff never touched.
+`/code-review` now resolves an artifact with
+`pr-diff-against-base.sh --staged --diff-file` immediately before that one
+spawn and passes the path. The cost verdict is unchanged: the
+handoff still lands below the noise floor, which is why this ships as a
+correctness fix and not a cost lever. The eight Bash-having reviewers named
+in the row above are unaffected. Each already fetches its own diff, scoped
+to its lane. Handing them the shared unscoped artifact instead would widen
+what each reads.
+
 ## From `opus-plan-boundary-handoff.md` — "Opus-anchored plan boundary: continue, switch, or hand off"
 
 `plan-boundary` re-priced 95 Opus-anchored sessions' own post-plan-boundary
