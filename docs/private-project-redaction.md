@@ -124,95 +124,83 @@ extends by analogy:
     - Cost may also be reported as a dimensionless share of pooled
       spend, split along any dimension but project, account,
       engagement, or calendar time (e.g., Opus dollars as a
-      percentage of total). A temporal split of any statistic,
-      Cost included, is governed exclusively by the time-series
-      bullet below and its full condition set — this bullet's "any
-      dimension" never reaches one.
+      percentage of total).
     - Duration may not: a share of pooled wall-clock is one hop from
       billable hours per deliverable.
-    - A raw total is barred outright — it scales with pool volume,
-      and, unlike a rate or a share, it can be converted to an
-      engagement-value estimate using public day-rate references.
+    - A raw total is barred outright. It scales with pool volume, and
+      unlike a rate or a share, it converts to an engagement-value
+      estimate via public day-rate references.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
-  - A pooled figure may be reported for the whole period covered only,
-    never as a time series. A series re-exposes the cadence the
-    excluded bullet above already closed off.
-    - One split is permitted. A whole-period figure may be reported as a
-      before value and an after value either side of a pivot. The pivot
-      must be a commit in this repository's own public history, cited by
-      SHA or merge date. It must be named before the figure is computed.
-      Any date not independently readable from this repository's own
-      commit history — owner-nominated, read off the data, or tied to
-      an engagement — is not a pivot, whatever corpus it is applied to.
-      The proposal cites the transcript turn where the pivot was named:
-      a session identifier plus turn index or timestamp, with the same
-      locatable, independently-checkable precision the pivot's own
-      SHA-or-merge-date citation has. This citation is approval-only
-      input — see the Approval gate's disclosure rule below. That turn
-      must precede every turn where a command was run against the same
-      corpus or date range, not only the turn where the
-      split-producing command itself ran — a pivot named only after an
-      exploratory query already revealed the shape of the answer is
-      not independently named.
-    - Both sides report the same statistic, in whatever form that
-      statistic is otherwise permitted (a share, a rate, or a
-      median — a total is excluded, below), resolved to a single
-      account and machine. The account/machine-spanning share
-      exception below does not extend to a split, for the same
-      cross-account-subtraction reason that exception's own boundary
-      exists (see "Account and machine scope" below). Together the
-      two sides exhaustively partition the period the whole-period
-      figure covered. This split adds no new permitted form for any
-      statistic — it adds a second point in time for a form already
-      permitted. Duration stays rate-only, per the
-      Cost/Duration bullet above. Neither side's own pool size is
-      published: a count total on one side of a pivot is pool volume
-      dated against calendar time, which is the cadence this bullet
-      withholds. What may not be published alongside a split is the
-      composition bullet's subject, below.
-  - These limits bind what published figures compose to, not only what
-    each one states on its own. A permitted rate times a permitted
-    pool-size count is the raw pooled total the Cost/Duration bullet
-    bars, whether both land in one artifact or in separate
-    publications months apart. Whole-period figures published across
-    successive artifacts are the time series the bullet above bars.
-    Once a split is published, nothing further may be published that,
-    combined with it, reaches any of these outcomes:
-    - Pool-share recovery: how much of the pool fell on either side
-      of the pivot.
-    - Series extension: the split extended into a series.
-    - Repeat-split accumulation: a further split — at the same pivot
-      or a different one, of the same statistic or a different one —
-      once any split has already been published under this carve-out.
-
-    A statement of the pool's relative proportion across the two
-    sides — how much of it fell before the pivot versus after —
-    reaches pool-share recovery exactly as an absolute count would.
-    This holds in this artifact or any other, at any time, and turns
-    on what the further figure yields, not on how it is labelled. The
-    statistic's whole-period value, its complement within a
-    fixed-sum partition, and a rescaling of it each reach the
-    pool-share-recovery or series-extension outcome. Any further
-    split reaches repeat-split accumulation, whatever pivot or
-    statistic it uses. One split, ever, is this carve-out's whole
-    allowance. A second split needs a fresh PR like this one, not a
-    fresh proposal under the same approval. What a pivot discloses is a
-    boundary date, and the date carries the same weight whichever
-    figure is split at it. This repository's history offers a commit
-    near any date a reader would want. The Counts bullet permits the
-    pooled total the arithmetic needs. The figure that completes the
-    reconstruction is the one that crosses the line.
 
 These two lists govern the mixed-corpus figure "What it permits" opens
-with, and nothing else. A figure the repo-root `CLAUDE.md` rule's own
-per-project, per-account, or per-engagement exclusion already places
-outside this class is not reached by any condition below.
+with, and nothing else. A figure the CLAUDE.md exclusion above already
+rules out is out of scope for every condition below.
 `pr-cost-section.sh`'s output is the worked case: it calls
 `transcript-analysis.py cost --this-repo --branches <branch>
 --summary`, and `--summary` exits non-zero unless the scope resolves to
 this repository and one account.
+
+**Three standing bars.** These hold across everything ever published
+under this carve-out, not only within one figure read alone. Where any
+bullet above permits a share split "along any dimension," calendar
+time is never one of them.
+
+1. **No time series.** No statistic carries a calendar-time axis. This
+   reaches whole-period figures published across successive artifacts
+   that together form a time series, not only a single figure with a
+   calendar-time axis of its own. A series re-exposes the cadence the
+   Cadence bullet above excludes. The one exception is the split
+   below.
+2. **One split, ever.** Once any split has been published under this
+   carve-out — in this repository or any other artifact — no further
+   split is permitted. This holds regardless of pivot, same or
+   different, and regardless of statistic, same or different. This
+   repository's history offers a commit near any date a reader would
+   want, so the limit isn't arbitrary. A further split needs a PR
+   amending this document, not a fresh proposal under it.
+3. **Composition is publication.** This bar reaches any set of
+   published figures that together produce a barred result, whether
+   they land in one artifact or in separate publications months apart.
+   What governs is what the figures together yield, not how any one of
+   them is labelled. A permitted rate times a permitted pool-size count
+   is the raw pooled total the Cost/Duration bullet bars. Once a split
+   is published, nothing further may be published that recovers either
+   side's pool size. Publishing the split statistic's own whole-period
+   value alongside both sides and the pooled count is one way this
+   happens: doing so solves for both sides' pool sizes exactly.
+
+**The one permitted split.** A whole-period figure may be reported
+once as a before value and an after value either side of a pivot.
+Every condition below must hold.
+
+- **Public pivot.** The pivot is a commit in this repository's own
+  public history, cited by SHA or merge date. A date read off the
+  data, owner-nominated, or tied to an engagement is disqualified as a
+  pivot, regardless of corpus.
+- **Named first.** The pivot is named before any command is run
+  against the corpus or date range being split, not merely before the
+  split-producing command itself. A pivot named only after an
+  exploratory query already revealed the shape of the answer was not
+  independently named.
+- **Same statistic, already-permitted form.** Both sides report the
+  same statistic — a label match, not an algebraically derivable
+  equivalent — in a form the lists above already permit for that
+  statistic. A raw total is never a valid split form, for any
+  statistic, Counts included, even where the base list permits a
+  total outside a split. The split adds a second point in time, never
+  a new form.
+- **One account, one machine.** Both sides resolve to a single
+  `CLAUDE_CONFIG_DIR` account and machine. The cross-account share
+  exception in "Account and machine scope" below does not extend to a
+  split.
+- **Exhaustive partition.** Together, the two sides cover exactly the
+  period the whole-period figure covered.
+- **No per-side pool size.** Neither side's own pool size is
+  published. A count on one side of a pivot is pool volume dated
+  against calendar time — the cadence the "No time series" bar
+  withholds.
 
 **Account and machine scope.** Every reporting mode in both lists
 above defaults to a single `CLAUDE_CONFIG_DIR` account and machine —
@@ -234,31 +222,33 @@ a link to the approving comment or message — tied to the exact figure
 and artifact. A citation to anyone else's comment, however definitive
 it reads, does not satisfy this gate. A narrative claim that approval
 occurred is not a citation either. Absent that citation, don't publish.
-For a before/after split under the time-series bullet's permitted
-exception, the proposal additionally states each side's window
-bounds and pool size, as approval-only input for the owner to judge
-thinness. This disclosure and the pivot-naming transcript-turn
-citation above are both approval-only input: neither is ever part of
-the published figure, neither is ever quoted in any commit message,
-PR body, issue, or other public-repo artifact, and both travel
-through a non-public channel, regardless of which channel carries the
-approval citation.
+
+For a split under "The one permitted split" above, the proposal
+additionally discloses two things, both approval-only input:
+
+- the transcript turn where the pivot was named: a session identifier
+  plus turn index or timestamp. This must be as locatable and
+  independently-checkable as the pivot's own citation;
+- each side's window bounds and pool size, so the owner can judge
+  whether either side is thin enough to isolate one engagement.
+
+Neither ever appears in the published figure, and neither is ever
+quoted in any commit message, PR body, issue, or other public-repo
+artifact. Both travel through a non-public channel, regardless of
+which channel carries the approval citation.
 
 Doubt about pool diversity goes to the owner as part of the proposal,
 not a reason to publish anyway. The proposal also names where the
 agent looked and what it found: any prior publication of the same or
-a composing statistic. When the proposal is a before/after split
-under the time-series bullet's permitted exception, it additionally
-searches this repository's own history for a prior split published
-under this carve-out, and names what it finds. That search is
-diligence, not enforcement — the Approval gate above is what governs
-publication regardless of what it finds. The owner is the one
+a composing statistic. For a split under "The one permitted split"
+above, it additionally searches this repository's own history for a
+prior split published under this carve-out, and names what it finds.
+That search is diligence, not enforcement. The owner is the one
 continuous witness, across this repository and any other publication
 artifact, to what has already shipped under it. Finding nothing is
-not approval to publish. The composition bar above holds regardless
-of what the search surfaced.
-Closed by default, same as the blocklist tier's "if in doubt, strip
-it."
+not approval to publish.
+This is closed by default, the same as the blocklist tier's "if in
+doubt, strip it."
 
 **Remediation.** A wrongly-scoped figure discovered already published
 is the owner's call, not the agent's. Stop and report what was
