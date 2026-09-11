@@ -4768,3 +4768,74 @@ class TestLengthRatchetExceeded:
         arises only as a side effect of git plumbing (deletion, timeout, or
         a missing HEAD) rather than as a directly-asserted value."""
         assert not _length_ratchet_exceeded(0, 300, 200)
+
+
+# --- _lib_list_contains ----------------------------------------------------
+#
+# Shared by _lib_is_review_only_agent, _lib_is_no_gate_release_agent, and
+# _lib_is_reviewer_persona -- three byte-identical membership scans over
+# three derived arrays, collapsed to one helper following
+# _lib_words_start_with's flatten-as-positional-args idiom.
+
+
+def _list_contains(value: str, items: tuple[str, ...]) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_list_contains "$@"', "bash", value, *items],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestListContains:
+    def test_empty_list_does_not_crash_under_set_dash_u(self) -> None:
+        """Zero ITEM args (an empty array flattened via "${arr[@]}") must
+        reach the "$@" loop safely rather than aborting on an unbound
+        variable."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_list_contains "$@"',
+                "bash",
+                "anything",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert "unbound variable" not in result.stderr
+
+    def test_single_item_list_matches(self) -> None:
+        assert _list_contains("staff-sdet", ("staff-sdet",))
+
+    def test_single_item_list_rejects_non_match(self) -> None:
+        assert not _list_contains("staff-sdet", ("ciso-reviewer",))
+
+    def test_value_matching_more_than_one_item_still_found(self) -> None:
+        """No dedup required -- VALUE need only equal one ITEM among several
+        equal ones for the scan to report a match."""
+        assert _list_contains("staff-sdet", ("staff-sdet", "staff-sdet", "ciso-reviewer"))
+
+    def test_value_matching_later_position_still_found(self) -> None:
+        """Pins the loop-continuation branch directly: a match past the
+        first ITEM must still be found, not just one at index 0."""
+        assert _list_contains("c", ("a", "b", "c"))
+
+    def test_empty_string_value_matches_empty_string_item(self) -> None:
+        assert _list_contains("", ("a", "", "b"))
+
+    def test_empty_string_value_does_not_match_list_without_it(self) -> None:
+        assert not _list_contains("", ("a", "b"))
+
+    def test_glob_metacharacter_item_does_not_spuriously_match(self) -> None:
+        """The three call sites rely on [ "$a" = "$b" ] string equality, not
+        a case glob match -- an ITEM shaped like a glob pattern must match
+        only that literal string, never a value it would otherwise
+        glob-match."""
+        assert not _list_contains("code-writer", ("code*",))
+
+    def test_glob_metacharacter_item_matches_its_own_literal_value(self) -> None:
+        assert _list_contains("code*", ("code*",))

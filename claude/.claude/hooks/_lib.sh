@@ -361,7 +361,9 @@ _lib_repo_root() {
 # only the touched-file diff, not repo state outside those files.
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
-  printf '%s' "$1" | sha256sum | awk '{print $1}'
+  local digest
+  digest=$(_lib_hash_diff_text "$1") || return 1
+  printf '%s\n' "$digest"
 }
 
 # _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
@@ -557,6 +559,12 @@ _lib_active_plan_files() {
 #     with no `pipefail`: a failed `sha256sum` there still leaves `awk`
 #     exiting 0 with empty output, which the emptiness check -- not
 #     `pipefail` -- is what catches.
+# Runs via require-plan-review.sh on every Edit/Write/MultiEdit/ExitPlanMode,
+# same trigger as _lib_active_plan_files above.
+# The per-file sha256sum loop below is bounded by the *active* plan count
+# (0-1 in normal use, per that function's untracked-or-modified filter), not
+# .claude/plans/'s total size, and returns early with zero forks when
+# nothing is active.
 # Usage: hash=$(_lib_active_plan_hash "$REPO_ROOT")
 _lib_active_plan_hash() {
   local repo_root="$1"
@@ -583,8 +591,7 @@ _lib_active_plan_hash() {
   done <<< "$active_files"
 
   local digest
-  digest=$(printf '%s' "$combined" | sha256sum | awk '{print $1}')
-  if [ -z "$digest" ]; then
+  if ! digest=$(_lib_hash_diff_text "$combined"); then
     printf '%s' "$plans_dir"
     return 1
   fi
@@ -2540,6 +2547,24 @@ _lib_review_only_agents() {
   printf '%s\n' "${_LIB_REVIEW_ONLY_AGENTS[@]}"
 }
 
+# _lib_list_contains VALUE ITEM...
+# Boolean exit status: 0 iff VALUE string-equals one of ITEM....
+# Matches via `[ "$a" = "$b" ]`, never a `case` glob -- an ITEM containing a
+# glob metacharacter (e.g. "code*") matches only that literal string.
+# Zero ITEMs (a flattened empty array) is a clean no-match, not a `set -u`
+# crash.
+# Shared by the three membership scans below, each over its own derived
+# array.
+_lib_list_contains() {
+  local value="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [ "$value" = "$item" ] && return 0
+  done
+  return 1
+}
+
 # _lib_is_review_only_agent AGENT_TYPE
 # Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
 # _LIB_REVIEW_ONLY_AGENTS. Empty input (agent_type absent from the
@@ -2547,11 +2572,7 @@ _lib_review_only_agents() {
 _lib_is_review_only_agent() {
   local agent_type="$1"
   [ -n "$agent_type" ] || return 1
-  local candidate
-  for candidate in "${_LIB_REVIEW_ONLY_AGENTS[@]}"; do
-    [ "$agent_type" = "$candidate" ] && return 0
-  done
-  return 1
+  _lib_list_contains "$agent_type" "${_LIB_REVIEW_ONLY_AGENTS[@]}"
 }
 
 # Agent identities that may never release a review gate — every review-only
@@ -2596,11 +2617,7 @@ _lib_no_gate_release_agents() {
 _lib_is_no_gate_release_agent() {
   local agent_type="$1"
   [ -n "$agent_type" ] || return 1
-  local candidate
-  for candidate in "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"; do
-    [ "$agent_type" = "$candidate" ] && return 0
-  done
-  return 1
+  _lib_list_contains "$agent_type" "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"
 }
 
 # Reviewer-persona agents dispatched by /code-review's fan-out, for
@@ -2628,11 +2645,7 @@ _lib_reviewer_persona_agents() {
 _lib_is_reviewer_persona() {
   local agent_type="$1"
   [ -n "$agent_type" ] || return 1
-  local candidate
-  for candidate in "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"; do
-    [ "$agent_type" = "$candidate" ] && return 0
-  done
-  return 1
+  _lib_list_contains "$agent_type" "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"
 }
 
 # Round-state cap shared by require-architect-consult.sh (the read side,
@@ -2678,10 +2691,10 @@ _lib_reviewer_round_state_cap() {
 #
 # Determinism contract (read side [require-architect-consult.sh] and write
 # side [log-reviewer-round.sh] must agree byte-for-byte, or the gate wedges):
-# branch name comes from `git symbolic-ref -q --short HEAD`, hashed with the
-# same sha256sum-of-bytes recipe _marker_lib_repo_hash already uses for the
-# repo half of the key, so both halves are produced identically regardless
-# of caller.
+# Branch name comes from `git symbolic-ref -q --short HEAD`, hashed via
+# _lib_hash_diff_text. _marker_lib_repo_hash hashes the repo half via the
+# same function, so both halves are produced identically regardless of
+# caller.
 _lib_reviewer_round_state_key() {
   local repo_root="$1"
   [ -n "$repo_root" ] || return 1
@@ -2690,7 +2703,7 @@ _lib_reviewer_round_state_key() {
   [ -n "$branch" ] || return 1
   local repo_hash branch_hash
   repo_hash=$(_marker_lib_repo_hash "$repo_root")
-  branch_hash=$(printf '%s' "$branch" | sha256sum | awk '{print $1}')
+  branch_hash=$(_lib_hash_diff_text "$branch")
   [ -n "$repo_hash" ] && [ -n "$branch_hash" ] || return 1
   printf '%s.%s' "$repo_hash" "$branch_hash"
 }
