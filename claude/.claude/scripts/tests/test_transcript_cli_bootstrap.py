@@ -233,6 +233,75 @@ def test_transcript_analysis_cost_trend_subprocess_finds_seeded_session(tmp_path
     assert "2026-W21" in result.stdout  # ISO week of the seeded 2026-05-19 timestamp
 
 
+def _seed_pr_cost_export_account(config_dir: Path) -> None:
+    """Build one pr-cost-export account: a `projects/` subdirectory
+    (declared_transcript_roots' own is_valid check requires it, even though
+    pr-cost-export never scans it), the .pr-cost-enabled opt-in sentinel, and
+    a single-row pr-cost ledger. The header and row are literal here rather
+    than derived from the module under test -- this test invokes it as an
+    opaque subprocess, so it can't import _PR_COST_LEDGER_COLUMNS."""
+    (config_dir / "projects").mkdir(parents=True)
+    (config_dir / ".pr-cost-enabled").touch()
+    header = (
+        "host\trepo\tpr_number\tmachine\thead_branch\tmerged_at\trate_stamp\tcaptured_at"
+        "\tjoin_confidence\tsupersedes\tstatus\tcache_read_usd\tcache_write_5m_usd\tcache_write_1h_usd"
+        "\toutput_usd\tinput_usd\tcache_read_tokens\tcache_write_5m_tokens\tcache_write_1h_tokens"
+        "\toutput_tokens\tinput_tokens\tunpriced_turns\tunpriced_tokens\tturn_count\tsession_count"
+        "\topus_dollars\topus_dollar_share_pct\tsum_context_at_turn\tmean_context_at_turn"
+        "\tadditions\tdeletions\tchanged_files\tcommit_count\treview_comment_count"
+        "\tdistinct_top_level_dirs\tdistinct_file_extensions\ttests_changed\tplan_file_added\trisk_surface_flag"
+    )
+    row = (
+        "github.com\towner/repo\t42\tci1\tbranch-1\t2026-01-01T00:00:00Z\t2026-08-02\t2026-01-02T00:00:00Z"
+        "\thigh\t\tok\t1.500000\t0.250000\t0.100000\t2.000000\t0.500000\t1000\t200\t100\t500\t300\t0\t0\t5\t2"
+        "\t0.000000\t0.000000\t1500\t300.000000\t42\t10\t3\t4\t1\t2\t3\ttrue\ttrue\tfalse"
+    )
+    (config_dir / "pr-cost-ledger.tsv").write_text(header + "\n" + row + "\n")
+
+
+def test_transcript_analysis_pr_cost_export_subprocess_writes_synthetic_two_account_rows(tmp_path):
+    """Automated replacement for the plan's earlier manual smoke-check step --
+    that step had no visible way to confirm the tester was actually pointed at
+    synthetic roots rather than silently scanning real accounts. Seeds two
+    synthetic accounts via CLAUDE_CONFIG_DIR (the active profile) and
+    TRANSCRIPT_CONFIG_DIRS_FILE (one declared root), matching the recipe
+    docs/transcript-analysis.md documents for smoke-testing any
+    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR subcommand against synthetic data, and
+    asserts the export's provenance line flags the run as corpus_override=1."""
+    acct_a = tmp_path / "acct-a"
+    acct_b = tmp_path / "acct-b"
+    _seed_pr_cost_export_account(acct_a)
+    _seed_pr_cost_export_account(acct_b)
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{acct_b}\n")
+    out_path = tmp_path / "export.tsv"
+    env = {
+        **os.environ,
+        "CLAUDE_CONFIG_DIR": str(acct_a),
+        "TRANSCRIPT_CONFIG_DIRS_FILE": str(roots_file),
+    }
+
+    result = _run("transcript-analysis.py", "pr-cost-export", "--out", str(out_path), env=env)
+
+    assert result.returncode == 0, result.stderr
+    written = out_path.read_text()
+    provenance = written.splitlines()[0]
+    assert "corpus_override=1" in provenance
+    account_cells = [line.split("\t")[0] for line in written.splitlines()[2:]]
+    assert account_cells == ["account-1", "account-2"]
+    # Proves redaction actually happens across the subprocess boundary, not
+    # just in-process (every other pr-cost-export test in this suite invokes
+    # the module directly): the seeded ledger's raw host/repo/branch literals
+    # must not survive into the written export as their own cell value.
+    # Exact-cell comparison, not substring containment, since the redacted
+    # head_branch_label token (account-N/branch-M) legitimately contains
+    # "branch-1" as a substring for the first account.
+    written_cells = {cell for line in written.splitlines()[2:] for cell in line.split("\t")}
+    assert "github.com" not in written_cells
+    assert "owner/repo" not in written_cells
+    assert "branch-1" not in written_cells
+
+
 def test_transcript_analysis_reviewer_yield_help_exits_zero():
     result = _run("transcript-analysis.py", "reviewer-yield", "--help")
     assert result.returncode == 0, result.stderr

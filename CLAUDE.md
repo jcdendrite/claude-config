@@ -168,6 +168,12 @@ doubt, don't.
 Content derived only from this repo's own history, from public
 sources, or from synthetic fixtures is not in this class.
 
+For the avoidance of doubt, this covers tokenized output such as a
+`transcript-analysis.py pr-cost-export` file: its rows are redacted, but
+publishing a row, or any per-row figure derived from one, still carries
+whatever private corpus it was drawn from. See `docs/pr-cost.md` for the
+mechanism and the aggregate figures exempted from this bar.
+
 ### Secrets, tokens, credentials
 
 Not a redaction concern — a do-not-commit-ever concern. API keys,

@@ -57,6 +57,14 @@ Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` la
 
 `context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
 
+### Testing against a synthetic corpus
+
+Setting both `TRANSCRIPT_CONFIG_DIRS_FILE` and `CLAUDE_CONFIG_DIR` fully **replaces** — never augments — the resolved root set for any subcommand in `transcript_analysis/scope.py`'s `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR` family (`cost`, `context-distribution`, `context-composition`, `edit-format`, `read-scope`, `cache-efficiency`, `subagents`, `subagent-mix`, `cost-trend`, `cache-rebuild`, `plan-boundary`, `instrument-authoring`, `pr-cost`, `pr-cost-export`), and for every other subcommand's default (non-`--config-dir`) scope: `CLAUDE_CONFIG_DIR` points the active-profile root at a synthetic directory instead of the real `~/.claude`, and `TRANSCRIPT_CONFIG_DIRS_FILE` points the declared-roots read at a synthetic roots file instead of the real `~/.claude/transcript-config-dirs`. Together they let a run scan only fixture data seeded under a throwaway directory (e.g. a test's own `tmp_path`), with no path back to this workstation's real corpus.
+
+Both env vars are required together, not either alone: if only `CLAUDE_CONFIG_DIR` is set while a real `~/.claude/transcript-config-dirs` file is still present and unoverridden, `declared_transcript_roots()` unions in the real declared accounts' real roots alongside the synthetic one, so a "synthetic" run can silently mix in real account data.
+
+This is the safe way to smoke-test any of these subcommands against synthetic data — it is not a `--config-dir` alternative for a real run, and a run made this way must never be treated as reporting on this machine's actual accounts. `pr-cost-export`'s own provenance line states this explicitly: `corpus_override=1` flags an export built from an overridden root set rather than this machine's real declared accounts. That flag is computed by `_config_dir.py`'s `declared_roots_file_is_overridden()` — see that function's own docstring for exactly which env vars it checks. See `docs/pr-cost.md`'s "Redacted cross-account export" section for what a `corpus_override=1` export means for publication.
+
 ---
 
 ## buckets
@@ -1025,6 +1033,20 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
+
+---
+
+## pr-cost-export
+
+**Purpose.** Export every declared account's current `pr-cost` ledger rows — redacted, collapsed to one row per PR — to a single operator-named TSV. A pure local file transform over ledger files already on disk: makes no `gh` call and scans no transcript corpus of its own. See `docs/pr-cost.md`'s "Redacted cross-account export" section for the full grain and redaction contract; this section covers only the essentials.
+
+**Flags.**
+- `--out PATH` — required; the destination TSV. Refused if it already exists (never overwritten). There is deliberately no stdout fallback — stdout inside a Claude Code session is captured into that session's own transcript.
+- `--config-dir DIR` — additional Claude Code config directory to scan (repeatable).
+
+**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `~/.claude/.pr-cost-enabled` sentinel (an account without it contributes zero rows).
+
+**When to reach for it.** Before a cross-account or cross-repo cost analysis that needs to leave the machine it was captured on, or before comparing per-PR cost figures across more than one declared account in one artifact.
 
 ---
 
