@@ -45,20 +45,17 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   `prevent_user_existence_errors`, which AWS defaults to `LEGACY`),
   mirror the recommended value instead, and state why the two diverge
   in a comment.
-- **On a retrofit** — an existing variable whose effective default is
-  changing for callers that don't already override it — this needs the
-  same scrutiny as any other behavior-changing default to a shared
-  module, and the verification method depends on whether the caller set
-  is enumerable:
+- **On a retrofit**, an existing variable's effective default changes
+  for callers that don't already override it. Treat it with the same
+  scrutiny as any other behavior-changing default to a shared module;
+  the verification method depends on whether the caller set is
+  enumerable:
   - **Enumerable** (an internal module): check existing callers, or
     diff a `terraform plan` across consumers, before merging.
   - **Open** (a published or registry-distributed module): treat the
     changed default as a new major version instead of a same-version
     flip, so a caller opts in by bumping their pin rather than
     inheriting the new behavior silently.
-- **Word the `validation` error message to name the staleness risk it
-  carries** — a block enumerating literal values is a maintenance surface:
-  when the provider adds a new legal value, Terraform's own schema accepts
-  it while the module's `validation` block still rejects it. Say so in the
-  message, so a future failure reads as "this list may be stale, check the
-  provider docs" rather than "you passed something invalid."
+- **Word the `validation` error message to flag it as possibly-stale**,
+  since the provider can add legal values the module's `validation`
+  block will keep rejecting.
