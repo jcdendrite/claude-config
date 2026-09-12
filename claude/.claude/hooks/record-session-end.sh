@@ -48,7 +48,7 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   echo "[record-session-end] could not source _lib.sh; no SessionEnd record written" >&2
   exit 0
 fi

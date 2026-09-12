@@ -185,7 +185,7 @@ emit_deny() {
 
 # emit_deny is defined before sourcing _lib.sh so a missing _lib.sh can
 # still deny rather than silently allow.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # False positive: shellcheck's static pass doesn't model this stub-then-
   # override redefinition, which resolves correctly at call time (see
   # _lib.sh's _lib_emit_deny comment). Considered moving the definition

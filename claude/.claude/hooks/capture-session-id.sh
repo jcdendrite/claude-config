@@ -47,7 +47,7 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   echo "[capture-session-id] could not source _lib.sh; respond-pr skill will fail at Step 0" >&2
   exit 0
 fi

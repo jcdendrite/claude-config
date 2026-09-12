@@ -81,7 +81,7 @@ fi
 
 # Sourced ahead of the stdin read so both paths can use it; sourcing has no
 # side effects, so this costs the fire path only a small, fixed amount of work.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 

@@ -60,7 +60,7 @@
 
 INPUT=$(cat 2>/dev/null)
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
