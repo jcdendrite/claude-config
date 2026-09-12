@@ -51,13 +51,16 @@ def declared_roots_file() -> Path:
 
 
 def declared_roots_file_is_overridden() -> bool:
-    """Return whether this run is a synthetic-corpus test: TRANSCRIPT_CONFIG_DIRS_FILE
-    is set, or CLAUDE_CONFIG_DIR is set with no real declared-roots file present.
-    declared_roots_file() resolves relative to Path.home(), never CLAUDE_CONFIG_DIR,
-    so a real declared-roots file existing alongside a real CLAUDE_CONFIG_DIR profile
-    must stay corpus_override=0 -- only declared_roots_file_state() == "absent" combines
-    with CLAUDE_CONFIG_DIR; "unreadable" is a real file an operator must fix, not a
-    synthetic fixture.
+    """Return whether this run is a synthetic-corpus test. This is True under
+    either of two independent conditions: TRANSCRIPT_CONFIG_DIRS_FILE is set,
+    or CLAUDE_CONFIG_DIR is set with no real declared-roots file present.
+    declared_roots_file() resolves relative to Path.home(), never
+    CLAUDE_CONFIG_DIR. A real declared-roots file existing alongside a real
+    CLAUDE_CONFIG_DIR profile is therefore a legitimate multi-account run, not
+    a synthetic one, and must stay corpus_override=0. Only
+    declared_roots_file_state() == "absent" combines with CLAUDE_CONFIG_DIR
+    to trigger the override. "unreadable" means a real file exists that an
+    operator must fix, not a synthetic fixture.
     """
     if os.environ.get("TRANSCRIPT_CONFIG_DIRS_FILE"):
         return True

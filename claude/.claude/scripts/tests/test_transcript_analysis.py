@@ -24861,6 +24861,44 @@ class TestParsePrCostLedgerFileTextMalformed:
         with pytest.raises(_mod._PrCostLedgerParseError, match="malformed captured_at"):
             _mod._parse_pr_cost_ledger_file_text(text)
 
+    def _line_with_malformed_cell(self, column: str, malformed_value: str) -> str:
+        """A valid formatted row line with `column`'s own cell replaced by
+        malformed_value -- bypasses _format_pr_cost_ledger_row's own
+        bool/float rendering, which would reject an arbitrary string before
+        parsing is ever reached for those columns."""
+        cells = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
+        cells[_mod._PR_COST_LEDGER_COLUMNS.index(column)] = malformed_value
+        return "\t".join(cells)
+
+    @pytest.mark.parametrize(
+        "column,malformed_value",
+        [
+            ("machine", "AcmeCorp-Bldg9"),
+            ("pr_number", "ACME-NONNUMERIC-PRVALUE"),
+            ("merged_at", "ACME-BAD-TIMESTAMP"),
+            ("rate_stamp", "ACME-BAD-RATE-STAMP"),
+            ("join_confidence", "ACME-BAD-CONFIDENCE"),
+            ("status", "ACME-BAD-STATUS"),
+            ("cache_read_usd", "ACME-BAD-FLOAT"),  # representative _PR_COST_FLOAT_COLUMNS
+            ("turn_count", "ACME-BAD-INT"),  # representative _PR_COST_INT_COLUMNS
+            ("tests_changed", "ACME-BAD-BOOL"),  # representative _PR_COST_BOOL_COLUMNS
+        ],
+    )
+    def test_malformed_value_omitted_from_message_but_column_and_line_named(
+        self, column, malformed_value,
+    ):
+        """The value-omission discipline the host/repo checks apply above
+        is a uniform contract of _parse_pr_cost_ledger_row_cells, not
+        special-cased to any column: every validation branch omits the raw
+        cell and names only the column and line number."""
+        text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + self._line_with_malformed_cell(column, malformed_value) + "\n"
+        with pytest.raises(_mod._PrCostLedgerParseError) as exc_info:
+            _mod._parse_pr_cost_ledger_file_text(text)
+        message = str(exc_info.value)
+        assert malformed_value not in message
+        assert column in message
+        assert "line 2" in message
+
     def test_merge_conflict_marker_raises(self):
         text = _mod._PR_COST_LEDGER_HEADER_LINE + "\n" + self._valid_line() + "\n<<<<<<< HEAD\n"
         with pytest.raises(_mod._PrCostLedgerParseError, match="merge-conflict marker"):
@@ -28308,7 +28346,7 @@ class TestPrCostExportOrdinalsAndOrder:
 
 class TestPrCostExportOptIn:
     def test_account_without_sentinel_contributes_no_rows_and_is_counted(
-        self, tmp_path, monkeypatch,
+        self, tmp_path, monkeypatch, capsys,
     ):
         roots = _two_declared_roots(tmp_path, monkeypatch)
         acct_a, acct_b = roots[0].parent, roots[1].parent
@@ -28330,6 +28368,18 @@ class TestPrCostExportOptIn:
         assert "declared=2" in provenance
         assert "opted_in=1" in provenance
         assert "skipped_no_sentinel=1" in provenance
+        # This fixture's declared/opted_in/skipped split (2/1/1) is
+        # non-trivial, so the stdout summary line's counts are load-bearing
+        # here rather than degenerate (e.g. all-equal or all-zero). Unlike
+        # the sibling key=value provenance-line assertions above, this
+        # regex anchors on some of the message's literal wording ("wrote",
+        # "row(s) from", "of", "declared account(s)"), so a future
+        # rewording of that CLI copy may require updating this regex too.
+        out = capsys.readouterr().out
+        summary_counts = re.search(r"wrote (\d+) row\(s\) from (\d+) of (\d+) declared account\(s\)", out)
+        assert summary_counts is not None
+        assert tuple(int(n) for n in summary_counts.groups()) == (1, 1, 2)
+        assert str(out_path) in out
 
 
 class TestPrCostExportEmptyLedger:
@@ -28373,6 +28423,53 @@ class TestPrCostExportEmptyLedger:
         assert rows[0].split("\t")[0] == "account-2"  # acct_a's empty ledger contributes no row
 
         # acct_a's empty ledger must not be counted in corpus_identities: an
+        # export scoped to acct_b alone produces the identical corpus digest.
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_b))
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_b / "projects")
+        roots_file.write_text("")
+        out_solo = tmp_path / "out-solo.tsv"
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_solo)))
+        assert digest_of(out_both) == digest_of(out_solo)
+
+    def test_opted_in_account_with_no_ledger_file_contributes_zero_rows_and_is_excluded_from_corpus_identities(
+        self, tmp_path, monkeypatch,
+    ):
+        """Distinct from the header-only case above: here the sentinel is
+        present but pr-cost-ledger.tsv was never created (no --record has
+        ever run for this account). Must still count toward opted_in,
+        contribute no row, and contribute no corpus_identities entry."""
+        acct_a = tmp_path / "acct-a"
+        (acct_a / "projects").mkdir(parents=True)
+        (acct_a / ".pr-cost-enabled").touch()  # opted in, but no ledger file at all
+        acct_b = tmp_path / "acct-b"
+        (acct_b / "projects").mkdir(parents=True)
+        (acct_b / ".pr-cost-enabled").touch()
+        _mod._write_pr_cost_ledger_file(
+            acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z", machine="ci1")],
+        )
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        roots_file = tmp_path / "roots"
+
+        def digest_of(path):
+            tokens = path.read_text().splitlines()[0].split(" ")[3:]
+            return dict(t.split("=", 1) for t in tokens)["corpus"]
+
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        roots_file.write_text(f"{acct_b}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+        out_both = tmp_path / "out-both.tsv"
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_both)))
+
+        text = out_both.read_text()
+        provenance = text.splitlines()[0]
+        assert "declared=2" in provenance
+        assert "opted_in=2" in provenance
+        rows = text.splitlines()[2:]
+        assert len(rows) == 1
+        assert rows[0].split("\t")[0] == "account-2"  # acct_a's missing ledger contributes no row
+
+        # acct_a's missing ledger must not be counted in corpus_identities: an
         # export scoped to acct_b alone produces the identical corpus digest.
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_b))
         monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_b / "projects")
@@ -28474,9 +28571,9 @@ class TestPrCostExportProvenanceLine:
         """The real multi-account scenario this check must not regress: a
         real non-personal-account run legitimately sets only CLAUDE_CONFIG_DIR
         while ~/.claude/transcript-config-dirs (resolved against $HOME, not
-        CLAUDE_CONFIG_DIR) exists and declares the account roster -- that must
-        stay corpus_override=0, not be misflagged as a synthetic-corpus
-        export the way CLAUDE_CONFIG_DIR-alone was before this test."""
+        CLAUDE_CONFIG_DIR) exists and declares the account roster. This case
+        must stay corpus_override=0 because a real declared-roots file makes
+        it a legitimate multi-account run, not a synthetic-corpus one."""
         monkeypatch.delenv("TRANSCRIPT_CONFIG_DIRS_FILE", raising=False)
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -28637,6 +28734,99 @@ class TestPrCostExportRefusals:
         assert "account-2" in err
         assert "account-1" not in err
 
+    @pytest.mark.parametrize(
+        "column,malformed_value",
+        [
+            ("machine", "AcmeCorp-Bldg9"),
+            ("pr_number", "ACME-NONNUMERIC-PRVALUE"),
+            ("merged_at", "ACME-BAD-TIMESTAMP"),
+        ],
+    )
+    def test_malformed_ledger_stderr_omits_raw_value_for_machine_pr_number_and_timestamp(
+        self, tmp_path, fake_projects, monkeypatch, capsys, column, malformed_value,
+    ):
+        """The column-count fixture above never embedded a raw value in the
+        first place -- this covers the branches that used to, proving
+        pr-cost-export's own stderr line doesn't leak a peer account's raw
+        cell for those either."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        line = _mod._format_pr_cost_ledger_row(_sample_pr_cost_row(**{column: malformed_value}))
+        ledger_path.write_text(_mod._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert "account-1" in err
+        assert malformed_value not in err
+
+    def test_export_column_formatting_error_exits_1_naming_account_with_no_partial_file(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        """_format_pr_cost_ledger_row's tab/newline guard has a second call
+        site -- _pr_cost_export_rows' own per-row formatting under
+        _PR_COST_EXPORT_COLUMNS -- distinct from the ledger-round-trip call
+        the malformed-ledger tests above exercise."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        real_format = _mod._format_pr_cost_ledger_row
+
+        def fake_format(row, *, columns=_mod._PR_COST_LEDGER_COLUMNS):
+            if columns == _mod._PR_COST_EXPORT_COLUMNS:
+                raise _mod._PrCostLedgerParseError(
+                    "line 2: column 'host' contains a tab or newline -- refusing to write a corrupt row"
+                )
+            return real_format(row, columns=columns)
+
+        monkeypatch.setattr(_mod, "_format_pr_cost_ledger_row", fake_format)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert "account-1:" in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_ledger_read_oserror_exits_1_naming_account_with_no_path_disclosure(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        """A permission-denied ledger file raises OSError from read_text(),
+        distinct from the _PrCostLedgerParseError paths covered above --
+        this must exit 1, name the account, and disclose no path either."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        _mod._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        os.chmod(ledger_path, 0o000)
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        finally:
+            os.chmod(ledger_path, 0o600)
+
+        assert exc_info.value.code == 1
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert "account-1" in err
+        assert str(ledger_path) not in err
+        assert str(tmp_path) not in err
+
 
 class TestPrCostExportSymlinks:
     def test_live_symlink_at_out_refuses_at_the_early_check(self, tmp_path, fake_projects, monkeypatch, capsys):
@@ -28710,6 +28900,43 @@ class TestPrCostExportOExclBackstop:
 
         assert exc_info.value.code == 2
         assert out_path.read_text() == "preexisting\n"
+
+
+class TestPrCostExportWriteOSError:
+    def test_write_oserror_exits_2_and_unlinks_the_just_created_out_file(
+        self, tmp_path, fake_projects, monkeypatch, capsys,
+    ):
+        """The write-time OSError (f.write raising after os.open's O_EXCL
+        has already created --out) is distinct from the open-time OSError
+        the O_EXCL backstop above covers -- it must still unlink the
+        just-created file rather than leave a truncated one behind."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        class _WriteFailsFile:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def write(self, text):
+                raise OSError("disk full")
+
+        def fake_fdopen(fd, mode):
+            os.close(fd)  # avoid leaking the real fd os.open already created
+            return _WriteFailsFile()
+
+        monkeypatch.setattr(os, "fdopen", fake_fdopen)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        assert exc_info.value.code == 2
+        assert not out_path.exists()
+        err = capsys.readouterr().err
+        assert f"--out {str(out_path)!r} could not be written" in err
 
 
 class TestFormatPrCostLedgerRowColumnsParameterRegression:

@@ -8330,7 +8330,10 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     """Validate and coerce one already-split, already-tab-separated data
     row's cells into a typed row dict. Raises _PrCostLedgerParseError naming
     the offending line on any field that doesn't match its column's
-    contract."""
+    contract. Never embeds a cell's raw value in this message; only the
+    column name and line number are included. pr-cost-export's
+    malformed-ledger path echoes this message to stderr, where another
+    account's session may be watching concurrently."""
     if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
         raise _PrCostLedgerParseError(
             f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
@@ -8338,21 +8341,15 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     row = dict(zip(_PR_COST_LEDGER_COLUMNS, cells, strict=True))
 
     if not row["host"] or row["host"] != row["host"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed host value (must be lowercase) -- value omitted from"
-            " this diagnostic since the ledger's host column is never scrubbed at rest"
-        )
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed host value (must be lowercase)")
     if not row["repo"] or row["repo"] != row["repo"].lower():
-        raise _PrCostLedgerParseError(
-            f"line {line_no}: malformed repo value (must be lowercase owner/name) -- value omitted from"
-            " this diagnostic since the ledger's repo column is never scrubbed at rest"
-        )
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed repo value (must be lowercase owner/name)")
     try:
         row["pr_number"] = int(row["pr_number"])
     except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number {row['pr_number']!r}") from None
+        raise _PrCostLedgerParseError(f"line {line_no}: non-numeric pr_number") from None
     if not _MACHINE_LABEL_RE.match(row["machine"]):
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label {row['machine']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed machine label")
     for required_col in ("head_branch", "merged_at", "captured_at"):
         if not row[required_col]:
             raise _PrCostLedgerParseError(f"line {line_no}: {required_col} must not be empty")
@@ -8362,35 +8359,33 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
         try:
             datetime.fromisoformat(row[ts_col].replace("Z", "+00:00"))
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col} {row[ts_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {ts_col}") from None
     try:
         datetime.strptime(row["rate_stamp"], "%Y-%m-%d")
     except ValueError:
-        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp {row['rate_stamp']!r}") from None
+        raise _PrCostLedgerParseError(f"line {line_no}: malformed rate_stamp") from None
     if row["join_confidence"] not in _PR_COST_JOIN_CONFIDENCE_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence {row['join_confidence']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown join_confidence")
     if row["status"] not in _PR_COST_STATUS_VALUES:
-        raise _PrCostLedgerParseError(f"line {line_no}: unknown status {row['status']!r}")
+        raise _PrCostLedgerParseError(f"line {line_no}: unknown status")
 
     for float_col in _PR_COST_FLOAT_COLUMNS:
         try:
             row[float_col] = float(row[float_col])
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col} {row[float_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {float_col}") from None
         if math.isnan(row[float_col]) or math.isinf(row[float_col]):
-            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col} {row[float_col]!r}")
+            raise _PrCostLedgerParseError(f"line {line_no}: non-finite {float_col}")
 
     for int_col in _PR_COST_INT_COLUMNS:
         try:
             row[int_col] = int(row[int_col])
         except ValueError:
-            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col} {row[int_col]!r}") from None
+            raise _PrCostLedgerParseError(f"line {line_no}: non-numeric {int_col}") from None
 
     for bool_col in _PR_COST_BOOL_COLUMNS:
         if row[bool_col] not in ("true", "false"):
-            raise _PrCostLedgerParseError(
-                f"line {line_no}: malformed {bool_col} {row[bool_col]!r} (expected true/false)"
-            )
+            raise _PrCostLedgerParseError(f"line {line_no}: malformed {bool_col} (expected true/false)")
         row[bool_col] = row[bool_col] == "true"
 
     return row
@@ -8457,9 +8452,7 @@ def _format_pr_cost_ledger_row(row: dict, *, columns: Sequence[str] = _PR_COST_L
         else:
             cell = str(value)
         if "\t" in cell or "\n" in cell or "\r" in cell:
-            raise _PrCostLedgerParseError(
-                f"column {col!r} value {cell!r} contains a tab or newline -- refusing to write a corrupt row"
-            )
+            raise _PrCostLedgerParseError(f"column {col!r} contains a tab or newline -- refusing to write a corrupt row")
         cells.append(cell)
     return "\t".join(cells)
 
@@ -9525,8 +9518,9 @@ _PR_COST_EXPORT_HEADER_LINE = "\t".join(_PR_COST_EXPORT_COLUMNS)
 
 def _pr_cost_export_date_only(value: str) -> str:
     """Date portion of an already-validated ISO8601 timestamp
-    (YYYY-MM-DDTHH:MM:SS[Z|+HH:MM], per _parse_pr_cost_ledger_row_cells) --
-    merged_at/captured_at only; rate_stamp is already date-only and never
+    (YYYY-MM-DDTHH:MM:SS[Z|+HH:MM]). Validated by
+    _parse_pr_cost_ledger_row_cells before this is ever called. Applies to
+    merged_at/captured_at only. rate_stamp is already date-only and never
     passed through this."""
     return value.split("T", 1)[0]
 
@@ -9598,9 +9592,9 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
     order, so two exports of the same declared-roots file under different
     active profiles produce byte-identical row order. Each account's rows
     are collapsed to current state, then redacted, then date-truncated,
-    then formatted, in that order -- reusing the same
-    four redact maps across every account, since _assign_root_scoped_redact_label's
-    own key already namespaces by ordinal.
+    then formatted, in that order. The same four redact maps are reused
+    across every account, since _assign_root_scoped_redact_label's own key
+    already namespaces by ordinal.
 
     corpus_identities carries one `captured_at|machine` string per
     participating account. An account participates if it's opted in and its
@@ -9669,7 +9663,11 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
             exported = _redact_pr_cost_row_for_export(
                 row, ordinal, correction_count, host_map, repo_map, pr_map, branch_map
             )
-            formatted_rows.append(_format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
+            try:
+                formatted_rows.append(_format_pr_cost_ledger_row(exported, columns=_PR_COST_EXPORT_COLUMNS))
+            except _PrCostLedgerParseError as exc:
+                print(f"pr-cost-export: account-{ordinal}: {exc}", file=sys.stderr)
+                sys.exit(1)
 
     return formatted_rows, declared, opted_in, skipped_no_sentinel, legacy_header_accounts, corpus_identities
 
@@ -9760,11 +9758,11 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    # No _resolve_project_scope call here to derive a scope_label from -- this
-    # subcommand has no --this-repo/--projects flags, so "*" (the same
-    # literal every other subcommand's scope_label defaults to absent those
-    # flags) is the accurate, unscoped label for every declared account's
-    # ledger.
+    # No _resolve_project_scope call here to derive a scope_label from --
+    # this subcommand has no --this-repo/--projects flags.
+    # "*" is the same literal every other subcommand's scope_label defaults
+    # to absent those flags, so it is the accurate, unscoped label for every
+    # declared account's ledger.
     _print_resolved_scope("pr-cost-export", "*", roots, file=sys.stderr)
 
     (
@@ -9794,8 +9792,17 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    with os.fdopen(fd, "w") as f:
-        f.write(file_text)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(file_text)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(open_path)
+        print(
+            f"pr-cost-export: --out {out!r} could not be written -- pass a new path",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     print(
         f"pr-cost-export: wrote {len(formatted_rows)} row(s) from {opted_in} of {declared} declared"
