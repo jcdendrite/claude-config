@@ -36,14 +36,14 @@ to surface the header, and refresh the publish-safety warning.
 
 ### The measurement that sets the priority
 
-Run against the live 6-root corpus with a branch filter that cannot match
+Run against every declared root with a branch filter that cannot match
 (`--branches zzz-no-such-branch-zzz`):
 
 | Run | stdout | stderr |
 |---|---|---|
-| `review-trace`, 6 roots | 0 bytes | `scanning root N/6` ×6 |
+| `review-trace`, every declared root | 0 bytes | `scanning root N/M`, printed once per root |
 | `review-trace`, 1 root (`--config-dir ~/.claude`) | 0 bytes | **0 bytes** |
-| `skill-invocation`, 6 roots | `No skill invocations found.` | `scanning root N/6` ×6 |
+| `skill-invocation`, every declared root | `No skill invocations found.` | `scanning root N/M`, printed once per root |
 
 The per-root progress line only prints above one root
 (`docs/transcript-analysis.md:44`; pinned by the existing assertion

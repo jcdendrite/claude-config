@@ -284,7 +284,7 @@ staff-sdet                   zero-finding            30     30     30      7    
 
 **When to reach for it.** Judge whether a reviewer agent's dispatch volume is worth its cost. Verdict classification is best-effort: it recognizes the `**No X concerns**`, `Wrote findings to <path>. Found <N> issues.`, `**Approve with concerns**`, and `**Request changes**` contract shapes (case-insensitive, bold-optional, singular/plural-tolerant) documented in `claude/.claude/agents/*.md`. The bulleted `**Approve with concerns**`/`**Request changes**` verdicts land in `Found` alongside the numeric-count verdicts, but carry no derivable count of their own — `Findings` is therefore a lower bound on actual findings, not an exact total. A dispatch whose `subagents/*.meta.json` sidecar can't be resolved at all is excluded entirely, not counted as `Unclass`. A `subagents/*.meta.json` sidecar that exists but is unreadable (invalid JSON) or is missing `toolUseId` is a second, distinct exclusion path — also excluded entirely, and corpus-wide counted in a `(N meta.json files failed to parse, excluded)` line printed under the table.
 
-The second table's columns: `Cited` = dispatches yielding at least one extracted, path-normalized citation (excluding the dispatch's own findings-file target and any cited plan file, which would otherwise self-match a `/plan-review` dispatch against the plan the parent then edits). `Active` = of those, dispatches after which the session recorded any code edit at all — a null control for "was the session still working," not yet path-specific. `Edited` = of the `Active` ones, a *cited* path itself was among the edited paths — the real cited-path-overlap signal. `Rate` = `Edited ÷ Active`, so it cannot exceed 100%. `insufficient` in `Rate` means `Active` fell below 10 for that cell — too few qualifying dispatches to report a rate. `excluded` marks the `unclassified` bucket, which this table doesn't score at all. **`Active`/`Edited` count edits inside subagent transcripts too**, not just parent-main-thread ones. Reading every reviewer dispatch's subagent transcript twice — once via the corpus-wide merge, once to build the reviewer-write exclusion — costs ~104s of added wall-clock over a 6-root `--since 30d` run (53.8s parent-only vs 157.7s subagent-inclusive). A reviewer agent's own writes are excluded from the edit index, so routine review bookkeeping can't inflate `Active` (see `cmd_reviewer_yield`'s docstring for exactly which writes that covers). **`--until` never bounds this table.** `compute_reviewer_yield_data`'s paired tool-result and edit indexes are built `since_ts`-only. A run with `--until` set prints a caveat line under this table's heading rather than silently applying a bound it can't honor.
+The second table's columns: `Cited` = dispatches yielding at least one extracted, path-normalized citation (excluding the dispatch's own findings-file target and any cited plan file, which would otherwise self-match a `/plan-review` dispatch against the plan the parent then edits). `Active` = of those, dispatches after which the session recorded any code edit at all — a null control for "was the session still working," not yet path-specific. `Edited` = of the `Active` ones, a *cited* path itself was among the edited paths — the real cited-path-overlap signal. `Rate` = `Edited ÷ Active`, so it cannot exceed 100%. `insufficient` in `Rate` means `Active` fell below 10 for that cell — too few qualifying dispatches to report a rate. `excluded` marks the `unclassified` bucket, which this table doesn't score at all. **`Active`/`Edited` count edits inside subagent transcripts too**, not just parent-main-thread ones. Reading every reviewer dispatch's subagent transcript twice — once via the corpus-wide merge, once to build the reviewer-write exclusion — costs ~104s of added wall-clock over a `--since 30d` run across every declared root (53.8s parent-only vs 157.7s subagent-inclusive). A reviewer agent's own writes are excluded from the edit index, so routine review bookkeeping can't inflate `Active` (see `cmd_reviewer_yield`'s docstring for exactly which writes that covers). **`--until` never bounds this table.** `compute_reviewer_yield_data`'s paired tool-result and edit indexes are built `since_ts`-only. A run with `--until` set prints a caveat line under this table's heading rather than silently applying a bound it can't honor.
 
 ---
 
@@ -585,8 +585,7 @@ other                  3,505,919        206,850,948
 ───────────────────────────────────────────────────
 total                 11,424,816        683,535,614
 
-Sonnet-tier estimate: $323.63
-  = 30% of priced Opus spend in this window
+Sonnet-tier estimate: 30% of priced Opus spend in this window
 
 Sonnet-tier estimate: 2,745,864 output tokens (secondary diagnostic)
   = 24% of Opus output in this window
@@ -768,7 +767,7 @@ sidechain         240          500,000              0      1,000,000          25
 ```
 `Write1h`/`Write5m` are the two `cache_creation` tiers (1-hour and 5-minute ephemeral). `Cold/Wr` is cold tokens as a share of that thread's total write tokens (`Write1h + Write5m`); `Cold/Rd` is cold tokens as a share of that thread's total `Read`. `AvgEvt` is `ColdTok / ColdEvts`, `0` when `ColdEvts` is `0`.
 
-**When to reach for it.** Answer "how much of this account's cache-write spend is a genuine cold re-write, versus an ordinary incremental append" before proposing a prefix-trimming or breakpoint-placement fix — `cost`'s own token-class table cannot separate the two. See the case study for what the validated classifier found: cold re-writes are real and large (60.6%–76.4% of cache-write tokens on the two accounts measured there), but a harness-side fix is not guaranteed to exist for most of it — a 15-session wire-level-capture sample found roughly two-thirds of cold events unexplained by any transcript-visible signal.
+**When to reach for it.** Answer "how much of this account's cache-write spend is a genuine cold re-write, versus an ordinary incremental append" before proposing a prefix-trimming or breakpoint-placement fix — `cost`'s own token-class table cannot separate the two. See the case study for what the validated classifier found: cold re-writes are real and large (60.6%–76.4% of cache-write tokens on the accounts measured there), but a harness-side fix is not guaranteed to exist for most of it — a 15-session wire-level-capture sample found roughly two-thirds of cold events unexplained by any transcript-visible signal.
 
 ---
 
@@ -811,9 +810,9 @@ A turn whose model ID has no pricing-table entry is excluded from every week's t
 - `--threshold TOKENS` — minimum cache-write tokens (`ephemeral_1h + ephemeral_5m`) for a call to count as a large rebuild. Default: `100,000`.
 - `--no-redact` — this report's output is aggregate-only (no project names or session IDs), so `--no-redact` has no effect on its content, but it still prints the `DO NOT PUBLISH` banner and enforces the same multi-root refusal as `cost`, for CLI parity
 
-**Sample output.** From a live `--this-repo` run against this repo's own transcript corpus:
+**Sample output.** From a live `--this-repo` run against this repo's own transcript corpus (the header's root count below is elided to `N`, since a real value would disclose this machine's account cardinality):
 ```
-CACHE REBUILD SOURCES (this repo (33 project dirs); 4 roots)
+CACHE REBUILD SOURCES (this repo (33 project dirs); N roots)
 
 ## Cache-rebuild report (last 30d, threshold >= 100,000 cache-write tokens)
 
@@ -842,13 +841,9 @@ Another session active              56        61.23
 Everything idle (a break)            6         4.09
 Total idle-gap rebuilds             62        65.31
 
-## Idle-gap excess by account
+## Idle-gap excess by account [account-level rows elided]
 
-Account           Rebuilds     Excess $
-account-1               62        65.31
-account-2                0         0.00
-account-3                0         0.00
-account-4                0         0.00
+All idle-gap rebuild activity in this run was concentrated in a single account; every other declared account showed zero rebuilds.
 
 ## Idle-gap rebuilds by origin
 
@@ -981,7 +976,7 @@ The match is textual pattern matching, not shell parsing, so a quoted or heredoc
 
 **Rule of thumb.** At list `claude-sonnet-5` rates ($2.00/MTok base input), the per-token excess is the gap between the cache-write rate and the 0.1x warm-read rate it replaces: 1.15x base for a pure 5-minute-tier rebuild (roughly $1 per 435k tokens abandoned and rebuilt) and 1.9x base for a pure 1-hour-tier rebuild (roughly $1 per 263k tokens — costlier per token, since the 1-hour cache-write multiplier is wider). A `cache-rebuild` dollar total mixes both tiers, so dividing by a single tier's per-token figure over- or under-states the tokens involved; as a corpus-wide blended average across both tiers, **$1 per ~250k tokens** is a reasonable estimate to divide by when a per-tier breakdown isn't available.
 
-Wall-clock scales with corpus size: this doc's own sample run above (`--this-repo`, 4 roots, ~37.9k calls scanned) took ~36s. A full machine-wide scan is correspondingly slower — ~3 minutes was observed in an earlier run against a ~165k-call, 6-root corpus.
+Wall-clock scales with corpus size: this doc's own sample run above (`--this-repo`, across every declared root, ~37.9k calls scanned) took ~36s. A full machine-wide scan is correspondingly slower — ~3 minutes was observed in an earlier run against a ~165k-call corpus spanning every declared root.
 
 Each session's file is read twice — once by the shared scope iterator, once more to recover the per-group (main thread vs. subagent) boundaries classification needs to avoid comparing timestamps across unrelated conversations — the same tradeoff `read-scope` already accepts for the same reason. `--since` only gates whether a threshold-crossing call is counted into the report, never whether it can see its own prior turn. See `_cache_rebuild_report`'s own docstring for how the concurrency check avoids re-scanning per gap.
 
@@ -1330,28 +1325,28 @@ isSidechain turns are excluded. A streak resets on a mid-session `gitBranch` cha
 
 ### Tool calls per turn
 
-Bucket      Turns            $
+Bucket      Turns    Share of $
 ────────────────────────────────
-0            1,958      $421.10
-1            2,407      $198.42
-2-3             49       $30.55
-4-7              1        $0.42
-8+               0        $0.00
+0            1,958         64.7%
+1            2,407         30.5%
+2-3             49          4.7%
+4-7              1          0.1%
+8+               0          0.0%
 
 ### Single-call streak length (batching rule)
 
-Bucket    Streaks            $
+Bucket    Streaks    Share of $
 ────────────────────────────────
-1           2,205      $172.90
-2              49       $12.30
-3-5             1        $0.95
+1           2,205         92.9%
+2              49          6.6%
+3-5             1          0.5%
 
 ### Bash-only single-call streak length, excluding mutating git (delegation rule)
 
-Bucket    Streaks            $
+Bucket    Streaks    Share of $
 ────────────────────────────────
-1             980       $61.20
-2              22        $5.60
+1             980         91.6%
+2              22          8.4%
 ```
 
 **When to reach for it.** Establish a re-derivable, dollar-weighted baseline for how often sessions violate the batching and delegation rules, before setting any nudge threshold — see `.claude/plans/tool-call-compliance-enforcement.md`.

@@ -8,11 +8,11 @@ entirely of individually-valid `marker.sh` operations is permitted* — so the
 94%-false-positive hard-denials the census measured stop firing, without
 loosening the gate against non-marker chaining.
 
-**Why now:** The 2026-07-02 denial census (1120 denials / 335 sessions) found
-`enforce-marker-script-shape` produced 206 denials, 193 (94%) false positives;
-188 of those were commands where **every `&&`-joined segment was an
-individually-sanctioned `marker.sh` shape** (e.g. `write ready-for-review &&
-deactivate ready-for-review` in one Bash call). Sessions recover only by
+**Why now:** A denial census (2026-07-02) found `enforce-marker-script-shape`
+at a 94% false-positive rate; nearly all of those (~97%) were commands where
+**every `&&`-joined segment was an individually-sanctioned `marker.sh`
+shape** (e.g. `write ready-for-review && deactivate ready-for-review` in one
+Bash call). Sessions recover only by
 splitting and re-running the identical operations. This is the *fourth* round
 of evidence (#187, #300, #362, #372 each added one carve-out) — the classic
 "compounding defensive layers on one mechanism" tell that the repo's own

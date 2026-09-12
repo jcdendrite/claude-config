@@ -12,7 +12,7 @@ git operations. None has ever been linted; `ruff` covers only the Python
 under `claude/.claude/`.
 
 **Why now:** `cleanup-merged-branches.sh` — an ~800-line script that runs
-`git push origin --delete` across ~37 repos — shipped a quoting defect that
+`git push origin --delete` across every repo on the machine — shipped a quoting defect that
 survived two rounds of specialist review. A backtick inside a double-quoted
 string holding Python source was parsed by bash as command substitution,
 silently deleting the text and emitting `syntax error: unexpected end of

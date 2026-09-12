@@ -18,7 +18,7 @@ The `instrument-authoring` subcommand of `claude/.claude/scripts/transcript-anal
 transcript-analysis.py instrument-authoring
 ```
 
-Snapshot taken 2026-08-16, default corpus scope (6 declared config-dir roots, no `--since`). Reproducible via the command above; the classification behavior itself is fixture-pinned by `TestInstrumentAuthoring` and `TestScanInstrumentAuthoringSession`.
+Snapshot taken 2026-08-16, default corpus scope (every declared config-dir root, no `--since`). Reproducible via the command above; the classification behavior itself is fixture-pinned by `TestInstrumentAuthoring` and `TestScanInstrumentAuthoringSession`.
 
 Honest limits:
 
@@ -28,7 +28,7 @@ Honest limits:
 
 ## The numbers
 
-**622 sessions scanned**, all 6 default-scope roots combined.
+**622 sessions scanned**, every default-scope root combined.
 
 | cohort | sessions | share of sessions | main-thread authored chars | share of authored mass |
 |---|---|---|---|---|
@@ -47,7 +47,7 @@ Zero-dispatch sessions are *under*-represented in authored mass relative to thei
 
 **A rule reinforcing itself does not fire twice in the same session for free.** Two delegation rules were already on the books when the observed trace occurred; the trace demonstrates that prose alone does not reliably bind at the decision point. This measurement says nothing about whether that binding problem is worse or better for instrument-authoring specifically than for any other delegation rule in the skill — it was never designed to.
 
-**Corpus scope, not generalization.** Same caveat as every other transcript-corpus case study on this page: one engineer's accounts, one machine, six declared roots. A consumer whose session mix differs materially — heavier one-off scripting, lighter subagent use generally — is not described by the ratio above.
+**Corpus scope, not generalization.** Same caveat as every other transcript-corpus case study on this page: one engineer's accounts, one machine, every declared root. A consumer whose session mix differs materially — heavier one-off scripting, lighter subagent use generally — is not described by the ratio above.
 
 ## Decision
 

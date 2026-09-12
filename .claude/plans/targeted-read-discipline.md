@@ -30,7 +30,7 @@ decision with a numeric revisit trigger.
 
 ### What the scratch measurement established
 
-Measured this session across four config-dir profiles. **These figures are
+Measured this session across every config-dir profile. **These figures are
 provisional.** They
 came from a scratch script whose growth denominator does not yet carry the
 corrections in "Computing the denominator" below; the committed subcommand must
@@ -293,8 +293,8 @@ because they are beyond changing.
 | R10 | **Read-result token figures are `chars // 4` estimates against a real-usage denominator** — a mixed-units ratio. Verification 5a fits the ratio; the self-consistent cross-check ratio bounds it | `[unverified]` |
 | R11 | 73.1% of whole-file-read tokens are inside subagents, where a read is discarded on return rather than re-billed for the session's remainder — so realized saving is below the growth-denominated share | `[verified: measurement]`; effect on the ceiling `[unverified]` |
 | R12 | Every figure undercounts nested workflow-agent transcripts: `_read_session_file` (`:370`) merges direct `subagents/*.jsonl` children but not `subagents/workflows/wf_*/agent-*.jsonl`. Magnitude unmeasured | `[verified: source; hashline-edit-format.md:30 records the same limit]` |
-| R13 | No before/after figure can be read causally. A staggered rollout across the four profiles would give a real control and is reachable, but is declined — see Out of scope | `[verified: each profile carries its own config dir]` |
-| R14 | **The corpus is one engineer's, on one machine; the instruction ships to every stow consumer.** Whether a ~46% baseline and a whole-file-heavy tail generalize to a consumer with a different task mix — heavier unfamiliar-codebase exploration, where whole reads are more often warranted — is not established and cannot be from this data. The measurement now carries direct evidence against assuming it does: across this one engineer's four account profiles the targeted-read share spans **34.3% to 48.2%**, a 14-point spread driven by nothing but which work each account does | `[verified: per-account breakdown]` for the spread; `[unverified]` for cross-consumer generalization |
+| R13 | No before/after figure can be read causally. A staggered rollout across every profile would give a real control and is reachable, but is declined — see Out of scope | `[verified: each profile carries its own config dir]` |
+| R14 | **The corpus is one engineer's, on one machine; the instruction ships to every stow consumer.** Whether a ~46% baseline and a whole-file-heavy tail generalize to a consumer with a different task mix — heavier unfamiliar-codebase exploration, where whole reads are more often warranted — is not established and cannot be from this data. The measurement now carries direct evidence against assuming it does: across this one engineer's account profiles the targeted-read share varies substantially, driven by nothing but which work each account does | `[verified: per-account breakdown]` for the spread; `[unverified]` for cross-consumer generalization |
 | R15 | Non-text `Read` results are encoded as `content: [{"type": "image", "source": …}]`; text results are a plain `str`. `chars // 4` over an image block is meaningless, so image results are excluded from the size histogram and counted separately | `[verified: corpus probe, 2,466 files — 11,907 `str` results vs 12 `image` results]` |
 | R16 | **57 `Read` calls carry `__unparsedToolInput` as their only input key, and 1 carries no keys at all** — no `file_path`, no `offset`/`limit`. Filing them under whole-file (the naive `is not None` outcome) would inflate the whole-file cohort with calls whose scope is unknowable. They get their own `unparsed_input` counter, excluded from both cohorts | `[verified: corpus probe]` |
 
@@ -449,7 +449,7 @@ Working Style, after `:31`.
 2. `../../../.venv/bin/ruff check claude/.claude/`.
 3. `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck`.
 4. **Reconcile against the scratch measurement.** Run `read-scope` over the same
-   four profiles; every number in the case study is re-derived from its output,
+   profiles; every number in the case study is re-derived from its output,
    none copied from the scratch run.
 
    **This gate's original wording was wrong and is corrected here.** It predicted

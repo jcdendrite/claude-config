@@ -42,7 +42,7 @@ Python commands run from this worktree via
 
 **Phase 3 — G0/G3 observational screen.**
 
-- Direct read of each declared account's `pr-cost-ledger.tsv` (`~/.claude/transcript-config-dirs` lists 6 roots; 5 have a ledger file, 1 does not yet), rather than `pr-cost --this-repo --all-accounts`'s own read-mode listing — that listing prints every row in an account's ledger and redacts only the displayed `repo` label, it does not filter by repo. Filtered to `repo == jcdendrite/claude-config` and deduped by `(host, repo, pr_number, machine)` keeping the latest `captured_at` (no `supersedes` corrections were present in this window, so dedup was a no-op).
+- Direct read of each declared account's `pr-cost-ledger.tsv` (`~/.claude/transcript-config-dirs` lists every declared root; not every one has a ledger file yet), rather than `pr-cost --this-repo --all-accounts`'s own read-mode listing — that listing prints every row in an account's ledger and redacts only the displayed `repo` label, it does not filter by repo. Filtered to `repo == jcdendrite/claude-config` and deduped by `(host, repo, pr_number, machine)` keeping the latest `captured_at` (no `supersedes` corrections were present in this window, so dedup was a no-op).
 - Stratified the resulting rows by `changed_files` terciles, split each stratum at its own within-stratum median `opus_dollar_share_pct`, and bootstrapped the adopt-candidate direction (high-Opus-dose stratum shows a *lower* outcome than low-dose) with 2,000 resamples per stratum/outcome pair.
 
 ## Results
@@ -90,7 +90,7 @@ for Phase 3.
 
 ### G2 — within-agent arm: BLOCKED, not evaluable on this instrument on this machine
 
-`subagent-mix --this-repo` always resolves 6 roots on this machine, and
+`subagent-mix --this-repo` always resolves more than one root on this machine, and
 under more than one root it redacts `subagent_type` as well as branch names
 to opaque `account-N/agent-type-M` labels — documented behavior
 (`docs/transcript-analysis.md:198`), confirmed in this run's own output.
@@ -235,8 +235,8 @@ average the highest density (2.0 signals/branch) against `plan-quality`
 in the expected direction: oscillation is repeated flailing, the pattern
 most likely to prompt a mid-session correction. Second, and more load-bearing:
 **zero** of the 29 tail branches carry any Opus-attributed correction
-signal, and only 4 hits exist machine-wide across the whole repo's history
-(2 on `main`, 2 on unrelated non-tail branches). This repo's main-thread
+signal, and machine-wide hits across the whole repo's history are rare,
+split between `main` and unrelated non-tail branches. This repo's main-thread
 work runs on Sonnet by default per its own routing convention; Opus only
 runs the main thread via the harness's plan-mode-forced phase or explicit
 `--model opus` anchoring. `struggle` shares no code path or redaction

@@ -26,11 +26,11 @@ it.
 
 ## Approach
 
-Run a fixed instrument battery across all six declared accounts, reporting
+Run a fixed instrument battery across every declared account, reporting
 outcomes in four tiers rather than one primary/one secondary metric, and
 publish the result as a case study. **Tier 0** (`spend-over-threshold`) is a
 manipulation check, not a cost result. **Tier 1** — total cost to reach a
-shipped unit of work, reported in dollars, measured across all six accounts'
+shipped unit of work, reported in dollars, measured across every declared account's
 own repos via a new per-account capture step (Phase 2/"Phase C" below) — is
 the primary outcome. **Tier 2** (review rounds, findings ratio, hook-denial
 friction) is a quality guardrail under non-inferiority framing. **Tier 3** is
@@ -90,7 +90,7 @@ same sentence.
 |---|---|---|
 | A1 | Eras are: **before** = advisory-only regime through 2026-08-16; **excluded** = 2026-08-17 through 2026-08-22; **after** = 2026-08-23 onward. | `[engineer-verified]` |
 | A2 | Run now and caveat low-n buckets as directional rather than withholding a result. | `[engineer-verified]` |
-| A3 | Enable `pr-cost` fresh in the three accounts that have never recorded it, and record across all six. | `[engineer-verified]` |
+| A3 | Enable `pr-cost` fresh in every account that has never recorded it, and record across every account. | `[engineer-verified]` |
 | A4 | Rounds = `code-review`/`ready-for-review`/`plan-review` invocations per PR branch; findings = `reviewer-yield` Found-verdict count; hook-denial friction is a secondary signal. | `[engineer-verified]` |
 | A5 | `compute_reviewer_yield_data` already accepts an exclusive `until_ts`; only `cmd_reviewer_yield` fails to expose it, passing `since_ts` alone. | `[verified: transcript_analysis/reviewer_yield.py:422-426, :462-469, :578, :585]` |
 | A6 | `review-trace` accepts inclusive absolute `--since`/`--until`, a per-event `--branches` filter, `--skill NAME` (one value, from a six-name set), and `--deny-summary`. | `[verified: transcript-analysis.py:10458-10486 subparser; :1751-1757 inclusive-day conversion; :1728-1734 per-event branch attribution; :964-966 REVIEW_TRACE_SKILLS]` |
@@ -104,7 +104,7 @@ same sentence.
 | A14 | A PR worked on from two accounts yields one partial row per account (each scans only its own corpus), so the cross-account union must **sum** corpus-derived columns per PR and take gh-sourced columns from any single row. The union key is `(host, repo, pr_number)`, never `pr_number` alone — once Phase C targets more than one repo, the same PR number recurs across unrelated repos as a matter of course, and a bare `pr_number` join would silently add two different repos' PRs together. | `[unverified]` — confirm empirically **after Phase 2's backfill completes**, by checking whether any `(host, repo, pr_number)` triple appears in more than one account's ledger; a check run before backfill is a false negative, not a validated answer, since Phase 2 is exactly the mutation that could introduce the duplicates. Grounding leads: `docs/pr-cost.md:82-84`; the ledger's own latest-row key is `(host, repo, pr_number, machine)` `[verified: transcript-analysis.py:7483, :7742-7744]`. |
 | A15 | The after-era **claude-config** merged-PR population is **28** as of 2026-08-28 — not the single-digit count an earlier draft of this plan assumed. It therefore clears A13's floor of 10, so median/IQR and percentage reporting are admissible for that bucket rather than raw-values-only. Two corrections ride on that: the *captured* n is 28 minus whatever A10's 3-day as-of window holds back at capture time, so Tier 1 reports the captured denominator it actually has, measured at capture, not the merged count; and the cross-account bucket Phase C adds remains a separate, larger population whose size Phase 0 measures rather than assumes. | `[verified: gh pr list --repo <owner>/claude-config --state merged --search "merged:>=2026-08-23" --limit 200 --json number, run 2026-08-28 → 28]` — re-derive the figure from this same command at the moment the report states it (CLAUDE.md, "Ground every choice"). |
 | A16 | `docs/case-studies/` is the repo's declared home for "longer-form writeups ... with primary-source citations ... the empirical record", and `docs/cost-levers-considered.md` keeps "the verdict plus the measured reason, not the full investigation." | `[verified: docs/case-studies.md:3; docs/cost-levers-considered.md:1-17]` |
-| A17 | The committed artifact carries **both** scopes: `--this-repo`-scoped figures **and** machine-wide aggregate totals and percentages spanning all six accounts (dollars, tokens, session counts, merged-PR counts, denial and block counts, and — per Phase C — cross-account Tier 1/Tier 3 figures). It carries no figure that could identify a specific account or private project — no per-account row, column, or ordered value list; no repo name, branch name, or per-account directory name other than `claude-config`'s own; no session ids. Aggregation across all six accounts, not repo-scoping, is the publication boundary. A machine-wide cell is only publishable when **at least 2** of the 6 accounts contributed to it — a single-contributor cell is arithmetically identical to a per-account disclosure and must be held back, not relabelled and published. This account-diversity gate is orthogonal to A13's n<10 volume floor; both must pass independently. This is the **sole** privacy control over Phase C's real per-account repo data — see A18. Phase 4 verifies this gate with a machine-readable per-cell contributor-count listing (an uncommitted, throwaway audit artifact — not a new committed script, per Out of scope's reusable-script exclusion) diffed against the drafted case study before staging, not by visual inspection alone. | `[engineer-verified]` |
+| A17 | The committed artifact carries **both** scopes: `--this-repo`-scoped figures **and** machine-wide aggregate totals and percentages spanning every declared account (dollars, tokens, session counts, and — per Phase C — cross-account Tier 1/Tier 3 figures). It carries no figure that could identify a specific account or private project — no per-account row, column, or ordered value list; no repo name, branch name, or per-account directory name other than `claude-config`'s own; no session ids. Aggregation across every declared account, not repo-scoping, is the publication boundary. A machine-wide cell is only publishable when **at least 2** of the declared accounts contributed to it — a single-contributor cell is arithmetically identical to a per-account disclosure and must be held back, not relabelled and published. This account-diversity gate is orthogonal to A13's n<10 volume floor; both must pass independently. This is the **sole** privacy control over Phase C's real per-account repo data — see A18. Phase 4 verifies this gate with a machine-readable per-cell contributor-count listing (an uncommitted, throwaway audit artifact — not a new committed script, per Out of scope's reusable-script exclusion) diffed against the drafted case study before staging, not by visual inspection alone. | `[engineer-verified]` |
 | A18 | A per-account consent field in the operator's private, uncommitted multi-account credential registry governs whether dollar figures may appear **inside that account's own PR descriptions** — a narrower publication surface than this study's cross-account aggregate. It does not gate inclusion in this study: A17's ≥2-contributor aggregation floor is the sole and sufficient privacy control for what this plan publishes, since no per-account figure is ever published regardless of that field's value. | `[engineer-verified 2026-08-28]` |
 | A19 | Each non-personal account maps to **one or more** operator-local container directories, and a container holds **zero or more** git checkouts — a container may be empty, hold a single repo, or hold a bulk-cloned org mirror, and its checkout count is not a proxy for how many of those repos were ever worked in from Claude Code. Each container carries a `direnv` `.envrc` that exports, for that container and every directory beneath it, a `GH_TOKEN`, a `GH_HOST` (the container's own declared host, **defaulting to `github.com` only when the container declares none** — an enterprise host is a first-class configured value, not an exception), and a `CLAUDE_CONFIG_DIR`. `git` needs no wrapper (its credential routing is directory-based), so every step of Phase C's repo-discovery runs unwrapped; only the `gh`-touching steps run under `cd <checkout> && direnv exec . <command>`, reusing exactly the pattern `CLAUDE.local.md` already documents. No new credential is provisioned for any of this. Container names, checkout paths, org names, hostnames, and per-account checkout counts are operator-local and are never written into this plan or the case study (A17) — a private forge hostname is itself an org identifier. | `[verified: direct filesystem and gh census, 2026-08-28 — per-account container count, per-container checkout count, and per-container host and auth status enumerated; direct inspection of each container's own .envrc-generation mechanism, confirming GH_HOST defaults to github.com only when a container declares no host]` |
 | A20 | Reusing `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT` (3 days) as the "candidate abandoned branch" threshold — a branch with zero PR match (merged or closed-unmerged) whose most recent local activity is older than this window — is a defensible reuse of an existing, already-justified constant rather than a newly invented number; it is deliberately not doubled or otherwise adjusted; results are reported as raw last-activity-age values (Statistical framing), not as a hard classification. | `[engineer-verified — reuse rather than a new tunable, per "Ground every choice"]` |
@@ -119,8 +119,9 @@ same sentence.
 **Tier 0 — mechanism-engagement gate (never a headline).**
 `spend-over-threshold`, run twice (`--since 2026-08-23` for the after era;
 an unfiltered run's per-week rows summed for weeks ≤ 2026-W33 for the before
-era), plus `action=block`/`handoff` line counts per era from
-`.handoff-nudge.log`. Report **both** the share and the absolute
+era), plus a directional `action=block`/`handoff` trend per era from
+`.handoff-nudge.log`, read for movement rather than published as a raw pooled
+count. Report **both** the share and the absolute
 above-threshold dollars, since the share's own denominator contains handoff
 overhead (Metric hierarchy, above) and is therefore endogenous to the thing
 being measured. Every place this appears in the report carries the sentence:
@@ -174,7 +175,8 @@ condition).**
   read — `--since`/`--until` bound each era exactly; redirect to a temp file,
   count per (branch, skill) pair in a second pass. `anchors: A6`
 - **Denial friction:** `review-trace --deny-summary`, date-bounded per era,
-  grouped counts only. `anchors: A6`
+  reported as a directional trend across the grouped buckets rather than a
+  raw pooled count. `anchors: A6`
 - **Findings:** `reviewer-yield` run three times — `--until 2026-08-16`,
   `--until 2026-08-22`, unbounded — differenced, all three with
   `--this-repo` (the merged-PR denominator is claude-config-only by G3, so an
@@ -196,7 +198,7 @@ handoff overhead, not a causal handoff count (a branch with 3 sessions may be
 3 genuine handoffs or 3 days of unrelated normal work):
 
 - *Sessions-per-branch and continuation startup-burn — pure transcript data,
-  no `gh`, no Phase C, runs corpus-wide across all six accounts for free.*
+  no `gh`, no Phase C, runs corpus-wide across every declared account for free.*
   Group every session by attributed branch (reusing `_attributed_branch`/
   `_session_branch_index`, `transcript_analysis/cost.py:26-48`, `:51-78` —
   already resolves a `worktree-agent-*` label back to its real branch, so
@@ -361,15 +363,18 @@ ratio), its numerator is produced with `--this-repo` as well (A12); everywhere
 else, including every Tier 1 and Tier 3 cross-account figure, both sides are
 machine-wide.
 
-**Statistical framing.** Report raw counts everywhere (PRs, sessions,
-dispatches, denials per bucket) alongside every ratio, and the *observed*
+**Statistical framing.** Report sessions and dispatches as raw counts per
+bucket; report PRs and denials as ratios only, never as raw counts. Report
+every ratio alongside the *observed*
 date window per bucket rather than the nominal one. Adopt A13's floor: any
 bucket whose denominator is under 10 is reported as raw values plus a point
 delta labelled **directional, not decisive** — no percentage headline, no
 confidence interval, no p-value, no bootstrap (the repo's bootstrap
 precedent in `opus-plan-boundary-handoff.md` ran 2,000 session-level
 resamples on a large arm; at single-digit n it manufactures precision).
-Every ratio prints its numerator and denominator. Add, as named limitations
+Every ratio prints its numerator and denominator, except the PR and denial
+ratios above, which report the ratio alone per the raw-count bar stated
+there. Add, as named limitations
 rather than footnotes: (1) the Tier 0 arithmetic-bias statement from "Metric
 hierarchy" above; (2) a **pre-registered decision rule**, written before the
 Phase 3 numbers are read: if after-era median dollars-per-shipped-unit —
@@ -382,8 +387,8 @@ improvement as the headline; (3) a **threshold-sensitivity check**: recompute Ti
 significance testing** — at the n this corpus produces, report descriptives
 and individual points, and pre-commit to "inconclusive" as an acceptable,
 stated outcome rather than a headline built on an underpowered comparison.
-Close with a **numeric revisit trigger** — a stated after-era PR count at
-which the battery is re-run — matching the convention the case-study index
+Close with a **numeric revisit trigger** — a stated after-era claude-config PR
+count at which the battery is re-run — matching the convention the case-study index
 already uses; this is a trigger for a *follow-up*, not a statement that the
 current run is merely an interim look, since the after-era population is neither single-digit (A15 measured the
 claude-config-only bucket at 28) nor limited to one repo (Phase C's derived
@@ -454,14 +459,15 @@ change could close.
      zero. Never record the checkout path, the hostname, the org, or `gh
      auth status`'s own login/org output anywhere in this repo.
 
-  Also measure: per bucket (before/excluded/after), how many of the 6
-  accounts hold at least one contributing session or ledger row, flagging
+  Also measure: per bucket (before/excluded/after), how many of the
+  declared accounts hold at least one contributing session or ledger row, flagging
   any bucket at 1 contributing account (A17) or fewer than 10 (A13); and
   total session and file count across the root union, as a duration signal
   for Phase 3's battery. Output: the exact before-era start date every later
   command uses; the target repo list (temp file, operator-local); and the
-  real after-era PR counts for both the claude-config-only population
-  (A15's 28, re-derived at read time) and the cross-account population.
+  real after-era PR count for the claude-config-only population
+  (A15's 28, re-derived at read time), plus confirmation that the
+  cross-account population clears A13's floor without stating its own count.
   **Not this phase:** A14's cross-account duplicate check — Phase 2's
   backfill is the mutation that could introduce the duplicate, so that
   check runs after Phase 2.
@@ -530,8 +536,8 @@ change could close.
      with a scripted equality check (`[ "$(direnv exec . printenv
      CLAUDE_CONFIG_DIR)" = "<expected config-dir>" ] || exit 1`) **before**
      anything is written — not an eyeball-only comparison, since this step
-     repeats across up to six accounts in one sitting and operator fatigue
-     is a realistic failure mode at that volume.
+     repeats across every declared account in one sitting and operator
+     fatigue is a realistic failure mode at that volume.
   2. *Preview.* The same read-mode invocation Phase 0 used
      (`--all-accounts --this-repo`, no `--record`). This mirrors the main
      loop's own preview-before-write pattern rather than deferring the
@@ -582,8 +588,8 @@ change could close.
   pr_number)` key.**
 - **Phase 3 — Instrument battery.** Deterministic command list, all runs
   back-to-back in one sitting so every instrument sees the same corpus.
-  **Pause other Claude Code activity on all 6 accounts for the battery's
-  duration** — estimate the actual pause window from Phase 0's session/file
+  **Pause other Claude Code activity on every declared account for the
+  battery's duration** — estimate the actual pause window from Phase 0's session/file
   count signal before starting, rather than leaving it open-ended. Corpus
   growth mid-battery breaks the corpus-stability check in Verification,
   which re-runs and compares only **one** instrument at the end — a partial
@@ -744,7 +750,7 @@ dispatched:**
   a gate not a result, per-era instrument tables, raw counts, every
   confound above, and the numeric revisit trigger. Tables split into two
   scope-labelled groups per A17: **machine-wide aggregate** (Tier 0, Tier 1
-  cross-account, Tier 3, denial counts, block counts, session counts) and
+  cross-account, Tier 3, session counts) and
   **`claude-config`-only** (Tier 1's claude-config component, Tier 2's
   rounds and findings ratio). Name the scope in each table's own heading.
   **Reuse:** follow `docs/case-studies/review-vs-babysitting.md`'s
@@ -777,7 +783,8 @@ instrument future sessions, not this study's before era.
 
 **Local state written outside the repo (not repository files, listed so the
 blast radius is explicit):** `<config-dir>/.pr-cost-enabled` in three
-accounts; `<config-dir>/pr-cost-ledger.tsv` appends in up to six accounts —
+accounts; `<config-dir>/pr-cost-ledger.tsv` appends in every account Phase C
+reaches —
 one row per (target repo, merged PR, contributing account) under Phase C,
 so the row count scales with the derived target set rather than with the
 account count; no new file type is introduced. One throwaway operator-local
@@ -898,7 +905,7 @@ a formality.**
   named substrings are illustrative examples, not an exhaustive list, since
   a custom private hostname matches neither — and `--hostname`.
 - **Per-bucket contributor-count check (A17):** for every machine-wide
-  aggregate cell, confirm at least 2 of the 6 accounts contributed to it —
+  aggregate cell, confirm more than one declared account contributed to it —
   including Phase C's Tier 1/Tier 3 cells and the sensitivity arm's
   2026-08-08..2026-08-16 sub-window, neither of which inherits its parent
   era's count automatically. Generate this as a throwaway, uncommitted

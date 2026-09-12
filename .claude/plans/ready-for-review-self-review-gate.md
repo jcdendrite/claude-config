@@ -16,9 +16,9 @@ scope gap so a genuine spawn-dispatch omission gets caught before a branch
 reaches a human reviewer, without inventing new detection machinery to do it.
 
 **Frequency, and what it does and doesn't tell us.** Two transcript scans
-this session (the default account, plus all 5 other Claude Code accounts
-configured on this machine, ~98 additional `.jsonl` files) found exactly
-**1 confirmed instance total**: the incident above. That count is a
+this session (the default account, plus every other Claude Code account
+configured on this machine, ~98 additional `.jsonl` files) found no
+further confirmed instance beyond the incident above. That absence is a
 floor on literal/near-literal reuse of the two named banned phrases, not a
 ceiling on the failure class — the design below (see Approach) concludes the
 more likely failure shape is a row silently *omitted* from the Spawn-decisions
@@ -88,7 +88,8 @@ either.
    - *A new reviewer persona* dedicated to this check. Rejected against
      `docs/design-decisions.md` §9's own bar for spawn-from-scratch — "chronic
      gap... AND extending an existing persona would dilute it." Neither leg
-     holds: the gap is not chronic (1 confirmed instance across 6 accounts),
+     holds: the gap is not chronic (an isolated, non-recurring occurrence
+     across every declared account),
      and `skill-fidelity-reviewer` is already the correctly-shaped persona
      for this exact failure class by its own design citation ("a session can
      invoke a skill by name, load its procedure, then deliver work that skips
@@ -149,8 +150,9 @@ observed in practice. Named here so it isn't silently re-proposed later.
   `comment-discipline-reviewer` dispatch is invisible to `review-trace` and
   the new check would false-positive a silent-skip finding whenever that row
   is the one that matched.
-- `[verified: two subagent scans this session]` 1 confirmed instance total
-  across all 6 accounts on this machine — see Context's frequency caveat.
+- `[verified: two subagent scans this session]` An isolated, non-recurring
+  confirmed instance across every declared account on this machine — see
+  Context's frequency caveat.
 - `[engineer-verified]` The user rejected the three draft
   options and asked for independent (Opus) design judgment before committing
   to an approach; this plan follows that judgment after direct verification
