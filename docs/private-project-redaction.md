@@ -100,8 +100,9 @@ provenance" rule states the carve-out these conditions gate.
 ### What it permits
 
 A figure pooled across a corpus that mixes private and public sources
-is publishable when it carries no per-project, per-account, or
-per-engagement dimension. Cite the command or script that produced it.
+is publishable when it carries no per-project, per-account,
+per-machine, or per-engagement dimension. Cite the command or script
+that produced it.
 That command or script must itself be an aggregation boundary. It may
 read the mixed corpus internally, but its output to the agent is the
 rounded pooled figure only — never per-session or per-project raw
@@ -130,13 +131,13 @@ Both have to be satisfied, and neither extends by analogy:
       unlike a rate or a share, it converts to an engagement-value
       estimate via public day-rate references.
   - Both Cost's share-of-spend mode and Counts' share mode may split
-    along any dimension except project, account, engagement, or
-    calendar time. Opus dollars as a percentage of total is permitted;
-    one account's share of pooled tool calls is not. A share split
-    along an excluded dimension hands a reader one side's value the
-    moment it's paired with an already-permitted exact figure for that
-    side — see the worked rejection under "Composition is publication"
-    below.
+    along any dimension except project, account, machine, engagement,
+    or calendar time. Opus dollars as a percentage of total is
+    permitted; one account's or one machine's share of pooled tool
+    calls is not. A share split along an excluded dimension hands a
+    reader one side's value the moment it's paired with an
+    already-permitted exact figure for that side — see the worked
+    rejection under "Composition is publication" below.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
@@ -189,8 +190,8 @@ only within one figure read alone.
    total (10,000) by division, then Account Q's own exact count
    (6,000) by subtraction, without either published figure naming an
    account's total directly. Barring a share split along the account
-   dimension (see "Scope — two closed lists" above) is what keeps this
-   reconstruction from starting.
+   dimension (see "Scope — two closed lists" above, which bars the
+   same for machine) is what keeps this reconstruction from starting.
 
 ### The one permitted split
 
@@ -198,9 +199,11 @@ A whole-period figure may be reported once as a before value and an
 after value either side of a pivot. Every condition below must hold.
 
 - **Public pivot.** The pivot is a commit in this repository's own
-  public history, cited by SHA or merge date. A date read off the
-  data, owner-nominated, or tied to an engagement is disqualified as a
-  pivot, regardless of corpus.
+  public history, cited by SHA or merge date. Disqualified as a pivot,
+  regardless of corpus:
+  - a date read off the data;
+  - an owner-nominated date;
+  - a date tied to an engagement.
 - **Named first.** The pivot is named before any command is run
   against the corpus or date range being split, not merely before the
   split-producing command itself. A pivot named only after an
@@ -214,9 +217,9 @@ after value either side of a pivot. Every condition below must hold.
   total outside a split. The split adds a second point in time, never
   a new form.
 - **One account, one machine.** Both sides resolve to a single
-  `CLAUDE_CONFIG_DIR` account and machine. The cross-account share
-  exception in "Account and machine scope" below does not extend to a
-  split.
+  `CLAUDE_CONFIG_DIR` account and machine. The cross-account/
+  cross-machine share exception in "Account and machine scope" below
+  does not extend to a split.
 - **Exhaustive partition.** Together, the two sides cover exactly the
   period the whole-period figure covered.
 - **No per-side pool size.** Neither side's own pool size is
@@ -226,34 +229,38 @@ after value either side of a pivot. Every condition below must hold.
 
 ### Own-history counts were never inside this class
 
-The test is content, not account count.
+The test is content, not account or machine count.
 
 - A count with no private-engagement records anywhere in its scope —
   this repo's own history, or the owner's other personal, non-client
   repositories — was never a mixed-corpus figure. Examples: branch,
   PR, review-finding, hook-denial, and log-line counts.
 - This holds however many accounts or machines the scope unions, for
-  a count with no per-account decomposition. Branch, PR,
-  review-finding, hook-denial, and log-line counts have none, so
+  a count with no per-account or per-machine decomposition. Branch,
+  PR, review-finding, hook-denial, and log-line counts have none, so
   unioning more roots discloses more of the same thing, not a new
   one. It does not extend to a `transcript-analysis.py` Count or
   Cost/Duration measurement of tool calls, sessions, dispatches,
-  dollars, or duration: that measurement type carries exactly the
-  per-account decomposition "Account and machine scope" and "Count
-  bin" exist to govern, and stays inside their machinery regardless
-  of `--this-repo` scoping.
-- Doubt about whether an account or repository genuinely carries no
-  private-engagement data goes to the owner, same as doubt about pool
-  diversity below. Doubt is never a reason to publish anyway.
+  dollars, or duration. That measurement type carries exactly the
+  per-account or per-machine decomposition "Account and machine
+  scope" and "Count bin" exist to govern. It stays inside their
+  machinery regardless of `--this-repo` scoping.
+- Doubt about whether an account, machine, or repository genuinely
+  carries no private-engagement data goes to the owner, same as doubt
+  about pool diversity below. Doubt is never a reason to publish
+  anyway.
 - This exemption covers what a figure is, not whether it can combine
   with an already-published split or bin to complete a
   reconstruction. An own-history figure that would narrow an
   already-published split's or bin's residual — directly or through a
   published rate — needs the owner's word first. This reaches any
   own-history figure regardless of its own quantity type or scope
-  shape: a same-quantity restatement, a `--this-repo` hook-denial or
-  log-line count pooled across several roots, or a figure that only
-  narrows the residual once combined with an already-published rate.
+  shape:
+  - a same-quantity restatement;
+  - a `--this-repo` hook-denial or log-line count pooled across
+    several roots;
+  - a figure that only narrows the residual once combined with an
+    already-published rate.
 - Before publishing such a figure, the agent checks this repository's
   own history, prior PR bodies, and other artifacts for an
   already-published split or bin — the same search the Approval gate
@@ -271,8 +278,9 @@ Every reporting mode in both lists above defaults to a single
 median all stay there. A dimensionless share is the one exception:
 Cost's share-of-spend mode and Counts' share mode may span accounts or
 machines. A pooled absolute that crosses the boundary can be
-subtracted against another publication of one account's own absolute,
-exposing a private engagement's activity on a shared account.
+subtracted against another publication of one account's or one
+machine's own absolute, exposing a private engagement's activity on a
+shared account or machine.
 
 ### Count bin, a narrow exception to the account/machine default
 
@@ -293,22 +301,18 @@ or a range. Duration never crosses the boundary at all.
   be a signal.
 - **Whether to publish at all is the approval gate's call**, not a
   consequence of which bin a figure falls into.
-- **No pairing a bin with a single account's exact count in the same
-  artifact.**
-  The composition bar above already treats cross-artifact composition,
-  however far apart in time, as the same violation a single artifact
-  would be — this bullet names the same-artifact case explicitly for
-  the bin. Pairing a bin with a single account's exact count of the
-  same quantity, in the same proposal or artifact, lets a reader
-  subtract one from the other directly, so same-artifact pairing
-  stays barred.
+- **No pairing a bin with a single account's or machine's exact count
+  of the same quantity, in the same proposal or artifact** — doing so
+  lets a reader subtract one from the other directly. Cross-artifact
+  pairing of the same kind is already barred by "Composition is
+  publication" above; this bullet only names the same-artifact case.
 - **The same exact figure can still surface separately, in an
   unrelated artifact** — `pr-cost-section.sh`'s automated per-PR
   session counts, for one. That exposure is an accepted cost this
   bullet doesn't track. The disclosure the Approval gate below
   requires for a bin is where it's actually weighed: the subtraction
   only resolves to one engagement when the pool is thin, and grows
-  weaker as the pool spans more accounts.
+  weaker as the pool spans more accounts or machines.
 
 ### Approval gate
 
@@ -343,11 +347,9 @@ approval-only input:
   judge whether the label sits near a bin boundary or draws from a
   thin pool.
 
-The owner's approval must weigh not just that snapshot but the
-erosion `pr-cost-section.sh`'s ongoing per-PR exact session counts
-will keep applying to the bin's residual afterward, with no further
-gate — the bin is a one-time approval against a pool that keeps
-disclosing pieces of itself indefinitely.
+The owner's approval must also weigh the ongoing erosion
+`pr-cost-section.sh`'s per-PR exact session counts will keep applying
+to the bin's residual, since no further gate re-checks it later.
 
 None of this ever appears in the published figure, and none of it is
 ever quoted in any commit message, PR body, issue, or other
