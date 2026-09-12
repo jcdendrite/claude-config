@@ -93,14 +93,14 @@ changes alongside a deploy is config, not a toggle.
    - Scoped to a narrower principal set than the datastore's general
      write grant, not merely a separate code path the same principals
      can still pass.
-   - Enforced at every writer capable of setting that field —
-     application code, migrations, admin tooling, background jobs, and
-     direct datastore access (a console `UPDATE`, an ad hoc SQL fix, a
-     broad table-write role). The first four are application-layer
-     concerns; direct datastore access needs its own datastore-level
-     control (a column-level grant, a row-level policy, or restricting
-     who holds the table's write role at all), since an
-     application-layer check cannot intercept a write issued directly
+   - Enforced at every application-layer writer capable of setting that
+     field — application code, migrations, admin tooling, background
+     jobs — at the call site.
+   - Enforced on direct datastore access (a console `UPDATE`, an ad hoc
+     SQL fix, a broad table-write role) with its own datastore-level
+     control instead — a column-level grant, a row-level policy, or
+     restricting who holds the table's write role at all — since an
+     application-layer check can't intercept a write issued directly
      against the datastore.
    - Not substituted for by an audit record after the fact — logging
      the write is not the same as gating it.
