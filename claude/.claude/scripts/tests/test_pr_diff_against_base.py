@@ -175,7 +175,7 @@ def _diff_artifact_path(env: dict, repo: Path, session_id: str) -> Path:
 
 
 def _staged_diff_artifact_path(env: dict, repo: Path, session_id: str) -> Path:
-    """The diff-file artifact path --staged --diff-file writes -- same
+    """The diff-file artifact path --staged --diff-file writes. Same
     repo-hash recipe as _diff_artifact_path above, keyed into its own
     directory so a staged write never collides with the cumulative
     --diff-file artifact at the same repo-hash-and-session-id."""
@@ -1016,6 +1016,37 @@ class TestDiffFileFlagWithoutASession:
         assert not diff_dir.exists() or list(diff_dir.iterdir()) == []
 
 
+_HASH_STAGED_DIFF_FIXTURE_START = "# MARKER_TEST_FIXTURE: hash-staged-diff — start\n"
+_HASH_STAGED_DIFF_FIXTURE_END = "# MARKER_TEST_FIXTURE: hash-staged-diff — end"
+_MARKER_SH = _SCRIPT.parent / "marker.sh"
+
+
+def _marker_hash_staged_diff(repo_root: str, env: dict) -> str:
+    """Shell out to the real _hash_staged_diff, extracted from marker.sh by
+    its own MARKER_TEST_FIXTURE delimiters rather than sourced whole.
+    marker.sh's subcommand dispatch runs unconditionally when sourced (no
+    BASH_SOURCE guard), so sourcing the whole file would hit its `case` and
+    exit before this ever called the function directly. This is the same
+    extraction mechanism test_marker_script.py's
+    _extract_hash_staged_diff_block uses. Invoked uncapped with no
+    pathspec, matching `write code-review`'s own call in marker.sh."""
+    marker_text = _MARKER_SH.read_text()
+    start = marker_text.find(_HASH_STAGED_DIFF_FIXTURE_START)
+    assert start != -1, f"{_HASH_STAGED_DIFF_FIXTURE_START!r} not found in {_MARKER_SH}"
+    end = marker_text.find(_HASH_STAGED_DIFF_FIXTURE_END, start)
+    assert end != -1, f"{_HASH_STAGED_DIFF_FIXTURE_END!r} not found after start marker in {_MARKER_SH}"
+    block = marker_text[start + len(_HASH_STAGED_DIFF_FIXTURE_START) : end]
+    script = block + '\n_hash_staged_diff "$@"\n'
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", "uncapped", repo_root],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    return result.stdout.strip()
+
+
 class TestStagedMode:
     """--staged's own behavior: DIFF_TEXT comes from `git diff --cached`
     instead of the merge-base diff, and the `gh pr view`/merge-base block is
@@ -1028,7 +1059,9 @@ class TestStagedMode:
       both write orders
     - dirty-index isolation of the non-staged modes
     - the --record mutual exclusion, in both flag orders
-    - the `git diff --cached` failure branch"""
+    - the `git diff --cached` failure branch
+    - byte-equality between the --diff-file artifact and marker.sh's own
+      _hash_staged_diff value"""
 
     SID = "test-session-staged-mode"
 
@@ -1089,6 +1122,28 @@ class TestStagedMode:
         assert expected_path.exists()
         assert "gh pr view failed; defaulting base to" not in result.stderr
         assert "no default branch resolved" not in result.stderr
+
+    def test_staged_diff_file_artifact_hashes_identically_to_marker_hash_staged_diff(self, tmp_path):
+        """The byte-equality property docs/scripts.md's --staged bullet
+        claims: hashing the --diff-file artifact's own bytes must equal
+        marker.sh's `_hash_staged_diff` value for the same staged tree, so
+        the artifact a reviewer reads and the subject `write code-review`
+        hashes can never silently diverge."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, env, staged=True, diff_file=True)
+        assert result.returncode == 0, result.stderr
+
+        artifact = _staged_diff_artifact_path(env, local, self.SID)
+        from_artifact = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+        from_marker = _marker_hash_staged_diff(str(local), env)
+
+        assert from_artifact == from_marker
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_staged_diff_file_artifact_mode_is_0600(self, tmp_path):
@@ -1152,9 +1207,9 @@ class TestStagedMode:
 
     def test_staged_and_cumulative_diff_file_artifacts_do_not_clobber_each_other(self, tmp_path):
         """The likelier collision scenario is cumulative-then-staged
-        (/ready-for-review then a fix-commit /code-review), but a
-        commit-gate /code-review pass followed later in the same session by
-        /ready-for-review is the reverse and equally plausible -- both
+        (/ready-for-review then a fix-commit /code-review). A commit-gate
+        /code-review pass followed later in the same session by
+        /ready-for-review is the reverse and equally plausible, so both
         orders are exercised rather than assuming order-independence."""
         local, _bare = _make_repo_with_remote(tmp_path)
         _make_feature_branch(local, "feat/dual-artifact")
@@ -1259,9 +1314,10 @@ class TestStagedModeWithoutASession:
 
     def test_staged_diff_file_prints_before_session_resolution_failure(self, tmp_path):
         """Stages a file first so DIFF_TEXT is non-empty and the run
-        actually reaches the writer block -- staging nothing would hit the
+        actually reaches the writer block. Staging nothing would hit the
         DIFF_EMPTY: early return instead, before the writer block's session
-        resolution ever runs, passing vacuously for the wrong reason."""
+        resolution ever runs, so the test would pass vacuously for the
+        wrong reason."""
         local, _bare = _make_repo_with_remote(tmp_path)
         env = _env_with_gh_shim(tmp_path, "main")
 
