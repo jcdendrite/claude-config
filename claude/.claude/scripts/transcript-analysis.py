@@ -7744,6 +7744,16 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
     # --all-accounts loop below, which passes its own account_config_dir.
     try:
         cost_ledger_recording_enabled = _config.config_enabled("cost_ledger_recording")
+    except _config.ConfigSchemaEmptyError:
+        # config-keys.psv was read successfully but produced zero schema
+        # rows (see that class's own docstring) -- distinct from the
+        # unreadable-file case below, which this file was not.
+        print(
+            "cost-ledger: --record found config-keys.psv empty or malformed"
+            " (no parseable schema rows) -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except KeyError as exc:
         if _config.schema():
             # config-keys.psv parsed fine (schema() returned rows), so this
@@ -9029,6 +9039,17 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             pr_cost_recording_enabled = _config.config_enabled(
                 "pr_cost_recording", config_dir_override=account_config_dir
             )
+        except _config.ConfigSchemaEmptyError:
+            # config-keys.psv was read successfully but produced zero
+            # schema rows (see that class's own docstring) -- distinct
+            # from the unreadable-file case below, which this file was
+            # not.
+            print(
+                "pr-cost: --record found config-keys.psv empty or malformed"
+                " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except KeyError as exc:
             if _config.schema():
                 # config-keys.psv parsed fine (schema() returned rows), so

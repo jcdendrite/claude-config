@@ -71,7 +71,7 @@ def schema() -> dict[str, SchemaRow]:
     """
     rows: dict[str, SchemaRow] = {}
     try:
-        text = _SCHEMA_FILE.read_text(errors="replace")
+        text = _SCHEMA_FILE.read_text(encoding="utf-8", errors="replace")
     except OSError:
         print(f"_config.py: warning: schema file not found or unreadable: {_SCHEMA_FILE}", file=sys.stderr)
         return rows
@@ -111,6 +111,21 @@ def schema() -> dict[str, SchemaRow]:
             prompt_description=prompt_description,
         )
     return rows
+
+
+class ConfigSchemaEmptyError(KeyError):
+    """Raised by config_value()/config_enabled() instead of a plain KeyError
+    when config-keys.psv was read successfully but produced zero schema rows
+    -- empty, or comments/blank-lines-only content.
+    This is the same mid-write-truncation or stow-relink race _config.sh's
+    own _config_schema_known_keys names in its matching comment.
+    _config.sh's own _config_value degrades identically here: a clean exit
+    1, the same code an ordinary typo'd key gets, since a readable but
+    momentarily rowless schema is indistinguishable from "this key isn't
+    in the schema" at that layer.
+    Still a KeyError subtype, so an `except KeyError` catch written before
+    this class existed (transcript-analysis.py's two call sites) keeps
+    working unchanged."""
 
 
 class _MalformedStateLine(Exception):
@@ -195,7 +210,7 @@ def _read_key_from_file(key: str, type_: str, state_file: Path, known_keys: froz
     _config_read_key_from_file's own distinct unrecognized-key warning.
     """
     try:
-        text = state_file.read_text(errors="replace")
+        text = state_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     if text.startswith("\ufeff"):
@@ -248,7 +263,7 @@ def _location_value(key: str, row: SchemaRow, directory: Path, known_keys: froze
     if row.legacy_polarity == "content-matches":
         if legacy_path.exists():
             try:
-                raw = legacy_path.read_text(errors="replace")
+                raw = legacy_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 raw = ""
             # [:space:]-equivalent trim (ASCII whitespace, incl. CR), not a
@@ -288,7 +303,9 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     authorize a raw $HOME/.claude fallback on that failure
     (legacy_probe_on_resolution_failure) -- this module's counterpart to
     _config.sh's exit code 2. Raises KeyError if KEY has no schema row (see
-    module docstring).
+    module docstring), or ConfigSchemaEmptyError (a KeyError subtype) if
+    config-keys.psv was read successfully but produced zero rows at all --
+    see that class's own docstring.
 
     config_dir_override lets a caller that already has its own config dir
     (e.g. transcript-analysis.py's --all-accounts loop, one
@@ -311,6 +328,8 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     produced by $HOME/.claude's legacy file.
     """
     all_rows = schema()
+    if not all_rows and os.access(_SCHEMA_FILE, os.R_OK):
+        raise ConfigSchemaEmptyError(key)
     row = all_rows[key]
     known_keys = frozenset(all_rows)
     override = str(config_dir_override) if config_dir_override else None

@@ -469,3 +469,52 @@ class TestMissingSchemaFile:
         with pytest.raises(KeyError):
             _config.config_value("worktree_required")
         assert "schema file not found or unreadable" in capsys.readouterr().err
+
+
+class TestReadableButEmptySchemaFile:
+    """config-keys.psv present and readable but parsing to zero rows --
+    empty, or comments/blank-lines-only content -- is a mid-write-truncation
+    or stow-relink race, distinct from the fully-absent-file case above.
+    _config_schema_field's own upfront [ -r ] check passes, so
+    _config_value degrades to the same clean exit 1 an ordinary typo'd key
+    gets, not exit 3.
+    Unlike TestMissingSchemaFile, true parity is achievable here since both
+    readers already treat this the same as "unknown key".
+    Python's own equivalent is ConfigSchemaEmptyError, a KeyError subtype
+    carrying a more specific type/message than a bare KeyError would, so a
+    caller can tell this race apart from a genuinely typo'd key literal."""
+
+    @pytest.mark.parametrize(
+        "schema_content",
+        ["", "# just a comment\n\n", "\n\n\n"],
+        ids=["empty-file", "comments-and-blank-lines-only", "blank-lines-only"],
+    )
+    def test_readable_empty_schema_degrades_cleanly_in_both_readers(
+        self, tmp_path, monkeypatch, schema_content, capsys
+    ) -> None:
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(schema_content)
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value worktree_required'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 1
+        assert bash_result.stdout == ""
+        assert bash_result.stderr == "", (
+            "a readable-but-empty schema must degrade as silently as an "
+            f"ordinary unknown key, not print the schema-unreadable warning: {bash_result.stderr!r}"
+        )
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(_config.ConfigSchemaEmptyError):
+            _config.config_value("worktree_required")
+        assert capsys.readouterr().err == "", (
+            "a readable-but-empty schema must degrade as silently as an "
+            "ordinary unknown key, not print a warning"
+        )

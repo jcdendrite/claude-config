@@ -186,21 +186,26 @@ _config_file_lines() {
 
 # _config_read_key_from_file KEY STATE_FILE [KNOWN_KEYS KEY_TYPE]
 # Prints KEY's value from STATE_FILE to stdout and returns 0 if any
-# conforming row for KEY exists; returns 1 (nothing printed) if the file is
-# absent or has no conforming row for KEY. Last KEY row wins on duplicates,
-# matching _config_set's own rewrite semantics. A grammar-invalid or
-# wrong-type row is warned (stderr, truncated 80 chars) and skipped, never
-# treated as authoritative -- a hand-edit typo on a `bool` key must not
-# silently resolve as enabled under _config_enabled's any-value-but-false
-# rule. An unrecognized key (grammatically valid but no config-keys.psv row)
-# is warned separately from a malformed line. When config-keys.psv itself is
-# unreadable, membership is treated as unknown, not "no keys known," so every
-# grammatically-valid row is treated as recognized -- but key_type is left
-# empty in that case, and an empty key_type matches its own dedicated `""`
-# case arm below, which accepts only the literals "true"/"false" (valid for
-# every key regardless of its real declared type) and rejects anything
-# else: a type-ambiguous row must never resolve as authoritative just
-# because its type couldn't be checked.
+# conforming row for KEY exists.
+# Returns 1 (nothing printed) if the file is absent or has no conforming row
+# for KEY.
+# Last KEY row wins on duplicates, matching _config_set's own rewrite
+# semantics.
+# A grammar-invalid or wrong-type row is warned (stderr, truncated 80 chars)
+# and skipped, never treated as authoritative -- a hand-edit typo on a
+# `bool` key must not silently resolve as enabled under _config_enabled's
+# any-value-but-false rule.
+# An unrecognized key (grammatically valid but no config-keys.psv row) is
+# warned separately from a malformed line.
+# When config-keys.psv itself is unreadable, membership is treated as
+# unknown, not "no keys known," so every grammatically-valid row is treated
+# as recognized.
+# key_type is left empty in that case, and an empty key_type matches its own
+# dedicated `""` case arm below, which accepts only the literals
+# "true"/"false" (valid for every key regardless of its real declared type)
+# and rejects anything else.
+# A type-ambiguous row must never resolve as authoritative just because its
+# type couldn't be checked.
 #
 # KNOWN_KEYS/KEY_TYPE are optional (both or neither, detected via `$# -eq 4`)
 # and let a caller that already resolved both skip re-deriving them --
@@ -685,6 +690,15 @@ _config_enabled() {
 # migrate-legacy-config.sh's import phase. Not mechanically enforced at the
 # tool-call boundary -- see docs/design-decisions/
 # sentinel-config-consolidation.md's descope note for why.
+#
+# Accepted risk, not lock-protected: the read-modify-write cycle (read the
+# whole file, rebuild its content, atomic mktemp+mv install) has no lock
+# across the two sanctioned callers above.
+# Two overlapping writers can silently lose an update -- last `mv` wins, no
+# error.
+# Accepted because both callers are human-driven, low-concurrency,
+# typically-singleton local processes, not a service with concurrent
+# writers. See docs/config-file.md for the matching note.
 _config_set() {
   local key="$1" value="$2" config_dir_override="${3:-}"
   local key_type

@@ -64,7 +64,7 @@ def declared_roots_file_state() -> RootsFileState:
     fix. Not Path.is_file() either, for the same masking reason.
     """
     try:
-        declared_roots_file().read_text(errors="replace")
+        declared_roots_file().read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return "absent"
     except OSError:
@@ -108,7 +108,7 @@ def declared_roots_matching(is_valid: Callable[[Path], bool], *, warn_prefix: st
     """
     roots_file = declared_roots_file()
     try:
-        raw_text = roots_file.read_text(errors="replace")
+        raw_text = roots_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
 

@@ -558,19 +558,6 @@ REPO_MARKER_INVENTORY=(
   ".claude/session-title-disabled|Branch-based session-title suppression (this repo)|docs/hooks.md § Utility hooks"
 )
 
-# Whether $1 (a zero-based REPO_MARKER_INVENTORY index) was prompted by
-# configure_machine_level_opt_ins during this run -- always false today,
-# since no repo-scope row is ever machine-promptable, kept for the same
-# reason report_sentinel_inventory's schema-key loop below needs no
-# equivalent: a repo marker's CTA is never suppressed by anything this
-# script prompts about.
-_sentinel_index_prompted_this_run() {
-  case " ${SENTINEL_INVENTORY_PROMPTED_INDICES:-} " in
-    *" $1 "*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Prints "ENABLED" when $1 exists, else "disabled" -- the same two labels
 # this reporter's own CTA text already uses.
 _sentinel_state_label() {
@@ -582,13 +569,13 @@ _sentinel_state_label() {
 }
 
 _report_repo_sentinel() {
-  local sentinel_index="$1" path_template="$2" human_name="$3" docs_anchor="$4"
+  local path_template="$1" human_name="$2" docs_anchor="$3"
   local repo_path="$REPO_DIR/$path_template"
   local state
   state="$(_sentinel_state_label "$repo_path")"
   printf '  %s: %s (%s)\n' "$human_name" "$state" "$path_template"
   printf '    docs: %s\n' "$docs_anchor"
-  if [ "$state" = "disabled" ] && ! _sentinel_index_prompted_this_run "$sentinel_index"; then
+  if [ "$state" = "disabled" ]; then
     printf '    → to enable: touch %s\n' "$path_template"
   fi
 }
@@ -665,10 +652,8 @@ _report_config_key() {
 
 # Read-only: creates and removes nothing. Reports every config-keys.psv key
 # (schema order), then the four repo markers. Called after
-# configure_machine_level_opt_ins so a just-prompted repo-marker row's hint
-# can be suppressed -- no config key needs that suppression, since a
-# hand-edited claude-config.toml row, not a raw touch/rm target, is the
-# sanctioned way to change a non-promptable key.
+# configure_machine_level_opt_ins so a value it just wrote is reflected in
+# the same run's report.
 report_sentinel_inventory() {
   echo ""
   echo "=== Opt-in sentinel inventory ==="
@@ -692,11 +677,10 @@ report_sentinel_inventory() {
     _report_config_key "$key" "$human_name" "$docs_anchor" "$resolution"
   done
 
-  local sentinel_index=0 entry path_template human_name_repo docs_anchor_repo
+  local entry path_template human_name_repo docs_anchor_repo
   for entry in "${REPO_MARKER_INVENTORY[@]}"; do
     IFS='|' read -r path_template human_name_repo docs_anchor_repo <<< "$entry"
-    _report_repo_sentinel "$sentinel_index" "$path_template" "$human_name_repo" "$docs_anchor_repo"
-    sentinel_index=$((sentinel_index + 1))
+    _report_repo_sentinel "$path_template" "$human_name_repo" "$docs_anchor_repo"
   done
 }
 # INSTALL_TEST_FIXTURE: sentinel-inventory — end
@@ -709,6 +693,11 @@ report_sentinel_inventory() {
 # legacy value is what those prompts (and the reporter) see. A failed
 # migration does not abort the rest of install.sh -- matching the shape at
 # this file's project-scope-plugin-install step below.
+# No CLAUDE_SESSION_MAY_BE_ACTIVE gate, unlike the stow-adoption-migration
+# and un-adopt-loop blocks above. _config_set's same-directory mktemp+mv
+# means a concurrent hook read never sees a torn claude-config.toml. A
+# legacy file is only deleted after its value is already durable in the
+# state file, so a hook reading mid-deletion still resolves correctly.
 "$REPO_DIR/claude/.claude/scripts/migrate-legacy-config.sh" \
   || echo "[install] warning: legacy config migration failed, run claude/.claude/scripts/migrate-legacy-config.sh directly to retry" >&2
 # INSTALL_TEST_FIXTURE: legacy-config-migration — end

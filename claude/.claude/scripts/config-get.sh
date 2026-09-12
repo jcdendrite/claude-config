@@ -4,12 +4,14 @@ set -uo pipefail
 # Reports whether a config key is enabled for the current machine/account.
 # Usage: config-get.sh <key>
 #
-# Exit 0 = enabled, exit 1 = disabled, exit 2 = unknown key (including a
-# reserved/disallowed subcommand — see below), exit 3 = environment failure
-# (config dir unresolvable, or config-keys.psv itself missing/unreadable —
-# a partial stow-relink or interrupted `git pull`). Prints the effective
-# value on stdout for a human — the exit code is the sole authority,
-# matching the phrasing CLAUDE.md already uses for
+# Exit 0 = enabled.
+# Exit 1 = disabled.
+# Exit 2 = unknown key, including a reserved/disallowed subcommand (see below).
+# Exit 3 = environment failure: config dir unresolvable, or config-keys.psv
+# itself missing/unreadable (a partial stow-relink or interrupted `git pull`).
+#
+# Prints the effective value on stdout for a human — the exit code is the
+# sole authority, matching the phrasing CLAUDE.md already uses for
 # autonomous-shipping-active.sh; never trust stdout alone. The
 # schema-readability check runs before unknown-key detection so a missing
 # config-keys.psv is never misreported as a typo'd key name — every row

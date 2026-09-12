@@ -212,6 +212,14 @@ descope note for why. An agent asking Claude Code to write
 `claude-config.toml` by another path still goes through the harness's own
 ask-by-default permission prompt, same as any other file write.
 
+Neither writer locks against the other. `_config_set`'s read-modify-write
+cycle can lose an update if `install.sh`'s prompt and
+`migrate-legacy-config.sh`'s import phase run concurrently against the same
+file, with the later `mv` silently winning. Accepted, not fixed with a
+lock, since both are human-driven, low-concurrency, typically-singleton
+local processes. See `_config_set`'s own header comment in `_config.sh`
+for the matching note.
+
 A human editing the file directly, with their own editor or a shell
 command run outside Claude Code's own tool calls (e.g. the `!` shell
 escape, which never reaches the Bash tool), is unaffected — that is the

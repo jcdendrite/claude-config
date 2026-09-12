@@ -5,6 +5,7 @@ paths:
   - "plugins/**/*"
   - ".claude/rules/**"
   - "claude/.claude/rules/**"
+  - "claude/.claude/hooks/config-keys.psv"
 ---
 
 ## Review pipeline: per-file-type dispatch
@@ -30,5 +31,20 @@ agent, or plugin files:
   merge-base with the default branch) — but this hook only activates once
   `plugin-semver` itself is installed/updated to a version carrying it, not
   on a bare `git pull`.
+- **`claude/.claude/hooks/config-keys.psv`** → `claude-hook-review` is
+  invoked by the dispatcher but **not hook-enforced**. Enforcement is
+  narrower than the whole file. The five enforcement-critical rows:
+  - `worktree_required`
+  - `autonomous_shipping`
+  - `round_consult_gate`
+  - `commit_stall_block`
+  - `authorization_boundary_restore`
+
+  Only these three of each row's columns:
+  - `resolution`
+  - `legacy-probe-on-resolution-failure`
+  - `legacy-import-locations`
+
+  Per this file's own header comment.
 
 `/code-review` invokes whichever applies automatically.

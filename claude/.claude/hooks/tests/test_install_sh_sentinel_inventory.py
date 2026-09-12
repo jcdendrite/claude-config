@@ -228,45 +228,6 @@ class TestSentinelInventoryArray:
                 )
 
 
-class TestSentinelIndexPromptedThisRun:
-    """Direct coverage of the word-boundary matching in
-    _sentinel_index_prompted_this_run -- a plain substring check would let
-    a prompted index "1" falsely suppress the hint for index "11" or "21".
-    Unchanged by the migration: this function still keys off a
-    space-delimited index list, now populated (never, in current practice
-    -- see report_sentinel_inventory's own header comment) only for
-    REPO_MARKER_INVENTORY rows."""
-
-    def _prompted(self, prompted_indices: str, index: str, tmp_path: Path) -> bool:
-        script = (
-            "set -e\n"
-            + _extract_inventory_block()
-            + f'\nSENTINEL_INVENTORY_PROMPTED_INDICES="{prompted_indices}"\n'
-            + f'_sentinel_index_prompted_this_run "{index}"\n'
-        )
-        result = subprocess.run(
-            [_BASH, "-c", script],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=_base_env(tmp_path / "home", tmp_path / "repo"),
-        )
-        assert result.stderr == "", result.stderr
-        return result.returncode == 0
-
-    def test_exact_index_matches(self, tmp_path: Path) -> None:
-        assert self._prompted("0 11", "11", tmp_path)
-
-    def test_index_one_does_not_falsely_match_index_eleven(self, tmp_path: Path) -> None:
-        assert not self._prompted("11", "1", tmp_path)
-
-    def test_index_absent_from_list_does_not_match(self, tmp_path: Path) -> None:
-        assert not self._prompted("0 2 4", "3", tmp_path)
-
-    def test_empty_prompted_list_matches_nothing(self, tmp_path: Path) -> None:
-        assert not self._prompted("", "0", tmp_path)
-
-
 class TestLegacyConfigMigrationExecution:
     """Coverage for the legacy-config-migration fixture block: install.sh
     executes migrate-legacy-config.sh as a separate process (not `source`s
@@ -601,43 +562,24 @@ class TestReportSentinelInventory:
                 f"(resolved config dir already is $HOME/.claude): {line!r}"
             )
 
-    def test_enable_hint_suppressed_for_repo_marker_index_prompted_this_run(
+    def test_enable_hint_shown_for_every_disabled_repo_marker(
         self, tmp_path: Path
     ) -> None:
-        """A repo-marker row configure_machine_level_opt_ins already
-        prompted about this run must not also print the enable-hint -- the
-        state is still shown, just without a redundant "here's the
-        command" line. No config key needs this suppression any more (row
-        39: none of their CTAs exist), so this test targets
-        REPO_MARKER_INVENTORY's own index-0 row directly."""
+        """Every disabled repo marker gets its enable-hint -- there is no
+        per-run suppression of it. config-keys.psv rows never need that
+        suppression, since a hand-edited claude-config.toml row, not a raw
+        touch/rm target, is the sanctioned way to change a non-promptable
+        key."""
         home = tmp_path / "home"
         home.mkdir()
         repo = tmp_path / "repo"
         repo.mkdir()
-        script = (
-            "set -e\n"
-            + _config_sh_prelude()
-            + _extract_inventory_block()
-            + '\nSENTINEL_INVENTORY_PROMPTED_INDICES="0"\nreport_sentinel_inventory\n'
-        )
-        result = subprocess.run(
-            [_BASH, "-c", script],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=_base_env(home, repo),
-        )
+
+        result = _run_report(_base_env(home, repo))
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        # Index 0 is REPO_MARKER_INVENTORY's own worktree-required row --
-        # "just prompted" -- no hint for it.
-        assert "to enable: touch .claude/worktree-required" not in result.stdout, (
-            f"unexpected enable-hint for a just-prompted row: {result.stdout!r}"
-        )
-        # A different, un-prompted repo marker still gets its hint.
-        assert "to enable: touch .claude/worktree-optout" in result.stdout, (
-            "an un-prompted disabled repo marker must still show its enable-hint"
-        )
+        assert "to enable: touch .claude/worktree-required" in result.stdout
+        assert "to enable: touch .claude/worktree-optout" in result.stdout
 
 
 class TestPrCostDisclosureExpectedContentField:
