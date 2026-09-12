@@ -312,16 +312,12 @@ case "$SUBCOMMAND" in
       exit 2
     fi
 
-    # Dedup key excludes schema_version (constant) and event_time (varies
-    # per call), so two rounds raising an identical finding both land as
-    # separate rows instead of colliding under whole-line dedup.
-    # This call's own dedup check makes a second independently-capped
-    # _lib_jq call on top of the LINE build above, so one append can add up
-    # to ~10.25s of worst-case latency (two 5s jq caps plus the append
-    # lock's bounded retry sleep) when timeout/gtimeout is on PATH.
-    # On a machine with neither on PATH, this doubles the number of
-    # uncapped-jq-hang exposure points per append from one to two
-    # (pre-existing risk, now wider).
+    # Dedup key excludes schema_version and event_time so two rounds raising
+    # an identical finding both land as separate rows.
+    # Each append makes two independently-capped _lib_jq calls: one to build
+    # LINE, one for this dedup check.
+    # An environment with neither timeout nor gtimeout on PATH therefore has
+    # two uncapped-hang points per append, not one.
     _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
       '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}'
 
