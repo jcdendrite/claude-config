@@ -223,6 +223,16 @@ class TestRoundNumberMismatch:
         ]
         assert ao._round_number_mismatch(rows, round_open_count=2) is True
 
+    def test_zero_round_opens_with_a_round_keyed_row_is_a_mismatch(self):
+        """round_open_count=0 (the transcript's own round-open detector
+        found no code-review round at all) against a ledger that still
+        carries a round-keyed row: contiguous_blocks is the non-empty
+        [1], but the expected list(range(1, 1)) is empty, so this must
+        resolve True rather than slip through as the legacy-only-ledger
+        False case above."""
+        rows = [_ledger_row(round=1, disposition="ADDRESS")]
+        assert ao._round_number_mismatch(rows, round_open_count=0) is True
+
 
 class TestLedgerPossiblySwept:
     _OLD_RECORD_TS = "2026-08-01T10:00:00.000Z"
@@ -923,6 +933,30 @@ class TestRoundNumberMismatchIntegration:
         # a1's attributed round (round 1, ADDRESS from the picked file)
         # would otherwise be a FAILURE -- excluded by the mismatch instead.
         assert sum(result["outcomes"].values()) == 0
+
+    def test_zero_round_opens_with_a_round_keyed_ledger_excludes_the_unresolved_dispatch(
+        self, fake_projects,
+    ):
+        """A session whose ledger carries a round-keyed row but whose own
+        transcript never opens a code-review round at all
+        (round_open_count=0) is a round-number mismatch too. Without the
+        exclusion, the session's one completed dispatch would classify
+        UNRESOLVED (no code-review round ever opens after it completes)
+        and silently pollute the headline aggregate -- the mismatch
+        exclusion drops it instead."""
+        session_id = "sess-zero-round-opens"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        # a1 would otherwise classify UNRESOLVED (no code-review round
+        # ever opens in this transcript) -- excluded by the mismatch instead.
+        assert sum(result["outcomes"].values()) == 0
+        assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 0
 
     def test_mismatched_session_still_increments_transcript_side_dq_counters(self, fake_projects):
         """_DQ_UNDECIDABLE and _DQ_CO_AUTHORED_ROUNDS measure transcript-side

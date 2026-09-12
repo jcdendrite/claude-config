@@ -297,10 +297,13 @@ class TestReviewLedgerAppendHappyPath:
 
 
 class TestReviewLedgerAuthoringAgentEnum:
-    """The `--authoring-agent` enum review-ledger.sh validates against must
-    equal the enum author_outcome.py's transcript-side classifier compares
-    declared values against -- a drift here would let review-ledger.sh
-    accept a value author_outcome.py silently never treats as consistent.
+    """Proves one direction only: each of author_outcome.py's own
+    `_AUTHORING_AGENT_*` constants is accepted, and one arbitrary
+    out-of-set string is rejected. It does not prove the reverse -- that
+    review-ledger.sh's case-pattern enum accepts *only* those constants
+    plus empty -- so a 5th literal added to the script's case pattern
+    with no corresponding python constant would still pass every test
+    in this class.
 
     Drives the actual CLI rather than scanning either file's source text: a
     source-scanning version of this test broke on a behavior-preserving

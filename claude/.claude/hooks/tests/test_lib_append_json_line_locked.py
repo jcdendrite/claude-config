@@ -45,6 +45,18 @@ def _append_json_line_locked(
     )
 
 
+def _popen_append_json_line_locked(
+    file: Path, lock_file: Path, line: str, dedup_filter: str
+) -> subprocess.Popen:
+    return subprocess.Popen(
+        ["bash", "-c", f'. "{LIB_SH}"; _lib_append_json_line_locked "$1" "$2" "$3" "$4"',
+         "_", str(file), str(lock_file), line, dedup_filter],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 class TestLibAppendJsonLineLocked:
     def test_basic_append_creates_file_with_one_line(self, tmp_path):
         target = tmp_path / "state.jsonl"
@@ -233,6 +245,26 @@ class TestLibAppendJsonLineLockedConcurrency:
     Mirrors test_lib_append_line_locked.py's
     TestLibAppendLineLockedConcurrency.test_lock_held_past_retry_budget_falls_through_to_unlocked_append."""
 
+    def test_concurrent_appends_with_distinct_content_both_land(self, tmp_path):
+        """Mirrors test_lib_append_line_locked.py's
+        TestLibAppendLineLockedConcurrency.test_concurrent_appends_with_distinct_content_both_land:
+        the winner's critical section completes and releases the lock well
+        inside the loser's 0.25s retry budget, so the loser always wins on
+        retry rather than exhausting it -- both distinct-dedup-key lines
+        land."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        line_a = '{"round":1,"disposition":"ADDRESS","finding":"line-a"}'
+        line_b = '{"round":1,"disposition":"ADDRESS","finding":"line-b"}'
+        procs = [
+            _popen_append_json_line_locked(target, lock_file, line_a, "{finding}"),
+            _popen_append_json_line_locked(target, lock_file, line_b, "{finding}"),
+        ]
+        for proc in procs:
+            proc.communicate(timeout=10)
+
+        assert set(target.read_text().splitlines()) == {line_a, line_b}
+
     @pytest.mark.timing
     def test_lock_held_past_retry_budget_falls_through_to_unlocked_append(self, tmp_path):
         """A lock held by a genuinely live holder for longer than the
@@ -298,3 +330,30 @@ class TestLibAppendJsonLineLockedConcurrency:
             except subprocess.TimeoutExpired:
                 holder.kill()
                 holder.wait()
+
+    def test_concurrent_appends_with_identical_content_dedup_to_one_line(self, tmp_path):
+        """Two racing appends of the identical dedup key may dedup to one
+        line (a low-consequence race outcome) but must never corrupt the
+        file -- every resulting line must match exactly, with no partial or
+        interleaved write. Mirrors test_lib_append_line_locked.py's own
+        identical-content race test's hedge: a retrying caller can exhaust
+        _LIB_APPEND_LOCK_RETRIES's 0.25s budget while the winner still holds
+        the lock, and fall through to the unlocked-append fallback. If the
+        winner hasn't written yet at that point, the fallen-through caller's
+        `[ -f "$file" ]` existence guard evaluates false and skips the dedup
+        check entirely rather than racing it, so two lines is a valid
+        outcome alongside the deduped single line."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        line = '{"round":1,"disposition":"ADDRESS"}'
+        procs = [
+            _popen_append_json_line_locked(target, lock_file, line, "{round, disposition}")
+            for _ in range(2)
+        ]
+        for proc in procs:
+            proc.communicate(timeout=10)
+
+        lines = target.read_text().splitlines()
+        assert lines in ([line], [line, line]), (
+            f"expected 1 (deduped) or 2 (raced) identical lines, got: {lines}"
+        )
