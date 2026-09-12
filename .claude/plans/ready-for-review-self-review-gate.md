@@ -18,9 +18,9 @@ reaches a human reviewer, without inventing new detection machinery to do it.
 **Frequency, and what it does and doesn't tell us.** Two transcript scans
 this session (the default account, plus every other Claude Code account
 configured on this machine, ~98 additional `.jsonl` files) found no
-further confirmed instance beyond the incident above. That absence is a
-floor on literal/near-literal reuse of the two named banned phrases, not a
-ceiling on the failure class — the design below (see Approach) concludes the
+further confirmed instance beyond the incident above. That scan technique
+is a literal-phrase match, which necessarily undercounts rather than
+censuses the failure class — the design below (see Approach) concludes the
 more likely failure shape is a row silently *omitted* from the Spawn-decisions
 enumeration entirely, which leaves no banned phrase for any phrase-based scan
 to find. Low observed frequency is a fact about what the current
