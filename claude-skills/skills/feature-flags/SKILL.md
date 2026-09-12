@@ -69,9 +69,11 @@ changes alongside a deploy is config, not a toggle.
 
 ## Escalation ordering
 
-1. **Deploy-time** — a Terraform variable with a `validation` block,
-   set per-environment in `.tfvars`. This is the same default the
-   `terraform-conventions` rule enforces for provider-native enums.
+1. **Deploy-time** — a typed variable with input validation in your IaC
+   tool, set per-environment. In Terraform, that's a variable with a
+   `validation` block set per-environment in `.tfvars` — the same
+   default the `terraform-conventions` rule enforces for
+   provider-native enums.
 2. **Runtime, single global or per-subject boolean** — a field in a
    datastore the team already runs, read behind one accessor. This
    layer owes, by hand, the disciplines a platform gives for free: an
@@ -96,20 +98,31 @@ changes alongside a deploy is config, not a toggle.
    - Enforced at every application-layer writer capable of setting that
      field — application code, migrations, admin tooling, background
      jobs — at the call site.
-   - Enforced on direct datastore access (a console `UPDATE`, an ad hoc
-     SQL fix, a broad table-write role) with its own datastore-level
-     control instead — a column-level grant, a row-level policy, or
-     restricting who holds the table's write role at all — since an
-     application-layer check can't intercept a write issued directly
-     against the datastore.
+   - Direct datastore access (a console `UPDATE`, an ad hoc SQL fix, a
+     broad table-write role) needs its own datastore-level control — a
+     column-level grant, a row-level policy, or restricting who holds
+     the table's write role at all. An application-layer check can't
+     intercept a write issued directly against the datastore.
    - Not substituted for by an audit record after the fact — logging
-     the write is not the same as gating it.
+     the write is not the same as gating it. When a security-sensitive
+     toggle does keep an audit trail, that trail should itself be
+     append-only and tamper-evident, the same bar `ciso-reviewer`
+     applies to any privileged-action log.
+   - Scoped per subject, not only per role, when the toggle is
+     per-subject: the caller's authority must reach the specific target
+     subject named in the write, not merely membership in the narrower
+     principal set above — otherwise a caller who passes the role check
+     can still lack authority over the specific target, an IDOR shape.
 3. **Multi-variant targeting, percentage rollout, or experimentation
    with metrics attribution** — a dedicated platform, and only here. A
    vendor's SaaS/cloud-hosted tier means the per-subject targeting
    attributes driving that rollout leave the team's infrastructure — a
    data-egress decision distinct from the license and self-host-cap
-   comparison in `REFERENCES.md`.
+   comparison in `REFERENCES.md`. When a toggle reaching this tier is
+   itself security-sensitive, the same write-path disciplines above
+   apply, translated to the vendor surface: vendor console/API RBAC or
+   SSO scoping in place of a datastore grant, the vendor's own audit log
+   in place of an application audit table.
 
 **One narrower anti-pattern**, not a category-wide claim: a boolean that
 only mirrors state already tracked elsewhere (e.g. `user.plan == 'pro'`)

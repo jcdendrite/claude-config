@@ -221,11 +221,19 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   `raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/cognito_user_pool_client.html.markdown`
   — that doc's own description carries no enumerated valid-values line for
   this argument. The enum instead comes from AWS's own API reference,
-  [`docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html),
+  `docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html`,
   on the `PreventUserExistenceErrors` field:
   > Valid Values: `LEGACY | ENABLED`
   >
   > Defaults to `LEGACY`.
+  That same field's description names the operations it affects:
+  `AdminInitiateAuth`, `AdminRespondToAuthChallenge`, `InitiateAuth`,
+  `RespondToAuthChallenge`, `ForgotPassword`, `ConfirmForgotPassword`,
+  `ConfirmSignUp`, and `ResendConfirmationCode`. `SignUp` is not on that
+  list —
+  `docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SignUp.html`
+  documents `SignUp` as unconditionally throwing `UsernameExistsException`
+  when the username is taken, regardless of this setting.
 - **Custom Validation Rules (the `validation` block)** — VERIFIED at
   `developer.hashicorp.com/terraform/language/values/variables` §
   "Custom Validation Rules":
@@ -248,8 +256,8 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   mapped through a ternary — confirmed negative as a HashiCorp
   recommendation.** Neither the Style Guide nor the Types reference
   (`developer.hashicorp.com/terraform/language/expressions/types`) states
-  a preference between the two, and Terraform has no native enum type at
-  all — tracked as an open feature request,
+  a preference between the two. Terraform has no native enum type at
+  all, tracked as open feature request
   `github.com/hashicorp/terraform/issues/33916`. This bullet's preference
   is this repo's own convention, reasoned from the `validation`-block
   mechanism above, not a stated HashiCorp rule.

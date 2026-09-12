@@ -28,7 +28,7 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 
 **Rate limiting / abuse surface** — any new unauthenticated or low-cost authenticated endpoint is enumeration-ready. Flag missing rate limits especially on password reset, signup, invite redemption, lookup-by-identifier.
 
-**Account-existence disclosure** — sign-in, sign-up, and password-reset responses that differ for a known vs. unknown identifier. Managed identity providers often default to the disclosing mode; check the provider setting, not just the application's own error strings.
+**Account-existence disclosure** — sign-in, sign-up, and password-reset responses that differ for a known vs. unknown identifier, in content (response body, status code) or in timing (CWE-208): a lookup path that only hashes/compares a password when the account exists, or short-circuits sooner for a miss, discloses existence via latency even with normalized response bodies. Managed identity providers often default to the disclosing mode; confirm from the provider's own documentation which specific operations a given setting covers, not just whether the setting exists and is enabled — a setting can close the channel for some operations (e.g. sign-in) while leaving another (e.g. the initial registration call) unconditionally disclosing regardless of the setting.
 
 **Cryptographic choices** — algorithm selection (AES-256-GCM not CBC, Argon2id/bcrypt not MD5), IV/nonce handling (never reused), JWT `alg` validation (reject `none`, pin expected algorithms), signature verification completeness (verify before parse). New keys: provisioning, rotation, revocation.
 

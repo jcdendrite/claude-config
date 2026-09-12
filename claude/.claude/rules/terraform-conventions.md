@@ -45,8 +45,12 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   the two diverge in a comment. For example,
   `aws_cognito_user_pool_client`'s `prevent_user_existence_errors`
   defaults to `LEGACY`; prefer `ENABLED`, since `LEGACY` reintroduces a
-  user-enumeration side channel during sign-in, sign-up, and
-  password-recovery flows.
+  user-enumeration side channel during sign-in and password-recovery
+  flows. `ENABLED` closes those unconditionally, but the initial
+  registration call (`SignUp`) is a separate, provider-independent
+  disclosure this setting doesn't reach — the application must handle it
+  itself, e.g. by not surfacing `UsernameExistsException` verbatim, or by
+  accepting the trade-off as a deliberate product decision.
 - **On a retrofit**, an existing variable's effective default changes
   for callers that don't already override it. Treat it with the same
   scrutiny as any other behavior-changing default to a shared module;

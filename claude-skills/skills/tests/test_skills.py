@@ -351,6 +351,34 @@ class TestSpecialistSkillTriggerContracts:
         )
 
 
+# feature-flags is skillOverrides: name-only (see TestNameOnlySkillContracts),
+# so it cannot auto-trigger by description match — its sole reachability
+# mechanism is these hand-off pointer sentences naming it by string.
+_FEATURE_FLAGS_POINTER_SITES = [
+    "claude-skills/skills/config-environments/SKILL.md",
+    "claude-skills/skills/code-review/SKILL.md",
+    "claude/.claude/agents/staff-product-engineer.md",
+    "claude/.claude/agents/staff-backend-engineer.md",
+    "claude/.claude/rules/terraform-conventions.md",
+]
+
+
+@pytest.mark.parametrize("relative_path", _FEATURE_FLAGS_POINTER_SITES)
+def test_feature_flags_pointer_sites_still_name_the_skill(relative_path):
+    """Each hand-off pointer site must still name feature-flags by string.
+
+    feature-flags is name-only, so nothing routes to it by description
+    match — dropping the literal string from any of these five files
+    silently strands that site with no test failure to catch it.
+    """
+    content = (REPO_ROOT / relative_path).read_text()
+    assert "feature-flags" in content, (
+        f"{relative_path} no longer contains the string 'feature-flags' — "
+        "this file is one of feature-flags' five hand-off pointer sites, "
+        "its sole reachability mechanism since the skill is name-only"
+    )
+
+
 class TestNameOnlySkillContracts:
     """Contract tests for skills with skillOverrides: name-only.
 

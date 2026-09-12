@@ -39,6 +39,6 @@ That deploy-versus-runtime boundary is the deploy-time half of the
 skill's layering test: a value that only ever changes alongside a
 deploy is config, not a toggle.
 
-**Cited only for the "config is what varies between deploys" definition
-(zero hits for "feature" in this section) — never as a feature-flag
-authority.**
+**Cited only for the "config is what varies between deploys" definition.**
+This section has zero hits for "feature" — never treat it as a
+feature-flag authority.
