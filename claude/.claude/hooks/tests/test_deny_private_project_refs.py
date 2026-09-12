@@ -141,6 +141,8 @@ class TestDenyPrivateProjectRefs:
             "Deprecate MD-5",
             "Support HTTP-2",
             "Disable TLS-1",
+            "Licensed under AGPL-3.0",
+            "Licensed under BSD-3-Clause",
             "See PROJ-123 for the placeholder convention",
             "See TICKET-456 for the placeholder convention",
         ],
@@ -148,6 +150,7 @@ class TestDenyPrivateProjectRefs:
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
             "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
             "sha", "md", "http", "tls",
+            "agpl", "bsd",
             "proj_placeholder", "ticket_placeholder",
         ],
     )
