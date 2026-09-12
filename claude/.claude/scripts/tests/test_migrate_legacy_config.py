@@ -358,6 +358,45 @@ class TestHandEditSurvivesRerun:
 
 
 # ---------------------------------------------------------------------------
+# The literal "safe-to-rerun" claim: running the script twice in immediate
+# succession with ZERO external change between runs must be a no-op on the
+# second run. Distinct from TestHandEditSurvivesRerun above, which mutates
+# state BETWEEN the two runs to prove a hand-edit survives -- this proves
+# the narrower, more literal property that a completely unchanged
+# precondition produces a completely unchanged outcome.
+# ---------------------------------------------------------------------------
+
+
+class TestDoubleInvocationIdempotency:
+    def test_second_run_with_no_external_change_is_byte_identical(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        config_dir = home / ".claude"
+        config_dir.mkdir(parents=True)
+        # Plant every key's own legacy file, matching an existing
+        # installation that has never run this script before -- a
+        # representative mix of presence-enables, presence-disables, and
+        # content-matches legacy-polarity kinds, not just one.
+        for row in _SCHEMA.values():
+            _write_legacy_file(config_dir, row, present=True)
+
+        first = _run(_env(home))
+        assert first.returncode == 0, f"stderr={first.stderr!r}"
+        state_after_first = _state_file(config_dir).read_text()
+
+        second = _run(_env(home))
+        assert second.returncode == 0, f"stderr={second.stderr!r}"
+        state_after_second = _state_file(config_dir).read_text()
+
+        assert state_after_second == state_after_first, (
+            "a second run with no external change must not alter the state file at all"
+        )
+        assert second.stdout == first.stdout, (
+            "the 'Legacy config files still present' report (and everything "
+            "else printed) must be unchanged on an unchanged second run"
+        )
+
+
+# ---------------------------------------------------------------------------
 # pr_cost_disclosure's two-legacy-location precedence
 # ---------------------------------------------------------------------------
 

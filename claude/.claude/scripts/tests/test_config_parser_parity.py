@@ -101,6 +101,19 @@ ADVERSARIAL_FIXTURES: dict[str, bytes] = {
     "toml-multiline-string-value": b'handoff_nudge = """\nmulti\nline\n"""\n',
     "empty-file": b"",
     "comments-and-blank-lines-only": b"# just a comment\n\n   \n",
+    # U+212A KELVIN SIGN is a documented Unicode special-casefold case:
+    # Python's str.lower() folds it to ASCII "k", while bash's own
+    # LC_ALL=C-forced `tr '[:upper:]' '[:lower:]'` leaves the 3-byte UTF-8
+    # sequence untouched. Both readers still reject this row today (a bool
+    # key's value must be exactly "true"/"false", and neither the raw
+    # Kelvin sign nor its Python-folded "k" match that), so this pins the
+    # currently-passing parity rather than proving a live divergence. It is
+    # a parity-pin, not a regression test for glibc's unforced-locale `tr`
+    # casefold behavior. This fixture runs only under this repo's own
+    # LC_ALL=C-forced tr, so it cannot exercise that unverified mechanism
+    # either way. See TestSpecificFixtureExpectations below for the direct
+    # assertion this relies on.
+    "kelvin-sign-value-collapses-under-unicode-casefold": "handoff_nudge = K\n".encode(),
 }
 
 
@@ -184,6 +197,18 @@ class TestSpecificFixtureExpectations:
         _write_state(home, b"[section]\nhandoff_nudge = false\n")
         values = _assert_parity()
         assert values["handoff_nudge"] == "false"
+
+    def test_kelvin_sign_value_is_rejected_by_both_readers(self, tmp_path, monkeypatch):
+        """U+212A KELVIN SIGN is a documented Unicode special-casefold case
+        (Python's str.lower() folds it to ASCII "k"; bash's own
+        LC_ALL=C-forced tr does not). Both readers still reject this row for
+        a bool key -- neither the raw Kelvin sign nor its Python-folded "k"
+        is "true"/"false" -- so it falls through to the schema default
+        (true), not just "the two readers happen to agree on some value"."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, "handoff_nudge = K\n".encode())
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
 
 
 # ---------------------------------------------------------------------------

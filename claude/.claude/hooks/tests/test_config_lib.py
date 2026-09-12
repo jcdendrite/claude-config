@@ -529,6 +529,37 @@ class TestReadKeyFromFileSchemaUnreadable:
         assert result.stdout == "true"
         assert "unrecognized key" not in result.stderr
 
+    def test_type_invalid_value_is_rejected_not_accepted_when_schema_unreadable(self, tmp_path):
+        """Regression test for a latent gap (not reachable by any current
+        caller -- _config_value's own earlier _config_schema_field call
+        already short-circuits on an unreadable schema before ever reaching
+        this function, and migrate-legacy-config.sh's own `set -euo
+        pipefail` schema read aborts first too): with the schema
+        unreadable, key_type is left empty, and a bool key's own
+        semantically-invalid value ("banana", not "true"/"false") must not
+        resolve as authoritative just because its type couldn't be
+        checked -- _config_enabled's any-value-but-false rule would
+        otherwise treat "banana" as enabled. Insurance against a future
+        caller reintroducing this as a live, reachable bug."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        # config-keys.psv deliberately never created here, matching this
+        # class's other tests.
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("autonomous_shipping = banana\n")
+
+        result = _run_with_schema(
+            isolated_hooks_dir,
+            f'_config_read_key_from_file autonomous_shipping "{state_file}"; echo "status=$?"',
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == "status=1\n", (
+            "a type-invalid value must not print anything and must return 1 "
+            f"(not found), not resolve as authoritative: stdout={result.stdout!r}"
+        )
+        assert "cannot validate its type" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # _config_read_key_from_file/_config_location_value dispatch on argument
@@ -734,6 +765,34 @@ class TestConfigSet:
         state_file = isolated_home / ".claude" / "claude-config.toml"
         assert not state_file.exists()
 
+    def test_write_failure_leaves_state_file_untouched_and_cleans_up_temp_file(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """The write block's own exit status is checked before `mv` -- a
+        failed write (simulated here via a `mktemp` shim that hands back an
+        already-read-only temp file, so the write block's own `>` redirect
+        fails) must not install a truncated/empty file over the real state
+        file, and must clean up the temp file rather than leaving it
+        behind."""
+        _write_state_file(isolated_home, "handoff_nudge = false\n")
+        bin_dir = tmp_path / "readonly-mktemp-bin"
+        bin_dir.mkdir()
+        fixed_tmp_file = tmp_path / "pre-existing-readonly-tmp"
+        shim = bin_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'touch "{fixed_tmp_file}"\n'
+            f'chmod 400 "{fixed_tmp_file}"\n'
+            f'printf "%s\\n" "{fixed_tmp_file}"\n'
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        result = _run("_config_set handoff_nudge true")
+        assert result.returncode == 1
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "handoff_nudge = false\n"
+        assert not fixed_tmp_file.exists()
+
 
 # ---------------------------------------------------------------------------
 # _config_scaffold is additive-only, honors an exclude-list, and -- for a
@@ -810,6 +869,67 @@ class TestConfigScaffold:
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
         assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_write_failure_leaves_state_file_untouched_and_cleans_up_temp_file(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """Mirrors TestConfigSet's identical test: the write block's own
+        exit status is checked before `mv` in _config_scaffold too."""
+        _write_state_file(isolated_home, "handoff_nudge = false\n")
+        bin_dir = tmp_path / "readonly-mktemp-bin"
+        bin_dir.mkdir()
+        fixed_tmp_file = tmp_path / "pre-existing-readonly-tmp"
+        shim = bin_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'touch "{fixed_tmp_file}"\n'
+            f'chmod 400 "{fixed_tmp_file}"\n'
+            f'printf "%s\\n" "{fixed_tmp_file}"\n'
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        result = _run("_config_scaffold")
+        assert result.returncode == 1
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "handoff_nudge = false\n"
+        assert not fixed_tmp_file.exists()
+
+    def test_write_failure_leaves_state_file_untouched_when_a_default_row_would_be_emitted(
+        self, isolated_home, monkeypatch, tmp_path
+    ):
+        """Mirrors test_plain_key_with_no_legacy_polarity_still_gets_its_default_row's
+        schema fixture -- a key with no legacy-polarity, so this run's
+        content build actually appends a default row, unlike the sibling
+        failure test above (which reaches the same unconditional write with
+        today's real config-keys.psv, but with no default row appended,
+        since every one of its 15 rows has a legacy-polarity value). This
+        test proves the failure check still fires when the write is reached
+        via that different condition -- scaffold's per-key inclusion logic
+        doesn't accidentally exempt a live, row-appending write from the
+        check."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_capability|bool|true|config-dir|false||||Brand new capability|docs/x.md\n"
+        )
+        bin_dir = tmp_path / "readonly-mktemp-bin"
+        bin_dir.mkdir()
+        fixed_tmp_file = tmp_path / "pre-existing-readonly-tmp"
+        shim = bin_dir / "mktemp"
+        shim.write_text(
+            "#!/bin/bash\n"
+            f'touch "{fixed_tmp_file}"\n'
+            f'chmod 400 "{fixed_tmp_file}"\n'
+            f'printf "%s\\n" "{fixed_tmp_file}"\n'
+        )
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold")
+        assert result.returncode == 1
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert not state_file.exists()
+        assert not fixed_tmp_file.exists()
 
 
 # ---------------------------------------------------------------------------

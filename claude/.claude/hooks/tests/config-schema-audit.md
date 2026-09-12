@@ -104,23 +104,43 @@ Column legend:
 
 ### `commit_stall_block`
 
-- Call site: `advance-past-commit-stall.sh:52,60`. `CONFIG_DIR=$(_lib_config_dir)
+- Call site: `advance-past-commit-stall.sh:52,66`. `CONFIG_DIR=$(_lib_config_dir)
   || exit 0` resolves the config dir directly (needed later in the script
-  for its log/state paths), then `_config_enabled commit_stall_block ||
-  exit 0` gates the rest of the hook — no raw `[ -f ]` probe against
-  `$CONFIG_DIR` for this key at the call site itself.
+  for its log/state paths), then `_config_enabled commit_stall_block` gates
+  the rest of the hook via an explicit `case "$?"` — only exit 1
+  (explicitly disabled) exits; every other code falls through and the hook
+  proceeds — no raw `[ -f ]` probe against `$CONFIG_DIR` for this key at the
+  call site itself.
 - Resolution: **config-dir**. `commit_stall_block`'s schema row carries
   `config-dir`, so `_config_value` reads only the already-resolved
   `CONFIG_DIR` — no `$HOME` union arm.
 - Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
   the call site's own `exit 0` on `_lib_config_dir` failure means
-  `_config_enabled` is never even reached on a resolution failure.
+  `_config_enabled` is never even reached on a config-dir resolution
+  failure.
 - Legacy-import-locations: **config-dir**. Same reasoning as
   `round_consult_gate` — never auto-written by `install.sh`.
-- Fail direction on resolution failure: `exit 0` (allow the hook's own
-  logic to proceed as if not blocked) — an unresolvable config dir means
-  "no kill-switch location to check," so the hook does not block on the
-  strength of an unreadable kill switch.
+- Fail direction: **two distinct failure modes, two distinct directions**.
+  An unresolvable config dir (line 52's own `_lib_config_dir` failure) exits
+  0 before `commit_stall_block`'s schema row is ever read — "no kill-switch
+  location to check," so the hook does not block on the strength of an
+  unreadable kill switch. Config-keys.psv itself being unreadable (exit 3
+  from the later `_config_enabled` call) is different: `commit_stall_block`
+  is one of the five enforcement-critical keys, and its fail-closed
+  direction is "stays armed," the same class as `round_consult_gate` and
+  `authorization_boundary_restore` — the `case "$?"` at the call site keeps
+  the hook running rather than collapsing exit 3 into the same "off"
+  outcome as exit 1 (explicitly disabled).
+- This exit-3 direction is masked from end-to-end observation in this hook
+  by design, not merely in practice: step 3's
+  `_lib_autonomous_shipping_sentinel_present` reads the same shared
+  config-keys.psv, and `autonomous_shipping`'s own fail direction is "NOT
+  shipping" on any resolution failure including exit 3 — so a fully
+  unreadable schema always fails both checks simultaneously before this
+  key's own exit-3 arm could ever be the deciding factor end to end.
+  Covered directly, isolated from that masking, by
+  `test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed` in
+  `test_advance_past_commit_stall.py`.
 
 ### `authorization_boundary_restore`
 

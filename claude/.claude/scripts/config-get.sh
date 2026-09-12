@@ -24,9 +24,10 @@ set -uo pipefail
 # matching note on that side.
 #
 # No `set` subcommand and no other writing verb — this is
-# read-only, full stop, the same "no set subcommand" property the query
-# CLI's own design requires: shipping a writer here would open the exact
-# distribution vector `enforce-config-write-shape.sh` exists to close.
+# read-only, full stop: shipping a writer here would give any caller of
+# this script an unmediated path to the same protected state file
+# claude-config.toml's own write path (migrate-legacy-config.sh, _config_set)
+# is deliberately narrow about.
 # Delegates to _config.sh's _config_enabled, which is the single bash
 # definition of config-key resolution — this script adds no logic of its
 # own beyond argument validation and the exit-code mapping above.

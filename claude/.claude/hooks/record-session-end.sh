@@ -49,7 +49,7 @@ if [ -z "$INPUT" ]; then
 fi
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
-  echo "[record-session-end] could not source _lib.sh; no SessionEnd record written" >&2
+  echo "[record-session-end] could not source _lib.sh (run ./install.sh to pick up hook files this update added); no SessionEnd record written" >&2
   exit 0
 fi
 

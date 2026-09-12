@@ -205,14 +205,12 @@ auto-imports a legacy value that already matches the fail-closed direction),
 while `install.sh`'s interactive prompt is not — see
 [`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)
 for that asymmetry and why it's accepted.
-`enforce-config-write-shape.sh` (see [`hooks.md`](hooks.md)) denies every
-Claude-Code-tool-mediated `Write`/`Edit`/`MultiEdit` targeting
-`claude-config.toml`, and every `Bash` command invoking `_config_set` by
-name or whose redirect/utility-write candidates resolve to the same path —
-this is a blanket denial with no agent-type carve-out, bounded to the
-fixed set of write utilities `_LIB_WRITE_UTILITIES` recognizes (see that
-hook's header for the current list and its open residuals), not a
-guarantee against every possible write mechanism.
+Nothing mechanically enforces the "only these two writers" restriction at
+the Claude-Code-tool-call boundary — see
+[`sentinel-config-consolidation.md`](design-decisions/sentinel-config-consolidation.md)'s
+descope note for why. An agent asking Claude Code to write
+`claude-config.toml` by another path still goes through the harness's own
+ask-by-default permission prompt, same as any other file write.
 
 A human editing the file directly, with their own editor or a shell
 command run outside Claude Code's own tool calls (e.g. the `!` shell

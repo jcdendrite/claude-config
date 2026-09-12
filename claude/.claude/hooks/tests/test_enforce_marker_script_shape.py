@@ -61,21 +61,6 @@ class TestEnforceMarkerScriptShape:
     def test_valid_shapes_allowed(self, command):
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "allow"
 
-    def test_case_varied_marker_script_path_allowed_for_main_session(self):
-        """The case-fold that lets Stage 1/2 recognize a case-varied
-        `Marker.sh` path (closing the fast-reject bypass) must not turn into
-        a false deny for a legitimate case-varied invocation from a session
-        that CAN release the gate -- VALID_PATTERN's own case-fold has to
-        hold for the allow path, not just the gate-release-authority deny
-        path this hook also gates."""
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input("~/.claude/scripts/Marker.sh write code-review"),
-            )
-            == "allow"
-        )
-
     # ------------------------------------------------------------------ #
     # Fast-exit: no marker.sh in command                                  #
     # ------------------------------------------------------------------ #
@@ -739,20 +724,6 @@ class TestGateReleaseAuthority:
             == "deny"
         )
 
-    def test_case_varied_marker_script_path_denied(self):
-        """Case-folded script path: on a case-insensitive-but-case-preserving
-        filesystem (macOS APFS/HFS+, Windows NTFS), Marker.sh opens the same
-        on-disk marker.sh a case-sensitive match here would miss -- Stage 1's
-        fast-reject alone would otherwise skip this hook's entire deep
-        validation, not just this gate-release-authority check."""
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input("~/.claude/scripts/Marker.sh write code-review", agent_type="code-writer"),
-            )
-            == "deny"
-        )
-
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
         "command",
@@ -982,65 +953,14 @@ class TestGateReleaseAuthority:
     )
     def test_quote_split_denied_via_command_word_arm(self, op, target):
         """A quote-split top-level invocation (`"marker.sh" write ...`)
-        quotes the whole `marker.sh` token, so the quote character sits
-        between the closing `"` and the op keyword, breaking the raw-text OP
-        check's `marker\\.sh[[:space:]]+(write|activate)` adjacency
-        requirement. This is the command-word arm's actual purpose —
-        _lib_command_invokes_tool_subcmd resolves the fragment's command word
-        after quote-stripping and matches regardless of that adjacency break.
-        (The raw-text OP check now also reads quote-stripped
-        COMMAND_UNQUOTED, so this exact command independently matches there
-        too — this test still pins the command-word arm's own resolution,
-        just no longer in isolation from the raw-text OP check. See
-        test_quote_split_inside_marker_token_denied below for a command that
-        quotes *inside* the token instead, which is what actually defeats
-        Stage 1 and the raw-text OP check rather than just their
-        now-superseded adjacency requirement.)"""
+        defeats the raw-text substring check: the quote character sits
+        between `marker.sh` and the op keyword, breaking the
+        `marker\\.sh[[:space:]]+(write|activate)` adjacency the raw-text
+        check requires. This is the command-word arm's actual purpose —
+        _lib_command_invokes_tool_subcmd resolves the fragment's command
+        word after quote-stripping and still matches, independent of the
+        raw-text arm."""
         cmd = f'"marker.sh" {op} {target}'
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(cmd, agent_type="code-writer"),
-            )
-            == "deny"
-        )
-
-    def test_quote_split_inside_marker_token_denied(self):
-        """A quote landing INSIDE the `marker.sh` token (as opposed to
-        test_quote_split_denied_via_command_word_arm's whole-token quoting,
-        e.g. `'"marker.sh" write ...'`, which leaves the substring
-        `marker.sh` itself contiguous in raw text and was already caught by
-        Stage 1's own substring check for a different reason) breaks that
-        contiguous substring in raw $COMMAND while a real shell still
-        executes it identically to the unquoted form. Reading raw $COMMAND
-        for Stage 1's fast-reject (`grep -qFi 'marker.sh'`) rather than
-        quote-stripped COMMAND_UNQUOTED would miss the match here entirely:
-        the whole hook would exit early as an allow before any deeper
-        validation ran, for a no-gate-release agent that cannot
-        legitimately release this gate at all."""
-        cmd = '~/.claude/scripts/"marker".sh write code-review'
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(cmd, agent_type="code-writer"),
-            )
-            == "deny"
-        )
-
-    def test_bash_c_wrapper_quote_split_inside_marker_token_denied(self):
-        """A `bash -c` wrapper whose wrapped text quote-splits INSIDE the
-        `marker.sh` token (as opposed to
-        test_bash_c_wrapper_denied_via_raw_text_arm's unquoted wrapped
-        text) defeats the raw-text OP check when it reads unstripped
-        $COMMAND: the split breaks the contiguous `marker.sh` substring the
-        same way it does at the top level, and this shape has no other
-        coverage — _lib_fragment_command_word's runner list excludes
-        bash/sh/zsh/dash/ksh entirely, so the command-word arm
-        (_lib_command_invokes_tool_subcmd) cannot see inside the wrapper
-        either. The raw-text OP check reading quote-stripped
-        COMMAND_UNQUOTED, rather than unstripped $COMMAND, is the sole
-        coverage for this shape."""
-        cmd = 'bash -c "mark""er.sh write code-review"'
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1055,16 +975,10 @@ class TestGateReleaseAuthority:
         shape: the same quote-split write that denies for a no-gate-release
         agent above must not deny here. (This command's overall verdict is
         "allow" for two independent reasons — the gate-release-authority
-        block never runs for this agent type, and Stage 2's anchor never
-        recognizes this command as a marker.sh invocation shape at all,
-        quote-stripped or not: the anchor requires a leading
-        `~`/`$HOME`/absolute-path prefix immediately before `.claude/scripts/
-        marker.sh`, and this bare `"marker.sh"` token has no such prefix —
-        but the agent-authority scoping is what this test pins. See
-        test_quote_split_inside_script_path_denied_even_for_full_authority
-        below for the anchored-path form of a quote-split invocation, which
-        Stage 2's anchor now DOES recognize post-fix and denies for every
-        caller regardless of authority.)"""
+        block never runs for this agent type, and Stage 2's anchor, which
+        reads raw unstripped $COMMAND, never recognizes a quote-split
+        `"marker.sh"` prefix as a marker.sh invocation shape at all — but
+        the agent-authority scoping is what this test pins.)"""
         cmd = '"marker.sh" write code-review'
         assert (
             run_hook(
@@ -1074,47 +988,13 @@ class TestGateReleaseAuthority:
             == "allow"
         )
 
-    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS + [None])
-    def test_quote_split_inside_script_path_denied_even_for_full_authority(
-        self, agent_type
-    ):
-        """A quote landing inside the `marker.sh` token, with the
-        anchored `~/.claude/scripts/` path prefix present (as opposed to
-        test_quote_split_write_allowed_for_full_tool_set_agents' bare,
-        unprefixed token), denies for EVERY caller — including one with
-        full gate-release authority (or no agent_type at all, the
-        main-session shape) — not just a no-gate-release agent.
-
-        This is an accepted over-deny, not a new restriction on authorized
-        release: pre-fix, this exact shape fast-exited Stage 2 as an
-        unrecognized "wrapped form" and fell through to
-        permissions.allow, whose literal-string entries don't match a
-        quoted command either — so it was never a guaranteed silent allow
-        pre-fix, just a different enforcement layer's problem. Post-fix,
-        Stage 2's anchor reads quote-stripped COMMAND_UNQUOTED and
-        correctly recognizes this as *a marker.sh invocation shape*, so it
-        proceeds to VALID_PATTERN — which is deliberately raw-text (see
-        enforce-marker-script-shape.sh's Stage 2 comments) and can never
-        match a quoted token — so it denies unconditionally. No legitimate
-        caller naturally embeds a quote inside the marker.sh path itself,
-        so denying this shape for authorized callers too is accepted as
-        the safe default rather than special-cased to allow."""
-        cmd = '~/.claude/scripts/"marker".sh write code-review'
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(cmd, agent_type=agent_type),
-            )
-            == "deny"
-        )
-
     def test_sed_absent_from_path_denies(self, tmp_path):
         """Status-2 propagation, fail-closed: with sed/tr unavailable, a
         no-gate-release agent's marker.sh write attempt still denies.
 
         The observed deny is reached via this hook's earlier, unconditional
-        COMMAND_UNQUOTED quote-strip check (runs before Stage 1, for every
-        Bash call, not only marker.sh-shaped ones) rather than
+        MARKER_WRITE_COMMAND_UNQUOTED quote-strip check (runs before Stage
+        1, for every Bash call, not only marker.sh-shaped ones) rather than
         via the gate-release-authority arm's own
         _lib_command_invokes_tool_subcmd status-2 branch in isolation —
         confirmed by inspecting the deny reason below. Both checks consume
@@ -1142,31 +1022,20 @@ class TestGateReleaseAuthority:
         """Isolates the gate-release-authority arm's OWN status-2 branch
         (_lib_command_invokes_tool_subcmd could not determine a match),
         distinct from the sed-absent test above, which is caught first by
-        this hook's earlier, unconditional COMMAND_UNQUOTED quote-strip
-        check and so never actually isolates this arm.
+        this hook's earlier, unconditional MARKER_WRITE_COMMAND_UNQUOTED
+        quote-strip check and so never actually isolates this arm.
 
-        The command here (`marker.sh status`) names neither `write` nor
-        `activate`, so the raw-text detector's own regex
-        (`marker\\.sh[[:space:]]+(write|activate)`) never matches it
-        regardless of sed's health — the loop below still calls
-        _lib_command_invokes_tool_subcmd once per op unconditionally, so a
-        status-only command is what isolates its own status-2 branch (a
-        quote-split write/activate command no longer does, now that the
-        raw-text detector reads quote-stripped COMMAND_UNQUOTED: it would
-        match there too, denying via the "cannot release a review gate"
-        branch before this arm's own status-2 branch is ever reached).
-        Skips the pre-Stage-1 redirect-candidate scan not because of any
-        `.claude`-substring requirement (that pre-filter was removed — see
-        this hook's header comment recording the removal) but because a
-        `status` command has no `>`/write-utility construct for
-        _lib_command_has_write_construct to flag. A sed shim that succeeds
-        only for _lib_strip_shell_quotes's own `-e`-flagged invocation
-        shape and fails for _lib_split_fragments's differently-shaped call
-        (the same technique test_fragments_split_sed_failure_denied in
-        test_deny_private_project_refs.py and
+        The command here is quote-split (`"marker.sh" write ...`), which
+        makes the raw-text detector NOT match, and contains no `.claude`
+        substring, which skips the pre-Stage-1 redirect-candidate scan (it
+        requires a literal `.claude` to run at all). A sed shim that
+        succeeds only for _lib_strip_shell_quotes's own `-e`-flagged
+        invocation shape and fails for _lib_split_fragments's differently-
+        shaped call (the same technique test_fragments_split_sed_failure_
+        denied in test_deny_private_project_refs.py and
         test_redirect_candidates_split_sed_failure_denied above both use)
-        lets COMMAND_UNQUOTED's own `-e`-shaped strip succeed via the real
-        sed while _lib_command_invokes_tool_subcmd's internal
+        lets MARKER_WRITE_COMMAND_UNQUOTED's own `-e`-shaped strip succeed
+        via the real sed while _lib_command_invokes_tool_subcmd's internal
         _lib_split_fragments call fails on its own, reaching this arm's
         status-2 branch in isolation. Asserted via the arm's own distinct
         deny-reason text ("could not determine whether ... invokes
@@ -1190,211 +1059,12 @@ class TestGateReleaseAuthority:
 
         reason = run_hook_reason(
             ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input(f"{MARKER} status", agent_type="code-writer"),
+            bash_input('"marker.sh" write code-review', agent_type="code-writer"),
             extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
         )
         assert reason is not None
         assert "could not determine whether" in reason
         assert "invokes marker.sh write/activate" in reason
-
-    def test_command_flattened_sed_failure_denied(self, tmp_path):
-        """Isolates _lib_brace_flatten's own sed call, distinct from the
-        sed-absent test above, which is caught first by this hook's
-        earlier, unconditional COMMAND_UNQUOTED quote-strip check.
-        _lib_brace_flatten's sed invocation carries the literal substring
-        `\\{` in its own pattern arguments, which none of
-        _lib_strip_shell_quotes's three sed patterns do (they use `\\$`
-        and `\\(` instead), so a shim keyed on that substring lets
-        COMMAND_UNQUOTED's strip succeed via the real sed while
-        _lib_brace_flatten's own sed call fails on its own, reaching this
-        hook's own $COMMAND_FLATTENED_EXIT check in isolation. The fixture
-        must itself contain a brace group -- _lib_brace_flatten's
-        fork-free fast path would otherwise never reach the sed call at
-        all."""
-        real_sed = shutil.which("sed")
-        assert real_sed, "test host must have a real sed binary on PATH"
-
-        shim_dir = tmp_path / "sed-fails-on-brace-flatten-pattern-shape"
-        shim_dir.mkdir()
-        shim_script = textwrap.dedent(f"""\
-            #!/bin/bash
-            for arg in "$@"; do
-              case "$arg" in
-                *'\\{{'*) exit 1 ;;
-              esac
-            done
-            exec "{real_sed}" "$@"
-        """)
-        (shim_dir / "sed").write_text(shim_script)
-        (shim_dir / "sed").chmod(0o755)
-
-        reason = run_hook_reason(
-            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input(f"{MARKER} write cod{{e,e}}-review", agent_type="code-writer"),
-            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
-        )
-        assert reason is not None
-        assert "could not flatten brace-expansion constructs" in reason
-
-    def test_pass_budget_exceeded_denied(self):
-        """Hook-level counterpart to test_lib.py's
-        test_lib_brace_flatten_fails_closed_past_the_16_pass_budget: 17
-        levels of real nesting -- one past _lib_brace_flatten's fixed
-        16-pass budget -- denies via this hook's own COMMAND_FLATTENED_EXIT
-        -eq 2 branch, not just at the isolated _lib_brace_flatten unit.
-        Fixture copied verbatim from test_lib.py's
-        _BRACE_FLATTEN_17_LEVEL_NESTED, since a single dropped or added
-        brace changes the required pass count."""
-        seventeen_level_nested = (
-            "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}}"
-        )
-        reason = run_hook_reason(
-            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input(
-                f"{MARKER} write code-review {seventeen_level_nested}",
-                agent_type="code-writer",
-            ),
-        )
-        assert reason is not None
-        assert "16-pass flattening budget" in reason
-
-    @pytest.mark.timing
-    def test_sixteen_level_nested_brace_returns_promptly(self):
-        """End-to-end latency of the brace-flatten pass plus the doubled
-        (raw + flattened) redirect-candidate scan this diff adds, driven
-        through the real hook binary rather than the isolated
-        _lib_brace_flatten unit test_lib.py's own timing test covers.
-        `tee` (a recognized write utility, unaffected by flattening) keeps
-        the doubled pipeline from fast-rejecting on either pass, so both
-        passes' full fragment-split/extraction/shape-match cost is paid, on
-        top of _lib_brace_flatten's own 16-pass cost. No `/` anywhere in the
-        command, so `_lib_command_has_brace_expansion_bypass`'s categorical
-        write-construct+brace+slash predicate doesn't fire and mask the
-        timing measurement behind an early deny. Generous bound, not a
-        tight wall-clock threshold, matching this repo's own stated
-        timing-test convention -- so this isn't flaky on a loaded machine,
-        but still catches a future regression to the doubled-scan wrapper
-        or the pass count."""
-        sixteen_level_nested = (
-            "l{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,{s,s}}}}}}}}}}}}}}}}"
-        )
-        started = time.monotonic()
-        result = run_hook(
-            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input(f"tee destfile {sixteen_level_nested}", agent_type="code-writer"),
-        )
-        elapsed = time.monotonic() - started
-        assert result == "allow"
-        assert elapsed < 5.0, f"16-level nested brace fixture took {elapsed:.2f}s -- should return promptly"
-
-
-class TestBraceSplitCallSitesClosed:
-    """A brace-split `marker.sh` token (`marker.s{h,h}`) reaches a raw-text
-    scan as a literal that matches nothing, even though bash itself
-    brace-expands it before executing, unless the scan is also run against
-    the flattened companion COMMAND_FLATTENED. One deny-path test per shape
-    (comma, range) at each call site, each paired with an "ordinary command
-    still allows" control at the same call site. Stage 1's own fast-reject
-    fix is a prerequisite every case here also exercises (an unfixed
-    Stage 1 would fast-exit as "allow" before any later check ever ran), so
-    it is not isolated as a separate case."""
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            pytest.param("marker.s{h,h} write code-review", id="gate-release-comma"),
-            pytest.param("marker.s{h..h} write code-review", id="gate-release-range"),
-        ],
-    )
-    def test_bare_invocation_denied_for_no_gate_release_agent(self, command):
-        """Bare (no `~/.claude/scripts/` path prefix) form: Stage 2's
-        anchor never matches this shape either way (fixed or not), so a
-        denial here isolates the gate-release-authority arm's own fix
-        specifically."""
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(command, agent_type="code-writer"),
-            )
-            == "deny"
-        )
-
-    def test_bare_ordinary_command_still_allowed_for_no_gate_release_agent(self):
-        assert (
-            run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input("echo hi", agent_type="code-writer"))
-            == "allow"
-        )
-
-    def test_bash_c_wrapper_with_brace_split_marker_token_denied(self):
-        """Crosses the two dimensions test_bash_c_wrapper_denied_via_raw_text_arm
-        and test_bare_invocation_denied_for_no_gate_release_agent each test
-        separately: a `bash -c` wrapper AND a brace-split `marker.sh` token,
-        together. Stage 1's fast-reject passes because COMMAND_FLATTENED
-        contains `marker.sh`, so the wrapped text reaches the gate-release-
-        authority arm; the raw-text substring check's own COMMAND_FLATTENED
-        companion is what denies it there, since
-        _lib_command_invokes_tool_subcmd's command-word resolution treats
-        `bash` (not `marker.sh`) as the fragment's command word regardless
-        of flattening."""
-        cmd = 'bash -c "marker.s{h,h} write code-review"'
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(cmd, agent_type="code-writer"),
-            )
-            == "deny"
-        )
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            pytest.param("~/.claude/scripts/marker.s{h,h} write code-review", id="stage2-anchor-comma"),
-            pytest.param("~/.claude/scripts/marker.s{h..h} write code-review", id="stage2-anchor-range"),
-        ],
-    )
-    def test_anchored_invocation_denied_for_full_tool_set_agent(self, command):
-        """Anchored (`~/.claude/scripts/` path prefix present) form, run
-        for an agent that COULD release a gate (no agent_type -- main
-        session): the gate-release-authority arm is skipped entirely for
-        this agent type, so a denial here isolates Stage 2's anchor fix --
-        an unfixed anchor would fast-exit as "allow", deferring to
-        permissions.allow, rather than routing into this hook's own deep
-        VALID_PATTERN validation, which then denies since the still-braced
-        text never matches VALID_PATTERN's own literal `marker.sh`."""
-        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command)) == "deny"
-
-    def test_anchored_ordinary_command_still_allowed_for_full_tool_set_agent(self):
-        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(f"{MARKER} status")) == "allow"
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            pytest.param(
-                "t{ee,ee} ~/.claude/code-review-markers/forged", id="alternation-comma"
-            ),
-            pytest.param(
-                "t{e..e}e ~/.claude/code-review-markers/forged", id="alternation-range"
-            ),
-        ],
-    )
-    def test_write_utility_name_brace_split_denied(self, command):
-        """Pre-Stage-1 redirect/utility-write scan: the write-utility name
-        itself is brace-split, so `marker.sh` is never mentioned anywhere
-        in the command at all -- distinct from every other case in this
-        class, which brace-splits `marker.sh` itself."""
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(command, agent_type="code-writer"),
-            )
-            == "deny"
-        )
-
-    def test_ordinary_command_still_allowed_at_alternation(self):
-        assert (
-            run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input("echo hi", agent_type="code-writer"))
-            == "allow"
-        )
 
 
 class TestGateReleaseAuthorityBashRedirectAndUtility:
@@ -1406,12 +1076,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
     """
 
     @pytest.fixture
-    def marker_home(self, tmp_path, monkeypatch):
-        # An ambient CLAUDE_CONFIG_DIR would resolve the config root away
-        # from this fixture's own $HOME/.claude, which the `-ef`-based
-        # symlink tests below depend on -- matching isolated_home's
-        # convention (conftest.py).
-        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    def marker_home(self, tmp_path):
         home = tmp_path / "home"
         (home / ".claude" / "code-review-markers").mkdir(parents=True)
         return home
@@ -1425,15 +1090,6 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
             "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
             "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
-            # A trailing flag after the true destination -- an argument
-            # shape cp's own parser accepts and still performs the write, so
-            # it must still deny.
-            "cp /tmp/attacker-plan.md ~/.claude/code-review-markers/forged -v",
-            "rsync /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
-            "curl -s -o ~/.claude/code-review-markers/forged https://example.invalid/payload",
-            "scp /tmp/attacker-plan.md localhost:~/.claude/code-review-markers/forged",
-            "wget -O ~/.claude/code-review-markers/forged https://example.invalid/payload",
-            "openssl enc -out ~/.claude/code-review-markers/forged -in /tmp/attacker-plan.md",
         ],
     )
     def test_write_utility_to_marker_path_denied(self, command):
@@ -1454,12 +1110,6 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
             "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
             "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
-            "cp /tmp/attacker-plan.md ~/.claude/code-review-markers/forged -v",
-            "rsync /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
-            "curl -s -o ~/.claude/code-review-markers/forged https://example.invalid/payload",
-            "scp /tmp/attacker-plan.md localhost:~/.claude/code-review-markers/forged",
-            "wget -O ~/.claude/code-review-markers/forged https://example.invalid/payload",
-            "openssl enc -out ~/.claude/code-review-markers/forged -in /tmp/attacker-plan.md",
         ],
     )
     def test_full_tool_set_agent_may_use_any_write_utility_on_a_marker_path(self, command):
@@ -1470,30 +1120,6 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="general-purpose"),
-            )
-            == "allow"
-        )
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "curl -O https://example.invalid/forged",
-            "wget https://example.invalid/forged",
-        ],
-    )
-    def test_curl_wget_implicit_destination_allowed_residual(self, command):
-        """curl -O and a bare `wget URL` derive their write target from the
-        URL or a server response rather than naming it as a literal token in
-        the command -- the one residual _LIB_WRITE_UTILITIES's membership
-        criterion excludes (see that array's own header comment in
-        _lib.sh). Pins that this specific implicit-destination shape stays
-        allowed, even for a no-gate-release agent, so a future attempt to
-        close it reads as a deliberate mechanism change to this test, not
-        an unnoticed capability drift."""
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(command, agent_type="code-writer"),
             )
             == "allow"
         )
@@ -1630,11 +1256,9 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
 
     def test_claude_mention_in_a_non_target_argument_allowed(self):
         """The fast-reject fires on `.claude` appearing anywhere in the
-        command, and every word of the fragment (source included) is now a
-        shape-tested candidate -- but a `.claude`-rooted source whose own
-        path shape doesn't match a marker suffix pattern (this one names a
-        script, not a marker file under a `*-markers`/`.*-active.d`
-        directory) must still not deny."""
+        command, but only the extracted write-target word is shape-tested --
+        a `.claude`-rooted source with a non-marker destination must not
+        deny."""
         cmd = "cp ~/.claude/scripts/marker.sh /tmp/backup.sh"
         assert (
             run_hook(
@@ -1681,76 +1305,14 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
         ],
     )
-    def test_target_directory_form_denied(self, command, marker_home):
-        """`-t DIR`/`--target-directory=DIR` writes to DIR/basename(source),
-        a path no single token in the command spells out literally -- but
-        DIR alone still `-ef`-matches the marker directory itself via
-        _lib_shape_match's Pass 4, so this is caught even though the joined
-        DIR/basename path is never a literal token in the command. Pass 4's
-        `-ef` comparison only fires against a marker directory that actually
-        exists on disk, hence marker_home."""
+    def test_target_directory_form_allowed_residual(self, command):
+        """Accepted residual: the destination isn't the last argument for
+        `-t DIR`/`--target-directory=DIR`, so the last-argument heuristic
+        misses it."""
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="code-writer"),
-                home=marker_home,
-            )
-            == "deny"
-        )
-
-    def test_bare_positional_directory_destination_denied(self, marker_home):
-        """Same DIR-alone shape as the `-t DIR` form above, reached through
-        cp's bare trailing-positional-argument form instead of the `-t`/
-        `--target-directory` flag -- no trailing slash on DIR."""
-        cmd = "cp /tmp/attacker-plan.md ~/.claude/code-review-markers"
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(cmd, agent_type="code-writer"),
-                home=marker_home,
-            )
-            == "deny"
-        )
-
-    @pytest.mark.parametrize(
-        "command_template",
-        [
-            "cp -t {target_dir} /tmp/attacker-plan.md",
-            "cp --target-directory={target_dir} /tmp/attacker-plan.md",
-            "mv -t {target_dir} /tmp/attacker-plan.md",
-            "install -t {target_dir} /tmp/attacker-plan.md",
-        ],
-    )
-    def test_target_directory_form_to_unrelated_directory_allowed(self, command_template, marker_home):
-        """Pass 4's candidate-itself `-ef` comparison is scoped to the
-        marker-kind directories `dir_expansions` glob-expands, not to "any
-        directory destination" -- a directory-form write into a genuinely
-        unrelated directory must stay allowed, or a future widening of Pass
-        4's own glob-expansion set would over-deny with no test to catch
-        it."""
-        unrelated_dir = marker_home / "unrelated"
-        unrelated_dir.mkdir()
-        command = command_template.format(target_dir=unrelated_dir)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(command, agent_type="code-writer"),
-                home=marker_home,
-            )
-            == "allow"
-        )
-
-    def test_bare_positional_directory_destination_to_unrelated_directory_allowed(self, marker_home):
-        """Bare-positional counterpart of the flag-based allow test above --
-        `cp file DIR` with no trailing slash, into an unrelated directory."""
-        unrelated_dir = marker_home / "unrelated"
-        unrelated_dir.mkdir()
-        cmd = f"cp /tmp/attacker-plan.md {unrelated_dir}"
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(cmd, agent_type="code-writer"),
-                home=marker_home,
             )
             == "allow"
         )
@@ -1790,11 +1352,12 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             == "allow"
         )
 
-    def test_symlink_with_no_claude_in_its_own_path_denied(self, marker_home, tmp_path):
-        """Closes the former residual: this scan no longer has a `.claude`-
-        substring fast-reject, so a symlink whose own path carries no
-        `.claude` segment but resolves (via `-ef` inode identity) into the
-        real markers directory is now caught."""
+    def test_symlink_with_no_claude_in_its_own_path_allowed_residual(self, marker_home, tmp_path):
+        """Accepted residual: this scan's fast-reject requires the literal
+        `.claude` in the command text, unlike the Write/Edit arm's
+        unconditional realpath resolution -- a symlink whose own path
+        carries no `.claude` segment but resolves into the markers directory
+        is not caught here."""
         alias_dir = tmp_path / "aliasdir"
         alias_dir.mkdir()
         symlinked_path = alias_dir / "notclaudepath"
@@ -1805,7 +1368,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
                 bash_input(f"printf x > {symlinked_path}/forged", agent_type="code-writer"),
                 home=marker_home,
             )
-            == "deny"
+            == "allow"
         )
 
     def test_symlink_with_claude_not_followed_by_slash_denied(self, marker_home, tmp_path):
@@ -1847,34 +1410,13 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "should stay near the fast-reject's cost, not scale with target count"
         )
 
-    @pytest.mark.timing
-    def test_many_header_flag_curl_with_no_claude_mention_completes_quickly(self):
-        """Unlike tee's branch above (still flag-filtered), the widened cp/
-        mv/install/dd/sed/curl/wget/rsync/scp/openssl class emits every word
-        of the fragment as a candidate, flags included -- so its candidate
-        count scales with total argv word count instead of staying O(1). A
-        curl invocation with 30 unrelated `-H header` flags exercises that
-        wider path specifically, with no target ever mentioning `.claude`."""
-        headers = " ".join(f'-H "X-Test-{i}: v{i}"' for i in range(30))
-        started = time.monotonic()
-        decision = run_hook(
-            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input(f"curl {headers} https://example.invalid/payload", agent_type="code-writer"),
-        )
-        elapsed = time.monotonic() - started
-        assert decision == "allow"
-        assert elapsed < 1.0, (
-            f"a 30-header curl invocation with no .claude mention took {elapsed:.2f}s -- "
-            "should stay near the fast-reject's cost, not scale with argv word count"
-        )
-
     def test_sed_absent_from_path_denied(self, isolated_home, tmp_path):
-        """COMMAND_UNQUOTED's sed/tr strip is the earliest fork this scan
-        reaches, run unconditionally ahead of Stage 1 for every Bash call.
-        A missing sed must deny (fail-closed) rather than let
-        _lib_strip_shell_quotes's failure silently clear COMMAND_UNQUOTED
-        and fall through to this scan's normal no-match allow path with no
-        bypass valve on a real marker write."""
+        """MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip is the earliest fork
+        this scan reaches, run unconditionally ahead of Stage 1 for every
+        Bash call. A missing sed must deny (fail-closed) rather than let
+        _lib_strip_shell_quotes's failure silently clear
+        MARKER_WRITE_COMMAND_UNQUOTED and fall through to this scan's normal
+        no-match allow path with no bypass valve on a real marker write."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -1890,16 +1432,12 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
 
     def test_redirect_candidates_split_sed_failure_denied(self, isolated_home, tmp_path):
         """GH-783: MARKER_WRITE_REDIRECT_CANDIDATES_EXIT must fail closed on
-        its own, isolated from COMMAND_UNQUOTED_EXIT above -- both checks
-        depend on the same sed binary, so a total sed-absent test (like the
-        one above) can't tell which of the two is actually catching the
-        failure. The command carries a genuine write construct (`>`) so
-        _lib_command_has_write_construct's fast-reject does not skip
-        _lib_split_fragments outright -- see
-        test_no_write_construct_command_skips_fragment_splitting below for
-        that case. A sed shim fails on any invocation that isn't
+        its own, isolated from MARKER_WRITE_COMMAND_UNQUOTED_EXIT above --
+        both checks depend on the same sed binary, so a total sed-absent test
+        (like the one above) can't tell which of the two is actually catching
+        the failure. A sed shim fails on any invocation that isn't
         _lib_strip_shell_quotes's own `-e`-flagged shape, so
-        COMMAND_UNQUOTED succeeds via the real sed while the
+        MARKER_WRITE_COMMAND_UNQUOTED succeeds via the real sed while the
         later _lib_split_fragments call inside _bash_marker_redirect_candidates
         (a bare `sed -E 's/.../g'`, no `-e` token) fails on its own."""
         real_sed = shutil.which("sed")
@@ -1920,178 +1458,11 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input("printf x > ~/.claude/code-review-markers/forged"),
+                bash_input("~/.claude/scripts/marker.sh write code-review"),
                 home=isolated_home,
                 extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
             )
             == "deny"
-        )
-
-    def test_no_write_construct_command_skips_fragment_splitting(self, tmp_path):
-        """A command with no >-family redirect and no _LIB_WRITE_UTILITIES
-        invocation must never reach _lib_split_fragments inside
-        _lib_redirect_candidates -- _lib_command_has_write_construct's
-        fork-free fast-reject is what proves this, not just the eventual
-        allow verdict, which a command that merely fails to match every
-        SUFFIX_PATTERN would also produce. Reuses the PATH-shim-records-
-        invocation technique from test_require_plan_review.py's
-        test_historical_plans_allows_and_skips_the_realpath_fast_path: the
-        shim records only a sed invocation whose pattern contains `&&`, the
-        substring unique to _lib_split_fragments's own first internal sed
-        call (`s/&&/\\n/g`) -- distinct from every other sed call this hook
-        makes (TRIMMED's whitespace strip, _lib_strip_shell_quotes's
-        `-e`-flagged calls) -- so an untouched marker file proves that
-        specific fork never ran. Main session (no agent_type) so the
-        gate-release-authority arm's own, independent _lib_split_fragments
-        calls (which run for a no-gate-release agent regardless of write
-        construct) don't also touch the marker and mask the result."""
-        real_sed = shutil.which("sed")
-        assert real_sed, "test host must have a real sed binary on PATH"
-
-        call_marker = tmp_path / "split-fragments-was-called"
-        shim_dir = tmp_path / "sed-records-fragment-split-calls"
-        shim_dir.mkdir()
-        shim_script = textwrap.dedent(f"""\
-            #!/bin/bash
-            case "$2" in
-              *'&&'*) touch "{call_marker}" ;;
-            esac
-            exec "{real_sed}" "$@"
-        """)
-        (shim_dir / "sed").write_text(shim_script)
-        (shim_dir / "sed").chmod(0o755)
-
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input("git status"),
-                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
-            )
-            == "allow"
-        )
-        assert not call_marker.exists(), (
-            "_lib_split_fragments must not run for a command with no write construct"
-        )
-
-    def test_hardlink_to_real_marker_file_denied(self, marker_home):
-        """A hardlink placed inside the real markers directory is a distinct
-        filesystem object from a plain new file at the same path -- pinning
-        that the `-ef`-based directory-prefix match (_lib_shape_match's Pass
-        2) denies it the same way, not just an ordinary Write. Scope note:
-        this places the hardlink INSIDE the real markers directory (`-ef`-
-        comparable via the directory-prefix check) rather than at a wholly
-        unrelated path aliasing one specific marker file's inode -- the
-        latter would require enumerating every real marker file to catch,
-        an unbounded-cost operation this redesign deliberately does not add
-        to the write-path gate (marker directories can hold tens of
-        thousands of entries; see _lib_shape_match's own header, Pass 3's
-        glob-metachar gate)."""
-        real_marker = marker_home / ".claude" / "code-review-markers" / "existing-reviewed-marker"
-        real_marker.write_text("deadbeef\n")
-        hardlinked_path = marker_home / ".claude" / "code-review-markers" / "hardlinked-forged"
-        os.link(real_marker, hardlinked_path)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(f"printf x > {hardlinked_path}", agent_type="code-writer"),
-                home=marker_home,
-            )
-            == "deny"
-        )
-
-    def test_full_tool_set_agent_may_write_through_a_hardlink_to_a_marker_file(self, marker_home):
-        """The deny above is agent-scoped, not hardlink-scoped: an agent that
-        could have run the review still passes the identical hardlink shape."""
-        real_marker = marker_home / ".claude" / "code-review-markers" / "existing-reviewed-marker"
-        real_marker.write_text("deadbeef\n")
-        hardlinked_path = marker_home / ".claude" / "code-review-markers" / "hardlinked-forged"
-        os.link(real_marker, hardlinked_path)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(f"printf x > {hardlinked_path}", agent_type="general-purpose"),
-                home=marker_home,
-            )
-            == "allow"
-        )
-
-
-class TestGateReleaseAuthorityGluedShortFlagBypassClosed:
-    """Regression test for the same glued short-option bypass -- see
-    TestGluedShortFlagBypassClosed in test_enforce_config_write_shape.py for
-    the shared _lib_shape_match root cause and the curl/wget/openssl
-    empirical verification of which of these three actually accept a glued
-    (no space, no '=') short-option value. Parametrized across both a
-    default (.claude-segment-present) and a .claude-segment-free
-    CLAUDE_CONFIG_DIR to prove the fix isn't itself keyed off the '.claude'
-    substring."""
-
-    @pytest.fixture(params=[True, False], ids=["default-dotclaude-segment", "dotclaude-free-config-dir"])
-    def config_dir_topology(self, request, tmp_path):
-        home = tmp_path / "home"
-        if request.param:
-            (home / ".claude" / "code-review-markers").mkdir(parents=True)
-            target = home / ".claude" / "code-review-markers" / "forged"
-            extra_env = None
-        else:
-            config_dir = tmp_path / "profile"
-            (config_dir / "code-review-markers").mkdir(parents=True)
-            home.mkdir()
-            target = config_dir / "code-review-markers" / "forged"
-            extra_env = {"CLAUDE_CONFIG_DIR": str(config_dir)}
-        return home, target, extra_env
-
-    @pytest.mark.parametrize(
-        "command_template",
-        [
-            "curl -sSo{target} https://example.invalid/payload",
-            "wget -O{target} https://example.invalid/payload",
-            "wget -qO{target} https://example.invalid/payload",
-            "openssl enc -out{target} -in /tmp/attacker-plan.md",
-        ],
-        ids=["curl-sSo-glued", "wget-O-glued", "wget-qO-glued", "openssl-out-glued"],
-    )
-    def test_glued_flag_value_denied(self, command_template, config_dir_topology):
-        home, target, extra_env = config_dir_topology
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(command_template.format(target=target), agent_type="code-writer"),
-                home=home,
-                extra_env=extra_env,
-            )
-            == "deny"
-        )
-
-
-class TestGateReleaseAuthorityWriteUtilitiesAllowUnrelatedDestinations:
-    """Mirrors TestGateReleaseAuthorityBashRedirectAndUtility's deny-path
-    parametrization, pointed at a destination with no relationship to any
-    marker/active-bypass path -- cp/dd/sed/tee already have this allow-path
-    coverage elsewhere in that class (e.g.
-    test_claude_mention_in_a_non_target_argument_allowed); rsync/scp/openssl
-    had none."""
-
-    @pytest.mark.parametrize(
-        "command_template",
-        [
-            "rsync /tmp/attacker-plan.md {target}",
-            "scp /tmp/attacker-plan.md localhost:{target}",
-            "openssl enc -out {target} -in /tmp/attacker-plan.md",
-        ],
-        ids=["rsync", "scp", "openssl"],
-    )
-    def test_explicit_destination_token_to_unrelated_file_allowed(self, command_template, tmp_path):
-        home = tmp_path / "home"
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        target = home / ".claude" / "some-other-file.md"
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(command_template.format(target=target), agent_type="code-writer"),
-                home=home,
-            )
-            == "allow"
         )
 
 
@@ -2455,23 +1826,26 @@ class TestGateReleaseAuthorityUnderCustomConfigDir:
         )
 
 
-class TestGateReleaseAuthorityBashArmConfigDirSubstringGapClosed:
-    """A config-dir-resolved marker write with no literal `.claude`
-    substring in the command is scanned via the fork-free write-construct
-    fast-reject, independent of the `.claude`-substring pre-filters used
-    elsewhere in this file. Pinned here so a future change to those
-    pre-filters doesn't silently reopen this gap."""
+class TestGateReleaseAuthorityBashArmConfigDirResidual:
+    """The Bash redirect/utility arm shares `_marker_shape_match` with the
+    Write/Edit/MultiEdit arm above, but its two `.claude`-substring
+    pre-filters (Stage 0 and `_marker_write_candidate_mentions_claude`) run
+    before `_marker_shape_match` is ever reached, so a config-dir-resolved
+    marker write with no literal `.claude` substring anywhere in the command
+    is never scanned — a named, accepted residual (see the hook's own header),
+    not a bug to chase. Pinned here so a future change to either pre-filter
+    doesn't silently assume this case is already covered."""
 
-    def test_redirect_to_config_dir_marker_path_denied(self, tmp_path):
+    def test_redirect_to_config_dir_marker_path_allowed_is_a_named_residual(self, tmp_path):
         home = tmp_path / "home"
         home.mkdir()
         config_dir = tmp_path / "profile-container"
         (config_dir / "code-review-markers").mkdir(parents=True)
         target = config_dir / "code-review-markers" / "forged"
-        # A `.claude` mention elsewhere in the same command is no longer
-        # load-bearing for this scan (there is no more per-candidate
-        # `.claude`-substring filter to satisfy) — kept anyway to show the
-        # deny does not depend on it.
+        # Even with a `.claude` mention elsewhere in the same command, the
+        # per-candidate filter still rejects `target` itself for lacking the
+        # literal substring — confirming the gap is the candidate-level
+        # filter, not merely the command-level Stage 0 one.
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2479,27 +1853,31 @@ class TestGateReleaseAuthorityBashArmConfigDirSubstringGapClosed:
                 home=home,
                 extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
             )
-            == "deny"
+            == "allow"
         )
 
 
-class TestGateReleaseAuthorityBashArmConfigDirShapeHasNoBudgetCliff:
-    """The prior realpath-budget design bounded per-fire cost by shape-testing
-    only the raw tilde-expanded form (no realpath) past the first
-    MARKER_WRITE_REALPATH_BUDGET=10 `.claude`-mentioning candidates in one
-    command — a documented, narrow degrade. The `-ef`-based redesign has no
-    such budget (each candidate's cost is a handful of in-process stat calls,
-    not a capped subprocess), so a config-dir-shape write must still deny
-    even as the 101st candidate in one command, proving there's no cliff to
-    fall off of."""
+class TestGateReleaseAuthorityBashArmConfigDirShapeSurvivesBudgetExhaustion:
+    """_lib_config_dir is subprocess-free, so _marker_shape_match resolves it
+    unconditionally regardless of the realpath budget — only the follow-on
+    realpath call (the one with real subprocess cost) is budget-gated. A
+    config-dir-shape write must still deny even when it is the 11th
+    `.claude`-mentioning candidate in one command (past
+    MARKER_WRITE_REALPATH_BUDGET=10), the same way the $HOME-relative shape
+    already degrades to raw-candidate-only rather than dropping coverage
+    entirely once the budget is spent."""
 
-    def test_config_dir_shape_denied_as_the_101st_candidate(self, tmp_path):
+    def test_config_dir_shape_denied_past_realpath_budget(self, tmp_path):
         home = tmp_path / "home"
         home.mkdir()
+        # Contains the literal substring ".claude" (so the per-candidate
+        # `.claude`-mention filter passes) without matching the $HOME-relative
+        # `*/.claude/*-markers/*` glob shape as a real path segment — only the
+        # config-dir-resolved shape check can catch this one.
         config_dir = tmp_path / "backup.claude-profile"
         (config_dir / "code-review-markers").mkdir(parents=True)
         forged = config_dir / "code-review-markers" / "forged"
-        padding = " ".join(f"/tmp/marker-shape-pad-{i}" for i in range(100))
+        padding = " ".join(f"~/.claude/pad{i}" for i in range(11))
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2510,7 +1888,7 @@ class TestGateReleaseAuthorityBashArmConfigDirShapeHasNoBudgetCliff:
             == "deny"
         )
 
-    def test_full_tool_set_agent_allowed_for_same_shape_as_the_101st_candidate(self, tmp_path):
+    def test_full_tool_set_agent_allowed_for_same_shape_past_realpath_budget(self, tmp_path):
         """The deny above is agent-scoped, not shape-scoped: an agent that
         could have run the review still passes the identical shape."""
         home = tmp_path / "home"
@@ -2518,7 +1896,7 @@ class TestGateReleaseAuthorityBashArmConfigDirShapeHasNoBudgetCliff:
         config_dir = tmp_path / "backup.claude-profile"
         (config_dir / "code-review-markers").mkdir(parents=True)
         forged = config_dir / "code-review-markers" / "forged"
-        padding = " ".join(f"/tmp/marker-shape-pad-{i}" for i in range(100))
+        padding = " ".join(f"~/.claude/pad{i}" for i in range(11))
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2530,148 +1908,20 @@ class TestGateReleaseAuthorityBashArmConfigDirShapeHasNoBudgetCliff:
         )
 
 
-class TestGateReleaseAuthorityBraceExpansionBypassClosed:
-    """HIGH-severity review finding: bash brace-expands
-    `pre{a,b}post` into one word per component at PARSE time, but
-    _lib_fragment_candidates only ever sees a fragment's words AFTER
-    runtime word-splitting (`for word in $fragment`), which bash never
-    re-brace-expands -- so an unexpanded `{,x}`-shaped literal token
-    reached _lib_shape_match unmatched, even though the real shell that
-    executes the command DOES brace-expand it into the real marker-
-    directory target. `_lib.sh`'s `_lib_command_has_brace_expansion_bypass`
-    closes this by detecting the construct's shape on the whole command
-    text and denying outright, rather than expanding it into candidates --
-    see test_lib.py's own `_lib_redirect_candidates` brace-expansion-bypass
-    tests for the shared predicate's full shape matrix; this class pins only
-    this hook's own wiring of that shared mechanism."""
-
-    def test_comma_list_glued_to_a_marker_directory_denied(self, tmp_path):
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(
-                    "tee ~/.claude/code-review-markers{,x}/forged", agent_type="code-writer"
-                ),
-                home=home,
-            )
-            == "deny"
-        )
-
-    def test_full_tool_set_agent_also_denied_for_the_same_brace_shape(self, tmp_path):
-        """Unlike every other Bash-arm candidate check in this file, the
-        brace-expansion-bypass predicate runs inside _lib_redirect_candidates
-        itself, ahead of the per-candidate no-gate-release check, so it
-        denies before the agent-type distinction is ever reached -- even an
-        agent that could have run the review is denied for this shape."""
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(
-                    "tee ~/.claude/code-review-markers{,x}/forged", agent_type="general-purpose"
-                ),
-                home=home,
-            )
-            == "deny"
-        )
-
-    def test_quoted_space_containing_component_denied(self, tmp_path):
-        """Testing a post-quote-strip, post-word-split candidate would let a
-        quoted, space-containing brace component get re-split by `for word
-        in $fragment` into two half-tokens, neither carrying a complete
-        `{`...`}` pair. Testing the whole command text instead (after
-        quote-stripping, before fragment-splitting/word-splitting) avoids
-        this."""
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input(
-                    'tee ~/.claude/code-review-markers/{"a b",forged}', agent_type="general-purpose"
-                ),
-                home=home,
-            )
-            == "deny"
-        )
-
-    def test_denial_message_names_the_brace_expansion_reason(self, tmp_path):
-        """Distinguishes this deny from the generic "could not split the
-        command into fragments" message a real sed/fragment-splitting
-        failure would produce -- both share a non-zero
-        _lib_redirect_candidates status, so the caller's status-check must
-        branch on _LIB_BRACE_EXPANSION_BYPASS_STATUS specifically rather
-        than falling into the generic branch."""
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        reason = run_hook_reason(
-            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input("tee ~/.claude/code-review-markers{,x}/forged", agent_type="code-writer"),
-            home=home,
-        )
-        assert reason is not None
-        assert "brace-expansion" in reason
-
-    def test_dollar_brace_shaped_command_denied(self, tmp_path):
-        """A `${...}` parameter expansion whose body has a `,` (`${x:-a,b}`)
-        denies, because real bash cannot distinguish "just a parameter
-        expansion" from "a parameter expansion that also brace-expands"
-        from command text alone. Writes to `/tmp/x`, not a marker path, so
-        the deny is attributable only to the brace-bypass status, not to an
-        actual marker-path candidate match."""
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input("tee /tmp/x ${x:-a,b}", agent_type="code-writer"),
-                home=home,
-            )
-            == "deny"
-        )
-
-    def test_ordinary_dollar_brace_command_still_allowed(self, tmp_path):
-        """Control for the test above -- a solitary `${x}` parameter
-        expansion with no comma or `..` in its body is not a brace-
-        expansion construct at all, so it allows. Writes to `/tmp/x`, not a
-        marker path, so this is a genuine allow control rather than a
-        marker-write deny for an unrelated reason."""
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".claude" / "code-review-markers").mkdir(parents=True)
-        assert (
-            run_hook(
-                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                bash_input("tee /tmp/x ${x}", agent_type="code-writer"),
-                home=home,
-            )
-            == "allow"
-        )
-
-
 class TestPrescriptionAllowlistAlignment:
     """Every tilde-form marker.sh (subcommand, argument) shape the hook
     accepts must have a matching permissions.allow entry, except a fixed,
-    literal exception set — not "any shape the hook happens to decline",
-    which would silently re-grant a future excluded shape. Absolute-path
-    forms are out of scope: every existing and proposed permissions.allow
-    rule is tilde-only by convention, even though the hook's MARKER_SHAPE
-    regex also accepts an absolute-path prefix.
+    literal exception set — not "any other shape A4/A5 decline", which would
+    silently re-grant a future excluded shape. Absolute-path forms are out of
+    scope: every existing and proposed permissions.allow rule is tilde-only
+    by convention, even though the hook's MARKER_SHAPE regex also accepts an
+    absolute-path prefix.
     """
 
     # clear-stale sweeps every session's dead-PID bypass markers machine-wide
     # (not just this session's) and is ungated by the hook's no-gate-release
-    # check — a broader blast radius than a per-session marker write, so it
-    # is excluded from permissions.allow even though CLAUDE.md prescribes it
-    # and the hook accepts it.
+    # check, so it fails A5 admission test (iii) even though CLAUDE.md
+    # prescribes it and the hook accepts it — see GH-557 plan, A5.
     ALLOWLIST_EXCEPTIONS = frozenset({
         "clear-stale",  # follow-up: marker.sh clear-stale scoping issue (not yet filed)
         "clear-stale --dry-run",  # follow-up: marker.sh clear-stale scoping issue (not yet filed)
@@ -2708,7 +1958,7 @@ class TestPrescriptionAllowlistAlignment:
 
     def test_allowlist_exceptions_is_exactly_the_clear_stale_forms(self):
         """Pins the exception set to its authored literal, not to whatever
-        shape the hook happens to exclude at any given time — an open-ended
+        shape A4/A5 happens to exclude at any given time — an open-ended
         "any excluded shape" clause would silently re-grant a future
         disqualified shape instead of failing this test."""
         assert {"clear-stale", "clear-stale --dry-run"} == self.ALLOWLIST_EXCEPTIONS

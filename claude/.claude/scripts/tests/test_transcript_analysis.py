@@ -17553,7 +17553,6 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-architect-consult.sh", "architect-consult"),
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
     ("deny-no-op-dispatch.sh", "no-op-dispatch"),
-    ("enforce-config-write-shape.sh", "config-write-shape"),
 )
 
 

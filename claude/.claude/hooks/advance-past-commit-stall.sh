@@ -54,13 +54,15 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 
 # 2. Always-effective kill switch, independent of sentinel state. Delegates
 # to _config_enabled's commit_stall_block schema row (presence-disables).
-# Exit code 2 (unresolvable) falls through to the same `|| exit 0` as
-# disabled; safe here because step 1 already exited on a resolution
-# failure. Exit code 3 (config-keys.psv unreadable) falls through the
-# same `|| exit 0` too: this line's own exit status doesn't distinguish
-# reason codes 1/2/3, so a broken schema exits here and never reaches
-# step 3's own autonomous_shipping check at all.
-_config_enabled commit_stall_block || exit 0
+# Only exit code 1 (explicitly disabled) turns this hook off -- every other
+# outcome, including config-keys.psv being transiently unreadable, leaves
+# it armed. See config-schema-audit.md's commit_stall_block section for
+# the full fail-direction rationale.
+_config_enabled commit_stall_block
+case "$?" in
+  1) exit 0 ;;
+  *) ;;
+esac
 
 # 3. Machine-sentinel fast path: the cheap (bare stat, no parsed input
 # needed) half of the full _lib_autonomous_shipping_active check at step 9

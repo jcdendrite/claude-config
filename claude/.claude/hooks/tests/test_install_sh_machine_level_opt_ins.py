@@ -81,10 +81,7 @@ def _run_prompt_sentinel_opt_in(
     test_install_sh_local_bin_path.py exercises ensure_local_bin_on_path.
 
     `key` must be a real config-keys.psv key -- _config_value/_config_set
-    both refuse (return non-zero) on an unknown key, so a synthetic
-    path-shaped string no longer exercises this function meaningfully now
-    that the prompt reads/writes through the schema instead of a
-    caller-supplied path.
+    both refuse (return non-zero) on an unknown key.
 
     `config_dir`: when set, exported as CLAUDE_CONFIG_DIR instead of the
     default unset (resolves to `home/.claude`) -- lets a

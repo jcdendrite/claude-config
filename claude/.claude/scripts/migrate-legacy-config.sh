@@ -92,7 +92,8 @@ _migrate_probe_legacy_location() {
       local mode expected
       _config_trim "$content"
       mode="$_CONFIG_TRIM_RESULT"
-      mode=$(tr '[:upper:]' '[:lower:]' <<< "$mode")
+      # LC_ALL=C -- same casefold rationale as _config.sh's tr calls.
+      mode=$(LC_ALL=C tr '[:upper:]' '[:lower:]' <<< "$mode")
       expected="${type#enum:}"
       if [ -z "$mode" ]; then
         _MIGRATE_DERIVED_VALUE="false"

@@ -25,8 +25,8 @@
 # _config_schema_field/_config_read_key_from_file/_config_file_lines) does
 # unwrapped filesystem I/O on every call, from this repo's 11+ hook/script
 # call sites -- accepted for local-disk/single-machine deployment; a stuck
-# read blocks the calling hook, the same tradeoff enforce-config-write-shape.sh/
-# enforce-marker-script-shape.sh already disclose.
+# read (e.g. a hung network mount under $CLAUDE_CONFIG_DIR) blocks the
+# calling hook with no timeout backstop.
 _CONFIG_SCHEMA_FILE="$(dirname "${BASH_SOURCE[0]}")/config-keys.psv"
 _CONFIG_STATE_FILENAME="claude-config.toml"
 
@@ -83,8 +83,7 @@ _lib_config_dir() {
 #
 # Sets a global rather than printing for $(...) capture -- this is called
 # per state-file line (up to 3 times each) by _config_line_key_value below,
-# and a command-substitution fork per call is pure overhead; same
-# fork-avoidance rationale as _lib.sh's _lib_pattern_component_count.
+# and a command-substitution fork per call is pure overhead.
 _config_trim() {
   local LC_ALL=C
   local s="$1"
@@ -112,9 +111,20 @@ _config_trim() {
 # The value is case-folded via `tr '[:upper:]' '[:lower:]'` before the
 # subset check, so a hand-authored `TRUE`/`True`/`FALSE` still resolves.
 # `tr`, not `${value,,}` (bash 4+): macOS system bash is 3.2, matching
-# install.sh:626's own idiom.
-# This repo's own key names are already lowercase snake_case, so only the
-# value needs folding; the key is matched case-sensitively.
+# install.sh:626's own idiom. The `tr` invocation itself is prefixed with
+# `LC_ALL=C`, not just this function's own `local LC_ALL=C`. That `local`
+# is a shell variable assignment and does not propagate to a child
+# process, so the `tr` subprocess needs its own prefix. `LC_ALL=C` here is
+# defense-in-depth against locale-dependent `tr`/bracket-range behavior in
+# general, the same rationale the paragraph below gives for this
+# function's own bracket-range regex checks, rather than a fix for one
+# confirmed mechanism. Left unguarded, a locale-dependent casefold could
+# let a non-ASCII value slip past the `[a-z0-9_-]` subset check below.
+# _config.py's `.lower()` is Python's own full Unicode casefold. Without
+# forcing the C locale here, the two readers could resolve the identical
+# hand-authored line differently. This repo's own key names are already
+# lowercase snake_case, so only the value needs folding; the key is matched
+# case-sensitively.
 #
 # `local LC_ALL=C` is load-bearing for the two bracket-range regex checks
 # below (`[A-Za-z0-9_-]`, `[a-z0-9_-]`): outside the C locale, bracket-range
@@ -143,7 +153,7 @@ _config_line_key_value() {
   _config_trim "$value"
   value="$_CONFIG_TRIM_RESULT"
   [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || return 2
-  value=$(tr '[:upper:]' '[:lower:]' <<< "$value")
+  value=$(LC_ALL=C tr '[:upper:]' '[:lower:]' <<< "$value")
   [[ "$value" =~ ^[a-z0-9_-]+$ ]] || return 2
   printf -v "$key_var" '%s' "$key"
   printf -v "$value_var" '%s' "$value"
@@ -185,9 +195,12 @@ _config_file_lines() {
 # rule. An unrecognized key (grammatically valid but no config-keys.psv row)
 # is warned separately from a malformed line. When config-keys.psv itself is
 # unreadable, membership is treated as unknown, not "no keys known," so every
-# grammatically-valid row is treated as recognized and key_type is left
-# empty (matching neither the `bool` nor `enum:*` type-check case, so KEY's
-# row still resolves instead of being misreported as absent).
+# grammatically-valid row is treated as recognized -- but key_type is left
+# empty in that case, and an empty key_type matches its own dedicated `""`
+# case arm below, which accepts only the literals "true"/"false" (valid for
+# every key regardless of its real declared type) and rejects anything
+# else: a type-ambiguous row must never resolve as authoritative just
+# because its type couldn't be checked.
 #
 # KNOWN_KEYS/KEY_TYPE are optional (both or neither, detected via `$# -eq 4`)
 # and let a caller that already resolved both skip re-deriving them --
@@ -248,6 +261,32 @@ _config_read_key_from_file() {
             false|"${key_type#enum:}") ;;
             *)
               printf '_config.sh: warning: skipping malformed line in %s: %s\n' "$state_file" "${line:0:80}" >&2
+              continue
+              ;;
+          esac
+          ;;
+        "")
+          # key_type is empty when the 2-arg form's own schema read failed
+          # (known_keys_status non-zero, config-keys.psv unreadable), or
+          # when KEY itself has no schema row despite the schema being
+          # readable (see this function's header). No real caller reaches
+          # the second sub-case today, since both existing 2-arg callers
+          # derive KEY from a schema-driven iteration in the same run --
+          # that describes today's callers, not a guarantee this arm is
+          # unreachable by construction. KEY's true declared type can't be
+          # validated without the schema. So this arm accepts only the
+          # literals "true"/"false", the two values valid for every key
+          # regardless of its real type (even an enum key's "off" value is
+          # "false"). It rejects anything else, the same as the
+          # malformed-line path above. A bool key's garbled value (e.g.
+          # "banana") must not resolve as authoritative just because its
+          # type couldn't be checked. _config_enabled's any-value-but-false
+          # rule would otherwise treat it as enabled.
+          case "$value_out" in
+            true|false) ;;
+            *)
+              printf '_config.sh: warning: skipping line for %s in %s: schema unreadable, cannot validate its type: %s\n' \
+                "$key" "$state_file" "${line:0:80}" >&2
               continue
               ;;
           esac
@@ -418,7 +457,10 @@ _config_location_value() {
         # identically here regardless of which legacy location produced it.
         _config_trim "$raw"
         mode="$_CONFIG_TRIM_RESULT"
-        mode=$(tr '[:upper:]' '[:lower:]' <<< "$mode")
+        # LC_ALL=C prefixes the tr invocation itself (not a `local`, which
+        # wouldn't reach this subshell) -- same ASCII-only-casefold
+        # rationale as _config_line_key_value's own tr call above.
+        mode=$(LC_ALL=C tr '[:upper:]' '[:lower:]' <<< "$mode")
         type="$key_type"
         [ -n "$precomputed" ] || type=$(_config_schema_field "$key" type)
         expected="${type#enum:}"
@@ -624,7 +666,14 @@ _config_enabled() {
 # bare `mktemp` (which defaults to $TMPDIR, commonly a different filesystem
 # — silently defeating `mv`'s same-filesystem atomicity via EXDEV or a
 # copy+unlink fallback). Matches pr-diff-against-base.sh:69 and
-# _stow_migration_lib.sh:551's existing precedent.
+# _stow_migration_lib.sh:551's existing precedent. The new content is built
+# in a shell variable first, then written to the temp file in one `printf`
+# whose own exit status is checked before the `mv`. This file has no
+# `set -e`, per its own header, so a write failure such as ENOSPC would
+# otherwise leave a truncated temp file that still gets installed as though
+# the write had fully succeeded. A nonzero status instead removes the temp
+# file and returns 1, rather than clobbering the real state file with
+# partial content.
 #
 # Rejects an empty or exactly-`/` resolved config dir before any
 # mkdir/write, failing the same way an unresolvable config dir already
@@ -633,9 +682,9 @@ _config_enabled() {
 # that routes a WRITE through that resolver.
 #
 # Sanctioned callers only: install.sh's interactive [y/N] path and
-# migrate-legacy-config.sh's import phase. Enforced by
-# enforce-config-write-shape.sh at the tool-call boundary, not by this
-# function itself.
+# migrate-legacy-config.sh's import phase. Not mechanically enforced at the
+# tool-call boundary -- see docs/design-decisions/
+# sentinel-config-consolidation.md's descope note for why.
 _config_set() {
   local key="$1" value="$2" config_dir_override="${3:-}"
   local key_type
@@ -683,20 +732,33 @@ _config_set() {
     fi
   done
 
+  # Full new state-file content built in one variable, with no
+  # intermediate redirects, so the single write below has one exit status
+  # to check -- not a `$?`-after-comment read whose block ends on a
+  # short-circuited `[ found -eq 0 ] || ...` that a later statement's own
+  # exit status could silently clobber.
+  local content=""
+  for ((i = 0; i < ${#existing_lines[@]}; i++)); do
+    _config_line_key_value "${existing_lines[$i]}" key_out value_out
+    status=$?
+    if [ "$status" -eq 0 ] && [ "$key_out" = "$key" ]; then
+      content+="$key = $value"$'\n'
+    else
+      content+="${existing_lines[$i]}"$'\n'
+    fi
+  done
+  [ "$found" -eq 0 ] || content+="$key = $value"$'\n'
+
   local tmp_file
   tmp_file=$(mktemp "$(dirname -- "$state_file")/.claude-config.XXXXXX") || return 1
-  {
-    for ((i = 0; i < ${#existing_lines[@]}; i++)); do
-      _config_line_key_value "${existing_lines[$i]}" key_out value_out
-      status=$?
-      if [ "$status" -eq 0 ] && [ "$key_out" = "$key" ]; then
-        printf '%s = %s\n' "$key" "$value"
-      else
-        printf '%s\n' "${existing_lines[$i]}"
-      fi
-    done
-    [ "$found" -eq 0 ] || printf '%s = %s\n' "$key" "$value"
-  } > "$tmp_file"
+  # printf's own exit status is authoritative through a write failure: bash's
+  # own `help printf` states "Returns success unless an invalid option is
+  # given or a write or assignment error occurs." See the atomicity note
+  # above for why this check runs before the `mv`.
+  if ! printf '%s' "$content" > "$tmp_file"; then
+    rm -f -- "$tmp_file"
+    return 1
+  fi
   mv -- "$tmp_file" "$state_file"
 }
 
@@ -751,48 +813,60 @@ _config_scaffold() {
     [ "$status" -eq 0 ] && present_keys+=("$key_out")
   done
 
+  # See _config_set's identical comment: full new state-file content built
+  # in one variable, with no intermediate redirects, so the single write
+  # below has one exit status to check rather than the block's own
+  # last-executed-statement status (here, always a bash `continue`'s own 0
+  # against today's config-keys.psv, since every one of its 15 rows has a
+  # legacy-polarity value).
+  local content=""
+  for ((i = 0; i < ${#existing_lines[@]}; i++)); do
+    content+="${existing_lines[$i]}"$'\n'
+  done
+  local schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
+  local already excluded present_key
+  # One pass over config-keys.psv, not a per-key _config_schema_field call
+  # inside this loop (which would re-read this 15-row file once per key,
+  # 15 total re-reads for one scaffold call) -- same field list as
+  # _config_schema_field's own read, so key and default come off the same
+  # line here instead of a second file scan.
+  while IFS='|' read -r schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do
+    case "$schema_key" in
+      ''|'#'*) continue ;;
+    esac
+    already=1
+    # Count-guarded (${#arr[@]} first): expanding "${present_keys[@]}"
+    # directly when the array is empty (a fresh/absent state file) is an
+    # unbound-variable error under `set -u` on bash before 4.4.
+    if [ "${#present_keys[@]}" -gt 0 ]; then
+      for present_key in "${present_keys[@]}"; do
+        [ "$present_key" = "$schema_key" ] && already=0 && break
+      done
+    fi
+    [ "$already" -eq 0 ] && continue
+    excluded=1
+    case " $exclude_list " in
+      *" $schema_key "*) excluded=0 ;;
+    esac
+    [ "$excluded" -eq 0 ] && continue
+    # A key with a legacy-polarity value has a legacy file that must stay
+    # reachable for as long as the key itself has no row -- writing its
+    # default here would make that file permanently inert with no
+    # warning, since _config_location_value only ever consults it when
+    # the key is entirely absent from the state file.
+    case "$legacy_polarity" in
+      presence-enables | presence-disables | content-matches) continue ;;
+    esac
+    content+="$schema_key = $default"$'\n'
+  done < "$_CONFIG_SCHEMA_FILE"
+
   local tmp_file
   tmp_file=$(mktemp "$(dirname -- "$state_file")/.claude-config.XXXXXX") || return 1
-  {
-    for ((i = 0; i < ${#existing_lines[@]}; i++)); do
-      printf '%s\n' "${existing_lines[$i]}"
-    done
-    local schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
-    local already excluded present_key
-    # One pass over config-keys.psv, not a per-key _config_schema_field call
-    # inside this loop (which would re-read this 15-row file once per key,
-    # 15 total re-reads for one scaffold call) -- same field list as
-    # _config_schema_field's own read, so key and default come off the same
-    # line here instead of a second file scan.
-    while IFS='|' read -r schema_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do
-      case "$schema_key" in
-        ''|'#'*) continue ;;
-      esac
-      already=1
-      # Count-guarded (${#arr[@]} first): expanding "${present_keys[@]}"
-      # directly when the array is empty (a fresh/absent state file) is an
-      # unbound-variable error under `set -u` on bash before 4.4.
-      if [ "${#present_keys[@]}" -gt 0 ]; then
-        for present_key in "${present_keys[@]}"; do
-          [ "$present_key" = "$schema_key" ] && already=0 && break
-        done
-      fi
-      [ "$already" -eq 0 ] && continue
-      excluded=1
-      case " $exclude_list " in
-        *" $schema_key "*) excluded=0 ;;
-      esac
-      [ "$excluded" -eq 0 ] && continue
-      # A key with a legacy-polarity value has a legacy file that must stay
-      # reachable for as long as the key itself has no row -- writing its
-      # default here would make that file permanently inert with no
-      # warning, since _config_location_value only ever consults it when
-      # the key is entirely absent from the state file.
-      case "$legacy_polarity" in
-        presence-enables | presence-disables | content-matches) continue ;;
-      esac
-      printf '%s = %s\n' "$schema_key" "$default"
-    done < "$_CONFIG_SCHEMA_FILE"
-  } > "$tmp_file"
+  # See _config_set's identical check: a failed write (e.g. ENOSPC) must
+  # not get installed as though it had fully succeeded.
+  if ! printf '%s' "$content" > "$tmp_file"; then
+    rm -f -- "$tmp_file"
+    return 1
+  fi
   mv -- "$tmp_file" "$state_file"
 }
