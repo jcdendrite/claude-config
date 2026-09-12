@@ -609,3 +609,298 @@ change; this plan extends the existing shape rather than bundling that refactor.
   here; consolidating retention across all five is a separate change.
 - **Automatic posting without confirmation**, and **replying to individual review
   threads** on someone else's PR — a separate surface from posting one review.
+
+---
+
+## Round 2: PR #718 review-comment remediation
+
+Everything above this line describes the original build and is unchanged —
+it shipped as PR #718. This section covers the second round of work on the
+same branch: addressing the 15 human review comments the PR received.
+
+### Context
+
+**Goal:** land fixes for all 15 human review comments on PR #718 in this
+same PR, rather than deferring any subset, because the PR is what
+introduced the defects the comments describe — a first-shipped review
+skill cannot ship buggy.
+
+Three design consults (frontmatter-trigger visibility, scriptable-vs-prose
+step boundaries, bash-vs-Python architecture) each returned a confirmed
+fix list. One consult surfaced a real, currently-shipping bug: SKILL.md
+Step 7 tells the model to write the findings body via `Write`, but
+`marker.sh write review-pr` refuses any body whose first line isn't
+`**[Claude Code]**` — a requirement SKILL.md states only in Step 8, not
+Step 7 — dead-ending the skill's own happy path on a first run. The
+engineer confirmed two scope-widening decisions beyond the consults'
+own recommendations: replace the cross-repo/first-time-contributor trust
+stop (currently prose, based on `isCrossRepository`/`author_association`)
+with an unconditional script-enforced block, and — because that block
+would otherwise make external/first-time-contributor PRs permanently
+unreviewable by this skill — add a new no-checkout, read-only review path
+(`gh pr diff`-based) so those PRs stay reviewable without ever fetching
+their tree into a worktree.
+
+**Why now:** the PR is open with 15 unresolved review comments and the
+engineer explicitly rejected a small-batch-now/defer-the-rest split:
+"You need to address all the findings in the same PR and here's why: this
+PR introduces them. I can't ship a pr-review feature that is buggy."
+
+**Intended outcome:** every one of the 15 comments gets either a code fix
+or a reasoned reply (posted via `/respond-pr`); `/review-pr` runs cleanly
+end to end against a real PR, including the previously-broken Step 7
+happy path; and the marker/hook/test conventions this repo already
+established for the skill (Round 1's M4/M6 above) are extended to cover
+the new scripts and the new no-checkout path rather than duplicated or
+bypassed.
+
+**Scope, confirmed with the engineer this session:** full scope —
+implement every consult's recommended fix in full, including the two
+items Consult 3 itself suggested deferring to a follow-up PR (the
+`fcntl.flock` rewrite of `review-pr-checkout.sh`'s directory mutex, and
+the marker.sh skill×directory registry collapse) and the design-changing
+sub-item in Consult 2 (the unconditional trust-stop block plus the new
+no-checkout review path). Nothing in this round is deferred to a
+follow-up PR.
+
+The 15 comments' individual dispositions (fix vs. reply-only, and what
+each fix consists of), the three consults' full recommended-fix lists,
+and the codebase-exploration evidence gathered for this round are not
+restated here — they were captured in full in the handoff this session
+resumed from and are passed to the `plan-architect` Step 5 dispatch
+directly as evidence. See that dispatch's own return, inserted into the
+Approach/Critical files/Verification/Out of scope subsections below.
+
+### Approach
+
+Every `gh` call, every filesystem path, and every cross-step fact `/review-pr` depends on moves out of SKILL.md prose into scripts that derive their own inputs; what stays prose is the four genuinely qualitative steps and the human-approval gate. Trust classification stops being prose the model may reason its way around and becomes an unconditional refusal inside `review-pr-checkout.sh`, paired with a new no-checkout `gh pr diff` review path so the PRs that refusal covers — the common case on a public repo — stay reviewable at reduced depth rather than becoming unreviewable.
+
+#### Assumption ledger
+
+```
+Root: the shipped skill dead-ends on its own happy path, and its
+safety-critical facts (trust class, PR identity, reviewed headRefOid,
+findings-body path) reach the code as model-transcribed prose, so a correct
+run depends on the model not making a mistake the code could have prevented.
+
+Givens:
+G4: author_association is exposed only on the REST pull endpoint, never as a
+    `gh pr view --json` field — beyond reach: vendor-imposed field set.
+G5: a PreToolUse hook sees only the literal text of a Bash-tool command, never
+    a subprocess a script spawns — beyond reach: harness-imposed, and already
+    documented as a known gap in require-worktree-for-git-writes.sh's header
+    (this round's Theme D).
+G6: bash 3.2 is the floor (no mapfile/readarray/declare -A) — beyond reach:
+    the bash macOS ships, pinned by test_no_bash4_constructs.py.
+G7: flock(1) is absent on stock macOS; Python's fcntl module is present —
+    beyond reach: vendor-imposed.
+G8: a process that can write files can write any of this skill's own state
+    files, so no provenance file or marker is unforgeable by the agent it
+    constrains — beyond reach: inherent to self-attestation, already recorded
+    in Round 1's M6.
+```
+
+| # | Row | Anchor |
+|---|---|---|
+| 1 | **[mechanism] Script-written provenance file replaces the model-written `.findings` sibling.** The two facts a marker binds — PR identity and reviewed `headRefOid` — are already derived *and* verified inside `review-pr-checkout.sh`; transcribing them through the model's context is a copy with no verification step. | anchors: root |
+| 2 | **[mechanism] Trust block inside `review-pr-checkout.sh`, unconditional within the checkout path.** A stop the model evaluates in prose is not a stop: the script already self-fetches everything else it refuses on, so the trust class belongs beside them and is checked on every invocation. This makes the check unconditional *within* the checkout path; it does not make that path the only way to reach a checked-out PR tree — see Residual risk. | anchors: root |
+| 3 | **[mechanism] No-checkout `gh pr diff` review path (`review-pr-diff.sh`).** Row 2 otherwise makes external and first-time-contributor PRs permanently unreviewable. Two lighter primitives fail. *Ship row 2 with no second path:* the skill becomes unusable on exactly the PR class inbound review exists for. *Check untrusted PRs out into a sandbox or container:* Round 1 already placed that Out of scope as platform-specific, and global skill bodies must stay platform-agnostic. A third, *add a `--no-checkout` flag to `review-pr-checkout.sh`*, fails because that script's contract is audit-then-fetch — a flag disabling the fetch keeps its symlink scan, worktree lock, and replace sequence live with nothing to protect. | anchors: row2 |
+| 4 | **[mechanism] One `mode` field (`acquired`/`checkout`/`diff-only`) carried provenance → marker → post, gating only the local-tree checks.** Reuses the provenance file and marker shape unmodified rather than adding a parallel no-checkout variant of either. | anchors: row3 |
+| 5 | **[mechanism] `review-pr-acquire.sh` replaces Step 1's prose recipe and its activate/deactivate bracket.** Two lighter primitives fail. *Keep the prose, add a trap around the bracket:* each Bash tool call is its own shell, so a trap set in one fenced block cannot fire on a later block's failure — the leak is structural, not an omission. *Keep the prose, reorder so the marker bracket wraps only the review-thread read:* the Trigger-A/B shape survives untouched, and `docs/worktree-bash-guard.md` § "The fix: script-first, not prose-split" already settled that this repo converts such sites to a script rather than splitting the prose. | anchors: root |
+| 6 | **[mechanism] Remove `review-pr` from the `activate`/`deactivate` enums entirely.** Two lighter primitives fail. *Delete the two call sites, keep the enum:* leaves an auto-approved, session-wide, repo-agnostic read bypass reachable with zero consumers. *Keep one bracket around the post:* `require-respond-pr.sh` denies every gated write unconditionally regardless of that marker, so the bracket authorizes nothing it does not already deny. | anchors: row5 |
+| 7 | **[mechanism] `review-pr-finish.sh` as the single cleanup call on every exit path.** Replaces prose spread across three SKILL.md locations plus `deactivate review-pr`'s cleanup arm. In `checkout` mode it acquires the same `review-pr-worktree-replace.py` `fcntl.flock` before touching the worktree or its lock file — otherwise a `finish` running concurrently with a fresh `review-pr-checkout.sh` invocation against the same PR races `worktree remove` against a live `add`/read, the exact race row 8 exists to close, on the one caller row 8's own tests don't cover. | anchors: root |
+| 8 | **[mechanism] `fcntl.flock` in one tested `.py` file replaces the hand-rolled directory mutex.** Three lighter primitives fail. *Keep the directory mutex and fix its bugs:* dead-holder detection is the mutex's irreducible hard part, and the kernel already does it. *Use a bare `mkdir` mutex with no owner file:* fails identically on a crashed holder, which is why the owner file exists. *Drop locking:* two invocations against the same PR race `worktree remove` against a live read. The wait-deadline argument still needs a poll loop — `fcntl.flock(LOCK_EX)` has no native timeout — so this simplifies the existing loop (dropping the PID/mtime dead-holder heuristics, which the kernel now subsumes) rather than deleting it; `transcript-analysis.py`'s `_acquire_cost_ledger_lock` is this repo's own precedent for a `LOCK_EX\|LOCK_NB` poll against a `time.monotonic()` deadline. | anchors: root |
+| 9 | **[mechanism] Parallel indexed arrays as marker.sh's single skill×directory registry.** Two lighter primitives fail. *Leave 8 sites and pin them with a test:* the test is a 9th copy. *Use an associative array:* barred by G6. | anchors: root |
+| 10 | **[mechanism] One four-way enum/count consistency test replacing three hand-pinned counts.** Fixing the third instance of a twice-recurring drift without retiring the class invites a fourth. | anchors: row9 |
+| 11 | **[mechanism] `_lib_parse_pr_identity` in `_lib.sh`, printing owner/repo and number on two lines.** Matches `_lib_review_pr_completion_marker_fields`'s existing multi-line-return idiom; error text stays at each call site, which needs its own script name and its own abort phrasing. | anchors: root |
+| 12 | **[mechanism] Script headers cite `/review-pr` steps by name, not number, guarded by a test.** Re-pinning the numbers is the locally-valid patch; the numbers drifted because Round 1's steps 2 and 3 merged, and will drift again. | anchors: root |
+| 13 | [assumption] `enforce-marker-script-shape.sh`'s denial list holds 23 entries, its header comment says 19, `docs/scripts.md` says 17, and `settings.json` allowlists 21 (the two `clear-stale` shapes prompt) `[verified: enforce-marker-script-shape.sh:658-680 and :75; docs/scripts.md:54; settings.json:4-24]` | anchors: row10 |
+| 14 | [assumption] Both review-pr scripts already source `_lib.sh` with a bare relative `. "$(dirname "$0")/../hooks/_lib.sh"` under a `# shellcheck source=` directive, so a `claude/.claude/scripts/*.sh` file sourcing a hooks-directory helper is an established convention, not a new one `[verified: review-pr-checkout.sh:70-71; review-pr-post.sh:38-39]` | anchors: row11 |
+| 15 | [assumption] `_refuse_main_tree_under_enforcement` refuses only when cwd is the main tree *and* a live linked worktree exists, and its stated rationale is that a marker's path and contents are keyed to the resolved tree `[verified: marker.sh:118-151]` | anchors: row4 |
+| 16 | [assumption] `review-pr-post.sh` already re-fetches the PR's current `headRefOid` and requires it to equal the marker's recorded value, independent of any local HEAD comparison `[verified: review-pr-post.sh:119-123]` | anchors: row4 |
+| 17 | [assumption] `require-respond-pr.sh` denies every gated *write* unconditionally and redirects to `review-pr-post.sh`; the `review-pr` active marker releases *reads* only `[verified: require-respond-pr.sh:342-358]` | anchors: row6 |
+| 18 | [assumption] `clear-stale` exempts `*.findings`/`*.body` from its PID parse and reaps them only once the sibling PID marker's process is confirmed dead `[verified: marker.sh:868-893]` | anchors: row6 |
+| 19 | [assumption] `check-skill-length.sh` caps `review-pr/SKILL.md` at 200 lines; the file is 113 today `[verified: check-skill-length.sh limit_for(); review-pr/SKILL.md]` | anchors: root |
+| 20 | [assumption] `author_association` needs `gh api repos/{owner}/{repo}/pulls/{number}`; adding it to `--json` errors the whole call `[verified: review-pr/SKILL.md:13; REFERENCES.md § "gh field reference (Step 1)"]` | anchors: row2 |
+| 21 | [assumption] That REST payload's `head.repo` is null for a PR whose fork was deleted `[unverified]` — the design fails closed on null (treat as cross-repo), so a wrong reading costs a false restriction, never a false trust. Confirm the real shape (docs or a live `gh api` call against a deleted-fork PR) before writing the PATH-shimmed fixture for this case — a fixture built from the same unverified guess as the code can't catch a shape mismatch against production. | anchors: row2 |
+| 22 | [assumption] `gh pr diff` has GitHub compute the merge-base diff server-side against live base state, with no local ref management `[unverified]` — Round 1's M2 asserts this with no citation tag of its own; confirm against `gh`'s actual diff-media-type behavior before treating it as verified | anchors: row3 |
+| 23 | [assumption] All 15 comments are fixed in this PR; the trust block is unconditional; the no-checkout path is required `[engineer-verified]` | anchors: root |
+| 24 | [assumption] `review-pr` has no `evals/` directory, so moving it to `name-only` changes no trigger-case fixture `[verified: claude-skills/skills/review-pr/ contents; no `review-pr` match under evals/]` | anchors: root |
+
+#### Provenance, and the bug it closes (Consult 2)
+
+`$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.provenance`, four lines: PR identity, `headRefOid`, mode, and the session's Claude PID (resolved via `_lib_resolve_claude_pid`, the same value `marker.sh activate` stores). `review-pr-acquire.sh` writes it with mode `acquired`; `review-pr-checkout.sh` and `review-pr-diff.sh` each rewrite it with `checkout`/`diff-only` after their own independent re-derivation. `marker.sh write review-pr` accepts only the latter two, so an acquire-only session can never write a completion marker.
+
+The findings-body path leaves the file entirely — it is derived by `_review_pr_findings_body_fixed_path`, which already exists. That deletes both fixed-path-equality checks (the `write` arm's and `deactivate`'s): those guards existed only because the path arrived as untrusted input, and removing the input removes the need for the guard rather than adding a check on top of it. `review-pr-findings-path.sh` prints that derived path for the model's `Write` call and exits 2 when no provenance file exists.
+
+Step 7 states the `**[Claude Code]**` prefix and the `🤖 Generated with [Claude Code](https://claude.com/claude-code)` trailer where the body is written, and Step 8 references Step 7 rather than restating the template. `review-pr-check-attribution-prefix.sh` is extended and renamed to `review-pr-check-attribution.sh`, taking the body path and the mode: it checks the first line's prefix, the last non-blank line's trailer, and — in `diff-only` mode only — the presence of the literal line `Reviewed from the PR diff only — no checkout, no checks run.` A second script reading the same file to check the other half of one convention is the duplication this repo's single-source rule targets, and the mode argument means the disclosure cannot be opted out of by a model that never saw the prose.
+
+`marker.sh write review-pr` then reads identity, `headRefOid`, and mode from provenance, adds a local `git rev-parse HEAD` equality check against the provenance `headRefOid` **in `checkout` mode only**, and stores a four-line value (identity, `headRefOid`, body hash, mode). `_lib_review_pr_completion_marker_fields` returns four fields; `review-pr-post.sh` applies its local-HEAD check only in `checkout` mode, while its existing *remote* `headRefOid` re-check (row 16) stays unconditional and is the sole freshness binding for `diff-only`. Nothing is lost there that ever existed: the local check proves the poster stands in the reviewed tree, and in `diff-only` mode there is no reviewed tree. Identity-binding, body-hash binding, session-scoping, and remote-freshness all survive intact.
+
+Two consequences that are easy to miss and are therefore prescribed explicitly:
+
+- **`clear-stale`'s suffix arm must cover `.provenance`, `.diff`, and `.context.json` alongside `.findings`/`.body`**, and its liveness key moves from the sibling PID marker to the PID recorded inside `.provenance` — because row 6 removes the PID marker that arm currently reads. Missing this makes every in-flight review's artifacts evictable by any concurrent `clear-stale`.
+- **The directory keeps the `.review-pr-active.d` name** even though no active marker lives there, because `clear-stale`'s outer glob is `"$CONFIG_DIR"/.*-active.d` and a renamed directory would never be swept. One comment line in the `clear-stale` arm records that.
+
+In `diff-only` mode `marker.sh write review-pr` resolves the repo root with `_lib_repo_root` and skips `_refuse_main_tree_under_enforcement`. That guard's own rationale (row 15) is that a marker's contents are keyed to the resolved tree; a `diff-only` marker's contents describe a remote diff and claim nothing about any tree, and the mode comes from a script-written file rather than an argument. Without this the no-checkout path is unpostable from the main tree of any enforcement-enabled repo — including this one.
+
+#### The unconditional trust block, and the path it needs (Consult 2, engineer-confirmed)
+
+`review-pr-checkout.sh` gains one `gh api repos/{owner}/{repo}/pulls/{number}` call placed immediately after the origin-identity check and before the first `headRefOid` fetch, reading `author_association` and deriving cross-repo status from `head.repo.full_name` vs `base.repo.full_name` (null `head.repo` → cross-repo). A hit on `FIRST_TIME_CONTRIBUTOR`, `NONE`, or cross-repo exits non-zero naming `review-pr-diff.sh` as the path to use instead — denial messages that name the next action are this repo's established convention for every marker gate. Placing it first means a refused PR never has its file list paginated.
+
+Collapsing the two existing `gh pr view --json headRefOid` calls into this same REST payload was considered and set aside: it would make the verified, tested `headRefOid` derivation depend on an unverified field mapping (row 21's sibling) and rewrite two working call sites plus their fixtures, for one saved round trip. Additive is the right trade in a round whose premise is that the shipped feature is buggy.
+
+`review-pr-diff.sh <owner>/<repo>#<number>` mirrors `review-pr-checkout.sh`'s self-derivation discipline minus everything that only matters once code is on disk: same PR-identity parse (via row 11), same origin-identity check, same paginated file list, same double `headRefOid` fetch bracketing the pagination. It then writes `gh pr diff <N> -R <owner>/<repo>` to `$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff` (30s budget, matching the script's own paginated-fetch budget) and prints that path. Two deliberate differences from the checkout path:
+
+- **The symlink scan is not carried over.** A tracked symlink matters because `git worktree add` materializes it and a `Read` follows it; with no checkout it is just a mode-120000 line in the diff, reviewable as text.
+- **`audit-execution-surface.py` runs, but its matches become a mandatory pre-seeded blocking finding rather than a stop.** Its stop exists to keep third-party code off disk; with nothing landing on disk it has no subject, while a PR touching `.claude/hooks/**` or `.mcp.json` is precisely what an inbound reviewer must flag. Same predicate, different disposition.
+
+SKILL.md keeps one eight-step ladder with two modes rather than a second parallel sequence — required by row 19's budget and by single-source-of-truth. Step 2 branches on the trust class the acquire JSON reports; Step 5 gains one clause forbidding any route to PR file contents other than the diff file in `diff-only` mode; Step 6 (run checks) is checkout-only and its skip is reported, not silent. The routing is one-directional by construction: a model that mis-routes a restricted PR to the checkout script is refused by the script, and a model that mis-routes a trusted PR to the diff path produces a shallower review with no safety consequence. The guarantee sits in the script; the prose only chooses the better of two safe options.
+
+Step 5 also gains the one thing it never stated: its diff source. Both modes use `gh pr diff`, which is what M2 already chose and what row 22 grounds — today the step says "the merge-base diff" and leaves the model to improvise between that and a local `git diff`.
+
+#### Step 1 as one script (Consult 2)
+
+`review-pr-acquire.sh <owner>/<repo>#<number>` emits one JSON document on stdout and exits non-zero on any `gh` failure, and additionally writes the identical document to `$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.context.json`. The file is a backstop, not a second contract: a harness-truncated stdout on a large PR would silently truncate the file list, which is the exact failure Round 1's pagination handling exists to prevent, and the file makes that recoverable with a `Read` instead of a second `gh` round trip. Inside the script: the `files`/`changedFiles` reconciliation and `--paginate` re-fetch, the `commits` cap, the second REST call for `author_association`, `gh pr checks`, and the existing-reviews fetch.
+
+One caveat does not survive the collapse mechanically and must stay as prose: "treat `mergeable`/`mergeStateStatus` as frequently `UNKNOWN` — never branch a stop decision on them" is guidance for how the model *reasons* about two fields in the script's JSON output, not fetch mechanics the script itself can enforce. SKILL.md's Step 2 branch keeps this sentence rather than letting it disappear when Step 1 becomes one script call.
+
+That last one needs no bypass marker — per G5 the hook sees `~/.claude/scripts/review-pr-acquire.sh foo/bar#42`, which contains no gated text, and never inspects the `gh api .../pulls/N/reviews` call the script makes internally. So the marker bracket does not get made leak-proof; it disappears. This is the same mechanism as Theme D, relied on deliberately here, and both the script's header and `docs/hooks.md` must say so — an undocumented reliance on a hook gap reads as a bypass. The invariant the gate protects (a complete, paginated three-endpoint fetch) is enforced more strongly by the script, which performs it by construction, than by a marker that only attests that a skill is running.
+
+With Step 1's bracket gone and Step 8's vestigial (row 6), `activate`/`deactivate review-pr` lose every call site and are removed from all four registry sites plus `require-respond-pr.sh`'s read-release arm. The registry collapse below is what makes this cheap — it is an array edit rather than eight — and the four-way consistency test is what makes a partial removal impossible.
+
+#### Architecture (Consult 3)
+
+**`_lib_parse_pr_identity`** in `_lib.sh` per row 11, replacing the byte-identical block in `review-pr-post.sh:89-103` and `review-pr-checkout.sh:52-68` and consumed by both new scripts. Pure bash; `_lib_sha256_no_follow`'s argv shape is the model only for future Python helpers. Any pattern matching inside it is POSIX ERE only (`[[:space:]]`, never `\s`), per this repo's own `shell-script-conventions.md`/`test_hook_alignment.py` convention.
+
+**`review-pr-worktree-replace.py`** holds `fcntl.flock` *and* the remove/prune/add sequence it protects, in one process, invoked once from `review-pr-checkout.sh` with (repo root, worktree dir, SHA, deadline). Keeping the lock and the sequence in one process is the correctness requirement — a lock helper that exits cannot hold a lock for its caller — and it avoids both a wrapper script and the `os.set_inheritable` footgun that an `execvp`-style wrapper carries. It deletes the staged-rename publish, the owner-PID file, the dead-PID reclaim, the aged-mtime reclaim, the poll loop, the re-reading EXIT trap, and both `REVIEW_PR_LOCK_*` override env vars: the two reclaim heuristics exist solely because a directory mutex cannot detect a dead holder, which the kernel does for free. Only the wait deadline survives, as an argument. The lock is a plain file at `<worktree-dir>.lock`; a leftover zero-length lock file carries no state and needs no cleanup.
+
+**Registry collapse** to `ACTIVE_BYPASS_SKILLS` / `ACTIVE_BYPASS_DIRS` parallel indexed arrays (row 9) plus `_active_bypass_dir_for` and `_active_bypass_skill_list`, covering all eight sites: `usage()`'s status prose and its `activate`/`deactivate` lines, both case statements, both `*)` error arms, and `status`'s six `_status_report_active_bypass` calls. `usage()` keeps its `<<'EOF'` quoted heredoc and emits the three enum lines with `printf` from the arrays — switching to an unquoted heredoc to get expansion would silently expand every future `$` in that text. The `activate`/`deactivate` arms become a shared body plus a small per-skill extension block, so `plan-review`'s routing-read backfill and `ready-for-review`'s cumulative-artifact cleanup stay explicit rather than pretending the six arms are uniform. A second small `WRITE_SKILLS` array covers the two sites that carry the `write` enum (`usage()` and the `write` `*)` arm).
+
+**`BASH_SOURCE` guard** around the two top-level dispatch `case` statements, letting `test_marker_script.py` source `marker.sh` and call `_hash_staged_diff` directly. `_extract_hash_staged_diff_block`, `_run_hash_staged_diff`'s synthesized-snippet construction, and the two `# MARKER_TEST_FIXTURE: hash-staged-diff` comments in `marker.sh` all go away together — leaving the fixture comments behind would strand markers no test reads.
+
+**`clear-stale`** collapses its per-file `python3` spawn into one invocation over the whole directory. Its generic `.*-active.d` glob is untouched; only the spawn count and the suffix/liveness rules above change.
+
+**Counts** (row 13) are not hand-corrected to three agreeing numbers. One test derives the valid-shape set from `marker.sh`'s arrays and asserts it against `MARKER_SHAPE`'s two enums, the denial list's length, `enforce-marker-script-shape.sh`'s header integer, `settings.json`'s `permissions.allow` marker entries (the set minus the two `clear-stale` shapes, which prompt), and the integer in `docs/scripts.md`. That retires the C22 class rather than fixing its third instance, and it subsumes the three-way count test as one of its assertions. `docs/scripts.md`'s sentence is reworded to state both numbers, since one integer cannot describe both the valid set and the allowlisted subset.
+
+**`claude/.claude/rules/shell-script-conventions.md`** gains one bullet: embedded `python3 -c`/heredoc Python is for syscalls bash cannot express (`O_NOFOLLOW`, `rename(2)`, `flock`); anything with control flow or data structures is a `.py` file with its own test file. `review-pr-worktree-replace.py` is the worked case on the far side of that line.
+
+**Step citations** (row 12): `review-pr-scan-findings-body.sh`'s header ("Step 9 posts it", "Step 8's scrub instruction" — both wrong; the scrub is Step 7's and there is no Step 9), `review-pr-check-attribution.sh`'s header (same two errors), and `marker.sh:23-27`'s "SKILL.md Step 7's start with `**[Claude Code]**` instruction" (the instruction is Step 8's — the same off-by-one that is Consult 2's headline bug, stated a second time in a comment) all become name-based: "the synthesize-and-record step", "the deliver step". `marker.sh:410-414` and `:17-21` already cite Step 7 correctly and change only for consistency of form.
+
+#### Frontmatter and docs (Consult 1), and Theme E
+
+`"review-pr": "name-only"` is added to `skillOverrides` after `"simplify"`, ahead of the `off` block. `review-pr/SKILL.md`'s frontmatter is not touched — the TRIGGER text is graceful degradation on pre-v2.1.129 clients, the same precedent `agent-review` sets. `docs/skills.md` gains a `` | `/review-pr` | `` table row (the literal substring `test_skill_overrides_documented_in_docs_skills_md` requires; the line-14 bullet does not satisfy it), and two census sentences change: line 33's category prose gains a fifth category, since `review-pr` is a user-invocable pipeline skill and fits none of workflow-utility, knowledge-domain, debugging-playbook, or dispatcher-reached-reviewer; and line 39's "Fourteen skills" becomes fifteen, with the TRIGGER-carrying count rising by one and the no-TRIGGER count unchanged at nine.
+
+Theme E is one deletion: the `multi-source synthesis (research-harness job);` clause leaves `verify-sources/SKILL.md`'s DO NOT TRIGGER list, because no `research-harness` skill exists anywhere in this repo. The other three comments in that theme need no change.
+
+#### Residual risk, named rather than layered
+
+Per G8 the model can write a `.provenance` file itself, including one claiming `diff-only` to skip the checkout-mode HEAD check. The bound on that forgery is small and worth stating instead of defending: PR identity, body hash, session scope, and the remote `headRefOid` re-check all still apply, so what a forged mode buys is "the poster need not stand in the reviewed tree" — a property that does not exist in the diff-only mode it would be impersonating. Adding a signature or a keyed digest would be theater in a same-user threat model and is exactly the compounding-defensive-layer shape this repo treats as a wrong-foundation tell. Round 1's M6 already records self-attestation as inherent; this round does not regress it and does not pretend to close it.
+
+**What `mode` attests, and what it does not.** `mode` selects which freshness binding applies — whether a local tree exists for a HEAD comparison (row 4). It does not attest which script produced that tree. A model that fetches `refs/pull/<N>/head` and checks it out by hand reaches a local HEAD and a remote `headRefOid` that both match honestly, so every binding `write review-pr` and `review-pr-post.sh` apply passes truthfully while the trust block, the symlink scan, and `audit-execution-surface.py` never ran. The three checks are unconditional along the path the skill prescribes; nothing makes that path unavoidable.
+
+**A Bash-level gate on acquisition is the layer this names instead of building.** It would have to be fail-open — `git fetch` cannot be denied in every repo every consumer of `claude/` touches — with `.provenance` as its arming signal, and G8 makes that file model-writable and the fetch orderable before it exists. `require-respond-pr.sh` works because it is the inverse: deny unconditionally, release on a marker. Getting a tree onto disk also has no enumerable spelling — the fork URL by branch, `gh pr checkout`, a clone, a tarball — so one gate closes one spelling and the next layer is owed for each of the rest. Per G5 a hook cannot see the canonical script's own fetch either, so it cannot distinguish script from model by observation. A18's `respond-pr` arm remains the cheaper path to the same end and stays out of scope, which is the proportionality answer on its own.
+
+**What survives a model that ignores the skill:** `require-respond-pr.sh`'s unconditional write-deny, with the completion marker's PR-identity, body-hash, and session bindings; and the two human gates — confirmation before running checks (Step 6) and approval of the exact posted body (Step 8). The first is code-enforced. The second is human attention, not automation, and is named as such rather than counted as a layer.
+
+### Critical files
+
+Three sequential phases, one `code-writer` dispatch each. They are not parallelizable: `settings.json`, `marker.sh`, `docs/scripts.md`, and `docs/skills.md` each appear in more than one grouping, and parallel dispatches share this worktree, where overlapping edits clobber silently rather than conflict.
+
+**Land as one squashed commit, not three observable ones.** Phase 1 rewrites `marker.sh write review-pr` to read a `.provenance` file with a `mode` field; the only writers of that file (`review-pr-acquire.sh`, `review-pr-diff.sh`, `review-pr-checkout.sh`'s mode-`checkout` write) are Phase 2 work. If Phase 1 ever ships alone, `/review-pr` Step 7 fails on every invocation, since the still-Round-1-shaped `SKILL.md`/`review-pr-checkout.sh` write the old `.findings` sibling file that `write review-pr` no longer reads. Sequencing the three `code-writer` dispatches is an implementation-order convenience, not a shippable-checkpoint boundary; squash before push. This same dependency also means a partial revert of Phase 1 (e.g., reverting only the registry collapse because it regresses another skill's marker flow) cascades: the plan itself argues leaving the `activate`/`deactivate review-pr` enum while removing its call sites recreates "an auto-approved, session-wide, repo-agnostic read bypass reachable with zero consumers" (row 6), so a partial revert that keeps the enum removal but drops the registry collapse — or vice versa — is not a safe intermediate state. Revert the whole round, not a slice of it.
+
+#### Phase 1 — shared plumbing and the marker registry
+
+Verification command: `.venv/bin/python3 claude/.claude/scripts/select-tests.py`.
+
+**Create**
+- `claude/.claude/scripts/review-pr-worktree-replace.py` — flock plus the worktree remove/prune/add sequence in one process.
+- `claude/.claude/scripts/tests/test_review_pr_worktree_replace.py` — real git repos in `tmp_path`; two concurrent processes proving mutual exclusion; a SIGKILLed holder proving automatic release (the case the current code spends ~40 lines of heuristics on); deadline-exceeded.
+
+**Modify**
+- `claude/.claude/hooks/_lib.sh` — add `_lib_parse_pr_identity` (two-line print, return 1 on invalid), modelled on `_lib_review_pr_completion_marker_fields`'s idiom; extend `_lib_review_pr_completion_marker_fields` to four fields.
+- `claude/.claude/scripts/marker.sh` — registry arrays and the two helpers; `BASH_SOURCE` guard plus removal of the two `MARKER_TEST_FIXTURE` comments; `clear-stale` single-spawn plus the new suffix/liveness rules; removal of the `activate`/`deactivate review-pr` arms; `write review-pr` rewritten against provenance; `status`'s review-pr line reporting presence-only in `diff-only` mode, following the "could not verify" precedent this same file already sets for `cumulative-review` at lines 996-998.
+- `claude/.claude/hooks/enforce-marker-script-shape.sh` — `MARKER_SHAPE`'s two enums, the denial list, and the header integer, all now derived-and-asserted rather than pinned.
+- `claude/.claude/settings.json` — drop the two `review-pr` activate/deactivate allow entries; add exact-match entries for the two new zero-argument scripts (`review-pr-findings-path.sh`, `review-pr-finish.sh`). No entries for the argument-taking scripts: an exact match cannot cover a per-PR argument, and CLAUDE.md bars the glob that would.
+- `claude/.claude/hooks/require-respond-pr.sh` — remove `REVIEW_PR_ACTIVE` and the read-release arm; update the "Second bypass path" header block. The unconditional write-deny and its redirect to `review-pr-post.sh` are unchanged.
+- `claude/.claude/scripts/review-pr-checkout.sh` — excise the hand-rolled mutex (lines ~283-392) in favour of one call to the new `.py`; adopt `_lib_parse_pr_identity`.
+- `claude/.claude/scripts/review-pr-post.sh` — adopt `_lib_parse_pr_identity`; read four marker fields; mode-gate the local HEAD check.
+- `claude/.claude/hooks/tests/test_marker_script.py` — replace `_extract_hash_staged_diff_block`/`_run_hash_staged_diff` with source-then-call; update `ALL_MARKER_SUBCOMMAND_ARGS`.
+- `claude/.claude/hooks/tests/test_enforce_marker_script_shape.py` — parametrized target lists; host or consume the four-way consistency test.
+- `claude/.claude/hooks/tests/test_require_respond_pr.py`, `claude/.claude/hooks/tests/test_lib.py`, `claude/.claude/scripts/tests/test_review_pr_checkout.py`, `claude/.claude/scripts/tests/test_review_pr_post.py` — enum removal, four-field marker, lock rewrite, mode gating.
+- `claude/.claude/rules/shell-script-conventions.md` — the embedded-Python-vs-`.py`-file bullet.
+- `docs/scripts.md`, `docs/hooks.md` — the two-number rewording; `require-respond-pr.sh`'s bullet losing the review-pr read-bypass path.
+
+**Reuse, not reimplement:** `_lib_capped` / `_lib_capped_for` for every timeout; `_lib_config_dir`; `_lib_resolve_claude_pid` for the provenance PID; `_lib_sha256_no_follow`; `_write_marker_no_follow` / `_read_marker_no_follow`; `_review_pr_findings_body_fixed_path`; `_marker_lib_repo_hash`.
+
+**Four-site registry.** This phase touches the marker-name enum shape again, so the four sites `marker.sh`, `enforce-marker-script-shape.sh`, `settings.json` `permissions.allow`, and the hook test files pinning it by literal must all land in this one commit. The new consistency test is what converts that from a discipline into a check: after this phase a fifth site cannot be added, and a partial edit to the existing four fails rather than shipping a skill denied at its first marker call.
+
+#### Phase 2 — provenance, the two acquisition paths, and SKILL.md
+
+Verification command: `.venv/bin/python3 claude/.claude/scripts/select-tests.py`. Depends on phase 1's `_lib_parse_pr_identity` and rewritten `write review-pr` arm.
+
+**Create**
+- `claude/.claude/scripts/review-pr-acquire.sh` — one JSON document on stdout plus the `.context.json` backstop; writes provenance with mode `acquired`.
+- `claude/.claude/scripts/review-pr-diff.sh` — no-checkout path; writes the diff file and provenance with mode `diff-only`. `gh pr diff`'s output gets the same truncation discipline `review-pr-acquire.sh` already applies to `files`/`commits`: check the captured size against a sane cap and report rather than silently trusting a possibly-truncated response, since `diff-only` mode is specifically the path for the less-trusted PR class where understated coverage matters most.
+- `claude/.claude/scripts/review-pr-findings-path.sh` — prints the derived findings-body path; exit 2 with no provenance.
+- `claude/.claude/scripts/review-pr-finish.sh` — resolves the repo root itself; removes provenance, body, diff, context, and completion marker, and in `checkout` mode the review worktree and its lock file, **acquiring `review-pr-worktree-replace.py`'s `fcntl.flock` first** (row 7) — a `finish` that removes the worktree without taking the same lock a concurrent `review-pr-checkout.sh` invocation holds races `worktree remove` against a live `add`/read.
+- `claude/.claude/scripts/tests/test_review_pr_acquire.py`, `test_review_pr_diff.py`, `test_review_pr_findings_path.py`, `test_review_pr_finish.py` — each following the PATH-shimmed-`gh` convention already established by `test_review_pr_checkout.py` and `test_review_pr_post.py`: `_shimmed_env` from `claude/.claude/scripts/tests/conftest.py` (never a hand-rolled shim — it is the single seam that scrubs `DIRENV_*` and the nine credential env vars in `_SENSITIVE_ENV_VARS`), a shim recording one JSON object per invocation, and real git left unshimmed so repository state is what the assertions read. `_build_repo_with_pr_ref` and `_install_audit_script` currently live as module-level functions inside `test_review_pr_checkout.py` with no cross-test-file import precedent in this suite (`test_review_pr_post.py` imports only from `conftest.py`) — promote both to `conftest.py` as shared fixtures, matching `_shimmed_env`'s existing precedent, rather than copying (drifts silently) or importing across sibling test modules (couples `test_review_pr_diff.py` to unrelated renames in `test_review_pr_checkout.py`).
+
+**Modify**
+- `claude/.claude/scripts/review-pr-checkout.sh` — the unconditional trust block; provenance write with mode `checkout`.
+- `claude/.claude/scripts/review-pr-check-attribution-prefix.sh` → `review-pr-check-attribution.sh` — prefix, trailer, and the mode-conditional disclosure line; name-based step citation. Rename sites: `marker.sh`'s `REVIEW_PR_ATTRIBUTION_SCRIPT`, `docs/scripts.md`, and its test file (renamed alongside).
+- `claude/.claude/scripts/review-pr-scan-findings-body.sh` — name-based step citations only.
+- `claude/.claude/scripts/tests/test_review_pr_check_attribution_prefix.py` → `test_review_pr_check_attribution.py` — trailer and disclosure cases.
+- `claude-skills/skills/review-pr/SKILL.md` — Step 1 to one script call; Step 2's branch and the deleted trust-class prose paragraph; Step 5's named diff source and the diff-only artifact clause; Step 6 checkout-only, and "paste the resolved script or manifest entry verbatim" replacing "show that content"; Step 7's script-derived path plus the prefix/trailer statement; Step 8's post and `review-pr-finish.sh`. Must land at or under 200 lines (row 19) — Steps 1, 7, and 8 each shrink as prose recipes become single calls, which is what funds Step 2's branch.
+- `claude-skills/skills/review-pr/REFERENCES.md` — the `gh` field notes move to describing what `review-pr-acquire.sh` fetches; a new section for the no-checkout path's reduced coverage; the Write-tool rationale updated for the script-derived path.
+- `docs/scripts.md`, `docs/hooks.md` — entries for the four new scripts, the renamed one, and the deliberate reliance on G5 in `review-pr-acquire.sh`.
+- `claude/.claude/scripts/tests/test_review_pr_checkout.py` — trust-block refusals and provenance assertions.
+
+#### Phase 3 — visibility, census, and Theme E
+
+Verification command: `.venv/bin/python3 claude/.claude/scripts/select-tests.py`.
+
+- `claude/.claude/settings.json` — `"review-pr": "name-only"`.
+- `docs/skills.md` — the `` | `/review-pr` | `` table row, line 33's category prose, line 39's counts.
+- `claude-skills/skills/verify-sources/SKILL.md` — delete the `research-harness` clause (line 8).
+
+### Verification
+
+**Scoped, not full-suite.** `.venv/bin/python3 claude/.claude/scripts/select-tests.py` is the command for every phase. This round is deliberately *not* one of CLAUDE.md's two hand-run-full-suite cases: `select-tests.py` carries explicit `REVIEW_PR_SKILL_DIR` mappings alongside its hooks, scripts, and skills domains, and widens on its own when a diff spans them — with this diff's breadth it may well select the full suite itself, which is case 1 and needs no hand invocation. `marker.sh` being hook-adjacent and the lock being rewritten are arguments for the rule table covering those paths, which it does, not for bypassing it; a hand-widened run here would be a licence the repo's own guidance denies. CI runs the full suite on every push. The single exception to watch for: if `/pr-description` makes a whole-repo accuracy claim in the PR body, that claim needs its own whole-repo run — write the body so it does not.
+
+**Named new tests**
+
+- **Four-way enum and count consistency** (`test_enforce_marker_script_shape.py`): `marker.sh`'s `ACTIVE_BYPASS_SKILLS`/`WRITE_SKILLS` arrays, `MARKER_SHAPE`'s two enums, the denial list's length, the header comment's integer, `settings.json`'s marker `permissions.allow` entries, and `docs/scripts.md`'s integer all derive from one set. Asserts the allowlist is exactly the valid set minus the two `clear-stale` shapes. This subsumes a standalone three-way count test and closes C22's recurrence class. Byte-for-byte behavioral parity for the five non-`review-pr` skills' marker flows after the array-ification is backstopped by the existing parametrized hook suite plus `select-tests.py`'s domain-widening for `marker.sh` edits — named explicitly here rather than left to be inferred, since this is deliberately the third instance of a twice-recurring drift and should not also be the first instance of an unstated coverage claim.
+- **`BASH_SOURCE`-guard replacement** (`test_marker_script.py`): source `marker.sh` and call `_hash_staged_diff` directly across all four non-empty-diff categories `TestHashStagedDiff` already covers, proving behavioral equivalence with the text-slicing path before it is deleted. A separate assertion that sourcing `marker.sh` produces no output and exits 0 is what keeps the guard from silently regressing.
+- **Trust-block refusals** (`test_review_pr_checkout.py`): these are **script exit-code tests with a PATH-shimmed `gh`, not hook-deny tests** — the block lives in the script by design (a hook cannot see a subprocess, G5, and Round 1's header already argues a hook cannot verify the audit's input). One case per trust class: `FIRST_TIME_CONTRIBUTOR`, `NONE`, cross-repo via differing `full_name`, and null `head.repo` (deleted fork) each exit non-zero with `review-pr-diff.sh` named on stderr, **with no `refs/pull/<N>/head` fetch and no worktree**. A `MEMBER`, same-repo PR still checks out. One case asserts the block fires before the paginated file-list call, read from the shim's recorded invocations. **A `MEMBER`/`OWNER` author paired with cross-repo `true`(or a differing `full_name`) must still refuse** — without this pairing, a suite passing all the cases above is also satisfied by an implementation that only checks cross-repo status for non-members, which is the exact standing-gated shape Round 1 rejected. **The trust-check `gh api` call itself failing** (non-zero exit, malformed JSON) must abort rather than being read as "no restriction found" and falling through to checkout — the same "any `gh` failure aborts" discipline this plan states elsewhere for other calls, extended explicitly to this one.
+- **No-checkout path** (`test_review_pr_diff.py`): a restricted PR produces a diff file and a `diff-only` provenance, and creates no worktree, no lock file, and no local ref; an `audit-execution-surface.py` hit is reported rather than exiting non-zero; an origin mismatch aborts before any `gh` call; a `headRefOid` change across the two fetches aborts.
+- **Mode gating end to end** (`test_marker_script.py`, `test_review_pr_post.py`): `write review-pr` refuses a provenance with mode `acquired`; in `checkout` mode it refuses when HEAD ≠ provenance `headRefOid`; in `diff-only` mode it writes from the main tree of an enforcement-active repo that has a live linked worktree — the case that would otherwise make the path unpostable (row 15); `review-pr-post.sh` skips the local HEAD check in `diff-only` while still refusing on a remote `headRefOid` mismatch, and every Round 1 gate assertion (wrong PR, body-hash mismatch, cross-session marker) still denies in both modes. **An out-of-enum `mode` string** (a corrupted or hand-written provenance, per G8) must refuse in both `write review-pr` and `review-pr-post.sh` rather than falling through to either known branch by default. **`checkout` mode must still trigger `_refuse_main_tree_under_enforcement`** post-refactor — only the new `diff-only` arm skipping that guard is otherwise named, leaving the `checkout` arm's continued enforcement unasserted.
+- **Checkout-mode provenance without the checkout script** (`test_review_pr_post.py`): a hand-written `checkout` provenance whose `headRefOid` genuinely matches a locally-checked-out HEAD still writes a marker and posts. This pins the documented residual (see "Residual risk, named rather than layered") rather than exercising a defect — its test docstring cites that section, so a future contributor who reads this as a bug meets the reasoning first.
+- **Attribution, trailer, and disclosure** (`test_review_pr_check_attribution.py`): missing prefix, missing trailer, trailer present but not the last non-blank line, and a `diff-only` body missing the disclosure line each exit 1; a body whose only defect is trailing blank lines passes.
+- **`gh` error text never bypasses the M5 scrub** (`test_review_pr_acquire.py`, `test_review_pr_diff.py`): a `gh` failure's stderr/error output is never captured verbatim into `.context.json` or `.diff` without the same scrub discipline M5 requires for findings bodies — GitHub API error payloads occasionally echo request parameters.
+- **Provenance lifecycle** (`test_marker_script.py`): `clear-stale` keeps `.provenance`/`.body`/`.diff`/`.context.json` while the recorded PID is alive and reaps them once it is dead — the regression test for the liveness-key change that row 6 forces. Cover two sessions' artifact sets coexisting in the same `.review-pr-active.d` directory, one live and one dead — the single-spawn batch refactor (Architecture, Consult 3) collapses per-file spawns into one invocation over the whole directory, exactly the shape that can leak state across sessions if the liveness key is scoped by filename pattern rather than session ID; assert only the dead session's files are reaped.
+- **G5 reliance is pinned, not left as documentation** (`test_require_respond_pr.py`): assert the hook allows the literal `review-pr-acquire.sh <owner>/<repo>#<N>` command text through ungated, converting the documented reliance (Step 1 as one script) into a checked property a later broadening of the hook's verb-matching can't silently regress.
+- **`review-pr-finish.sh`** (`test_review_pr_finish.py`): removes every artifact and the worktree in `checkout` mode; removes artifacts and touches no worktree in `diff-only`; is idempotent; exits 0 when nothing is in flight.
+- **Worktree lock** (`test_review_pr_worktree_replace.py`): mutual exclusion under concurrency, proven by each process recording its own enter/exit timestamps inside the critical section and asserting no two intervals overlap — "B eventually succeeds after A releases" only proves serialization, not exclusion, and would pass even against a silently no-op `flock` call. Automatic release on a SIGKILLed holder, detected via `waitpid` rather than a `sleep()`-based poll (which flakes under load). Deadline exceeded reported, not hung.
+- **Step-citation guard**: no `claude/.claude/scripts/review-pr-*.sh` header contains a `Step <digit>` reference.
+- **Skill-length**: `review-pr/SKILL.md` ≤ 200 lines, enforced at commit by `check-skill-length.sh`.
+
+**Pipeline gates.** `/skill-review` is hook-enforced on the `review-pr` and `verify-sources` SKILL.md commits. `claude-hook-review` applies to `require-respond-pr.sh` and `enforce-marker-script-shape.sh`. `/review-permissions` applies to the `settings.json` `permissions.allow` change. `ai-instruction-and-memory-files` applies to the `shell-script-conventions.md` bullet.
+
+**Lint.** `.venv/bin/ruff check claude/.claude/ claude-skills/` and `scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck`.
+
+**End-to-end, both paths, pinned.** One manual run against a same-repo PR pinned by number and `headRefOid` (checkout path, through the previously-broken Step 7 to a `--comment` post), and one against a fork PR pinned the same way (diff-only path, confirming the checkout script refuses, the diff path produces a reviewable artifact, and the posted body carries the disclosure line). Pinned rather than "a real inbound PR", so both are reproducible.
+
+### Out of scope
+
+- **Theme D's `require-worktree-for-git-writes.sh` gap.** The hook matches a literal `git` word boundary in Bash-tool command text, so a script's internal `git worktree` calls are invisible to it. Pre-existing, documented in that hook's own header, and this round deliberately *relies* on the same mechanism for `review-pr-acquire.sh` (G5). Resolved by explanation; no code change, and closing it repo-wide is a separate design question.
+- **Updating `docs/worktree-bash-guard.md`'s Site sweep table.** That table records what one dated sweep found; adding review-pr's two sites would falsify the record (CLAUDE.md §Scope discipline, Axis 3). The doc's forward-looking claim — every affected site invokes one dedicated script — stays true once this round converts both, so no edit is owed. Named here because a reader would otherwise expect one.
+- **A repo-wide step-citation resolution test.** The guard this round adds is scoped to the `review-pr-*.sh` headers that actually drifted. Generalizing it to resolve every `<skill> Step <N>` citation across `claude/.claude/` against real `## Step <N>` headings — the mechanical sibling of `citation-grammar.md`'s existing `§ "Heading"` enforcement — is a worthwhile follow-up and not one of the 15 comments.
+- **`deny-private-project-refs.sh` not covering `gh pr review`.** Pre-existing (A12); the mitigation stays Round 1's scrub instruction plus `review-pr-scan-findings-body.sh`'s mechanical backstop, both unchanged.
+- **`require-respond-pr.sh`'s unscoped `respond-pr` arm** (A18). Still sets total system strength, still pre-existing, still a change to a gate other skills depend on.
+- **Retention for `review-pr-markers/` and its four sibling completion-marker directories.** Unchanged inherited gap.
+- **Sandboxed or containerized check execution.** Round 1 excluded it as platform-specific; row 3 re-derives the same conclusion from the no-checkout path's angle.
+- **`cleanup-idle-open-pr-worktrees.sh` not reclaiming detached review worktrees.** `review-pr-finish.sh` now removes the worktree on every exit path, which mitigates the leak, but the reclaim mechanism for an abandoned session's worktree is still absent — the accepted gap already named in `review-pr-checkout.sh`'s `--detach` comment.
+- **`--approve`.** Still never constructible: `review-pr-post.sh`'s two-element `case` is unchanged by this round, and the no-checkout path uses the same script.
+
+**Decision confirmed with the engineer this session:** remove the `review-pr` `activate`/`deactivate` marker-enum entries and `require-respond-pr.sh`'s review-pr read-release arm in this round (row 6), rather than leaving them dormant as a follow-up. Phase 1's Critical files already reflect this — the four-way consistency test asserts 21 valid shapes, not 23.
