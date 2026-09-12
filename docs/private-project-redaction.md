@@ -178,7 +178,10 @@ only within one figure read alone.
    that together form a time series, not only a single figure with a
    calendar-time axis of its own. A series re-exposes the cadence the
    Cadence bullet above excludes. The one exception is the split
-   below.
+   below. A boundary-crossing pooled Count is a one-time disclosure
+   under this bar for the same reason: a second one published later
+   forms a barred two-point series. It cannot qualify as the split,
+   since the split requires single-account, single-machine scope.
 2. **One split, ever.** This carve-out defines exactly one narrow
    exception to "No time series" above: the split. Across everything
    ever published under this carve-out, at most one split may ever be
@@ -201,11 +204,9 @@ only within one figure read alone.
    count is the raw pooled total the Cost/Duration bullet bars, for
    instance.
 
-   *Worked rejection.* Account P carries no private-engagement
-   records, so its own transcript-analysis.py tool-call count is
-   freely publishable under "Own-history counts were never inside
-   this class" below, absent any already-published carve-out figure
-   it would narrow — say, 4,000 tool calls. If a Counts share could
+   *Worked rejection.* Account P's own transcript-analysis.py
+   tool-call count already cleared the Approval gate below and is
+   published — say, 4,000 tool calls. If a Counts share could
    split along the account dimension, "Account P: 40% of pooled tool
    calls" would combine with that exact count to solve the pooled
    total (10,000) by division, then Account Q's own exact count
@@ -263,9 +264,9 @@ The test is content, not account or machine count.
   unioning more roots discloses more of the same thing, not a new
   one. It does not extend to a `transcript-analysis.py` Cost or
   Duration measurement of tool calls, sessions, dispatches, dollars,
-  or duration — that measurement type carries exactly the per-account
+  or duration. That measurement type carries exactly the per-account
   or per-machine decomposition "Cost and Duration scope" above exists
-  to govern, and stays inside that machinery regardless of
+  to govern. It stays inside that machinery regardless of
   `--this-repo` scoping. A `transcript-analysis.py` Count of the same
   tool calls, sessions, or dispatches is different: it carries no
   account or machine default to begin with, since Counts carry none —
@@ -322,7 +323,12 @@ account can correspond to a single private engagement, so its
 cardinality is the per-account dimension the repo-root `CLAUDE.md`
 bars absolutely. How many machines exist may be stated as a digit. A
 machine is the operator's own hardware and partitions no engagement.
-This repository states its own machine count in ordinary prose.
+This repository states its own machine count in ordinary prose. Doubt
+about whether an operator's own machine boundary correlates with an
+engagement boundary — as it could for a fork contributor running
+client-dedicated hardware — goes to that operator, the same as every
+other content-purity judgment call in this section. Doubt is never a
+reason to publish anyway.
 
 ### Approval gate
 
@@ -358,15 +364,16 @@ additionally discloses two things, both approval-only input:
   whether either side is thin enough to isolate one engagement.
 
 For a pooled Count that spans more than one account or machine, the
-proposal additionally discloses which accounts or machines contribute
-to the pool, so the owner can judge whether it draws from a thin pool,
-and names any already-published or routinely-automated single-account
-or single-machine exact figure of the same quantity —
-`pr-cost-section.sh`'s per-PR exact session counts, published
-automatically on every merged PR once `pr-cost-disclosure` is enabled,
-at minimum — so the owner can weigh whether the pooled figure and that
-exact figure together isolate one account's or machine's own count by
-subtraction.
+proposal additionally discloses two things, both approval-only input:
+
+- which accounts or machines contribute to the pool, so the owner can
+  judge whether it draws from a thin pool;
+- any already-published or routinely-automated single-account or
+  single-machine exact figure of the same quantity — `pr-cost-section.sh`'s
+  per-PR exact session counts, published automatically on every merged
+  PR once `pr-cost-disclosure` is enabled, at minimum — so the owner
+  can weigh whether the pooled figure and that exact figure together
+  isolate one account's or machine's own count by subtraction.
 
 None of this ever appears in the published figure, and none of it is
 ever quoted in any commit message, PR body, issue, or other
