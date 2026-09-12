@@ -1066,13 +1066,17 @@ _KNOWN_NON_SOURCING_HOOKS: frozenset[str] = frozenset(
 
 
 def test_lib_source_hooks_exhaustive() -> None:
-    """_LIB_SOURCE_HOOKS must equal ALL_HOOKS minus only the known
-    non-sourcing hooks, mirroring test_all_hooks_and_libs_includes_every_lib_sh's
-    exhaustiveness pattern above."""
-    expected_count = len(ALL_HOOKS) - len(_KNOWN_NON_SOURCING_HOOKS)
-    assert len(_LIB_SOURCE_HOOKS) == expected_count, (
-        f"expected {expected_count} hooks in _LIB_SOURCE_HOOKS (ALL_HOOKS minus "
-        f"{sorted(_KNOWN_NON_SOURCING_HOOKS)}), found {len(_LIB_SOURCE_HOOKS)}"
+    """_LIB_SOURCE_HOOKS must equal ALL_HOOKS minus exactly the known
+    non-sourcing hooks by name, not merely by count — a set check names the
+    diverging hook directly instead of masking it against a compensating
+    drift elsewhere."""
+    expected_names = {h.name for h in ALL_HOOKS} - _KNOWN_NON_SOURCING_HOOKS
+    actual_names = {h.name for h in _LIB_SOURCE_HOOKS}
+    assert actual_names == expected_names, (
+        f"_LIB_SOURCE_HOOKS diverges from ALL_HOOKS minus "
+        f"{sorted(_KNOWN_NON_SOURCING_HOOKS)}: "
+        f"missing={sorted(expected_names - actual_names)}, "
+        f"unexpected={sorted(actual_names - expected_names)}"
     )
 
 
@@ -1269,13 +1273,17 @@ _NON_SWEPT_GATE_HOOKS: frozenset[str] = frozenset({"validate-migration-filename.
 
 
 def test_swept_gate_hooks_exhaustive() -> None:
-    """_SWEPT_GATE_HOOKS must equal GATE_HOOKS minus only the known
-    excluded gate hook, mirroring test_all_hooks_and_libs_includes_every_lib_sh's
-    exhaustiveness pattern above."""
-    expected_count = len(GATE_HOOKS) - len(_NON_SWEPT_GATE_HOOKS)
-    assert len(_SWEPT_GATE_HOOKS) == expected_count, (
-        f"expected {expected_count} hooks in _SWEPT_GATE_HOOKS (GATE_HOOKS minus "
-        f"{sorted(_NON_SWEPT_GATE_HOOKS)}), found {len(_SWEPT_GATE_HOOKS)}"
+    """_SWEPT_GATE_HOOKS must equal GATE_HOOKS minus exactly the known
+    excluded gate hook by name, not merely by count — a set check names the
+    diverging hook directly instead of masking it against a compensating
+    drift elsewhere."""
+    expected_names = {h.name for h in GATE_HOOKS} - _NON_SWEPT_GATE_HOOKS
+    actual_names = {h.name for h in _SWEPT_GATE_HOOKS}
+    assert actual_names == expected_names, (
+        f"_SWEPT_GATE_HOOKS diverges from GATE_HOOKS minus "
+        f"{sorted(_NON_SWEPT_GATE_HOOKS)}: "
+        f"missing={sorted(expected_names - actual_names)}, "
+        f"unexpected={sorted(actual_names - expected_names)}"
     )
 
 
