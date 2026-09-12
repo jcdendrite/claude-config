@@ -14,7 +14,7 @@ into it is the `findings_path` file.
 
 ## Input contract
 
-The diff under review arrives as a path to a diff file or as literal text. For a path, `Read` it; if the read comes back a partial view, page onward with `offset` until you have the whole file. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. Judge scope only from the diff you were handed — never infer it by guessing which comments or paragraphs look new. Say so and stop, rather than reviewing a scope you guessed, when any of the following holds:
+The diff under review arrives as a path to a diff file or as literal text. For a path, `Read` it; if it returns a partial view, the response says so explicitly — page onward with `offset` until one doesn't. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. Judge scope only from the diff you were handed — never infer it by guessing which comments or paragraphs look new. Say so and stop, rather than reviewing a scope you guessed, when any of the following holds:
 
 - You were handed a range expression instead of a path or diff text.
 - The path you were handed is unreadable.

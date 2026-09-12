@@ -3746,7 +3746,7 @@ def _change_type_table_rows(skill_md_path: Path) -> list[str]:
 
     Shared header-lookup-and-row-walk for every reader of the Change-type
     table — `_change_type_table_left_columns` and
-    `test_code_review_staged_diff_instruction_lives_in_the_change_type_row_only`
+    `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
     both build on this instead of re-walking the table themselves.
     """
     lines = skill_md_path.read_text().splitlines()
@@ -3955,15 +3955,16 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
     assert "a path to a diff file" in reviewer_body
     # Also pinned independently in claude/.claude/hooks/tests/test_agent_roster.py's
     # DIFF_INPUT_CONTRACT_SHARED_SENTENCES — update both on a wording change.
-    assert "page onward with `offset` until you have the whole file" in reviewer_body
+    assert "page onward with `offset` until one doesn't" in reviewer_body
 
 
-def test_code_review_staged_diff_instruction_lives_in_the_change_type_row_only() -> None:
-    """The comment-discipline-reviewer diff-artifact instruction lives in
-    the Change-type table's row for that reviewer, not in Step 0. A
-    file-wide `in` check would pass just as well if a later edit moved the
-    instruction back into Step 0, so this locates the row itself before
-    also checking the file-wide occurrence count.
+def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> None:
+    """The comment-discipline-reviewer diff-artifact-resolution procedure
+    lives in its own subsection directly below the Change-type table, not
+    inside the row itself and not in Step 0. A file-wide `in` check would
+    pass just as well if a later edit moved the instruction back into the
+    row or into Step 0, so this locates the note's own text before also
+    checking the file-wide occurrence count.
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
@@ -3981,14 +3982,27 @@ def test_code_review_staged_diff_instruction_lives_in_the_change_type_row_only()
         f"SCOPE_EXEMPT_ROW's shorthand {exempt_shorthand!r}"
     )
 
+    note_heading = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
+    next_heading = "**Invalid skip rationales.**"
+    assert note_heading in text, (
+        f"{skill_md_path}: the diff-artifact-resolution note heading is missing"
+    )
+    note_start = text.index(note_heading)
+    note_end = text.index(next_heading, note_start)
+    note_text = text[note_start:note_end]
+
     staged_diff_literal = "pr-diff-against-base.sh --staged --diff-file"
-    assert staged_diff_literal in row_text, (
-        f"{skill_md_path}: the comment-discipline-reviewer row no longer carries "
-        "its own diff-artifact-resolution instruction"
+    assert staged_diff_literal not in row_text, (
+        f"{skill_md_path}: the comment-discipline-reviewer row should point to "
+        "the resolution note below the table, not restate the procedure inline"
+    )
+    assert staged_diff_literal in note_text, (
+        f"{skill_md_path}: the resolution note no longer carries the "
+        "diff-artifact-resolution instruction"
     )
     assert text.count(staged_diff_literal) == 1, (
         f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
-        "the Change-type row only -- not duplicated into Step 0"
+        "the resolution note only -- not duplicated into Step 0 or the row"
     )
 
     for literal in (
@@ -3997,8 +4011,8 @@ def test_code_review_staged_diff_instruction_lives_in_the_change_type_row_only()
         "quote the script's own stderr line",
         "halt the review",
     ):
-        assert literal in row_text, (
-            f"{skill_md_path}: the comment-discipline-reviewer row no longer carries "
+        assert literal in note_text, (
+            f"{skill_md_path}: the resolution note no longer carries "
             f"the exact literal {literal!r}"
         )
 

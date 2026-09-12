@@ -16,8 +16,8 @@
 # --diff-file additionally writes the diff to
 # <config-dir>/cumulative-review-diff-markers/<repo-hash>.<session-id> and
 # announces the path on stderr as `DIFF_FILE: <path>`, for a reviewer with
-# no Bash to Read directly. ready-for-review/SKILL.md step 4 is the only
-# caller. Both flags may be combined. `marker.sh deactivate ready-for-review`
+# no Bash to Read directly. See docs/scripts.md for the current caller
+# list. Both flags may be combined. `marker.sh deactivate ready-for-review`
 # removes both artifacts.
 set -euo pipefail
 
@@ -57,7 +57,7 @@ fi
 
 if [ "$STAGED" -eq 1 ]; then
   DIFF_MARKER_DIR_NAME="code-review-diff-markers"
-  if ! DIFF_TEXT=$(git diff --cached 2>/dev/null); then
+  if ! DIFF_TEXT=$(_lib_capped git diff --cached 2>/dev/null); then
     printf 'pr-diff-against-base.sh: --staged could not compute the staged diff\n' >&2
     exit 1
   fi

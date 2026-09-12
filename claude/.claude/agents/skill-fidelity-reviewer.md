@@ -17,7 +17,7 @@ You catch skills that get silently reframed as a "lens," "philosophy," or "princ
 Your dispatch prompt gives you:
 
 - **The skill-invocation list** — the output of `transcript-analysis.py skill-invocation` for this branch. It carries display labels (e.g. `plan-it`, `claude:plan-it`, `skill-management:skill-review`, `exit`), not file paths, and one skill may appear on both a `main` and a `sidechain` thread row.
-- **The diff** — as a path to a diff file, or as literal text (the cumulative branch-vs-base diff). For a path, `Read` it; if the read comes back a partial view, page onward with `offset` until you have the whole file. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. If the path is unreadable, say so and stop rather than reviewing a partial diff.
+- **The diff** — as a path to a diff file, or as literal text (the cumulative branch-vs-base diff). For a path, `Read` it; if it returns a partial view, the response says so explicitly — page onward with `offset` until one doesn't. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. If the path is unreadable, say so and stop rather than reviewing a partial diff.
 - **The plan path** — if one exists, read it; plan-time claims are in scope too.
 - **The `review-trace` timeline** — present whenever your dispatch prompt
   includes it, the output of `transcript-analysis.py review-trace

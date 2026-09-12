@@ -64,8 +64,8 @@ DIFF_INPUT_NO_BASH_AGENTS = (
 # test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path — update
 # both on a wording change.
 DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
-    "For a path, `Read` it; if the read comes back a partial view, page "
-    "onward with `offset` until you have the whole file.",
+    "For a path, `Read` it; if it returns a partial view, the response "
+    "says so explicitly — page onward with `offset` until one doesn't.",
     "Never review a partial diff.",
     "You have no `Bash`; you cannot run `git diff`.",
     "A range expression (e.g. `main...HEAD`) is neither a path nor diff "
