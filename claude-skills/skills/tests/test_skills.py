@@ -2963,6 +2963,7 @@ def test_handoff_nudge_doc_cites_handoff_warrant_check_section() -> None:
         "docs/cost-levers-considered.md",
         "docs/design-decisions/schedulewakeup-misapplied-documented.md",
         "docs/design-decisions/schedulewakeup-denied-by-bare-tool-name.md",
+        "docs/transcript-analysis.md",
     ],
 )
 def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
@@ -2981,6 +2982,25 @@ def test_pooled_tooling_measurement_citation_resolves_to_real_heading(
         REPO_ROOT / relative_path,
         "docs/private-project-redaction.md",
         "Publishing a pooled tooling measurement",
+        repo_root=REPO_ROOT,
+    )
+
+
+def test_cost_trend_share_only_citation_resolves_to_real_heading() -> None:
+    """docs/transcript-analysis.md's `cost-trend`/`--share-only` exclusion
+    cites `docs/private-project-redaction.md` § "Three standing bars" for
+    why a calendar-anchored series is barred outright — resolves to a real
+    heading there.
+
+    A prior wording of this same citation named the wrong section ("What it
+    permits", a requirement `cost-trend` already satisfies) and shipped
+    without any test catching it — this test exists so a future rename or
+    mis-citation on this line fails here instead of requiring manual review.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "transcript-analysis.md",
+        "docs/private-project-redaction.md",
+        "Three standing bars",
         repo_root=REPO_ROOT,
     )
 

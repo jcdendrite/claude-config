@@ -129,14 +129,14 @@ Both have to be satisfied, and neither extends by analogy:
     - A raw total is barred outright. It scales with pool volume, and
       unlike a rate or a share, it converts to an engagement-value
       estimate via public day-rate references.
-  - A share — Cost's share-of-spend mode or Counts' share mode alike —
-    may split along any dimension except project, account, engagement,
-    or calendar time (e.g., Opus dollars as a percentage of total is
-    permitted; one account's share of pooled tool calls is not). A
-    share split along an excluded dimension hands a reader one side's
-    value the moment it's paired with an already-permitted exact
-    figure for that side — see the worked rejection under "Composition
-    is publication" below.
+  - Both Cost's share-of-spend mode and Counts' share mode may split
+    along any dimension except project, account, engagement, or
+    calendar time. Opus dollars as a percentage of total is permitted;
+    one account's share of pooled tool calls is not. A share split
+    along an excluded dimension hands a reader one side's value the
+    moment it's paired with an already-permitted exact figure for that
+    side — see the worked rejection under "Composition is publication"
+    below.
   - Cadence (how often releases happen) stays excluded even when
     pooled. It describes the engagements' own schedule, not the
     tooling's behavior.
@@ -167,13 +167,12 @@ only within one figure read alone.
    ever published under this carve-out, at most one of the two — a
    split or a bin, whichever comes first — may ever be published. Once
    either lands, in this repository or any other artifact, no further
-   split and no further bin is permitted, regardless of pivot or bin
-   label, same or different, and regardless of statistic, same or
-   different. This repository's history offers a commit near any date
-   a reader would want, so the split's limit isn't arbitrary. The
-   bin's fixed ladder (below) covers every count, so its limit isn't
-   arbitrary either. A further instance needs a PR amending this
-   document, not a fresh proposal under it.
+   split and no further bin is permitted, regardless of label or
+   statistic, same or different. This repository's history offers a
+   commit near any date a reader would want, so the split's limit
+   isn't arbitrary. The bin's fixed ladder (below) covers every count,
+   so its limit isn't arbitrary either. A further instance needs a PR
+   amending this document, not a fresh proposal under it.
 3. **Composition is publication.** This bar reaches any set of
    published figures that together produce a barred result, whether
    they land in one artifact or in separate publications months apart.
@@ -190,8 +189,8 @@ only within one figure read alone.
    total (10,000) by division, then Account Q's own exact count
    (6,000) by subtraction, without either published figure naming an
    account's total directly. Barring a share split along the account
-   dimension (see "Scope" above) is what keeps this reconstruction
-   from starting.
+   dimension (see "Scope — two closed lists" above) is what keeps this
+   reconstruction from starting.
 
 ### The one permitted split
 
@@ -233,11 +232,16 @@ The test is content, not account count.
   this repo's own history, or the owner's other personal, non-client
   repositories — was never a mixed-corpus figure. Examples: branch,
   PR, review-finding, hook-denial, and log-line counts.
-- This holds however many accounts or machines the scope unions. A
-  `--this-repo` measurement that pools several roots stays outside
-  this class for the same reason: every record it counts is this
-  repo's own activity, not an engagement's. Unioning more roots
-  therefore discloses more of the same thing, not a new one.
+- This holds however many accounts or machines the scope unions, for
+  a count with no per-account decomposition. Branch, PR,
+  review-finding, hook-denial, and log-line counts have none, so
+  unioning more roots discloses more of the same thing, not a new
+  one. It does not extend to a `transcript-analysis.py` Count or
+  Cost/Duration measurement of tool calls, sessions, dispatches,
+  dollars, or duration: that measurement type carries exactly the
+  per-account decomposition "Account and machine scope" and "Count
+  bin" exist to govern, and stays inside their machinery regardless
+  of `--this-repo` scoping.
 - Doubt about whether an account or repository genuinely carries no
   private-engagement data goes to the owner, same as doubt about pool
   diversity below. Doubt is never a reason to publish anyway.
@@ -247,9 +251,9 @@ The test is content, not account count.
   already-published split's or bin's residual — directly or through a
   published rate — needs the owner's word first. This reaches any
   own-history figure regardless of its own quantity type or scope
-  shape: a same-quantity restatement, a `--this-repo` measurement
-  pooled across several roots, or a figure that only narrows the
-  residual once combined with an already-published rate.
+  shape: a same-quantity restatement, a `--this-repo` hook-denial or
+  log-line count pooled across several roots, or a figure that only
+  narrows the residual once combined with an already-published rate.
 - Before publishing such a figure, the agent checks this repository's
   own history, prior PR bodies, and other artifacts for an
   already-published split or bin — the same search the Approval gate
@@ -275,22 +279,29 @@ exposing a private engagement's activity on a shared account.
 A pooled Count total — tool calls, sessions, or agent dispatches,
 nothing else — that crosses the account/machine boundary may publish
 as an order-of-magnitude label instead of an exact figure. Cost and
-Duration are unaffected: Cost stays a rate or a share, never a total
-or a range; Duration never crosses the boundary at all.
+Duration are unaffected. Cost stays a rate or a share, never a total
+or a range. Duration never crosses the boundary at all.
 
-- **Fixed bins, never chosen per figure.** Below 10 is "fewer than
-  10"; 10–99 is "dozens"; 100–999 is "hundreds"; 1,000–9,999 is
-  "thousands"; 10,000 or more is "tens of thousands." Every count maps
-  to exactly one label, so a missing one can't itself be a signal.
+- **Fixed bins, never chosen per figure:**
+  - Below 10: "fewer than 10"
+  - 10–99: "dozens"
+  - 100–999: "hundreds"
+  - 1,000–9,999: "thousands"
+  - 10,000 or more: "tens of thousands"
+
+  Every count maps to exactly one label, so a missing one can't itself
+  be a signal.
 - **Whether to publish at all is the approval gate's call**, not a
   consequence of which bin a figure falls into.
-- **No pairing a bin with its own exact count in the same artifact.**
+- **No pairing a bin with a single account's exact count in the same
+  artifact.**
   The composition bar above already treats cross-artifact composition,
   however far apart in time, as the same violation a single artifact
   would be — this bullet names the same-artifact case explicitly for
-  the bin. Pairing a bin with an exact own-scope count of the same
-  quantity, in the same proposal or artifact, lets a reader subtract
-  one from the other directly, so same-artifact pairing stays barred.
+  the bin. Pairing a bin with a single account's exact count of the
+  same quantity, in the same proposal or artifact, lets a reader
+  subtract one from the other directly, so same-artifact pairing
+  stays barred.
 - **The same exact figure can still surface separately, in an
   unrelated artifact** — `pr-cost-section.sh`'s automated per-PR
   session counts, for one. That exposure is an accepted cost this
@@ -324,10 +335,19 @@ additionally discloses two things, both approval-only input:
   whether either side is thin enough to isolate one engagement.
 
 For a bin under "Count bin, a narrow exception to the account/machine
-default" above, the proposal additionally discloses the exact count
-behind the label and which accounts or machines contribute to the
-pool, both approval-only input, so the owner can judge whether the
-label sits near a bin boundary or draws from a thin pool.
+default" above, the proposal additionally discloses two things, both
+approval-only input:
+
+- the exact count behind the label;
+- which accounts or machines contribute to the pool, so the owner can
+  judge whether the label sits near a bin boundary or draws from a
+  thin pool.
+
+The owner's approval must weigh not just that snapshot but the
+erosion `pr-cost-section.sh`'s ongoing per-PR exact session counts
+will keep applying to the bin's residual afterward, with no further
+gate — the bin is a one-time approval against a pool that keeps
+disclosing pieces of itself indefinitely.
 
 None of this ever appears in the published figure, and none of it is
 ever quoted in any commit message, PR body, issue, or other
@@ -344,8 +364,10 @@ diligence, not enforcement. The owner is the one continuous witness,
 across this repository and any other publication artifact, to what
 has already shipped under it. Finding nothing is not approval to
 publish.
-This is closed by default, the same as the blocklist tier's "if in
-doubt, strip it."
+
+Absent the durable citation this gate requires, the whole carve-out is
+closed by default, the same as the blocklist tier's "if in doubt,
+strip it."
 
 ### Remediation
 
