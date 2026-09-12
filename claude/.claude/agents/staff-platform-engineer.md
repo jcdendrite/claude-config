@@ -32,6 +32,8 @@ If the diff is pure application logic with no operational surface delta, or a co
 
 **Terraform state** — remote backend configured, state locking, access control, `terraform apply` without plan review.
 
+**Terraform variable typing** — a provider-native string enum modeled as its own type with a `validation` block enumerating legal values, versus a `bool` mapped onto the provider's real enum through a ternary.
+
 **Timeouts and resource limits** — `timeout-minutes` on jobs, unbounded retries, runaway bash `while` loops.
 
 **Shell script discipline** — `set -euo pipefail`, quoted expansions, no unguarded `rm -rf`, no implicit splitting on user input, no `eval` on untrusted data, no `curl | bash` without checksum/pin.

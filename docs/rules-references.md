@@ -206,6 +206,27 @@ Source for `claude/.claude/rules/github-actions-workflows.md`. All fetched
   trust policy rather than having its own. No separate composite-action
   citation applies.
 
+## Terraform conventions
+
+Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
+2026-09-12.
+
+- **`user_pool_tier` valid values** — verbatim-confirmed against
+  `raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/cognito_user_pool.html.markdown`:
+  > `user_pool_tier` - (Optional) The user pool feature plan, or tier.
+  > Valid values: `LITE`, `ESSENTIALS`, `PLUS`.
+- **`prevent_user_existence_errors` — confirmed negative in the provider
+  docs, enumerated in the AWS API reference instead.** `LEGACY`/`ENABLED`
+  do not appear anywhere in
+  `raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/cognito_user_pool_client.html.markdown`
+  — that doc's own description carries no enumerated valid-values line for
+  this argument. The enum instead comes from AWS's own API reference,
+  [`docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html),
+  on the `PreventUserExistenceErrors` field:
+  > Valid Values: `LEGACY | ENABLED`
+  >
+  > Defaults to `LEGACY`.
+
 ## `paths:` glob-dialect conventions
 
 Source for `claude/.claude/rules/rule-authoring-conventions.md`. Verified

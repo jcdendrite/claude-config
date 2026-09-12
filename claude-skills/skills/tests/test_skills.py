@@ -292,6 +292,7 @@ class TestSpecialistSkillTriggerContracts:
         ("review-permissions", "permissions.allow"),
         ("test-conventions", "new"),
         ("test-evaluation", "existing"),
+        ("feature-flags", "toggle"),
     ])
     def test_trigger_covers_designated_surface(self, skill_name, expected_surface):
         """TRIGGER block must reference the file surface or intent the skill owns."""
@@ -310,6 +311,11 @@ class TestSpecialistSkillTriggerContracts:
         ("test-conventions", "test-evaluation"),
         ("test-evaluation", "test-conventions"),
         ("agent-review", "skill-review"),
+        # No reciprocal row: feature-flags is `skillOverrides: name-only` and
+        # cannot description-auto-trigger, so config-environments has nothing
+        # to exclude — it is meant to keep firing on toggle-adjacent env-var
+        # questions rather than decline to a skill that can't reach them itself.
+        ("feature-flags", "config-environments"),
     ])
     def test_do_not_trigger_names_adjacent_skill(self, skill_name, adjacent_skill):
         """DO NOT TRIGGER block must name the adjacent skill with overlapping surface."""
