@@ -14,6 +14,7 @@ awareness at all.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -338,3 +339,125 @@ echo "pid:$WORKTREE_LOCK_PID"
         assert f"path:{wt_path}" in result.stdout
         assert "locked:1" in result.stdout
         assert f"pid:{dead}" in result.stdout
+
+
+class TestCollectAllWorktrees:
+    """collect_all_worktrees, sourced and called directly (no consumer
+    script), against real repos built from the shared conftest helpers.
+
+    A worktree path itself is never quoted by `git worktree list
+    --porcelain` (verified: even a path containing a literal `"` character
+    passes through unquoted on git 2.43), so there is no cheap fixture for
+    a quoted *path* -- only the `locked <reason>` line is ever C-style
+    quoted, exercised by test_quoted_lock_reason_is_stored_verbatim below.
+    """
+
+    def test_multiple_records_capture_distinct_lock_and_prunable_state(self, tmp_path):
+        from .conftest import _make_feature_branch, _make_repo_with_remote, _make_worktree
+
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/plain")
+        plain_path = tmp_path / "plain-tree"
+        _make_worktree(local, "feat/plain", plain_path)
+        _make_feature_branch(local, "feat/locked")
+        locked_path = tmp_path / "locked-tree"
+        _make_worktree(local, "feat/locked", locked_path)
+        subprocess.run(
+            ["git", "worktree", "lock", str(locked_path), "--reason", "held for review"],
+            cwd=local, check=True,
+        )
+        _make_feature_branch(local, "feat/prunable")
+        prunable_path = tmp_path / "prunable-tree"
+        _make_worktree(local, "feat/prunable", prunable_path)
+        shutil.rmtree(prunable_path)
+
+        result = _run_bash(f'''
+cd "{local}"
+collect_all_worktrees
+for i in "${{!ALL_WT_PATHS[@]}}"; do
+  p=1
+  [ -z "${{ALL_WT_PRUNABLE_REASONS[$i]}}" ] && p=0
+  echo "path:${{ALL_WT_PATHS[$i]}}|locked:${{ALL_WT_LOCKED[$i]}}|reason:${{ALL_WT_LOCK_REASONS[$i]}}|prunable_nonempty:$p"
+done
+''')
+        assert result.returncode == 0, result.stderr
+        assert f"path:{plain_path}|locked:0|reason:|prunable_nonempty:0" in result.stdout
+        assert f"path:{locked_path}|locked:1|reason:held for review|prunable_nonempty:0" in result.stdout
+        assert f"path:{prunable_path}|locked:0|reason:|prunable_nonempty:1" in result.stdout
+
+    def test_locked_with_no_reason_leaves_lock_reason_empty(self, tmp_path):
+        from .conftest import _make_feature_branch, _make_repo_with_remote, _make_worktree
+
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-bare")
+        wt_path = tmp_path / "locked-bare-tree"
+        _make_worktree(local, "feat/locked-bare", wt_path)
+        subprocess.run(["git", "worktree", "lock", str(wt_path)], cwd=local, check=True)
+
+        result = _run_bash(f'''
+cd "{local}"
+collect_all_worktrees
+for i in "${{!ALL_WT_PATHS[@]}}"; do
+  [ "${{ALL_WT_PATHS[$i]}}" = "{wt_path}" ] && echo "locked:${{ALL_WT_LOCKED[$i]}}|reason:[${{ALL_WT_LOCK_REASONS[$i]}}]"
+done
+''')
+        assert result.returncode == 0, result.stderr
+        assert "locked:1|reason:[]" in result.stdout
+
+    def test_lock_reason_with_non_pid_digits_leaves_lock_pid_empty(self, tmp_path):
+        """A lock reason carrying digits with no `pid` token (e.g. an issue
+        number) must not be mistaken for a pid -- the pid regex requires
+        the literal `pid` substring, not just any digits."""
+        from .conftest import _make_feature_branch, _make_repo_with_remote, _make_worktree
+
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/locked-digits")
+        wt_path = tmp_path / "locked-digits-tree"
+        _make_worktree(local, "feat/locked-digits", wt_path)
+        reason = "issue 1234 blocked"
+        subprocess.run(["git", "worktree", "lock", str(wt_path), "--reason", reason], cwd=local, check=True)
+
+        result = _run_bash(f'''
+cd "{local}"
+collect_all_worktrees
+for i in "${{!ALL_WT_PATHS[@]}}"; do
+  [ "${{ALL_WT_PATHS[$i]}}" = "{wt_path}" ] && echo "reason:${{ALL_WT_LOCK_REASONS[$i]}}|pid:[${{ALL_WT_LOCK_PIDS[$i]}}]"
+done
+''')
+        assert result.returncode == 0, result.stderr
+        assert f"reason:{reason}|pid:[]" in result.stdout
+
+    def test_quoted_lock_reason_is_stored_verbatim(self, tmp_path):
+        """A lock reason containing characters that trigger git's C-style
+        quoting (embedded quote and backslash characters) is stored exactly
+        as the porcelain line reports it -- collect_all_worktrees never
+        attempts to unescape it. The expected text is read back from a real
+        `git worktree list --porcelain` call rather than hand-encoding
+        git's quoting rules a second time."""
+        from .conftest import _make_feature_branch, _make_repo_with_remote, _make_worktree
+
+        local, _ = _make_repo_with_remote(tmp_path)
+        _make_feature_branch(local, "feat/quoted-reason")
+        wt_path = tmp_path / "quoted-reason-tree"
+        _make_worktree(local, "feat/quoted-reason", wt_path)
+        reason = 'reason with "quotes" and \\ backslash'
+        subprocess.run(["git", "worktree", "lock", str(wt_path), "--reason", reason], cwd=local, check=True)
+
+        porcelain = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=local,
+            capture_output=True, text=True, check=True,
+        ).stdout
+        locked_lines = [line for line in porcelain.splitlines() if line.startswith("locked")]
+        assert len(locked_lines) == 1
+        expected_reason = locked_lines[0][len("locked"):].lstrip(" ")
+        assert expected_reason.startswith('"'), "test assumes this reason triggers git's C-style quoting"
+
+        result = _run_bash(f'''
+cd "{local}"
+collect_all_worktrees
+for i in "${{!ALL_WT_PATHS[@]}}"; do
+  [ "${{ALL_WT_PATHS[$i]}}" = "{wt_path}" ] && printf 'reason:%s\\n' "${{ALL_WT_LOCK_REASONS[$i]}}"
+done
+''')
+        assert result.returncode == 0, result.stderr
+        assert f"reason:{expected_reason}" in result.stdout
