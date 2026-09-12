@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -4405,6 +4406,44 @@ def _redact_credential_shaped_strings(
 
 
 class TestRedactCredentialShapedStrings:
+    @pytest.fixture
+    def jq_invocation_counter(self, tmp_path: Path):
+        """`install(match_condition)` writes a `jq` shim that always execs
+        the real binary, but first appends one line to a counter file for
+        every invocation matching `match_condition` -- same conditional-
+        match, PATH-override idiom as conftest.py's git_timeout_shim/
+        gh_timeout_shim, counting invocations instead of sleeping past a
+        timeout. Class-local (not conftest.py) since only one test here
+        uses it.
+
+        `match_condition` is a `[ ... ]`/`[[ ... ]]` test expression
+        evaluated against the shim's own positional args, e.g.
+        `[ "$1" = "-R" ]` to count only the batched-validation call shape.
+
+        `install` returns `(path_env, counter_file)`: the PATH-override
+        dict, and the Path whose line count is the invocation count.
+        """
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+
+        counter_file = tmp_path / "jq-invocations.count"
+        counter_file.write_text("")
+
+        def install(match_condition: str) -> tuple[dict[str, str], Path]:
+            fake_binary = tmp_path / "jq"
+            fake_binary.write_text(
+                f"#!/bin/bash\n"
+                f"if {match_condition}; then\n"
+                f"  echo x >> {shlex.quote(str(counter_file))}\n"
+                f"fi\n"
+                f'exec {real_jq} "$@"\n'
+            )
+            fake_binary.chmod(0o755)
+            return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}, counter_file
+
+        return install
+
     def test_credential_shaped_string_is_redacted(self, tmp_path: Path) -> None:
         token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
         payload = json.dumps(f"token={token}")
@@ -4501,6 +4540,115 @@ class TestRedactCredentialShapedStrings:
         assert "dpl_abcdefghijklmno" not in result.stdout
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
 
+    def test_multiple_malformed_addition_lines_each_reported_individually(
+        self, tmp_path: Path
+    ) -> None:
+        """Two or more unparseable regexes in the additions file are each
+        attributed to their own line by the single batched validation call
+        -- per-addition fate, not one aggregate pass/fail for the whole
+        file."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad one: [unterminated(\n"
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+            "Bad two: (unterminated\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+        assert "credential-value-patterns.md line 1" in result.stderr
+        assert "credential-value-patterns.md line 3" in result.stderr
+        assert "[unterminated(" not in result.stderr
+        assert "(unterminated" not in result.stderr
+
+    def test_batched_call_failure_falls_back_to_per_line_validation(
+        self, tmp_path: Path
+    ) -> None:
+        """When the single batched jq invocation itself fails outright
+        (jq crashing, timing out, or erroring on the call as a whole) --
+        not merely one addition failing to compile within it -- the
+        function falls back to validating each addition individually, so
+        only the genuinely malformed pattern is skipped and the rest still
+        apply, rather than the batch failure silently dropping every
+        custom pattern for the invocation."""
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            pytest.skip("jq not found in PATH")
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        fake_jq = shim_dir / "jq"
+        fake_jq.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "-R" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_jq} "$@"\n'
+        )
+        fake_jq.chmod(0o755)
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Bad line: [unterminated(\nInternal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+        )
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno")
+        result = _redact_credential_shaped_strings(
+            payload, home, extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}"}
+        )
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED}")
+        assert "credential-value-patterns.md line 1" in result.stderr
+
+    def test_additions_file_only_comments_and_blanks_builtin_still_applies(
+        self, tmp_path: Path
+    ) -> None:
+        """An additions file present but empty after comment/blank
+        filtering must not spuriously warn, and built-in redaction still
+        applies -- there is nothing to batch-validate, so the validator
+        must not fire (and fail) on an empty candidate set."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text("# just a comment\n\n   \n")
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"token={token}")
+        result = _redact_credential_shaped_strings(payload, home)
+        assert result.returncode == 0
+        assert token not in result.stdout
+        assert _REDACTED in result.stdout
+        assert result.stderr == ""
+
+    def test_batched_validation_makes_exactly_one_jq_call_with_multiple_additions(
+        self, tmp_path: Path, jq_invocation_counter
+    ) -> None:
+        """Directly pins the fork-count reduction this phase exists to
+        deliver: two or more valid addition lines still validate through
+        exactly one jq invocation, not one fork per pattern. Counts only
+        the batched-validation call shape (`jq -R ...`), distinguishing it
+        from the always-present final combined gsub call (`jq -c ...`)."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "credential-value-patterns.md").write_text(
+            "Internal deploy token: dpl_[A-Za-z0-9]{10,}\n"
+            "Another internal token: xyz_[A-Za-z0-9]{8,}\n"
+        )
+        path_env, counter_file = jq_invocation_counter('[ "$1" = "-R" ]')
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+        payload = json.dumps(f"a={token} b=dpl_abcdefghijklmno c=xyz_12345678")
+        result = _redact_credential_shaped_strings(payload, home, extra_env=path_env)
+        assert result.returncode == 0
+        assert "dpl_abcdefghijklmno" not in result.stdout
+        assert "xyz_12345678" not in result.stdout
+        assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED} c={_REDACTED}")
+        assert len(counter_file.read_text().splitlines()) == 1
+
 
 # --- _lib_config_lines -------------------------------------------------
 #
@@ -4551,3 +4699,153 @@ def test_lib_config_lines_counts_raw_line_numbers_through_skipped_lines(tmp_path
     messages pointing the user at the actual line to fix."""
     content = "# comment\nfirst\n\nsecond\n"
     assert _config_lines(content, tmp_path) == [("2", "first"), ("4", "second")]
+
+
+# --- _lib_length_ratchet_exceeded -----------------------------------------
+#
+# Extracted out of _lib_staged_length_gate's loop body in _lib.sh so the
+# growth-comparison boundary (NEW > LIMIT && NEW > OLD) is reachable without
+# a real git repo. _lib_staged_length_gate calls this same predicate for
+# both its line-count check and its byte-count check, so the boundary
+# matrix below stands in for the pure-triple cases pruned out of
+# test_check_claude_md_length.py and test_check_skill_length.py (see the
+# hook length-limit tests' end-to-end matrices for the second-dimension
+# cases -- path pattern, command parsing, message text, fail-closed
+# posture -- that stay end-to-end).
+
+
+def _length_ratchet_exceeded(new: int, old: int, limit: int | str) -> bool:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; _lib_length_ratchet_exceeded "$@"',
+            "bash",
+            str(new),
+            str(old),
+            str(limit),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestLengthRatchetExceeded:
+    def test_new_at_exactly_limit_not_exceeded(self) -> None:
+        """new == limit is not "over" it -- migrated from
+        test_claude_md_at_exactly_200_allows / test_skill_at_exactly_200_allows."""
+        assert not _length_ratchet_exceeded(200, 190, 200)
+
+    def test_new_over_limit_and_over_old_exceeded(self) -> None:
+        """Crossing the limit for the first time -- migrated from
+        test_claude_md_growing_to_201_denies / test_skill_growing_to_201_denies."""
+        assert _length_ratchet_exceeded(201, 190, 200)
+
+    def test_new_over_limit_growing_further_while_already_over_exceeded(self) -> None:
+        """Already over the limit and growing further still denies --
+        migrated from test_already_over_limit_growing_denies."""
+        assert _length_ratchet_exceeded(215, 210, 200)
+
+    def test_new_over_limit_but_shrinking_from_old_not_exceeded(self) -> None:
+        """Reducing an already-over-limit file is allowed -- migrated from
+        test_already_over_limit_reducing_allows."""
+        assert not _length_ratchet_exceeded(205, 210, 200)
+
+    def test_new_over_limit_same_size_as_old_not_exceeded(self) -> None:
+        """Different content, same count, still over limit: not growing, so
+        allowed -- migrated from test_already_over_limit_same_size_allows."""
+        assert not _length_ratchet_exceeded(210, 210, 200)
+
+    def test_new_under_limit_growing_not_exceeded(self) -> None:
+        """Growing but never crossing the limit -- migrated from
+        test_byte_cap_under_limit_growing_allows."""
+        assert not _length_ratchet_exceeded(190, 180, 200)
+
+    def test_new_zero_not_exceeded(self) -> None:
+        """NEW=0 (a capped-timeout read or a staged deletion) can never be
+        "over" a positive limit, regardless of OLD -- boundary case not
+        pinned by name in either hook's own test file, since there NEW=0
+        arises only as a side effect of git plumbing (deletion, timeout, or
+        a missing HEAD) rather than as a directly-asserted value."""
+        assert not _length_ratchet_exceeded(0, 300, 200)
+
+    def test_empty_limit_not_exceeded(self) -> None:
+        """Non-integer/empty LIMIT makes the underlying `[ -gt ]` test exit 2
+        ("integer expression expected") rather than 0 or 1 -- characterizes
+        the current fail-open behavior documented on the function's header:
+        every caller's `if ...; then deny; fi` treats that exit 2 the same
+        as "not exceeded", i.e. allow."""
+        assert not _length_ratchet_exceeded(250, 300, "")
+
+
+# --- _lib_list_contains ----------------------------------------------------
+#
+# Shared by _lib_is_review_only_agent, _lib_is_no_gate_release_agent, and
+# _lib_is_reviewer_persona -- three byte-identical membership scans over
+# three derived arrays, collapsed to one helper following
+# _lib_words_start_with's flatten-as-positional-args idiom.
+
+
+def _list_contains(value: str, items: tuple[str, ...]) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_list_contains "$@"', "bash", value, *items],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+class TestListContains:
+    def test_empty_list_does_not_crash_under_set_dash_u(self) -> None:
+        """Zero ITEM args (an empty array flattened via "${arr[@]}") must
+        reach the "$@" loop safely rather than aborting on an unbound
+        variable."""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -uo pipefail; . {_LIB_SH}; _lib_list_contains "$@"',
+                "bash",
+                "anything",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert "unbound variable" not in result.stderr
+
+    def test_single_item_list_matches(self) -> None:
+        assert _list_contains("staff-sdet", ("staff-sdet",))
+
+    def test_single_item_list_rejects_non_match(self) -> None:
+        assert not _list_contains("staff-sdet", ("ciso-reviewer",))
+
+    def test_value_matching_more_than_one_item_still_found(self) -> None:
+        """No dedup required -- VALUE need only equal one ITEM among several
+        equal ones for the scan to report a match."""
+        assert _list_contains("staff-sdet", ("staff-sdet", "staff-sdet", "ciso-reviewer"))
+
+    def test_value_matching_later_position_still_found(self) -> None:
+        """Pins the loop-continuation branch directly: a match past the
+        first ITEM must still be found, not just one at index 0."""
+        assert _list_contains("c", ("a", "b", "c"))
+
+    def test_empty_string_value_matches_empty_string_item(self) -> None:
+        assert _list_contains("", ("a", "", "b"))
+
+    def test_empty_string_value_does_not_match_list_without_it(self) -> None:
+        assert not _list_contains("", ("a", "b"))
+
+    def test_glob_metacharacter_item_does_not_spuriously_match(self) -> None:
+        """The three call sites rely on [ "$a" = "$b" ] string equality, not
+        a case glob match -- an ITEM shaped like a glob pattern must match
+        only that literal string, never a value it would otherwise
+        glob-match."""
+        assert not _list_contains("code-writer", ("code*",))
+
+    def test_glob_metacharacter_item_matches_its_own_literal_value(self) -> None:
+        assert _list_contains("code*", ("code*",))

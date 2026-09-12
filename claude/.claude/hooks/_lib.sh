@@ -361,7 +361,9 @@ _lib_repo_root() {
 # only the touched-file diff, not repo state outside those files.
 # Usage: hash=$(_marker_lib_repo_hash "$REPO_ROOT")
 _marker_lib_repo_hash() {
-  printf '%s' "$1" | sha256sum | awk '{print $1}'
+  local digest
+  digest=$(_lib_hash_diff_text "$1") || return 1
+  printf '%s\n' "$digest"
 }
 
 # _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
@@ -557,6 +559,12 @@ _lib_active_plan_files() {
 #     with no `pipefail`: a failed `sha256sum` there still leaves `awk`
 #     exiting 0 with empty output, which the emptiness check -- not
 #     `pipefail` -- is what catches.
+# Runs via require-plan-review.sh on every Edit/Write/MultiEdit/ExitPlanMode,
+# same trigger as _lib_active_plan_files above.
+# The per-file sha256sum loop below is bounded by the *active* plan count
+# (0-1 in normal use, per that function's untracked-or-modified filter), not
+# .claude/plans/'s total size, and returns early with zero forks when
+# nothing is active.
 # Usage: hash=$(_lib_active_plan_hash "$REPO_ROOT")
 _lib_active_plan_hash() {
   local repo_root="$1"
@@ -583,8 +591,7 @@ _lib_active_plan_hash() {
   done <<< "$active_files"
 
   local digest
-  digest=$(printf '%s' "$combined" | sha256sum | awk '{print $1}')
-  if [ -z "$digest" ]; then
+  if ! digest=$(_lib_hash_diff_text "$combined"); then
     printf '%s' "$plans_dir"
     return 1
   fi
@@ -1175,12 +1182,34 @@ _lib_command_invokes_tool_subcmd() {
   return 1
 }
 
+# _lib_length_ratchet_exceeded NEW OLD LIMIT
+# Pure predicate: exit 0 (true) iff NEW is over LIMIT AND NEW is longer than
+# OLD. Reducing an already-over-limit file commit by commit is allowed; new
+# bloat is not. Extracted out of _lib_staged_length_gate's loop body so this
+# boundary is reachable without a real git repo. NEW, OLD, and LIMIT are
+# plain integers regardless of whether the caller derived them from a line
+# count or a byte count — both dimensions in _lib_staged_length_gate below
+# call this same predicate.
+# Current behavior on a non-integer or empty LIMIT: `[ "$new" -gt "$limit" ]`
+# exits 2 with "integer expression expected" stderr noise, which every
+# caller's `if _lib_length_ratchet_exceeded ...; then deny; fi` treats the
+# same as "not exceeded" -- i.e. this fails open. Pre-existing property
+# inherited from the inline code before extraction, not a new defect.
+_lib_length_ratchet_exceeded() {
+  local new="$1" old="$2" limit="$3"
+  [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]
+}
+
 # _lib_staged_length_gate PATTERN OVER_LIMIT_MESSAGE [BYTE_LIMIT]
 # Shared body behind check-skill-length.sh and check-claude-md-length.sh:
 # deny a git commit when a staged file matching PATTERN (a grep -E pattern
 # over `git diff --cached --name-only` output) is over its per-file limit
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
+#
+# Runs only when a Bash command invokes `git commit`, gated behind both
+# callers' `if: git commit *` matcher in settings.json — commit-time-cold,
+# not per-tool-call like most _lib.sh helpers.
 #
 # BYTE_LIMIT is optional and opt-in. When set, the byte check derives
 # counts via `git cat-file -s` rather than reusing the `git show` reads
@@ -1209,21 +1238,23 @@ _lib_command_invokes_tool_subcmd() {
 # killed, or erroring inside _lib_command_invokes_git_subcmd) denies rather
 # than silently skipping the length check.
 #
-# The git calls below are capped via _lib_capped, which degrades to allow
-# (not just to not-hanging) on timeout: a locked index or network mount
-# silently skips the length check rather than blocking the commit. That is
-# a deliberate choice for a style/lint gate, not a security-relevant
-# scanner — contrast deny-pii-in-commits.sh, which fails closed on the same
-# class of timeout because an unscanned commit there is an unscanned leak
-# vector.
+# The git calls below are capped via _lib_capped. rev-parse, diff --cached,
+# and the ":$f" show call all degrade to allow (not just to not-hanging) on
+# timeout: a locked index or network mount silently skips the length check
+# rather than blocking the commit. That is a deliberate choice for a
+# style/lint gate, not a security-relevant scanner — contrast
+# deny-pii-in-commits.sh, which fails closed on the same class of timeout
+# because an unscanned commit there is an unscanned leak vector.
 #
-# The rev-parse and diff calls' cap-engagement characterization tests live
-# only in test_check_skill_length.py, valid for both callers because these
-# capped calls are caller-invariant. The two show calls (one per revision,
-# feeding the line-count check) still have no dedicated cap-engagement test
-# anywhere, a pre-existing gap this extraction doesn't close. The two
-# cat-file -s calls (one per revision, feeding the byte-count check) are
-# covered by test_byte_cap_cat_file_git_timeout_engages_cap in
+# The "HEAD:$f" show call is the one exception: its timeout yields old=0,
+# which can flip a shrinking-but-still-over-limit file to a false deny (see
+# test_check_skill_length.py's HEAD-timeout characterization test).
+#
+# The rev-parse, diff, and both show calls' cap-engagement characterization
+# tests live in test_check_skill_length.py, valid for both callers because
+# these capped calls are caller-invariant. The two cat-file -s calls (one
+# per revision, feeding the byte-count check) are covered by
+# test_byte_cap_cat_file_git_timeout_engages_cap in
 # test_check_claude_md_length.py.
 _lib_staged_length_gate() {
   local pattern="$1" over_limit_message="$2" byte_limit="${3:-}"
@@ -1264,7 +1295,7 @@ _lib_staged_length_gate() {
     new=$(printf '%s' "$new_content" | awk 'END{print NR}')
     old=$(printf '%s' "$old_content" | awk 'END{print NR}')
     limit=$(limit_for "$f")
-    if [ "$new" -gt "$limit" ] && [ "$new" -gt "$old" ]; then
+    if _lib_length_ratchet_exceeded "$new" "$old" "$limit"; then
       messages="${messages}  $f: $new lines (was $old, limit $limit)\n"
       fail=1
     fi
@@ -1274,7 +1305,7 @@ _lib_staged_length_gate() {
       old_bytes=$(_lib_capped git cat-file -s "HEAD:$f" 2>/dev/null)
       [ -n "$new_bytes" ] || new_bytes=0
       [ -n "$old_bytes" ] || old_bytes=0
-      if [ "$new_bytes" -gt "$byte_limit" ] && [ "$new_bytes" -gt "$old_bytes" ]; then
+      if _lib_length_ratchet_exceeded "$new_bytes" "$old_bytes" "$byte_limit"; then
         messages="${messages}  $f: $new_bytes bytes (was $old_bytes, limit $byte_limit)\n"
         fail=1
       fi
@@ -2203,6 +2234,17 @@ _LIB_CREDENTIAL_VALUE_REGEX='(gh[opsur]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_
 # Body class excludes `-` so a greedy match stops at the first END footer rather than consuming past it; [:space:] (not `.`) lets the match span embedded newlines under Oniguruma without a dot-matches-newline flag.
 _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=[:space:]]*-----END[A-Z ]*PRIVATE KEY-----'
 
+# _lib_warn_skipped_credential_pattern FILE LINENO
+# One source of truth for the diagnostic _lib_redact_credential_shaped_strings
+# emits on both its skip paths (batch-success and per-pattern fallback) below
+# -- both branches print the same 4-line message, so a change to its wording
+# only needs to happen once.
+_lib_warn_skipped_credential_pattern() {
+  local file="$1" lineno="$2"
+  printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
+    "$file" "$lineno" >&2
+}
+
 # _lib_redact_credential_shaped_strings JSON
 # Replaces every credential-shaped string anywhere in JSON's value tree
 # (the PEM block/header, GitHub token prefixes, an AWS access key ID, plus
@@ -2214,6 +2256,9 @@ _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX='-----BEGIN[A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=
 # nothing and returns non-zero, so a caller's `[ -n "$result" ]` guard
 # treats "redaction failed" the same as "nothing to act on" rather than
 # silently passing the unredacted input through.
+# Invoked by redact-credential-values.sh, which runs on every
+# Bash|Read|WebFetch|Grep|Task PostToolUse -- cost scales with how many
+# custom patterns a user has added to credential-value-patterns.md.
 _lib_redact_credential_shaped_strings() {
   local json="$1"
 
@@ -2229,6 +2274,7 @@ _lib_redact_credential_shaped_strings() {
   fi
   if [ -f "$credential_value_patterns_file" ] && [ -r "$credential_value_patterns_file" ]; then
     local addition_lineno line addition_value
+    local -a addition_linenos=() addition_values=()
     while IFS=$'\t' read -r addition_lineno line; do
       case "$line" in
         *:*) ;;
@@ -2239,15 +2285,83 @@ _lib_redact_credential_shaped_strings() {
       addition_value="${addition_value#"${addition_value%%[![:space:]]*}"}"
       [ -n "$addition_value" ] || continue
 
-      # Skip (don't apply) a pattern that fails to compile under jq's regex engine -- one bad addition would otherwise break the single combined gsub call below for the whole invocation, including the built-in redaction.
-      # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
-      if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
-        printf '_lib_redact_credential_shaped_strings: skipping unparseable pattern at %s line %d (jq could not compile it as a regex) — built-in credential redaction is unaffected, but this addition is not being applied.\n' \
-          "$credential_value_patterns_file" "$addition_lineno" >&2
-        continue
-      fi
-      credential_value_pattern="${credential_value_pattern}|${addition_value}"
+      addition_linenos+=("$addition_lineno")
+      addition_values+=("$addition_value")
     done < <(_lib_config_lines "$credential_value_patterns_file")
+
+    if [ "${#addition_values[@]}" -gt 0 ]; then
+      local batch_i batch_rows batch_status batch_output
+      batch_rows=""
+      batch_i=0
+      while [ "$batch_i" -lt "${#addition_values[@]}" ]; do
+        batch_rows="${batch_rows}${addition_linenos[$batch_i]}"$'\t'"${addition_values[$batch_i]}"$'\n'
+        batch_i=$((batch_i + 1))
+      done
+
+      # Validates every addition in one jq call instead of one fork per
+      # pattern. An unparseable pattern makes jq's test() throw; per-row
+      # try/catch isolates that failure to the offending line. Contrast the
+      # combined gsub call below, which fails wholesale on the same error.
+      # Reads "<lineno>\t<pattern>" rows from stdin (the same tab-delimited
+      # shape _lib_config_lines produces) and emits "1\t<pattern>" for a
+      # pattern that compiles or "0\t<lineno>" for one that doesn't.
+      # shellcheck disable=SC2016 # single-quoted on purpose: $p and $l are jq variable bindings, not shell variables; double-quoting would expand them in the shell before jq sees them.
+      batch_output=$(printf '%s' "$batch_rows" | _lib_jq -R -n -r '
+        [inputs | select(length > 0) | {lineno: .[0:(index("\t"))], pattern: .[(index("\t")+1):]}]
+        | .[]
+        | .pattern as $p
+        | .lineno as $l
+        | if (try (("" | test($p)) | true) catch false)
+          then "1\t\($p)"
+          else "0\t\($l)"
+          end
+      ' 2>/dev/null)
+      batch_status=$?
+
+      if [ "$batch_status" -eq 0 ]; then
+        local valid_flag payload batch_parsed_rows=0
+        local credential_value_pattern_before_batch="$credential_value_pattern"
+        # Safe to re-parse on a bare tab because _lib_config_lines trims
+        # every line first, so no addition_value can carry a leading tab.
+        while IFS=$'\t' read -r valid_flag payload; do
+          [ -z "$valid_flag" ] && continue
+          batch_parsed_rows=$((batch_parsed_rows + 1))
+          if [ "$valid_flag" = "1" ]; then
+            credential_value_pattern="${credential_value_pattern}|${payload}"
+          else
+            _lib_warn_skipped_credential_pattern "$credential_value_patterns_file" "$payload"
+          fi
+        done <<< "$batch_output"
+        # Row-count parity: a batch call that exits 0 but returns fewer rows
+        # than it was given (truncated output) must not be trusted -- undo
+        # its partial additions and fall back to per-pattern validation
+        # instead of silently under-applying the rest.
+        if [ "$batch_parsed_rows" -ne "${#addition_values[@]}" ]; then
+          credential_value_pattern="$credential_value_pattern_before_batch"
+          batch_status=1
+        fi
+      fi
+
+      if [ "$batch_status" -ne 0 ]; then
+        # The batched call itself failed (jq crashed, timed out, or errored
+        # outright) or returned a row count that doesn't match what it was
+        # given, not just one pattern failing to compile within it -- fall
+        # back to validating each addition individually so only the
+        # malformed pattern(s) are skipped, not every custom addition.
+        batch_i=0
+        while [ "$batch_i" -lt "${#addition_values[@]}" ]; do
+          addition_value="${addition_values[$batch_i]}"
+          addition_lineno="${addition_linenos[$batch_i]}"
+          # shellcheck disable=SC2016 # single-quoted on purpose: $pattern is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
+          if ! _lib_jq -n --arg pattern "$addition_value" '"" | test($pattern)' >/dev/null 2>&1; then
+            _lib_warn_skipped_credential_pattern "$credential_value_patterns_file" "$addition_lineno"
+          else
+            credential_value_pattern="${credential_value_pattern}|${addition_value}"
+          fi
+          batch_i=$((batch_i + 1))
+        done
+      fi
+    fi
   fi
 
   local redacted
@@ -2457,6 +2571,31 @@ _lib_review_only_agents() {
   printf '%s\n' "${_LIB_REVIEW_ONLY_AGENTS[@]}"
 }
 
+# _lib_list_contains VALUE ITEM...
+# Boolean exit status: 0 iff VALUE string-equals one of ITEM....
+# Matches via `[ "$a" = "$b" ]`, never a `case` glob -- an ITEM containing a
+# glob metacharacter (e.g. "code*") matches only that literal string.
+# Zero ITEMs (a flattened empty array) is a clean no-match, not a `set -u`
+# crash.
+# That guarantee covers only this helper's own zero-ITEMs case: an unset
+# array expanded via "${arr[@]}" under `set -u` would abort at the call
+# site, before _lib_list_contains is even entered, and this helper cannot
+# protect against that. Currently latent, not live -- all three call sites'
+# arrays below are module-level constants defined by construction, never a
+# conditionally-set variable, even though their gate-script callers do run
+# under `set -u`.
+# Shared by the three membership scans below, each over its own derived
+# array.
+_lib_list_contains() {
+  local value="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [ "$value" = "$item" ] && return 0
+  done
+  return 1
+}
+
 # _lib_is_review_only_agent AGENT_TYPE
 # Returns 0 (true) iff AGENT_TYPE exactly matches an entry in
 # _LIB_REVIEW_ONLY_AGENTS. Empty input (agent_type absent from the
@@ -2464,11 +2603,7 @@ _lib_review_only_agents() {
 _lib_is_review_only_agent() {
   local agent_type="$1"
   [ -n "$agent_type" ] || return 1
-  local candidate
-  for candidate in "${_LIB_REVIEW_ONLY_AGENTS[@]}"; do
-    [ "$agent_type" = "$candidate" ] && return 0
-  done
-  return 1
+  _lib_list_contains "$agent_type" "${_LIB_REVIEW_ONLY_AGENTS[@]}"
 }
 
 # Agent identities that may never release a review gate — every review-only
@@ -2513,11 +2648,7 @@ _lib_no_gate_release_agents() {
 _lib_is_no_gate_release_agent() {
   local agent_type="$1"
   [ -n "$agent_type" ] || return 1
-  local candidate
-  for candidate in "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"; do
-    [ "$agent_type" = "$candidate" ] && return 0
-  done
-  return 1
+  _lib_list_contains "$agent_type" "${_LIB_NO_GATE_RELEASE_AGENTS[@]}"
 }
 
 # Reviewer-persona agents dispatched by /code-review's fan-out, for
@@ -2545,11 +2676,7 @@ _lib_reviewer_persona_agents() {
 _lib_is_reviewer_persona() {
   local agent_type="$1"
   [ -n "$agent_type" ] || return 1
-  local candidate
-  for candidate in "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"; do
-    [ "$agent_type" = "$candidate" ] && return 0
-  done
-  return 1
+  _lib_list_contains "$agent_type" "${_LIB_REVIEWER_PERSONA_AGENTS[@]}"
 }
 
 # Round-state cap shared by require-architect-consult.sh (the read side,
@@ -2595,10 +2722,10 @@ _lib_reviewer_round_state_cap() {
 #
 # Determinism contract (read side [require-architect-consult.sh] and write
 # side [log-reviewer-round.sh] must agree byte-for-byte, or the gate wedges):
-# branch name comes from `git symbolic-ref -q --short HEAD`, hashed with the
-# same sha256sum-of-bytes recipe _marker_lib_repo_hash already uses for the
-# repo half of the key, so both halves are produced identically regardless
-# of caller.
+# Branch name comes from `git symbolic-ref -q --short HEAD`, hashed via
+# _lib_hash_diff_text. _marker_lib_repo_hash hashes the repo half via the
+# same function, so both halves are produced identically regardless of
+# caller.
 _lib_reviewer_round_state_key() {
   local repo_root="$1"
   [ -n "$repo_root" ] || return 1
@@ -2607,7 +2734,7 @@ _lib_reviewer_round_state_key() {
   [ -n "$branch" ] || return 1
   local repo_hash branch_hash
   repo_hash=$(_marker_lib_repo_hash "$repo_root")
-  branch_hash=$(printf '%s' "$branch" | sha256sum | awk '{print $1}')
+  branch_hash=$(_lib_hash_diff_text "$branch")
   [ -n "$repo_hash" ] && [ -n "$branch_hash" ] || return 1
   printf '%s.%s' "$repo_hash" "$branch_hash"
 }

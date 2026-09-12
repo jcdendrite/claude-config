@@ -443,6 +443,150 @@ class TestCwdFlag:
         assert recorder.exists()
 
 
+class TestModelFlag:
+    def test_model_flag_is_forwarded_after_the_prompt_file_pair(self, tmp_path: Path) -> None:
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--model", "opus", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "opus" not in result.stderr
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        recorded_args = recorder.read_text().splitlines()
+        assert len(recorded_args) == 5, "argv must be the prompt-file pair, the --model pair, and the prompt"
+        assert recorded_args[:4] == ["--append-system-prompt-file", str(moved[0]), "--model", "opus"]
+
+    def test_no_model_flag_emits_no_model_token(self, tmp_path: Path) -> None:
+        """Pins the absent-flag argv byte-for-byte, so a future reordering of
+        the LAUNCH_ARGS build can't silently start emitting a --model token
+        (or shift the prompt's index) when the flag was never passed."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            [str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        recorded_args = recorder.read_text().splitlines()
+        assert len(recorded_args) == 3
+        assert "--model" not in recorded_args
+
+    def test_model_flag_with_consume_only_is_rejected(self, tmp_path: Path) -> None:
+        """--model only matters for launch mode. Combined with --consume-only
+        (which never launches) it would silently do nothing, so reject the
+        combination explicitly — mirrors the --cwd + --consume-only check."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+        result = _run(
+            ["--model", "opus", "--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+        assert src.exists(), "source must not be moved when the flag combination is rejected"
+        assert not recorder.exists()
+
+    def test_consume_only_with_model_flag_is_also_rejected(self, tmp_path: Path) -> None:
+        """The flag loop must reject the combination regardless of the order
+        the two flags are given in."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-task.md"
+        src.write_text("hello brief\n")
+        result = _run(
+            ["--consume-only", "--model", "opus", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip()
+        assert src.exists()
+        assert not recorder.exists()
+
+    def test_model_flag_missing_value_errors_without_side_effects(self, tmp_path: Path) -> None:
+        """`--model` as the last token, with no value argument following it."""
+        stub, recorder = _install_recorder(tmp_path)
+        result = _run(
+            ["--model"],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "--model requires a value" in result.stderr
+        assert not recorder.exists()
+
+    def test_cwd_and_model_flags_combine(self, tmp_path: Path) -> None:
+        """The real-world worktree-resume invocation: --cwd picks the
+        launched process's working directory while --model independently
+        reaches the launcher's argv, neither one interfering with the
+        other."""
+        stub, recorder, cwd_recorder = _install_cwd_recorder(tmp_path)
+        target_dir = tmp_path / "worktree"
+        target_dir.mkdir()
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--cwd", str(target_dir), "--model", "opus", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert os.path.samefile(cwd_recorder.read_text().strip(), target_dir)
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        recorded_args = recorder.read_text().splitlines()
+        assert recorded_args[:4] == ["--append-system-prompt-file", str(moved[0]), "--model", "opus"]
+
+    def test_model_value_with_space_stays_one_argv_element(self, tmp_path: Path) -> None:
+        """Pins the quoting-safety property the array-based LAUNCH_ARGS build
+        exists to guarantee: a --model value containing whitespace must not
+        get word-split into multiple argv elements."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--model", "sonnet with space", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1
+        recorded_args = recorder.read_text().splitlines()
+        assert len(recorded_args) == 5
+        assert recorded_args[2] == "--model"
+        assert recorded_args[3] == "sonnet with space"
+
+    def test_model_flag_swallowing_a_flag_shaped_value_is_accepted_residual(
+        self, tmp_path: Path
+    ) -> None:
+        """Pins a known, accepted residual: --model takes $2 unconditionally,
+        with no check that $2 isn't itself a recognized flag -- unlike --cwd,
+        which incidentally rejects a flag-shaped value via its directory-
+        existence check, --model has no such backstop. `--model
+        --consume-only <file>` sets LAUNCH_MODEL to the literal string
+        "--consume-only", leaves CONSUME_ONLY at 0, and proceeds to move the
+        file and forward "--model" "--consume-only" to the launcher verbatim.
+        This mirrors test_cwd_flag_not_a_directory_channel_preserves_bidi_override_as_accepted_residual
+        above. A future change narrowing or widening this residual should
+        show up as a visible diff here."""
+        stub, recorder = _install_recorder(tmp_path)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        result = _run(
+            ["--model", "--consume-only", str(src)],
+            {"RESUME_CONTEXT_LAUNCHER": str(stub), "RESUME_CONTEXT_TMPDIR": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        moved = [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")]
+        assert len(moved) == 1, "the move is not blocked despite --model swallowing a flag-shaped value"
+        recorded_args = recorder.read_text().splitlines()
+        assert recorded_args[:4] == ["--append-system-prompt-file", str(moved[0]), "--model", "--consume-only"]
+
+
 class TestConsumeOnlyMode:
     def test_happy_path_moves_without_launching(self, tmp_path: Path) -> None:
         stub, recorder = _install_recorder(tmp_path)

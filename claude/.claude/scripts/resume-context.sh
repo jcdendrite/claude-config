@@ -7,7 +7,7 @@
 # files; this script is the mechanical, no-model-judgment consume+load step.
 #
 # Usage:
-#   resume-context.sh [--cwd <dir>] <continuity-file-path>
+#   resume-context.sh [--cwd <dir>] [--model <value>] <continuity-file-path>
 #   resume-context.sh --consume-only <continuity-file-path>
 #
 # --consume-only performs the move only, without resolving or launching a
@@ -26,6 +26,12 @@
 # no branch at all. Rejected together with --consume-only, since that mode
 # never launches a session for a cwd to apply to. Validated as an existing
 # directory before any file is moved.
+#
+# --model <value> forwards to the launcher as `--model <value>`, so a resume
+# can pick the new session's model the same way `claude --model <value>` would.
+# Forwarded verbatim with no validation here, since `claude` owns model alias
+# resolution — a bad value therefore fails after the move, not before it.
+# Rejected together with --consume-only, since that mode never launches.
 #
 # Env overrides:
 #   RESUME_CONTEXT_LAUNCHER  command to exec instead of `claude`. Used by tests
@@ -128,7 +134,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: resume-context.sh [--cwd <dir>] <continuity-file-path>
+Usage: resume-context.sh [--cwd <dir>] [--model <value>] <continuity-file-path>
        resume-context.sh --consume-only <continuity-file-path>
 EOF
 }
@@ -197,6 +203,7 @@ record_consumed_destination() {                 # invoked as `... || true`
 
 CONSUME_ONLY=0
 LAUNCH_CWD=""
+LAUNCH_MODEL=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --consume-only)
@@ -210,6 +217,14 @@ while [ "$#" -gt 0 ]; do
       fi
       LAUNCH_CWD=$2
       LAUNCH_CWD_DISPLAY=$(_lib_sanitize_for_terminal "$LAUNCH_CWD")
+      shift 2
+      ;;
+    --model)
+      if [ "$#" -lt 2 ]; then
+        printf 'resume-context.sh: --model requires a value\n' >&2
+        exit 1
+      fi
+      LAUNCH_MODEL=$2
       shift 2
       ;;
     --)
@@ -236,6 +251,11 @@ SRC_DISPLAY=$(_lib_sanitize_for_terminal "$SRC")
 
 if [ -n "$LAUNCH_CWD" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
   printf 'resume-context.sh: --cwd is not valid with --consume-only (that mode never launches)\n' >&2
+  exit 1
+fi
+
+if [ -n "$LAUNCH_MODEL" ] && [ "$CONSUME_ONLY" -eq 1 ]; then
+  printf 'resume-context.sh: --model is not valid with --consume-only (that mode never launches)\n' >&2
   exit 1
 fi
 
@@ -339,4 +359,9 @@ if [ -n "$LAUNCH_CWD" ]; then
   }
 fi
 
-exec "$LAUNCHER" --append-system-prompt-file "$DEST" "Continue from the handoff or brief file loaded into your system prompt. If it contains a task-list resume directive, track its pending and in-progress items from the file (not from memory) as you resume — using your session's task-list tool if one is available, otherwise inline. A missing task-list tool is not a blocker."
+# Array so the optional --model pair appends without duplicating the exec line.
+# Never empty, so "${LAUNCH_ARGS[@]}" is safe under set -u.
+LAUNCH_ARGS=(--append-system-prompt-file "$DEST")
+[[ -n "$LAUNCH_MODEL" ]] && LAUNCH_ARGS+=(--model "$LAUNCH_MODEL")
+
+exec "$LAUNCHER" "${LAUNCH_ARGS[@]}" "Continue from the handoff or brief file loaded into your system prompt. If it contains a task-list resume directive, track its pending and in-progress items from the file (not from memory) as you resume — using your session's task-list tool if one is available, otherwise inline. A missing task-list tool is not a blocker."

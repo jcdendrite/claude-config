@@ -94,6 +94,7 @@
     "root-cause-analysis": "name-only",
     "tighten-prose": "name-only",
     "measure-check-output": "name-only",
+    "review-loop-cost-audit": "name-only",
     "loop": "name-only",
     "simplify": "name-only",
     "claude-api": "off",

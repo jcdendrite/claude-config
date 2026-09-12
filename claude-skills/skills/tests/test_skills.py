@@ -617,6 +617,33 @@ class TestCodeWriterSelfReviewScope:
         assert "Never use `git diff HEAD`" in self._body()
 
 
+_TEST_TO_FIT_RULE = "fix the code, not the test"
+
+
+class TestCodeWriterTestToFitRule:
+    """Pin code-writer's Charter bullet on fixing a red check.
+
+    The second literal is verbatim-shared with ready-for-review/SKILL.md's
+    "Test-to-fit is forbidden" line, making the accepted duplication across
+    the two files mechanically detectable rather than a silent drift risk.
+    """
+
+    def _body(self) -> str:
+        return _agent_body("code-writer")
+
+    def test_names_test_to_fit(self):
+        """The Charter must name the failure mode as test-to-fit."""
+        assert "test-to-fit" in self._body().lower()
+
+    def test_states_fix_the_code_not_the_test(self):
+        """The Charter must carry the canonical rule statement verbatim."""
+        assert _TEST_TO_FIT_RULE in self._body()
+
+    def test_ready_for_review_shares_the_same_literal(self):
+        """ready-for-review/SKILL.md must carry the identical literal, pinning the cross-file duplication."""
+        assert _TEST_TO_FIT_RULE in _skill_body("ready-for-review")
+
+
 class TestSkillFidelityReviewerUndecidableDismissal:
     """Pin the decidability-keyed dismissal rule and its visible output slot.
 

@@ -1510,6 +1510,24 @@ def test_graceful_end_record_entry_without_mtime_never_matches(tmp_path):
     assert _mod._graceful_end_record(entry, records) is None
 
 
+def test_graceful_end_record_reason_other_no_match(tmp_path):
+    """Condition 4: a record whose reason is "other" is excluded even when
+    it otherwise satisfies conditions 1-3."""
+    record = _session_end_record(pid=100, mtime=1500.0, reason="other", config_dir=tmp_path)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is None
+
+
+def test_graceful_end_record_null_reason_matches(tmp_path):
+    """Condition 4's other half: a record with reason=None still matches --
+    only "other" has field evidence of firing on a non-deliberate exit."""
+    record = _session_end_record(pid=100, mtime=1500.0, reason=None, config_dir=tmp_path)
+    entry = _registry_entry(pid=100, mtime=1000.0, config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 100): record}
+    assert _mod._graceful_end_record(entry, records) is record
+
+
 # ---------------------------------------------------------------------------
 # _graceful_end_coverage, _all_entries_explained, _has_indeterminate_liveness
 # -- direct unit tests
@@ -1979,6 +1997,21 @@ def test_classify_registry_dead_after_boot_fully_covered_no_reason_says_no_reaso
     assert "reason None" not in row.detail
 
 
+def test_classify_registry_dead_after_boot_reason_other_is_not_confirmed_clean_exit(tmp_path):
+    """reason="other" must not confer Confirmed clean exit even when a
+    record exists for every tracked instance."""
+    entry = _registry_entry(mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=entry.pid, mtime=1600.0, reason="other", config_dir=tmp_path)
+    records = {(tmp_path.resolve(), entry.pid): record}
+    row = _mod._classify_session(
+        "s1", [entry], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        session_end_records=records,
+    )
+    assert row.classification != _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
 def test_classify_registry_full_coverage_ignores_uncovered_lookup_entry_for_same_session(tmp_path):
     """The registry branch's full-coverage promotion must rest on the
     registry's own dead_after_boot list alone. `lookup_entries` here is
@@ -2042,6 +2075,28 @@ def test_classify_registry_dead_after_boot_partially_covered_stays_possible_cras
     assert row.classification == _mod.CLASS_POSSIBLE_CRASH
     assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
     assert "at least one did not" in row.detail
+
+
+def test_classify_registry_dead_after_boot_one_reason_other_stays_partial_coverage(tmp_path):
+    """One instance has a genuine graceful-exit record, the other only an
+    "other"-reason record. The "other" record must not count toward
+    coverage, so this reads as 1 of 2 (partial), not 2 of 2 (confirmed)."""
+    explained_entry = _registry_entry(pid=100, mtime=1500.0, config_dir=tmp_path)
+    inconclusive_entry = _registry_entry(pid=101, mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(last_activity=1500.0, has_main=True)
+    explained_record = _session_end_record(pid=100, mtime=1600.0, reason="prompt_input_exit", config_dir=tmp_path)
+    inconclusive_record = _session_end_record(pid=101, mtime=1600.0, reason="other", config_dir=tmp_path)
+    records = {
+        (tmp_path.resolve(), 100): explained_record,
+        (tmp_path.resolve(), 101): inconclusive_record,
+    }
+    row = _mod._classify_session(
+        "s1", [explained_entry, inconclusive_entry], [], transcript, boot_time=1000.0,
+        ps_lstart=_fake_ps_lstart({}), ps_usable=True, session_end_records=records,
+    )
+    assert row.classification != _mod.CLASS_CONFIRMED_CLEAN_EXIT
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
 
 
 def test_classify_registry_dead_after_boot_no_matching_record_omits_coverage_sentence(tmp_path):
@@ -2143,6 +2198,40 @@ def test_classify_lookup_dead_pid_fully_covered_is_confirmed_clean_exit(tmp_path
         lookup_entries=(lookup,), session_end_records=records,
     )
     assert row.classification == _mod.CLASS_CONFIRMED_CLEAN_EXIT
+
+
+def test_classify_lookup_dead_pid_reason_other_is_not_confirmed_clean_exit(tmp_path):
+    """Same reason="other" carve-out as the registry branch, exercised via
+    the lookup branch's own _graceful_end_coverage call."""
+    lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
+    record = _session_end_record(pid=400, mtime=1600.0, reason="other", config_dir=tmp_path)
+    records = {(tmp_path.resolve(), 400): record}
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(lookup,), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+
+
+def test_classify_lookup_dead_pid_one_reason_other_stays_partial_coverage(tmp_path):
+    """Lookup-branch mirror of the registry branch's mixed partial-coverage
+    test: one instance genuinely explained, one only reason="other"."""
+    explained_lookup = _lookup_entry(pid=400, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    inconclusive_lookup = _lookup_entry(pid=401, session_id="s1", mtime=1500.0, config_dir=tmp_path)
+    transcript = _transcript_info(session_id="s1", last_activity=1500.0, has_main=True)
+    explained_record = _session_end_record(pid=400, mtime=1600.0, reason="prompt_input_exit", config_dir=tmp_path)
+    inconclusive_record = _session_end_record(pid=401, mtime=1600.0, reason="other", config_dir=tmp_path)
+    records = {
+        (tmp_path.resolve(), 400): explained_record,
+        (tmp_path.resolve(), 401): inconclusive_record,
+    }
+    row = _mod._classify_session(
+        "s1", [], [], transcript, boot_time=1000.0, ps_lstart=_fake_ps_lstart({}), ps_usable=True,
+        lookup_entries=(explained_lookup, inconclusive_lookup), session_end_records=records,
+    )
+    assert row.classification == _mod.CLASS_POSSIBLE_CRASH
+    assert "1 of 2 tracked process instances for this session recorded a graceful SessionEnd" in row.detail
 
 
 def test_classify_lookup_dead_pid_no_transcript_fully_covered_is_confirmed_clean_exit(tmp_path):
