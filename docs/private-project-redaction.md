@@ -114,7 +114,11 @@ Both have to be satisfied, and neither extends by analogy:
 
 - *What may be counted:* this repo's own tooling in use — Claude Code
   tool calls, sessions, and agent dispatches. Nothing else.
-- *How it may be reported:*
+- *How it may be reported:* A PR or branch count is freely publishable
+  on its own under "Own-history counts were never inside this class"
+  below. That exemption covers what a bare count is, not what may
+  serve as a rate or granularity unit for the Counts or Cost/Duration
+  bullet below.
   - Counts may be reported as a total, a share, or a median. Report
     each at any granularity — per tool call, per session, per
     dispatch, or pooled. A count carries no external reference point
