@@ -123,6 +123,20 @@ Both have to be satisfied, and neither extends by analogy:
     each at any granularity — per tool call, per session, per
     dispatch, or pooled. A count carries no external reference point
     that converts it into an engagement-value estimate on its own.
+    Counts carry no account or machine pooling boundary: report a
+    Count total, share, or median at any pooling breadth, including
+    one spanning every account on a machine or several machines. This
+    governs how wide the pool may be, never how it may be broken
+    down. A Count split along the project, account, machine,
+    engagement, or calendar-time dimension stays barred by the
+    share-split bullet below. A Count published alongside a per-unit
+    Cost rate stays barred by "Composition is publication." A pooled
+    Count that crosses the boundary can still be subtracted against
+    another publication of one account's or one machine's own exact
+    Count of the same quantity — the same account-isolation risk
+    "Account and machine scope" below names for Cost. The Approval
+    gate's disclosure duty for a boundary-crossing Count exists to
+    catch this before it publishes.
   - Cost is dollar or token spend on running the tooling. Duration is
     wall-clock time spent running the tooling. Cost and Duration may
     never be reported as a client-billed, engagement-revenue, or
@@ -165,24 +179,20 @@ only within one figure read alone.
    calendar-time axis of its own. A series re-exposes the cadence the
    Cadence bullet above excludes. The one exception is the split
    below.
-2. **One boundary-crossing exception, ever.** This carve-out defines
-   exactly two narrow exceptions to its own defaults: the split (an
-   exception to "No time series" above) and the Count bin (an
-   exception to the account/machine default below). Across everything
-   ever published under this carve-out, at most one of the two — a
-   split or a bin, whichever comes first — may ever be published. Once
-   either lands, in this repository or any other artifact, no further
-   split and no further bin is permitted, regardless of label or
+2. **One split, ever.** This carve-out defines exactly one narrow
+   exception to "No time series" above: the split. Across everything
+   ever published under this carve-out, at most one split may ever be
+   published. Once one lands, in this repository or any other
+   artifact, no further split is permitted, regardless of label or
    statistic, same or different. This repository's history offers a
    commit near any date a reader would want, so the split's limit
-   isn't arbitrary. The bin's fixed ladder (below) covers every count,
-   so its limit isn't arbitrary either. A further instance needs a PR
-   amending this document, not a fresh proposal under it.
+   isn't arbitrary. A further instance needs a PR amending this
+   document, not a fresh proposal under it.
 
-   Only a split or a bin published under this carve-out spends this
-   allowance. Content predating this carve-out does not, whatever
-   shape it takes. Where such content sits beside a new proposal, the
-   composition bar below governs instead.
+   Only a split published under this carve-out spends this allowance.
+   Content predating this carve-out does not, whatever shape it takes.
+   Where such content sits beside a new proposal, the composition bar
+   below governs instead.
 3. **Composition is publication.** This bar reaches any set of
    published figures that together produce a barred result, whether
    they land in one artifact or in separate publications months apart.
@@ -192,8 +202,10 @@ only within one figure read alone.
    instance.
 
    *Worked rejection.* Account P carries no private-engagement
-   records, so its exact count is freely publishable outside this
-   carve-out entirely — say, 4,000 tool calls. If a Counts share could
+   records, so its own transcript-analysis.py tool-call count is
+   freely publishable under "Own-history counts were never inside
+   this class" below, absent any already-published carve-out figure
+   it would narrow — say, 4,000 tool calls. If a Counts share could
    split along the account dimension, "Account P: 40% of pooled tool
    calls" would combine with that exact count to solve the pooled
    total (10,000) by division, then Account Q's own exact count
@@ -226,9 +238,10 @@ after value either side of a pivot. Every condition below must hold.
   total outside a split. The split adds a second point in time, never
   a new form.
 - **One account, one machine.** Both sides resolve to a single
-  `CLAUDE_CONFIG_DIR` account and machine. The cross-account/
-  cross-machine share exception in "Account and machine scope" below
-  does not extend to a split.
+  `CLAUDE_CONFIG_DIR` account and machine. Neither of "Account and
+  machine scope" below's two exceptions — Cost's cross-account/
+  cross-machine share mode, or Counts' unscoped reporting — extends to
+  a split.
 - **Exhaustive partition.** Together, the two sides cover exactly the
   period the whole-period figure covered.
 - **No per-side pool size.** Neither side's own pool size is
@@ -248,23 +261,29 @@ The test is content, not account or machine count.
   a count with no per-account or per-machine decomposition. Branch,
   PR, review-finding, hook-denial, and log-line counts have none, so
   unioning more roots discloses more of the same thing, not a new
-  one. It does not extend to a `transcript-analysis.py` Count or
-  Cost/Duration measurement of tool calls, sessions, dispatches,
-  dollars, or duration. That measurement type carries exactly the
-  per-account or per-machine decomposition "Account and machine
-  scope" and "Count bin" exist to govern. It stays inside their
-  machinery regardless of `--this-repo` scoping.
+  one. It does not extend to a `transcript-analysis.py` Cost or
+  Duration measurement of tool calls, sessions, dispatches, dollars,
+  or duration — that measurement type carries exactly the per-account
+  or per-machine decomposition "Cost and Duration scope" above exists
+  to govern, and stays inside that machinery regardless of
+  `--this-repo` scoping. A `transcript-analysis.py` Count of the same
+  tool calls, sessions, or dispatches is different: it carries no
+  account or machine default to begin with, since Counts carry none —
+  see "Counts are not scoped by this boundary" above. It still answers
+  to the closed lists, the time-series bar, the composition bar, and
+  the Approval gate below, the same as every other figure this
+  carve-out governs.
 - Doubt about whether an account, machine, or repository genuinely
   carries no private-engagement data goes to the owner, same as doubt
   about pool diversity below. Doubt is never a reason to publish
   anyway.
 - This exemption covers what a figure is, not whether it can combine
-  with an already-published split or bin to complete a
-  reconstruction. An own-history figure that would narrow an
-  already-published split's or bin's residual — directly or through a
-  published rate — needs the owner's word first. This reaches any
-  own-history figure regardless of its own quantity type or scope
-  shape:
+  with any figure already published under this carve-out to complete
+  a reconstruction. An own-history figure that would narrow the
+  residual of any figure already published under this carve-out —
+  directly or through a published rate — needs the owner's word
+  first. This reaches any own-history figure regardless of its own
+  quantity type or scope shape:
   - a same-quantity restatement;
   - a `--this-repo` hook-denial or log-line count pooled across
     several roots;
@@ -272,8 +291,9 @@ The test is content, not account or machine count.
     already-published rate.
 - Before publishing such a figure, the agent checks this repository's
   own history, prior PR bodies, and other artifacts for an
-  already-published split or bin — the same search the Approval gate
-  below already requires for its own proposals. If one exists, the
+  already-published figure under this carve-out whose residual it
+  would narrow — the same search the Approval gate below already
+  requires for a split's own proposals. If one exists, the
   agent tells the owner what the combination would newly disclose and
   asks in the session. An uncited in-session answer satisfies this,
   not the durable citation the Approval gate below requires, since the
@@ -282,46 +302,27 @@ The test is content, not account or machine count.
 
 ### Account and machine scope
 
-Every reporting mode in both lists above defaults to a single
-`CLAUDE_CONFIG_DIR` account and machine — a total, a rate, and a
-median all stay there. A dimensionless share is the one exception:
-Cost's share-of-spend mode and Counts' share mode may span accounts or
-machines. A pooled absolute that crosses the boundary can be
-subtracted against another publication of one account's or one
-machine's own absolute, exposing a private engagement's activity on a
+**Cost and Duration scope.** Cost's and Duration's reporting modes
+default to a single `CLAUDE_CONFIG_DIR` account and a single machine —
+a total, a rate, and a median all stay there. Cost's dimensionless
+share-of-spend mode is the one exception and may span accounts or
+machines. Duration has no share mode, so Duration never crosses the
+boundary at all. A pooled Cost absolute that crosses the boundary can
+be subtracted against another publication of one account's or one
+machine's own absolute, exposing a private engagement's spend on a
 shared account or machine.
 
-### Count bin, a narrow exception to the account/machine default
+**Counts are not scoped by this boundary.** See the Counts bullet
+under "Scope — two closed lists" above.
 
-A pooled Count total — tool calls, sessions, or agent dispatches,
-nothing else — that crosses the account/machine boundary may publish
-as an order-of-magnitude label instead of an exact figure. Cost and
-Duration are unaffected. Cost stays a rate or a share, never a total
-or a range. Duration never crosses the boundary at all.
-
-- **Fixed bins, never chosen per figure:**
-  - Below 10: "fewer than 10"
-  - 10–99: "dozens"
-  - 100–999: "hundreds"
-  - 1,000–9,999: "thousands"
-  - 10,000 or more: "tens of thousands"
-
-  Every count maps to exactly one label, so a missing one can't itself
-  be a signal.
-- **Whether to publish at all is the approval gate's call**, not a
-  consequence of which bin a figure falls into.
-- **No pairing a bin with a single account's or machine's exact count
-  of the same quantity, in the same proposal or artifact** — doing so
-  lets a reader subtract one from the other directly. Cross-artifact
-  pairing of the same kind is already barred by "Composition is
-  publication" above; this bullet only names the same-artifact case.
-- **The same exact figure can still surface separately, in an
-  unrelated artifact** — `pr-cost-section.sh`'s automated per-PR
-  session counts, for one. That exposure is an accepted cost this
-  bullet doesn't track. The disclosure the Approval gate below
-  requires for a bin is where it's actually weighed: the subtraction
-  only resolves to one engagement when the pool is thin, and grows
-  weaker as the pool spans more accounts or machines.
+**Account cardinality and machine cardinality are different
+questions.** How many accounts or declared roots exist is never
+published as a digit or a bounded range, at any pooling breadth. An
+account can correspond to a single private engagement, so its
+cardinality is the per-account dimension the repo-root `CLAUDE.md`
+bars absolutely. How many machines exist may be stated as a digit. A
+machine is the operator's own hardware and partitions no engagement.
+This repository states its own machine count in ordinary prose.
 
 ### Approval gate
 
@@ -341,8 +342,8 @@ they differ. Before the artifact ships, the owner confirms the
 approval that citation points at. That confirmation stands in for a
 durable record the citing agent has no write access to produce
 itself. The confirmation covers every citation this gate requires.
-That includes a split's or a bin's approval, and the pivot-naming
-turn a split discloses. A citation to anyone
+That includes a split's approval, and the pivot-naming turn it
+discloses. A citation to anyone
 else's comment, however definitive it reads, does not satisfy this
 gate. A narrative claim that approval occurred is not a citation
 either. Absent that citation, don't publish.
@@ -356,18 +357,16 @@ additionally discloses two things, both approval-only input:
 - each side's window bounds and pool size, so the owner can judge
   whether either side is thin enough to isolate one engagement.
 
-For a bin under "Count bin, a narrow exception to the account/machine
-default" above, the proposal additionally discloses two things, both
-approval-only input:
-
-- the exact count behind the label;
-- which accounts or machines contribute to the pool, so the owner can
-  judge whether the label sits near a bin boundary or draws from a
-  thin pool.
-
-The owner's approval must also weigh the ongoing erosion
-`pr-cost-section.sh`'s per-PR exact session counts will keep applying
-to the bin's residual, since no further gate re-checks it later.
+For a pooled Count that spans more than one account or machine, the
+proposal additionally discloses which accounts or machines contribute
+to the pool, so the owner can judge whether it draws from a thin pool,
+and names any already-published or routinely-automated single-account
+or single-machine exact figure of the same quantity —
+`pr-cost-section.sh`'s per-PR exact session counts, published
+automatically on every merged PR once `pr-cost-disclosure` is enabled,
+at minimum — so the owner can weigh whether the pooled figure and that
+exact figure together isolate one account's or machine's own count by
+subtraction.
 
 None of this ever appears in the published figure, and none of it is
 ever quoted in any commit message, PR body, issue, or other
@@ -392,12 +391,12 @@ activity falls in more tightly than either figure discloses alone.
 That narrowing — not merely the pre-existing publication's existence —
 is what the proposal must name.
 
-For a split or a bin, it additionally searches this repository's own
-history for a prior instance of either published under this
-carve-out, and names what it finds. That search is diligence, not
-enforcement. The owner is the one continuous witness, across this
-repository and any other publication artifact, to what has already
-shipped under it. Finding nothing is not approval to publish.
+For a split, it additionally searches this repository's own history
+for a prior instance published under this carve-out, and names what
+it finds. That search is diligence, not enforcement. The owner is the
+one continuous witness, across this repository and any other
+publication artifact, to what has already shipped under it. Finding
+nothing is not approval to publish.
 
 Absent the durable citation this gate requires, the whole carve-out is
 closed by default, the same as the blocklist tier's "if in doubt,
