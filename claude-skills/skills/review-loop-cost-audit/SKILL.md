@@ -94,7 +94,7 @@ Where the narrative cannot settle which of these applies, the verdict is **Incon
 
 ## Step 4 — Verdict rubric
 
-The **post-freeze round share** — post-freeze rounds as a fraction of the branch's rounds — is the only discriminating signal, and it yields a candidate rather than a verdict. Step 3(g)'s narrative read is what confirms or rejects the label, so a thrash label is a claim that read must evidence and never a threshold the share alone can clear. Never decide from the outside-review-window share: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
+The **post-freeze round share** — post-freeze rounds as a fraction of the branch's rounds — is the only discriminating signal. It yields a candidate rather than a verdict. Step 3(g)'s narrative read is what confirms or rejects the label. A thrash label is a claim that read must evidence, and never a threshold the share alone can clear. Never decide from the outside-review-window share: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
 
 Report Step 3(f)'s skew and dispatches-per-round as descriptive context, never as criteria. Neither tracks the freeze partition: a branch with no post-freeze rounds can carry the corpus's highest within-branch skew. Requiring them as co-signals suppresses true positives.
 
