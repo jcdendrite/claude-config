@@ -389,7 +389,7 @@ Immediately once dispositions are finalized — before DEFER persistence below �
 - `mixed` — both contributed
 - `unknown` — cannot be determined (e.g. a handoff from a prior session)
 
-If the review is clean — zero findings — call `~/.claude/scripts/review-ledger.sh append code-review --disposition CLEAN --round <N> --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high` instead (no `--finding`/`--rationale`: the script rejects them for `CLEAN`), in addition to, not instead of, the marker write at the end of this skill. This guarantees the ledger records one event per round-open regardless of outcome, matching Step 0.1's own CLEAN append for its short-circuit path.
+If the review is clean — zero findings — call `~/.claude/scripts/review-ledger.sh append code-review --disposition CLEAN --round <N> --authoring-agent code-writer|inline|mixed|unknown --authoring-effort high` instead (the script rejects a present `--finding`/`--rationale` for `CLEAN`). Make this call in addition to, not instead of, the marker write at the end of this skill. This guarantees the ledger records one event per round-open regardless of outcome, matching Step 0.1's own CLEAN append for its short-circuit path.
 
 Unlike the marker write at the end of this skill, this runs whether or not the review is clean — a mid-loop review that is not yet clean is exactly the case this ledger exists to preserve across a compaction or session resume. A finding rejected by the script for an over-length `--finding`/`--rationale`, or for an invalid `--authoring-agent`/`--authoring-effort`/`--round` value, should be summarized more tightly (or corrected) and retried, not skipped.
 

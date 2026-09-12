@@ -951,6 +951,36 @@ class TestRoundNumberMismatchIntegration:
         # of the mismatch above.
         assert result["data_quality"][ao._DQ_UNDECIDABLE] == 1
 
+    def test_mismatched_session_still_increments_kill_switch_inferred_clean(self, fake_projects):
+        """_DQ_KILL_SWITCH_INFERRED_CLEAN measures a transcript-side fact
+        (a round's own marker write with no matching ledger row), not the
+        ledger/round join session_round_mismatch guards. It must still
+        increment for a round inside a mismatched session, unlike the
+        headline outcomes counters, which this same session's mismatch
+        excludes. Mirrors TestLedgerPossiblySweptIntegration's own
+        test_old_session_with_no_ledger_file_excludes_dispatch_and_increments_counter,
+        which pins the analogous interaction for the possibly-swept
+        exclusion."""
+        session_id = "sess-mismatched-with-inferred-clean-round"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=3, disposition="DEFER"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:10.000Z", content=[_marker_write_use("m1")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s3", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        # Round 2 has no matching ledger row (the ledger only carries
+        # rounds 1 and 3), but its own marker write still lets the
+        # kill-switch-inferred-clean fallback fire.
+        assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
+
 
 class TestLedgerPossiblySweptIntegration:
     def test_old_session_with_no_ledger_file_excludes_dispatch_and_increments_counter(

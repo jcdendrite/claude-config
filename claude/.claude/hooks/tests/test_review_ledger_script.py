@@ -378,6 +378,7 @@ class TestReviewLedgerRoundValidation:
         result = _run(_append_args(round="-1"), cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
         assert not _ledger_path(isolated_home, git_repo).exists()
+        assert "got '-1'" in result.stderr
 
     def test_valid_round_accepted_and_recorded(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -457,9 +458,8 @@ class TestReviewLedgerRoundScopedDedup:
     def test_identical_finding_in_two_different_rounds_both_land(self, isolated_home, git_repo):
         """Two rounds raising a textually identical finding/disposition/
         rationale must not collapse into one ledger line under the
-        round-scoped dedup key -- the bug this schema revision fixes, since
-        whole-line dedup alone would have collapsed them once event_time
-        stopped being the only varying field."""
+        round-scoped dedup key, since whole-line dedup alone would collapse
+        them once event_time stopped being the only varying field."""
         _seed_session(isolated_home, SID)
         _run(_append_args(round="1"), cwd=git_repo, home=isolated_home)
         result = _run(_append_args(round="2"), cwd=git_repo, home=isolated_home)

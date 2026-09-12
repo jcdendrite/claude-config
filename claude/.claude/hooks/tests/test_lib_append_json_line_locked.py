@@ -20,9 +20,15 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
 from helpers import HOOKS_DIR
 
 from .conftest import _dead_pid
+from .test_lib_append_line_locked import (
+    _EARLY_RETURN_CEILING_SECONDS,
+    _LOCK_HOLD_SECONDS,
+    _RETRY_BUDGET_SECONDS,
+)
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -217,3 +223,78 @@ class TestLibAppendJsonLineLockedLockEviction:
         assert result.returncode == 0, result.stderr
         assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
         assert lock_file.exists()
+
+
+class TestLibAppendJsonLineLockedConcurrency:
+    """Two-process race coverage of the shared _lib_acquire_append_lock
+    primitive against this function's own, heavier critical section (an
+    extra _lib_jq subprocess for the dedup-key comparison, on top of the
+    grep + printf _lib_append_line_locked's own critical section runs).
+    Mirrors test_lib_append_line_locked.py's
+    TestLibAppendLineLockedConcurrency.test_lock_held_past_retry_budget_falls_through_to_unlocked_append."""
+
+    @pytest.mark.timing
+    def test_lock_held_past_retry_budget_falls_through_to_unlocked_append(self, tmp_path):
+        """A lock held by a genuinely live holder for longer than the
+        0.25s retry budget forces real retry exhaustion (not lucky
+        reacquisition, not dead-holder eviction), and the append must still
+        land via the unlocked-append fallback rather than blocking or
+        dropping the write. The same bound holds even though this
+        critical section additionally runs a jq subprocess for the
+        dedup-key comparison."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        # A pre-existing, non-matching line is required so the dedup branch's
+        # `[ -f "$file" ] && [ -s "$file" ]` gate is true and the jq
+        # subprocess actually runs on the timed path -- against an empty or
+        # absent target, _lib_append_json_line_locked skips dedup entirely
+        # and this test would measure the same path as its plain sibling.
+        target.write_text('{"round":0,"disposition":"ADDRESS"}\n')
+        # The holder writes its own live pid into the lock file itself (the
+        # same noclobber idiom _lib_acquire_append_lock uses) and then holds
+        # it for _LOCK_HOLD_SECONDS, well past the 0.25s retry budget --
+        # long enough that eviction never fires and the racing append must
+        # exhaust every retry against a still-live holder.
+        holder = subprocess.Popen(
+            ["bash", "-c", f'echo "$$" > "$1"; sleep {_LOCK_HOLD_SECONDS}; rm -f "$1"',
+             "_", str(lock_file)],
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not lock_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert lock_file.exists(), "holder failed to create the lock file in time"
+            holder_pid = lock_file.read_text().strip()
+
+            start = time.monotonic()
+            result = _append_json_line_locked(
+                target, lock_file, '{"round":1,"disposition":"ADDRESS"}',
+                "{round, disposition}",
+            )
+            elapsed = time.monotonic() - start
+
+            assert result.returncode == 0, result.stderr
+            assert target.read_text().splitlines() == [
+                '{"round":0,"disposition":"ADDRESS"}',
+                '{"round":1,"disposition":"ADDRESS"}',
+            ]
+            # Genuine exhaustion takes at least the retry budget (each
+            # `sleep 0.05` is a guaranteed minimum, never less) but nowhere
+            # near the holder's own hold duration -- an early return would
+            # mean it never really exhausted its retries against the
+            # still-live holder.
+            assert _RETRY_BUDGET_SECONDS <= elapsed < _EARLY_RETURN_CEILING_SECONDS, (
+                f"append call took {elapsed:.2f}s -- expected roughly the "
+                f"{_RETRY_BUDGET_SECONDS}s retry budget, not an early return "
+                f"or a block until the {_LOCK_HOLD_SECONDS}s holder released"
+            )
+            assert lock_file.read_text().strip() == holder_pid, (
+                "the still-live holder's lock must be left alone by the "
+                "fallback append, not evicted or overwritten"
+            )
+        finally:
+            try:
+                holder.wait(timeout=_LOCK_HOLD_SECONDS + 5)
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                holder.wait()
