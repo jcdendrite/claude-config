@@ -8283,18 +8283,18 @@ def _extract_cache_rebuild_dispersion(out: str) -> dict[str, object]:
 
 
 def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
-    """Read --ttl-verdict's own per-bucket summary line ('main: populated
-    5m-tier roots=N  populated 1h-tier roots=N  excluded (mixed-or-
-    unpopulated) roots=N  verdict=...') for one bucket."""
+    """Read --ttl-verdict's own per-bucket summary line ('main: consistent
+    5m roots=N  consistent 1h roots=N  excluded (mixed-tier or no
+    data) roots=N  verdict=...') for one bucket."""
     match = re.search(
-        rf"^{re.escape(origin)}: populated 5m-tier roots=(\d+)  populated 1h-tier roots=(\d+)"
-        r"  excluded \(mixed-or-unpopulated\) roots=(\d+)  verdict=(.+)$",
+        rf"^{re.escape(origin)}: consistent 5m roots=(\d+)  consistent 1h roots=(\d+)"
+        r"  excluded \(mixed-tier or no data\) roots=(\d+)  verdict=(.+)$",
         out, re.MULTILINE,
     )
     assert match is not None, f"ttl-verdict summary line not found for origin {origin!r}"
     return {
-        "populated_5m": match.group(1),
-        "populated_1h": match.group(2),
+        "consistent_5m": match.group(1),
+        "consistent_1h": match.group(2),
         "excluded": match.group(3),
         "verdict": match.group(4),
     }
@@ -8310,7 +8310,7 @@ def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dic
     section_start = lines.index(f"### {origin}")
     section_end = len(lines)
     for i in range(section_start + 1, len(lines)):
-        if lines[i].startswith("### ") or lines[i].startswith(f"{origin}: populated"):
+        if lines[i].startswith("### ") or lines[i].startswith(f"{origin}: consistent"):
             section_end = i
             break
     section_lines = lines[section_start:section_end]
@@ -10304,8 +10304,8 @@ class TestCacheRebuildTokenTiebreakerFavors5m:
 
     def test_z_equal_to_w1h_is_a_disagreement_not_a_favorable_tie(self):
         """Z == W1h counts as a disagreement, never a wash --
-        including the degenerate 0 == 0 case (a root with neither
-        direction populated never reaches this function in the report's
+        including the degenerate 0 == 0 case (a root with no data in
+        either direction never reaches this function in the report's
         own per-root reduction, but the function itself must not
         special-case zero)."""
         assert _mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10) is None
@@ -10315,53 +10315,46 @@ class TestCacheRebuildTokenTiebreakerFavors5m:
 class TestCacheRebuildRootVerdictInput:
     """Direct unit coverage for _cache_rebuild_root_verdict_input -- the
     per-root reduction the report's own per-bucket loop calls once per
-    5m-tier root and once per 1h-tier root, always with a tiebreaker; the
-    raw-token tiebreaker runs for every populated root regardless of
-    tier."""
+    5m-tier root (apply_tiebreaker=False, tiebreaker never runs -- W1h is
+    always 0 for a 5m-tier root by construction, so a raw-token comparison
+    against it is degenerate) and once per 1h-tier root (apply_tiebreaker=
+    True, tiebreaker gates clears)."""
 
-    def test_5m_tier_root_favors_1h_and_clears_when_tiebreaker_agrees(self):
+    def test_5m_tier_root_clears_despite_disagreeing_tiebreaker_value(self):
+        """apply_tiebreaker is False for a 5m-tier root, so clears is
+        decided by the margin alone even when tiebreaker_favors_5m is
+        passed a value that would disagree with the dollar accounting's
+        own sign."""
         root_input = _mod._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="1h", negative_favors="5m",
-            tiebreaker_favors_5m=False,
+            apply_tiebreaker=False, tiebreaker_favors_5m=True,
+        )
+        assert root_input == {"favors": "1h", "clears": True}
+
+    def test_5m_tier_root_clears_despite_tiebreaker_wash(self):
+        """A 5m-tier root's most common would-be tiebreaker outcome is
+        Z == W1h == 0, a wash -- but apply_tiebreaker is False for it, so
+        the wash never gates clears the way it does for a 1h-tier root."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
         )
         assert root_input == {"favors": "1h", "clears": True}
 
     def test_5m_tier_root_favoring_5m_when_net_primary_is_non_positive(self):
         """A 5m-tier root whose own net$ is non-positive (no savings from
-        adopting 1h) favors staying at 5m, never clearing -- even with an
-        agreeing tiebreaker, isolating that the margin failure alone is
+        adopting 1h) favors staying at 5m, never clearing -- apply_tiebreaker
+        is always False for a 5m-tier root, so the margin failure alone is
         what fails it here."""
         root_input = _mod._cache_rebuild_root_verdict_input(
             net_primary=-1.0, net_sensitivity=-1.0, volume=10.0,
             positive_favors="1h", negative_favors="5m",
-            tiebreaker_favors_5m=True,
+            apply_tiebreaker=False,
         )
         assert root_input == {"favors": "5m", "clears": False}
-
-    def test_5m_tier_root_declines_on_tiebreaker_disagreement_despite_clearing_margin(self):
-        """A 5m-tier root's own dollar margin clears comfortably at both
-        boundaries, favoring a switch to 1h, but its raw-token tiebreaker
-        disagrees -- declines rather than adopting."""
-        root_input = _mod._cache_rebuild_root_verdict_input(
-            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
-            positive_favors="1h", negative_favors="5m",
-            tiebreaker_favors_5m=True,
-        )
-        assert root_input == {"favors": "1h", "clears": False}
-
-    def test_5m_tier_root_declines_on_tiebreaker_wash(self):
-        """A 5m-tier root's W1h is always 0 (the population test forces the
-        opposite accumulator to zero), so its most common tiebreaker
-        outcome is Z == W1h == 0 -- a wash, which counts as a
-        disagreement, never a favorable tie, even when the dollar margin
-        clears comfortably."""
-        root_input = _mod._cache_rebuild_root_verdict_input(
-            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
-            positive_favors="1h", negative_favors="5m",
-            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(0, 0),
-        )
-        assert root_input == {"favors": "1h", "clears": False}
 
     def test_1h_tier_root_declines_when_sensitivity_boundary_fails_margin(self):
         """Clears at the primary boundary's own margin but not at the
@@ -10370,7 +10363,7 @@ class TestCacheRebuildRootVerdictInput:
         root_input = _mod._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=-1.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
-            tiebreaker_favors_5m=True,
+            apply_tiebreaker=True, tiebreaker_favors_5m=True,
         )
         assert root_input == {"favors": "5m", "clears": False}
 
@@ -10381,7 +10374,20 @@ class TestCacheRebuildRootVerdictInput:
         root_input = _mod._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
-            tiebreaker_favors_5m=False,
+            apply_tiebreaker=True, tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_declines_on_tiebreaker_wash(self):
+        """A 1h-tier root's own raw-token tiebreaker wash (Z == W1h) counts
+        as a disagreement, never a favorable tie, even when the dollar
+        margin clears comfortably -- apply_tiebreaker is True here, unlike
+        a 5m-tier root, so the wash still gates clears."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=5.0, net_sensitivity=5.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True,
+            tiebreaker_favors_5m=_mod._cache_rebuild_token_tiebreaker_favors_5m(10, 10),
         )
         assert root_input == {"favors": "5m", "clears": False}
 
@@ -10389,7 +10395,7 @@ class TestCacheRebuildRootVerdictInput:
         root_input = _mod._cache_rebuild_root_verdict_input(
             net_primary=5.0, net_sensitivity=5.0, volume=10.0,
             positive_favors="5m", negative_favors="1h",
-            tiebreaker_favors_5m=True,
+            apply_tiebreaker=True, tiebreaker_favors_5m=True,
         )
         assert root_input == {"favors": "5m", "clears": True}
 
@@ -10399,7 +10405,7 @@ class TestCacheRebuildTtlVerdictDecision:
     reduction, with hand-fed per-root {"favors", "clears"} inputs -- one
     test per branch."""
 
-    def test_zero_populated_roots_is_no_verdict(self):
+    def test_zero_consistent_roots_is_no_verdict(self):
         assert _mod._cache_rebuild_ttl_verdict([]) == _mod._TTL_VERDICT_NO_VERDICT
 
     def test_single_direction_all_clearing_is_adopt(self):
@@ -10447,11 +10453,12 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
     def test_main_bucket_5m_tier_root_reaches_adopt(self, fake_projects, capsys):
         """A clean 5m-tier main-thread root (W5m=1,000,000, X=500,000,
         comfortably clearing margin) reaches 'adopt' for the main bucket.
-        A third, idle-gap warm read (300,000 tokens, no write at all) gives
-        the raw-token tiebreaker non-wash evidence -- Z=300,000 against
-        this root's own W1h=0 disfavors 5m, agreeing with the dollar
-        accounting's own "favors 1h" direction -- since a wash would
-        otherwise force a disagreement regardless of margin."""
+        A third, idle-gap warm read (300,000 tokens, no write at all)
+        accumulates Z=300,000 for this root, but apply_tiebreaker is False
+        for a 5m-tier root, so this read's presence or absence never gates
+        its own clears (see
+        test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash
+        below for the same root reaching 'adopt' with no read at all)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
             _priced(
@@ -10467,8 +10474,8 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
-        assert summary["populated_5m"] == "1"
-        assert summary["populated_1h"] == "0"
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "0"
         assert summary["verdict"] == "adopt"
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -10477,12 +10484,13 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert root_row["Favors"] == "1h"
         assert root_row["Clears"] == "True"
 
-    def test_main_bucket_5m_tier_root_declines_on_tiebreaker_wash(self, fake_projects, capsys):
-        """The same clean 5m-tier root as above (W5m=1,000,000, X=500,000,
-        comfortably clearing margin), but with no idle-gap read at all: Z
-        stays 0, tying its own W1h=0 -- a wash, which counts as
-        a disagreement, never a favorable tie, so this root declines
-        rather than adopting even though its dollar margin clears."""
+    def test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash(self, fake_projects, capsys):
+        """Regression test guarding the tiebreaker-scope fix: apply_tiebreaker
+        is False for a 5m-tier root, so its own Z==W1h==0 wash (no idle-gap
+        read at all) never gates clears, and this root adopts despite the
+        wash -- same clean 5m-tier root as
+        test_main_bucket_5m_tier_root_reaches_adopt above (W5m=1,000,000,
+        X=500,000), but with no third call at all."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
             _priced(
@@ -10494,15 +10502,15 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
-        assert summary["populated_5m"] == "1"
-        assert summary["verdict"] == "decline"
+        assert summary["consistent_5m"] == "1"
+        assert summary["verdict"] == "adopt"
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
         assert root_row["Favors"] == "1h"
-        assert root_row["Clears"] == "False"
+        assert root_row["Clears"] == "True"
 
     def test_subagent_bucket_1h_tier_root_reaches_adopt(self, fake_projects, capsys):
-        """A clean 1h-tier subagent-origin root (W1h populated from a
+        """A clean 1h-tier subagent-origin root (W1h nonzero from a
         single session-start write, Z=0) reaches 'adopt' for the subagent
         bucket, favoring a drop to 5m."""
         records = [
@@ -10517,7 +10525,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "subagent")
-        assert summary["populated_1h"] == "1"
+        assert summary["consistent_1h"] == "1"
         assert summary["verdict"] == "adopt"
 
         root_row = _extract_ttl_verdict_root_row(out, "subagent", "account-1")
@@ -10600,12 +10608,12 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert root_row["W5m/W1h"] == "300,000"
         assert root_row["X/Z"] == "150,000"
 
-    def test_root_with_both_w5m_and_w1h_populated_contributes_no_verdict_for_that_bucket(
+    def test_root_with_both_w5m_and_w1h_nonzero_contributes_no_verdict_for_that_bucket(
         self, fake_projects, capsys
     ):
         """A root paying both tiers simultaneously in this window (mixed
         evidence) is excluded from the bucket's verdict entirely, the same
-        as a root with neither populated -- the break-even algebra
+        as a root with no data -- the break-even algebra
         assumes a single live tier per root per window."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="mix-1"),
@@ -10618,16 +10626,16 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
-        assert summary["populated_5m"] == "0"
-        assert summary["populated_1h"] == "0"
+        assert summary["consistent_5m"] == "0"
+        assert summary["consistent_1h"] == "0"
         assert summary["excluded"] == "1"
         assert summary["verdict"] == "no verdict"
 
-    def test_zero_populated_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
+    def test_zero_consistent_roots_reaches_no_verdict_not_adopt(self, fake_projects, capsys):
         """A corpus with cache activity but no cache-write/read tokens
         crossing either direction's own accumulation gate (plain
-        input/output tokens only) populates neither direction -- 'no
-        verdict', never a vacuous 'adopt'."""
+        input/output tokens only) leaves neither direction with data --
+        'no verdict', never a vacuous 'adopt'."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
         ])
@@ -10636,8 +10644,8 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
 
         for origin in ("main", "subagent"):
             summary = _extract_ttl_verdict_summary(out, origin)
-            assert summary["populated_5m"] == "0"
-            assert summary["populated_1h"] == "0"
+            assert summary["consistent_5m"] == "0"
+            assert summary["consistent_1h"] == "0"
             assert summary["verdict"] == "no verdict"
 
     def test_no_redact_single_root_shows_real_path_not_account_ordinal(self, fake_projects, capsys):
@@ -10680,25 +10688,14 @@ class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
     two boundaries always agreed. Each fixture below adds a read call idle
     only at the 60s sensitivity boundary (gap in [60s, 300s)) alongside one
     idle at both boundaries, so the primary and sensitivity Z totals
-    genuinely differ -- gating on the wrong boundary here would flip the
-    5m-tier root's own verdict (its own X/Z column shows X, not Z, so the
-    swap is only observable through Clears/verdict there) or print a
-    different Z figure in the 1h-tier root's own X/Z column."""
+    genuinely differ. apply_tiebreaker is False for a 5m-tier root, so Z
+    never gates its own clears regardless of which boundary it is
+    accumulated at -- the mutation is observable only through the 1h-tier
+    root's own printed Z figure in its X/Z column below."""
 
-    def test_5m_tier_root_declines_on_a_wash_only_the_primary_boundary_sees(self, fake_projects, capsys):
-        """W5m=1,000,000/X=500,000 clears margin comfortably (identical
-        call1/call2 to test_main_bucket_5m_tier_root_reaches_adopt above),
-        but the only idle-gap read (call3, 300,000 tokens) falls in the
-        90s gap after call2 -- idle at the 60s sensitivity boundary but not
-        the 300s primary one. The primary Z therefore stays 0, tying this
-        5m-tier root's own W1h=0 -- a wash, which declines regardless of
-        the clearing margin. Gating Z's own increment on the sensitivity
-        boundary instead of the primary one would see Z=300,000 > W1h=0,
-        disfavor 5m, agree with the dollar accounting's own "favors 1h"
-        direction, and clear -- flipping the
-        verdict to adopt instead of declining (the 5m-tier row's own X/Z
-        column prints X, not Z, so this mutation surfaces only through
-        Clears/verdict, never through a printed number)."""
+    def test_5m_tier_root_adopts_regardless_of_which_boundary_z_is_read_at(self, fake_projects, capsys):
+        """apply_tiebreaker is False for a 5m-tier root, so a Z/W1h wash at
+        either boundary never gates clears."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="w5m-1"),
             _priced(
@@ -10714,13 +10711,13 @@ class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
-        assert summary["verdict"] == "decline"
+        assert summary["verdict"] == "adopt"
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
         assert root_row["W5m/W1h"] == "1,000,000"
         assert root_row["X/Z"] == "500,000"
         assert root_row["Favors"] == "1h"
-        assert root_row["Clears"] == "False"
+        assert root_row["Clears"] == "True"
 
     def test_1h_tier_root_declines_on_a_non_wash_disagreement(self, fake_projects, capsys):
         """W1h=1,000,000 (call1, session start). call2 reads 800,000
@@ -10788,7 +10785,7 @@ class TestCacheRebuildTtlVerdictSensitivityBoundary:
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
-        assert summary["populated_1h"] == "1"
+        assert summary["consistent_1h"] == "1"
         assert summary["verdict"] != "adopt"
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")

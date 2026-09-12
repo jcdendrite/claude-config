@@ -6347,16 +6347,14 @@ def _cache_rebuild_margin_clears(net_dollars: float, dollar_volume: float) -> bo
 
 
 def _cache_rebuild_token_tiebreaker_favors_5m(z: int, w1h: int) -> bool | None:
-    """Raw-token, zero-price tiebreaker for any populated root (5m-tier
-    or 1h-tier alike, per the Approach section's "every populated root"
-    rule): True favors dropping to 5m (Z < W1h), False disfavors it
-    (Z > W1h), None when Z == W1h -- a wash counts as a disagreement, never
-    a favorable tie, so a root whose dollar accounting
-    disagrees with this sign, or whose Z and W1h are exactly equal,
-    declines regardless of its own dollar margin. W1h is always 0 for a
-    5m-tier-populated root (the population test requires the opposite
-    accumulator to be zero), so a 5m-tier root's tiebreaker can only ever
-    disfavor 5m (Z > 0) or wash (Z == 0); it never favors 5m.
+    """Raw-token, zero-price tiebreaker for a 1h-tier root (the vendor
+    publishes nothing on how cache writes weigh against subscription rate
+    limits, which matters only for a root currently paying the 1h tier):
+    True favors dropping to 5m (Z < W1h), False disfavors it (Z > W1h),
+    None when Z == W1h -- a wash counts as a disagreement, never a
+    favorable tie, so a root whose dollar accounting disagrees with this
+    sign, or whose Z and W1h are exactly equal, declines regardless of
+    its own dollar margin.
     """
     if z == w1h:
         return None
@@ -6366,25 +6364,30 @@ def _cache_rebuild_token_tiebreaker_favors_5m(z: int, w1h: int) -> bool | None:
 def _cache_rebuild_root_verdict_input(
     *, net_primary: float, net_sensitivity: float, volume: float,
     positive_favors: str, negative_favors: str,
-    tiebreaker_favors_5m: bool | None,
+    apply_tiebreaker: bool, tiebreaker_favors_5m: bool | None = None,
 ) -> dict[str, object]:
-    """Reduce one populated root's own net-dollar figures (at both
+    """Reduce one consistent root's own net-dollar figures (at both
     sensitivity boundaries) and dollar-equivalent volume into the
     {"favors", "clears"} shape _cache_rebuild_ttl_verdict consumes.
     positive_favors/negative_favors name the direction net_primary's own
     sign resolves to -- "1h"/"5m" for a 5m-tier root, "5m"/"1h" for a
     1h-tier root, since the two directions' savings-positive sign points
-    opposite ways. tiebreaker_favors_5m is this root's own raw-token
-    tiebreaker, run for every populated root regardless of tier; a
-    disagreement with the dollar accounting's own sign -- including the
-    None (Z == W1h wash) case, which never agrees -- forces
-    clears=False regardless of margin.
+    opposite ways. apply_tiebreaker is False for a 5m-tier root; clears is
+    then the dollar margin alone, since W1h is always 0 there by
+    construction (that's what "consistent 5m" means), which makes a
+    raw-token comparison against it degenerate rather than a real
+    tiebreaker. For a 1h-tier root, apply_tiebreaker is True and
+    tiebreaker_favors_5m must agree with the dollar accounting's own sign
+    -- a None (Z == W1h wash) result never agrees, so clears is forced
+    False regardless of margin.
     """
     favors = positive_favors if net_primary > 0 else negative_favors
     margin_ok = (
         _cache_rebuild_margin_clears(net_primary, volume)
         and _cache_rebuild_margin_clears(net_sensitivity, volume)
     )
+    if not apply_tiebreaker:
+        return {"favors": favors, "clears": margin_ok}
     tiebreaker_agrees = (
         tiebreaker_favors_5m is not None and tiebreaker_favors_5m == (favors == _CACHE_REBUILD_TIER_5M)
     )
@@ -6393,16 +6396,16 @@ def _cache_rebuild_root_verdict_input(
 
 
 def _cache_rebuild_ttl_verdict(root_inputs: Sequence[dict[str, object]]) -> str:
-    """Reduce one bucket's own populated-root inputs to the plan's four-way
+    """Reduce one bucket's own consistent-root inputs to the plan's four-way
     verdict (Approach section's "ship rule"). Each element of root_inputs is
-    {"favors": "5m" | "1h", "clears": bool} for one populated root --
+    {"favors": "5m" | "1h", "clears": bool} for one consistent root --
     "favors" is this root's own resolved direction, the dollar accounting's
-    own sign, and "clears" folds in the margin-at-both-boundaries check and
-    the tiebreaker-agreement check, run for every populated root
-    regardless of tier. No populated root at all is "no verdict", a
+    own sign, and "clears" folds in the margin-at-both-boundaries check and,
+    for a 1h-tier root only, the tiebreaker-agreement check. No consistent
+    root at all is "no verdict", a
     distinct state "adopt" can never reach vacuously (adopt requires at
-    least one populated root by construction). Differing "favors" values
-    across populated roots is "roots disagree", checked before "clears" --
+    least one consistent root by construction). Differing "favors" values
+    across consistent roots is "roots disagree", checked before "clears" --
     a fundamental disagreement on direction is reported as such even when
     every root's own margin happens to clear. Uniform direction with every
     root clearing is "adopt"; uniform direction with at least one root not
@@ -7104,18 +7107,18 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
             "\n## TTL-verdict per-root analysis (--ttl-verdict) [unverified]\n\n"
             "Per-root break-even verdict for each bucket's own live TTL tier -- see"
             " .claude/plans/cache-ttl-tuning-analysis.md's Approach section for the derivation, the ship rule,"
-            " and every caveat this print omits. A root is populated by whichever tier it is currently paying"
+            " and every caveat this print omits. A root is consistent by whichever tier it is currently paying"
             " for this bucket (nonzero W5m XOR nonzero W1h); a root paying both or neither in this window is"
             " excluded from this bucket's verdict entirely, never counted toward either direction. Clears"
             " requires the margin to hold at both the"
             f" {_CACHE_REBUILD_IDLE_5M_SECONDS}s and {_CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS}s boundary,"
-            " and, for every populated root, the raw-token tiebreaker to agree with the dollar accounting's own"
+            " and, for every 1h-tier root, the raw-token tiebreaker to agree with the dollar accounting's own"
             " sign. [unverified]\n"
         )
         all_root_ordinals: tuple[int, ...] = tuple(sorted(set(redact_ordinals.values())))
         for ttl_origin in _CACHE_REBUILD_ORIGINS:
-            populated_5m_roots = 0
-            populated_1h_roots = 0
+            consistent_5m_roots = 0
+            consistent_1h_roots = 0
             excluded_roots = 0
             root_inputs: list[dict[str, object]] = []
             print(f"\n### {ttl_origin}\n")
@@ -7129,13 +7132,13 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                 root_w5m = w5m_by_origin_root.get(root_key, 0)
                 root_w1h = w1h_by_origin_root.get(root_key, 0)
                 if (root_w5m > 0) == (root_w1h > 0):
-                    # Both populated (mixed tier in this window) or neither
-                    # populated -- excluded from this bucket's verdict
+                    # Both nonzero (mixed tier in this window) or both zero
+                    # (no data) -- excluded from this bucket's verdict
                     # either way (Approach section).
                     excluded_roots += 1
                     continue
                 if root_w5m > 0:
-                    populated_5m_roots += 1
+                    consistent_5m_roots += 1
                     net_primary = _negate_switch_delta_for_display(
                         switch_delta_5m_to_1h_by_origin_root.get(root_key, 0.0)
                     )
@@ -7143,11 +7146,10 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         switch_delta_5m_to_1h_at_60_by_origin_root.get(root_key, 0.0)
                     )
                     volume = w5m_dollars_by_origin_root.get(root_key, 0.0)
-                    root_z = z_by_origin_root.get(root_key, 0)
                     root_input = _cache_rebuild_root_verdict_input(
                         net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
                         positive_favors=_CACHE_REBUILD_TIER_1H, negative_favors=_CACHE_REBUILD_TIER_5M,
-                        tiebreaker_favors_5m=_cache_rebuild_token_tiebreaker_favors_5m(root_z, root_w1h),
+                        apply_tiebreaker=False,
                     )
                     root_inputs.append(root_input)
                     print(
@@ -7156,7 +7158,7 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                         f" {root_input['favors']:>8} {str(root_input['clears']):>8}"
                     )
                 else:
-                    populated_1h_roots += 1
+                    consistent_1h_roots += 1
                     net_primary = _negate_switch_delta_for_display(
                         switch_delta_1h_to_5m_by_origin_root.get(root_key, 0.0)
                     )
@@ -7168,6 +7170,7 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                     root_input = _cache_rebuild_root_verdict_input(
                         net_primary=net_primary, net_sensitivity=net_sensitivity, volume=volume,
                         positive_favors=_CACHE_REBUILD_TIER_5M, negative_favors=_CACHE_REBUILD_TIER_1H,
+                        apply_tiebreaker=True,
                         tiebreaker_favors_5m=_cache_rebuild_token_tiebreaker_favors_5m(root_z, root_w1h),
                     )
                     root_inputs.append(root_input)
@@ -7177,9 +7180,9 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
                     )
             verdict = _cache_rebuild_ttl_verdict(root_inputs)
             print(
-                f"\n{ttl_origin}: populated 5m-tier roots={populated_5m_roots}"
-                f"  populated 1h-tier roots={populated_1h_roots}"
-                f"  excluded (mixed-or-unpopulated) roots={excluded_roots}  verdict={verdict}"
+                f"\n{ttl_origin}: consistent 5m roots={consistent_5m_roots}"
+                f"  consistent 1h roots={consistent_1h_roots}"
+                f"  excluded (mixed-tier or no data) roots={excluded_roots}  verdict={verdict}"
             )
 
         if unpriced_ttl_verdict_turns:
@@ -12300,7 +12303,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Also report a per-root, per-bucket (main / everything-else) adopt/decline verdict on"
             " each bucket's live prompt-cache TTL, covering both the 5m-to-1h and the mirrored,"
-            " inferred 1h-to-5m direction. Ships a shared default only when every populated root"
+            " inferred 1h-to-5m direction. Ships a shared default only when every consistent root"
             " agrees -- see .claude/plans/cache-ttl-tuning-analysis.md's Approach section. Adds"
             " no new output when omitted; every figure without this flag is unchanged."
         ),
