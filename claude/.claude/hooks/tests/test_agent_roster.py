@@ -49,6 +49,31 @@ CANARY_AGENTS = sorted(
     REVIEWER_AGENTS + ["comment-discipline-reviewer.md", "skill-fidelity-reviewer.md"]
 )
 
+# Reviewers /code-review dispatches that carry no Bash and therefore cannot
+# fetch their own diff — each must instead carry an ## Input contract
+# section telling it to read the diff artifact it is handed.
+DIFF_INPUT_NO_BASH_AGENTS = (
+    "comment-discipline-reviewer.md",
+    "skill-fidelity-reviewer.md",
+)
+
+# Each no-Bash agent's Input contract wording is its own natural-language
+# voice, not a shared template. Each agent therefore gets its own literals
+# below, checked only against its own section, rather than one tuple
+# checked against every agent.
+DIFF_INPUT_CONTRACT_LITERALS = {
+    "comment-discipline-reviewer.md": (
+        "a path to a diff file",
+        "continue with `offset` until a read returns no further lines",
+        "never reconstruct one",
+    ),
+    "skill-fidelity-reviewer.md": (
+        "a path to a diff file",
+        "continuing with `offset` until a read returns no further lines",
+        "do not try to reconstruct it",
+    ),
+}
+
 # Agents that exist in the directory but are not code-review dispatched
 # reviewers — they do not receive findings_path and do not need the canary.
 # When a new non-reviewer agent is added, add it here; the
@@ -193,6 +218,79 @@ class TestReviewerAgentRoster:
             f"Uncategorized agent file(s): {sorted(uncategorized)}. "
             "Add each to REVIEWER_AGENTS (if it should carry the canary) or "
             "NON_REVIEWER_AGENTS (if not) in this test file."
+        )
+
+
+class TestDiffInputContractAgents:
+    """No-Bash reviewers can't self-fetch a diff, so each must carry an Input
+    contract telling it to read the artifact it's handed instead of inferring
+    scope from content."""
+
+    @staticmethod
+    def _extract_input_contract_section(path) -> str:
+        """Extract the '## Input contract' section from an agent file.
+
+        Extracts from the '## Input contract' heading line (inclusive) up to,
+        but excluding, the next line starting with '## '. There is no
+        terminating sentinel inside this section the way there is for the
+        File-based output block, so the next top-level heading is the
+        boundary instead.
+        """
+        content = path.read_text()
+        lines = content.splitlines(keepends=True)
+        in_section = False
+        section_lines = []
+        for line in lines:
+            if line.rstrip("\n") == "## Input contract":
+                in_section = True
+            elif in_section and line.startswith("## "):
+                break
+            if in_section:
+                section_lines.append(line)
+        assert section_lines, f"{path.name}: '## Input contract' section not found."
+        return "".join(section_lines)
+
+    @pytest.mark.parametrize("name", DIFF_INPUT_NO_BASH_AGENTS)
+    def test_no_bash_agent_carries_input_contract(self, name):
+        path = AGENTS_DIR / name
+        content = path.read_text()
+        assert "## Input contract" in content, (
+            f"{name}: '## Input contract' heading missing. A reviewer with no "
+            "Bash needs this section to know how to read the diff artifact it "
+            "is handed."
+        )
+        section = self._extract_input_contract_section(path)
+        for literal in DIFF_INPUT_CONTRACT_LITERALS[name]:
+            assert literal in section, (
+                f"{name}: expected literal {literal!r} missing from the "
+                "Input contract section."
+            )
+        fm = parse_frontmatter(path)
+        tools_value = fm.get("tools") or ""
+        assert "Bash" not in tools_value, (
+            f"{name}: 'tools:' now grants Bash ({tools_value!r}), but its "
+            "Input contract tells it otherwise. Either drop the contract's "
+            "no-Bash claim or revert the tools: grant."
+        )
+
+    def test_diff_input_no_bash_agents_roster_is_complete(self):
+        """DIFF_INPUT_NO_BASH_AGENTS must equal every CANARY_AGENTS member with no Bash grant.
+
+        Derives the expected set from each canary agent's own tools:
+        frontmatter rather than trusting a second hand-maintained list, so a
+        new no-Bash canary agent that omits the roster entry fails here
+        instead of silently escaping test_no_bash_agent_carries_input_contract.
+        """
+        expected_no_bash = set()
+        for name in CANARY_AGENTS:
+            fm = parse_frontmatter(AGENTS_DIR / name)
+            tools_value = fm.get("tools") or ""
+            if "Bash" not in tools_value:
+                expected_no_bash.add(name)
+        assert expected_no_bash == set(DIFF_INPUT_NO_BASH_AGENTS), (
+            f"CANARY_AGENTS with no Bash grant are {sorted(expected_no_bash)}, but "
+            f"DIFF_INPUT_NO_BASH_AGENTS is {sorted(DIFF_INPUT_NO_BASH_AGENTS)}. "
+            "Add the missing agent(s) to DIFF_INPUT_NO_BASH_AGENTS in this file."
         )
 
 
