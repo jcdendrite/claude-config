@@ -140,11 +140,11 @@ def _code_review_rounds(records: list[dict]) -> list[tuple[int, int]]:
 def _config_dir_root_for_session(jsonl: Path) -> Path:
     """The Claude Code config-dir root a transcript file lives under.
 
-    jsonl is always <config_dir_root>/projects/<project-slug>/<session_id>.jsonl
-    -- scope.PROJECTS_DIR's own layout, and every other root
-    scope.resolve_scan_roots can produce (a --config-dir root) shares the
-    identical <dir>/projects layout -- so the root is three parents up
-    regardless of which root produced this path.
+    jsonl is always <config_dir_root>/projects/<project-slug>/<session_id>.jsonl,
+    scope.PROJECTS_DIR's own layout. Every other root scope.resolve_scan_roots
+    can produce (a --config-dir root) shares that identical <dir>/projects
+    layout. The config-dir root is therefore three parents up regardless of
+    which root produced this path.
     """
     return jsonl.parent.parent.parent
 

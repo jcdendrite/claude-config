@@ -349,7 +349,7 @@ def _ledger_row(
 ) -> dict:
     """One review-narrative-ledger row, review-ledger.sh's own schema v2
     shape. round=None omits the `round` key entirely rather than setting it
-    null, modeling a pre-schema-v2 legacy row -- review-ledger.sh itself
+    null, modeling a pre-schema-v2 legacy row. review-ledger.sh itself
     never writes a null round."""
     row = {
         "schema_version": schema_version,

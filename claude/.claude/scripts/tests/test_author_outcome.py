@@ -814,6 +814,30 @@ class TestSinceFilterBifurcation:
         assert sum(result["outcomes"].values()) == 0
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
 
+    def test_co_authored_rounds_counter_uses_since_filtered_dispatch_count(self, fake_projects):
+        """_DQ_CO_AUTHORED_ROUNDS reads dispatch_count (the --since-filtered
+        count), unlike the authoring_agent inconsistency check above, which
+        reads unfiltered_dispatch_count -- deliberate, since co-authored
+        measures fan-in to the headline in-scope aggregate rather than the
+        ledger's own unfiltered declaration. a1 falls outside the --since
+        cutoff and a2 falls inside it, both attributed to round 1: the round
+        has two dispatches transcript-side but only one in scope, so it must
+        not count as co-authored."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS", authoring_agent="code-writer")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T09:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T09:00:10.000Z"),
+            _dispatch_start("a2", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a2", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        since_ts = corpus._parse_ts("2026-08-01T09:30:00.000Z")
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), since_ts=since_ts)
+        assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 0
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+
     def test_round_number_mismatch_still_increments_when_the_only_dispatch_is_out_of_since_scope(self, fake_projects):
         """_DQ_ROUND_NUMBER_MISMATCH is computed from the ledger/transcript
         round-open comparison alone, before any --since filtering -- it must
@@ -1205,6 +1229,24 @@ class TestCmdAuthorOutcomeReport:
         assert "Dispatches in scope" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
         assert "Data quality" in out
+
+    def test_non_default_agent_reaches_compute_and_the_printed_header(self, fake_projects, capsys):
+        """args.agent must actually reach compute_author_outcomes (not just
+        the parser default) and the printed header -- a staff-sdet dispatch
+        is classified as this round's FAILURE, and the header prints
+        agent=staff-sdet rather than the code-writer default."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z", agent_type="staff-sdet"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        _mod.cmd_author_outcome(self._args(agent="staff-sdet"))
+        out = capsys.readouterr().out
+        assert "agent=staff-sdet  window=all time" in out
+        assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
 
     def test_agent_inline_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as excinfo:

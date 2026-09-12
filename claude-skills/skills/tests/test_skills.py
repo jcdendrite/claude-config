@@ -516,9 +516,20 @@ class TestReviewLedgerAuthoringEffortLiteral:
         # Substring check, not a regex extraction -- catches drift on either
         # side without hand-parsing prose text (test-conventions §9).
         code_writer_effort = parse_frontmatter(_AGENTS_DIR / "code-writer.md")["effort"]
-        assert f"--authoring-effort {code_writer_effort}" in _skill_body("code-review"), (
+        literal = f"--authoring-effort {code_writer_effort}"
+        skill_body = _skill_body("code-review")
+        assert literal in skill_body, (
             f"code-review/SKILL.md's --authoring-effort literal must match "
             f"code-writer.md's own effort: frontmatter ({code_writer_effort!r})"
+        )
+        # An exact count, not a bare substring check, catches a stale
+        # literal on any one of the three known call sites even when the
+        # others are correct.
+        assert skill_body.count(literal) == 3, (
+            f"code-review/SKILL.md must carry {literal!r} at exactly its three "
+            "known --authoring-effort call sites (Step 0.1 CLEAN short-circuit, "
+            "main finding append, main-flow CLEAN append) -- found "
+            f"{skill_body.count(literal)}"
         )
 
 
