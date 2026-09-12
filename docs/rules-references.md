@@ -226,6 +226,40 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   > Valid Values: `LEGACY | ENABLED`
   >
   > Defaults to `LEGACY`.
+- **Custom Validation Rules (the `validation` block)** — VERIFIED at
+  `developer.hashicorp.com/terraform/language/values/variables` §
+  "Custom Validation Rules":
+  > ```
+  > validation {
+  >   condition     = contains(["dev", "staging", "prod"], var.environment)
+  >   error_message = "Environment must be dev, staging, or prod."
+  > }
+  > ```
+  Triangulated against the Style Guide,
+  `developer.hashicorp.com/terraform/language/style`: "Only use variable
+  validation when your variable values have uniquely restrictive
+  requirements."
+- **`nullable` argument** — VERIFIED at
+  `developer.hashicorp.com/terraform/language/block/variable`: "Enabling
+  the `nullable` argument lets module consumers assign the value `null`
+  to the variable." Defaults to `true`; when `false`, the variable must
+  have a non-null value.
+- **Type a provider-native string enum as its own type, not a `bool`
+  mapped through a ternary — confirmed negative as a HashiCorp
+  recommendation.** Neither the Style Guide nor the Types reference
+  (`developer.hashicorp.com/terraform/language/expressions/types`) states
+  a preference between the two, and Terraform has no native enum type at
+  all — tracked as an open feature request,
+  `github.com/hashicorp/terraform/issues/33916`. This bullet's preference
+  is this repo's own convention, reasoned from the `validation`-block
+  mechanism above, not a stated HashiCorp rule.
+- **Major-version bump on a breaking change** — VERIFIED via two
+  triangulated sources:
+  `developer.hashicorp.com/terraform/registry/modules/publish` requires a
+  Git tag matching semantic versioning, and `semver.org` itself states
+  the rule that format defers to: "MAJOR version X (X.y.z | X > 0) MUST
+  be incremented if any backward incompatible changes are introduced to
+  the public API."
 
 ## `paths:` glob-dialect conventions
 

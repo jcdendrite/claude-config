@@ -8,9 +8,13 @@ paths:
 
 ## Terraform conventions
 
-Sources verified against `terraform-provider-aws` and the AWS Cognito API
-reference (2026-09); see `docs/rules-references.md` for citations. AWS
-provider arguments below are illustrations — apply the equivalent for your
+Sources verified against `terraform-provider-aws`, the AWS Cognito API
+reference, and HashiCorp's own Terraform documentation (2026-09); see
+`docs/rules-references.md` for citations. This rule covers input-variable
+design — typing, validation, defaults, and changing a default on an
+existing module. State, backend, and apply-workflow concerns are
+`staff-platform-engineer`'s review angles, not this rule's. AWS provider
+arguments below are illustrations — apply the equivalent for your
 provider. Whether a toggle belongs in Terraform at all, versus a runtime
 layer, is the `feature-flags` skill's call — this rule doesn't decide it.
 
@@ -29,10 +33,6 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   versioning status) is a legitimate boolean-convenience idiom the
   ecosystem's own registry modules use deliberately — not every
   two-valued provider enum needs flagging.
-- **Prefer `ENABLED` over `LEGACY` for `prevent_user_existence_errors`**
-  (e.g. concretely applying the carve-out below) — `LEGACY` reintroduces
-  a user-enumeration side channel during sign-in, sign-up, and
-  password-recovery flows.
 - **Pair the variable with a `validation` block enumerating the
   provider's documented legal values**, rather than leaving the type as a
   bare `string` with no guard against a typo or an unsupported value.
@@ -40,11 +40,13 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   one exists, with a matching `validation` branch admitting `null` when
   the underlying argument is itself optional.
 - **Exception: prefer the recommended value over an inferior provider
-  default.** When the provider's documented default is itself the
-  less-secure or otherwise-inferior of two legal values (as with
-  `prevent_user_existence_errors`, which AWS defaults to `LEGACY`),
-  mirror the recommended value instead, and state why the two diverge
-  in a comment.
+  default.** When the provider's documented default is the less-secure of
+  two legal values, mirror the recommended value instead and state why
+  the two diverge in a comment. For example,
+  `aws_cognito_user_pool_client`'s `prevent_user_existence_errors`
+  defaults to `LEGACY`; prefer `ENABLED`, since `LEGACY` reintroduces a
+  user-enumeration side channel during sign-in, sign-up, and
+  password-recovery flows.
 - **On a retrofit**, an existing variable's effective default changes
   for callers that don't already override it. Treat it with the same
   scrutiny as any other behavior-changing default to a shared module;

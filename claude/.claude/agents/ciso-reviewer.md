@@ -28,6 +28,8 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 
 **Rate limiting / abuse surface** — any new unauthenticated or low-cost authenticated endpoint is enumeration-ready. Flag missing rate limits especially on password reset, signup, invite redemption, lookup-by-identifier.
 
+**Account-existence disclosure** — sign-in, sign-up, and password-reset responses that differ for a known vs. unknown identifier. Managed identity providers often default to the disclosing mode; check the provider setting, not just the application's own error strings.
+
 **Cryptographic choices** — algorithm selection (AES-256-GCM not CBC, Argon2id/bcrypt not MD5), IV/nonce handling (never reused), JWT `alg` validation (reject `none`, pin expected algorithms), signature verification completeness (verify before parse). New keys: provisioning, rotation, revocation.
 
 **Multi-tenant isolation beyond IDOR** — cross-org/group/tenant leakage via shared caches, shared query keys, shared background jobs, shared logs, shared debugging endpoints.

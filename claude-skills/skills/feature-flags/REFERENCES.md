@@ -34,10 +34,11 @@ lifespan-drives-implementation-weight axis.**
 **URL:** https://12factor.net/config
 **Status:** VERIFIED (fetched 2026-09-11)
 
-Zero hits for "feature" anywhere in this section — it never mentions
-feature flags. It defines config as "everything that is likely to vary
-between deploys," fully orthogonal, never grouped as "environments."
+Defines config as "everything that is likely to vary between deploys."
+That deploy-versus-runtime boundary is the deploy-time half of the
+skill's layering test: a value that only ever changes alongside a
+deploy is config, not a toggle.
 
 **Cited only for the "config is what varies between deploys" definition
-underpinning the deploy-time half of the layering test — never as a
-feature-flag authority.**
+(zero hits for "feature" in this section) — never as a feature-flag
+authority.**

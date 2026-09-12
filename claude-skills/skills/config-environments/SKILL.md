@@ -165,7 +165,7 @@ Enforce **credential isolation** at provisioning time, not in code:
 2. **Does the code branch on `NODE_ENV` / `ENVIRONMENT` to pick a credential?** Collapse to a single env var read.
 3. **Are missing stateful env vars handled with a production-shaped sentinel default?** Fail loudly for credentials, URLs, bucket names.
 4. **Does the client bundle resolve env vars at build time?** Verify the prod bundle was built with prod env vars.
-5. **Is "environment" conflated with "tenant" or "feature flag"?** Those are different axes. Where the toggle should live, and whether it needs a flag platform, is the `feature-flags` skill's call, not this one's.
+5. **Is "environment" conflated with "tenant" or "feature flag"?** Those are different axes. Toggle placement is the `feature-flags` skill's call.
 6. **Are `process.env` / `Deno.env.get(...)` reads scattered across many files?** Consolidate into `config.ts`.
 7. **Are env vars read inside functions/handlers instead of at module scope?** Request-path reads hide missing-config failures from boot-time validation.
 8. **Is there boot-time validation of required env vars?** Schema parsed on startup, not on first use.
