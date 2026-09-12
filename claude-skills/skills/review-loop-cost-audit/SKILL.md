@@ -1,6 +1,6 @@
 ---
 name: review-loop-cost-audit
-description: Diagnose whether a branch's review-loop spend is a stuck loop, plan-grinding, or ordinary large-diff work between review gates, by correlating review-round-cost's dated round table against a git-log code-freeze date, via a corpus-wide sweep or a single-branch deep audit. For a narrative timeline of session prompts use transcript-narrative; for raw toolkit metrics use transcript-analysis.
+description: Diagnose whether a branch's review-loop spend is a stuck loop, plan-grinding, or ordinary large-diff work between review gates, by correlating review-round-cost's dated round table against a git-log code-freeze instant, via a corpus-wide sweep or a single-branch deep audit. For a narrative timeline of session prompts use transcript-narrative; for raw toolkit metrics use transcript-analysis.
 argument-hint: "[branch-name | sweep] [output-path]"
 ---
 
@@ -57,13 +57,22 @@ python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo -
 ```
 
 **(c) Resolve code-churn dates, tiered.**
-- **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `git log --reverse --date=short --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
+- **Tier 1** — a live local ref: `git rev-parse --verify --quiet <branch>` succeeds → from the repo's worktree root, run `TZ=UTC git log --reverse --date=iso-local --format='commit %h %ad %s' --name-only origin/main..<branch>` (substitute the repo's own default-branch ref for `origin/main`). Keep this to one statement with no `$(...)`, per the worktree Bash-guard's Trigger A/B/E discipline.
+
+  `TZ=UTC` is load-bearing: round timestamps are UTC, so the commit clock must be too. A date flag that renders `%ad` in the author's local zone puts a commit authored near local midnight in the adjacent UTC day — compare the two clocks as instants, never as date strings.
 - **Tier 2** — no local ref: resolve the PR number with `pr-link --repo owner/repo --this-repo --branches <branch>`, then `git fetch origin refs/pull/<N>/head:refs/pr-audit/<N> --no-tags`, re-run the Tier 1 `git log` call against `refs/pr-audit/<N>` in place of `<branch>`, then `git update-ref -d refs/pr-audit/<N>`. Use a named ref, not `FETCH_HEAD`. `FETCH_HEAD` is repo-global, so a concurrent fetch from another worktree can clobber it.
 - **Tier 3** — both unavailable: stop and report the churn signal as unavailable. Label the outside-review-window share — the % of the branch's review-round dollars (from `review-round-cost`'s table) that falls outside its dated round windows — as non-diagnostic. This is a real, printed outcome, not a fallback to a weaker proxy.
 
-**(d) Classify commits and take the freeze date.** Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. The **code-freeze date** is the last code-bearing commit's date. A branch whose commits are one squashed WIP commit carries no usable per-commit date series — return **Inconclusive** (Step 4) rather than reading a single commit as an immediate freeze.
+**(d) Classify commits and take the freeze instant.** Classify each commit as code-bearing or artifact-only. Default artifact glob is `.claude/plans/*.md` (matching `pr-cost --plan-file-glob`'s own default). Accept an explicit glob argument to extend it. The **code-freeze instant** is the last code-bearing commit's author instant. A branch whose commits are one squashed WIP commit carries no usable per-commit date series — return **Inconclusive** (Step 4) rather than reading a single commit as an immediate freeze.
 
-**(e) Partition.** Split Step (b)'s round table at the code-freeze date and report the rounds and dollars that fall after it.
+**(d2) Confirm the branch has actually frozen.** A freeze partition presupposes a freeze. Record the tip SHA and run `TZ=UTC git log -1 --date=iso-local --format='%h %cd' <branch>`, then apply both tests:
+
+- Tip newer than the newest round in Step (b)'s table → the branch moved after the last round the corpus observed.
+- Tip moved during this audit (re-read the ref after Step (c) and compare SHAs) → the corpus was read mid-flight.
+
+Either one returns **Inconclusive — branch still active** (Step 4). Report the tip SHA with the verdict so a later re-run can tell whether the branch moved since. An in-flight branch has no freeze to partition at.
+
+**(e) Partition.** Split Step (b)'s round table at the code-freeze instant and report the rounds and dollars that fall after it. When the freeze instant is at or after the newest round, say **partition vacuous — no rounds fall after the freeze** and return **Inconclusive**. Never report that case as zero post-freeze rounds. Zero-by-construction and zero-after-checking are different findings; only the second is a clean bill of health.
 
 **(f) Per-session skew.**
 ```bash
@@ -75,14 +84,29 @@ python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --bran
 ```
 Per-session granularity is unavailable under multi-root scope. Use the aggregate run's `Top subagent types` column, the per-branch dispatch-count breakdown, as the skew signal instead.
 
+**(g) Characterize the post-freeze rounds.** Required before any thrash verdict in Step 4, and skipped only when Step (e) found no post-freeze rounds. The counts from Steps (b)–(f) establish that rounds ran after the freeze, never what they did — invoke `transcript-narrative` for the branch and establish three things:
+
+- Whether successive rounds of the same skill raised new findings each time or re-surfaced ones already raised.
+- Whether repeated `ready-for-review` rounds re-ran an identical denial with the command shape unadapted.
+- Whether the rounds are spread across sessions by crashes, stale worktree locks, or resumed handoffs rather than by re-review.
+
+Where the narrative cannot settle which of these applies, the verdict is **Inconclusive**.
+
 ## Step 4 — Verdict rubric
 
-Decide only from the freeze partition (Step 3e) and skew (Step 3f) — **never from the outside-review-window share**: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
+The **post-freeze round share** — post-freeze rounds as a fraction of the branch's rounds — is the only discriminating signal. Never decide from the outside-review-window share: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
 
-- **Stuck loop** — rounds keep opening after the freeze date and carry most of the branch's post-freeze dollars, with one reviewer type taking an outsized within-branch share and a high dispatches-per-round ratio.
-- **Plan-grinding** — the same pattern, with post-freeze rounds predominantly `plan-review` and post-freeze commits touching only artifact paths.
+Report Step 3(f)'s skew and dispatches-per-round as descriptive context, never as criteria. Neither tracks the freeze partition: a branch with no post-freeze rounds can carry the corpus's highest within-branch skew. Requiring them as co-signals suppresses true positives.
+
+**Verdict per round type, not per branch.** A branch's `code-review`, `plan-review`, and `ready-for-review` rounds routinely diverge — productive code review alongside genuine plan-grinding on one unimplemented slice, for instance. One label per branch destroys that finding. Emit a verdict for each round type that has post-freeze rounds, then a one-line branch summary naming the divergence when the verdicts differ.
+
+- **Stuck loop** — post-freeze rounds of this type keep opening and re-surface findings already raised, rather than new ones each round.
+- **Plan-grinding** — post-freeze `plan-review` rounds iterating a plan whose feature is still unimplemented, with post-freeze commits touching only artifact paths.
+- **Gate-denial churn** — post-freeze `ready-for-review` rounds re-running an identical denial across sessions with the command shape unadapted. Distinct from stuck loop: nothing is being re-reviewed.
 - **Legitimate large-diff work** — code-bearing commits spread across the branch's whole date range (no early freeze), whatever the outside-review-window share reads.
-- **Inconclusive** — Tier 3, or a single squashed commit (Step 3d).
+- **Inconclusive** — Tier 3, a single squashed commit (Step 3d), a branch still active (Step 3d2), or a vacuous partition (Step 3e).
+
+A high post-freeze round share is not by itself unproductive review. Session crashes, stale worktree locks, and resumed handoffs all fragment one stretch of work across many sessions and inflate the round count without re-litigating anything. Check what the rounds did before naming a thrash verdict; where the transcript cannot settle it, return **Inconclusive** rather than the thrash label.
 
 State the non-discrimination rule in words. Carry no dollar total, no per-branch cost share, and no figure from either corpus into the verdict text — this is a repo-wide publication rule, not a per-branch choice.
 
