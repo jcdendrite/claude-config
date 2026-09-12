@@ -266,7 +266,7 @@ The test is content, not account or machine count.
   already-published split or bin — the same search the Approval gate
   below already requires for its own proposals. If one exists, the
   agent tells the owner what the combination would newly disclose and
-  asks in the session. An ordinary in-session answer satisfies this,
+  asks in the session. An uncited in-session answer satisfies this,
   not the durable citation the Approval gate below requires, since the
   own-history figure was never inside that gate. Absent an answer, the
   agent holds the figure rather than publishing it.
@@ -324,7 +324,16 @@ one artifact does not cover a different one — a changed destination
 needs a fresh proposal. Cite the approval as a durable,
 independently-checkable record from the owner's own account — e.g., a
 link to the approving comment or message. The citation must tie to
-the exact figure and artifact it approves. A citation to anyone
+the exact figure and artifact it approves. An approval given in
+session qualifies only while the owner is an active party to that
+session. Cite it by session identifier plus turn index or timestamp,
+naming the proposal's turn and the approval's turn separately when
+they differ. Before the artifact ships, the owner confirms the
+approval that citation points at. That confirmation stands in for a
+durable record the citing agent has no write access to produce
+itself. The confirmation covers every citation this gate requires.
+That includes a split's or a bin's approval, and the pivot-naming
+turn a split discloses. A citation to anyone
 else's comment, however definitive it reads, does not satisfy this
 gate. A narrative claim that approval occurred is not a citation
 either. Absent that citation, don't publish.
