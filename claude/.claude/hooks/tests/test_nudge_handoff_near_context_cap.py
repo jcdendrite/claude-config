@@ -228,9 +228,8 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
 
 def _check_mode_path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries run_check_mode's --check path
-    invokes (`dirname` kept as a harmless superset entry: run_check_mode
-    itself never calls dirname, and the top-level bootstrap uses ${0%/*}
-    instead, `jq` for the reported JSON, `ps`/`head`/`sed`/`tr` for the
+    invokes (`dirname` kept as a harmless superset entry `run_check_mode`
+    never calls, `jq` for the reported JSON, `ps`/`head`/`sed`/`tr` for the
     ancestor walk, `env` for the pinned-locale live-start read, `tail` for
     read_latest_usage), omitting both timeout(1) and gtimeout(1). Skips when
     a needed real binary is itself absent from the test machine."""

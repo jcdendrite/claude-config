@@ -1037,10 +1037,10 @@ class TestHookClassHeader:
 
 
 # Matches the $0-relative _lib.sh source line in either of its two known
-# forms: the current `${0%/*}` parameter expansion, or the `$(dirname "$0")`
-# command substitution it replaced. Matching both, rather than only the
-# current form, keeps a hook that regresses to the old form inside this
-# test's domain instead of silently dropping out of it.
+# forms: the current `${0%/*}` parameter expansion, or the obsolete
+# `$(dirname "$0")` command substitution (matched too, so a hook that
+# regresses to it stays inside this test's domain instead of silently
+# exempting itself).
 #
 # Excludes plugins/lovable-cloud/hooks/validate-migration-filename.sh — see
 # _SWEPT_GATE_HOOKS below for why.
@@ -1052,6 +1052,28 @@ def _sources_lib_via_dollar_zero(hook: Path) -> bool:
 
 
 _LIB_SOURCE_HOOKS = [h for h in ALL_HOOKS if _sources_lib_via_dollar_zero(h)]
+
+# Hooks with no $0-relative _lib.sh source line at all, named so a hook's
+# source line silently drifting to an unrecognized shape fails this count
+# instead of quietly shrinking _LIB_SOURCE_HOOKS's parametrized case count.
+_KNOWN_NON_SOURCING_HOOKS: frozenset[str] = frozenset(
+    {
+        "provision-validator-venv.sh",
+        "consume-migration-token.sh",
+        "validate-migration-filename.sh",
+    }
+)
+
+
+def test_lib_source_hooks_exhaustive() -> None:
+    """_LIB_SOURCE_HOOKS must equal ALL_HOOKS minus only the known
+    non-sourcing hooks, mirroring test_all_hooks_and_libs_includes_every_lib_sh's
+    exhaustiveness pattern above."""
+    expected_count = len(ALL_HOOKS) - len(_KNOWN_NON_SOURCING_HOOKS)
+    assert len(_LIB_SOURCE_HOOKS) == expected_count, (
+        f"expected {expected_count} hooks in _LIB_SOURCE_HOOKS (ALL_HOOKS minus "
+        f"{sorted(_KNOWN_NON_SOURCING_HOOKS)}), found {len(_LIB_SOURCE_HOOKS)}"
+    )
 
 
 @pytest.mark.parametrize("hook", _LIB_SOURCE_HOOKS, ids=[h.name for h in _LIB_SOURCE_HOOKS])
@@ -1067,9 +1089,6 @@ def test_lib_sh_sourced_via_parameter_expansion(hook: Path) -> None:
     line = source_lines[0]
     assert line == 'if ! . "${0%/*}/_lib.sh" 2>/dev/null; then', (
         f"{hook.name}: _lib.sh source line must use the ${{0%/*}} parameter expansion; got: {line!r}"
-    )
-    assert '$(dirname "$0")' not in line, (
-        f"{hook.name}: _lib.sh source line still uses the $(dirname \"$0\") command substitution: {line!r}"
     )
 
 
@@ -1243,6 +1262,21 @@ class TestGateHookBehavior:
 # validate-migration-filename.sh: it is hook-class: gate but sources
 # _lib.sh via "${CLAUDE_PLUGIN_ROOT}", a mechanism this sweep doesn't touch.
 _SWEPT_GATE_HOOKS = [h for h in _LIB_SOURCE_HOOKS if _hook_class(h) == "gate"]
+
+# The one hook-class: gate hook excluded above by construction, named so
+# this count stays independently checkable rather than self-referential.
+_NON_SWEPT_GATE_HOOKS: frozenset[str] = frozenset({"validate-migration-filename.sh"})
+
+
+def test_swept_gate_hooks_exhaustive() -> None:
+    """_SWEPT_GATE_HOOKS must equal GATE_HOOKS minus only the known
+    excluded gate hook, mirroring test_all_hooks_and_libs_includes_every_lib_sh's
+    exhaustiveness pattern above."""
+    expected_count = len(GATE_HOOKS) - len(_NON_SWEPT_GATE_HOOKS)
+    assert len(_SWEPT_GATE_HOOKS) == expected_count, (
+        f"expected {expected_count} hooks in _SWEPT_GATE_HOOKS (GATE_HOOKS minus "
+        f"{sorted(_NON_SWEPT_GATE_HOOKS)}), found {len(_SWEPT_GATE_HOOKS)}"
+    )
 
 
 @pytest.mark.parametrize("hook", _SWEPT_GATE_HOOKS, ids=[h.name for h in _SWEPT_GATE_HOOKS])
