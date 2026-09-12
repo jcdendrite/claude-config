@@ -25,6 +25,7 @@ import itertools
 import json
 import os
 import sys
+import time
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
@@ -58,16 +59,22 @@ _OUTCOME_KEYS = (_OUTCOME_FAILURE, _OUTCOME_PASS, _OUTCOME_UNRESOLVED, _OUTCOME_
 _DQ_CO_AUTHORED_ROUNDS = "rounds co-authored by >1 dispatch"
 _DQ_KILL_SWITCH_INFERRED_CLEAN = "rounds with a marker write but no ledger row (kill-switch inferred clean)"
 _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match the transcript's round-opens"
+_DQ_LEDGER_POSSIBLY_SWEPT = "sessions with a code-review round but no ledger file, cold enough to be swept"
 _DQ_UNDECIDABLE = "dispatches with no paired tool_result (undecidable)"
 _DQ_AUTHORING_AGENT_INCONSISTENT = "authoring_agent inconsistent with the transcript join"
 _DATA_QUALITY_KEYS = (
     _DQ_CO_AUTHORED_ROUNDS, _DQ_KILL_SWITCH_INFERRED_CLEAN, _DQ_ROUND_NUMBER_MISMATCH,
-    _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
+    _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
 )
 
 # review-narrative-ledger's own directory name, one level under a Claude
 # Code config-dir root -- mirrors review-ledger.sh's own $LEDGER_DIR.
 _REVIEW_LEDGER_DIRNAME = "review-narrative-ledger"
+
+# Mirrors review-ledger.sh's _sweep_stale_ledger_files `-mtime +30` threshold. Kept
+# as a duplicated literal per CLAUDE.md's single-source-of-truth exception for small
+# values, pending a shared config source.
+_LEDGER_SWEEP_WINDOW_SECONDS = 30 * 24 * 60 * 60
 
 
 def _is_clean_marker_write(command: str) -> bool:
@@ -226,6 +233,34 @@ def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bo
     return contiguous_blocks != list(range(1, round_open_count + 1))
 
 
+def _ledger_possibly_swept(
+    jsonl: Path,
+    code_review_rounds: list[tuple[int, int]],
+    ledger_rows: list[dict],
+    records: list[dict],
+    *,
+    now: float | None = None,
+) -> bool:
+    """True iff this session opened >=1 code-review round, has no ledger
+    file at all, and its own newest record is older than
+    review-ledger.sh's 30-day sweep window. False otherwise, including
+    when no record in the session has a parseable timestamp to compare.
+    See docs/transcript-analysis.md's "Ledger-possibly-swept check"
+    section for the rationale.
+    """
+    if not code_review_rounds:
+        return False
+    if ledger_rows or _ledger_path_for_session(jsonl) is not None:
+        return False
+    timestamps = [
+        ts for ts in (corpus._parse_ts(rec.get("timestamp")) for rec in records) if ts is not None
+    ]
+    if not timestamps:
+        return False
+    now = time.time() if now is None else now
+    return max(timestamps) < now - _LEDGER_SWEEP_WINDOW_SECONDS
+
+
 def _classify_round(
     round_ordinal: int,
     ledger_rows: list[dict],
@@ -316,10 +351,16 @@ def compute_author_outcomes(
     *,
     agent_type: str = _AUTHORING_AGENT_CODE_WRITER,
     since_ts: float | None = None,
+    now: float | None = None,
 ) -> dict:
     """Single pass over session_iter (main-thread only, no subagent merge --
     every transcript-side signal this join needs lives on the main thread;
     the disposition side comes from each session's own ledger file).
+
+    now is forwarded to _ledger_possibly_swept as its own clock override --
+    lets a caller/test inject a fixed value instead of monkeypatching the
+    global time.time. Defaults to None, which leaves the real clock in
+    place.
 
     Returns {"outcomes": Counter over _OUTCOME_KEYS, "data_quality": Counter
     over _DATA_QUALITY_KEYS}. See docs/transcript-analysis.md's
@@ -351,6 +392,12 @@ def compute_author_outcomes(
         if session_round_mismatch:
             data_quality[_DQ_ROUND_NUMBER_MISMATCH] += 1
 
+        session_ledger_possibly_swept = _ledger_possibly_swept(
+            jsonl, code_review_rounds, ledger_rows, records, now=now,
+        )
+        if session_ledger_possibly_swept:
+            data_quality[_DQ_LEDGER_POSSIBLY_SWEPT] += 1
+
         for round_ordinal, (open_idx, span_end) in enumerate(code_review_rounds, start=1):
             has_marker_write = _round_has_marker_write(records, open_idx, span_end)
             classification, matching_ledger_rows = _classify_round(
@@ -368,18 +415,22 @@ def compute_author_outcomes(
             # filters by the dispatch's start timestamp, not its completion timestamp.
             ts = corpus._parse_ts(records[dispatch_idx].get("timestamp"))
             in_scope = since_ts is None or (ts is not None and ts >= since_ts)
-            # A round-number-mismatched session's ledger/round join can't be
-            # trusted, so its dispatches still count toward
-            # _DQ_ROUND_NUMBER_MISMATCH above but are excluded from the
-            # headline outcomes/"Dispatches in scope" numerator-denominator.
-            counts_toward_headline = in_scope and not session_round_mismatch
+            # A round-number-mismatched or possibly-swept-ledger session's
+            # ledger/round join can't be trusted, so its dispatches still
+            # count toward _DQ_ROUND_NUMBER_MISMATCH/_DQ_LEDGER_POSSIBLY_SWEPT
+            # above but are excluded from the headline outcomes/"Dispatches
+            # in scope" numerator-denominator.
+            counts_toward_headline = (
+                in_scope and not session_round_mismatch and not session_ledger_possibly_swept
+            )
 
             completion_idx = tool_result_index.get(tool_use_id)
             if completion_idx is None:
                 if in_scope:
-                    # Deliberately not gated by session_round_mismatch: a missing
-                    # tool-result completion is a transcript-side attribution fact,
-                    # not something the ledger/round join's mismatch affects.
+                    # Deliberately not gated by session_round_mismatch or
+                    # session_ledger_possibly_swept: a missing tool-result
+                    # completion is a transcript-side attribution fact, not
+                    # something either ledger-side exclusion affects.
                     data_quality[_DQ_UNDECIDABLE] += 1
                 continue
             attributed_open_idx = next(
@@ -399,9 +450,10 @@ def compute_author_outcomes(
 
     for round_entry in rounds_by_key.values():
         if round_entry["dispatch_count"] > 1:
-            # Deliberately not gated by session_round_mismatch: more than one
-            # dispatch attributed to a round is a transcript-side attribution
-            # fact, not something the ledger/round join's mismatch affects.
+            # Deliberately not gated by session_round_mismatch or
+            # session_ledger_possibly_swept: more than one dispatch
+            # attributed to a round is a transcript-side attribution fact,
+            # not something either ledger-side exclusion affects.
             data_quality[_DQ_CO_AUTHORED_ROUNDS] += 1
         transcript_side = (
             agent_type if round_entry["unfiltered_dispatch_count"] >= 1

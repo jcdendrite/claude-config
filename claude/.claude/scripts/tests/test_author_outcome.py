@@ -1,6 +1,7 @@
 """Tests for transcript_analysis/author_outcome.py (author-outcome)."""
 import importlib.util
 import itertools
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from .conftest import (
 )
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
+_REVIEW_LEDGER_SH = Path(__file__).parent.parent / "review-ledger.sh"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
 # alone doesn't register it), so it can't shadow the real transcript_analysis package.
 # The standard importlib recipe does register in sys.modules and would shadow it --
@@ -222,6 +224,117 @@ class TestRoundNumberMismatch:
         assert ao._round_number_mismatch(rows, round_open_count=2) is True
 
 
+class TestLedgerPossiblySwept:
+    _OLD_RECORD_TS = "2026-08-01T10:00:00.000Z"
+    _NOW_WELL_PAST_WINDOW = corpus._parse_ts("2026-09-15T10:00:00.000Z")  # 45 days after _OLD_RECORD_TS
+    _NOW_WITHIN_WINDOW = corpus._parse_ts("2026-08-10T10:00:00.000Z")  # 9 days after _OLD_RECORD_TS
+
+    def _jsonl(self, tmp_path: Path) -> Path:
+        jsonl = tmp_path / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+        return jsonl
+
+    def test_old_session_with_no_ledger_file_is_possibly_swept(self, tmp_path):
+        jsonl = self._jsonl(tmp_path)
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+        ) is True
+
+    def test_recent_session_with_no_ledger_file_is_not_possibly_swept(self, tmp_path):
+        jsonl = self._jsonl(tmp_path)
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WITHIN_WINDOW,
+        ) is False
+
+    def test_no_code_review_rounds_is_never_possibly_swept(self, tmp_path):
+        jsonl = self._jsonl(tmp_path)
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [], [], records, now=self._NOW_WELL_PAST_WINDOW,
+        ) is False
+
+    def test_nonempty_ledger_rows_is_never_possibly_swept(self, tmp_path):
+        jsonl = self._jsonl(tmp_path)
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        rows = [_ledger_row(round=1, disposition="DEFER")]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], rows, records, now=self._NOW_WELL_PAST_WINDOW,
+        ) is False
+
+    def test_ledger_file_present_but_zero_rows_is_never_possibly_swept(self, tmp_path):
+        """A ledger file that exists but is empty (or every line malformed)
+        is a different failure mode from a swept/never-written ledger --
+        this check keys on the file's own presence, not its row count."""
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        (ledger_dir / ("a" * 64 + ".sess-1.jsonl")).write_text("not json\n")
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+        ) is False
+
+    def test_no_parseable_timestamp_is_never_possibly_swept(self, tmp_path):
+        jsonl = self._jsonl(tmp_path)
+        records = [{"timestamp": None}, {}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+        ) is False
+
+    def test_boundary_exactly_at_sweep_window_is_not_possibly_swept(self, tmp_path):
+        """max(timestamps) == now - _LEDGER_SWEEP_WINDOW_SECONDS sits on
+        the strict `<` inequality's excluded side, one second short of
+        swept."""
+        jsonl = self._jsonl(tmp_path)
+        record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
+        now = record_ts + ao._LEDGER_SWEEP_WINDOW_SECONDS
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is False
+
+    def test_boundary_one_second_past_sweep_window_is_possibly_swept(self, tmp_path):
+        """One second older than the exact boundary above crosses onto
+        the swept side of the same strict `<` inequality."""
+        jsonl = self._jsonl(tmp_path)
+        record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
+        now = record_ts + ao._LEDGER_SWEEP_WINDOW_SECONDS + 1
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records, now=now) is True
+
+    def test_now_omitted_defaults_to_the_real_clock(self, tmp_path, monkeypatch):
+        """now=None (the default) falls back to the real time.time() call,
+        confirmed here by monkeypatching it directly rather than passing an
+        override."""
+        jsonl = self._jsonl(tmp_path)
+        monkeypatch.setattr(ao.time, "time", lambda: self._NOW_WELL_PAST_WINDOW)
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(jsonl, [(0, 1)], [], records) is True
+
+
+class TestLedgerSweepWindowMatchesShellScript:
+    def test_mtime_threshold_matches_the_python_sweep_window_constant(self):
+        """Source-scans review-ledger.sh's own -mtime +N literal instead of
+        executing it, since there's no other way to pin a cross-file,
+        cross-language numeric literal without running the shell script.
+        Accepted per test-conventions §9's "wiring-presence" carve-out."""
+        text = _REVIEW_LEDGER_SH.read_text()
+        function_match = re.search(
+            r"^_sweep_stale_ledger_files\(\) \{\n(.*?)\n\}\n", text, re.DOTALL | re.MULTILINE,
+        )
+        assert function_match is not None, "_sweep_stale_ledger_files definition not found"
+        # Scoped to the function's own find invocation, not the illustrative
+        # "-mtime +30" comment above it describing a different script by analogy.
+        mtime_match = re.search(r"find.*-mtime \+(\d+).*-print0", function_match.group(1))
+        assert mtime_match is not None, "review-ledger.sh's find -mtime +N sweep threshold not found"
+        mtime_days = int(mtime_match.group(1))
+        assert mtime_days * 86400 == ao._LEDGER_SWEEP_WINDOW_SECONDS
+
+
 class TestClassifyRound:
     def test_address_row_is_failure_even_with_other_defer_rows_present(self):
         data_quality = ao.Counter()
@@ -310,7 +423,12 @@ class TestComputeAuthorOutcomesBuckets:
     def test_dispatch_is_pass_when_marker_write_present_with_no_ledger_row_at_all(self, fake_projects):
         """The review-narrative-ledger kill switch was on for this round --
         no ledger file exists for the session at all -- but the round's
-        own marker.sh write code-review call still ran."""
+        own marker.sh write code-review call still ran. now= is pinned
+        well inside the sweep window, distinct from
+        TestLedgerPossiblySweptIntegration's own old-session case below.
+        Pinning it is required: this test's fixture dates are hardcoded to
+        2026-08-01, so leaving now= at its real-clock default would flake
+        once wall-clock time passes the 30-day sweep window from that date."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
@@ -318,18 +436,27 @@ class TestComputeAuthorOutcomesBuckets:
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:10.000Z", content=[_marker_write_use("m1")]),
         ])
-        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-08-01T11:00:00.000Z"),
+        )
         assert result["outcomes"][ao._OUTCOME_PASS] == 1
         assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
 
     def test_dispatch_is_unattributed_when_no_ledger_row_and_no_marker_write(self, fake_projects):
+        """now= is pinned well inside the sweep window, distinct from
+        TestLedgerPossiblySweptIntegration's own old-session case below.
+        Pinning it is required: this test's fixture dates are hardcoded to
+        2026-08-01, so leaving now= at its real-clock default would flake
+        once wall-clock time passes the 30-day sweep window from that date."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
             _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
             _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
         ])
-        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-08-01T11:00:00.000Z"),
+        )
         assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
         assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 0
 
@@ -822,6 +949,106 @@ class TestRoundNumberMismatchIntegration:
         assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 1
         # a3 never gets a paired tool_result, so it's undecidable regardless
         # of the mismatch above.
+        assert result["data_quality"][ao._DQ_UNDECIDABLE] == 1
+
+
+class TestLedgerPossiblySweptIntegration:
+    def test_old_session_with_no_ledger_file_excludes_dispatch_and_increments_counter(
+        self, fake_projects,
+    ):
+        """No ledger file exists at all, and the session's newest record is
+        well past the 30-day sweep window. That is indistinguishable from a
+        genuinely swept ledger, so the dispatch is excluded from the
+        headline outcomes. The round's own marker write still lets the
+        kill-switch-inferred-clean counter increment, since that counter
+        measures a transcript-side fact this exclusion doesn't gate."""
+        session_id = "sess-old-no-ledger"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:10.000Z", content=[_marker_write_use("m1")]),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-09-15T10:00:00.000Z"),
+        )
+
+        assert result["data_quality"][ao._DQ_LEDGER_POSSIBLY_SWEPT] == 1
+        assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
+        assert sum(result["outcomes"].values()) == 0
+
+    def test_recent_session_with_no_ledger_file_is_unaffected(self, fake_projects):
+        """Same shape as the old-session case above, but the session's
+        newest record is recent -- the existing kill-switch-inferred-clean
+        PASS behavior must be unaffected by this exclusion."""
+        session_id = "sess-recent-no-ledger"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:10.000Z", content=[_marker_write_use("m1")]),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-08-01T11:00:00.000Z"),
+        )
+
+        assert result["data_quality"][ao._DQ_LEDGER_POSSIBLY_SWEPT] == 0
+        assert result["data_quality"][ao._DQ_KILL_SWITCH_INFERRED_CLEAN] == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+
+    def test_ledger_file_present_is_never_flagged_regardless_of_age(self, fake_projects):
+        """A ledger file exists for this old session. Its one row is legacy
+        (no `round` key), so it never matches round 1. This check keys on
+        the file's own presence, not the usability of its rows, so it must
+        never flag this session no matter how cold its newest record is."""
+        session_id = "sess-old-with-ledger-file"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=None, disposition="DEFER")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-09-15T10:00:00.000Z"),
+        )
+
+        assert result["data_quality"][ao._DQ_LEDGER_POSSIBLY_SWEPT] == 0
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+
+    def test_possibly_swept_session_still_increments_transcript_side_dq_counters(
+        self, fake_projects,
+    ):
+        """_DQ_CO_AUTHORED_ROUNDS and _DQ_UNDECIDABLE measure transcript-side
+        dispatch-to-round attribution, not the ledger-possibly-swept
+        exclusion above. Both must still increment for a possibly-swept
+        session, unlike the headline outcomes counters, which this same
+        session's exclusion removes entirely. Mirrors
+        TestRoundNumberMismatchIntegration's own
+        test_mismatched_session_still_increments_transcript_side_dq_counters
+        for the analogous round-number-mismatch exclusion."""
+        session_id = "sess-swept-with-quality-issues"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _dispatch_start("a2", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("a2", "2026-08-01T10:01:10.000Z"),
+            _dispatch_start("a3", "2026-08-01T10:02:00.000Z"),  # never completes
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:03:00.000Z", content=[_skill_block("s1", "code-review")]),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-09-15T10:00:00.000Z"),
+        )
+
+        assert result["data_quality"][ao._DQ_LEDGER_POSSIBLY_SWEPT] == 1
+        # a1 and a2 both complete before the session's one round-open and
+        # attribute to it, co-authoring round 1 despite the exclusion above.
+        assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 1
+        # a3 never gets a paired tool_result, so it's undecidable regardless
+        # of the exclusion above.
         assert result["data_quality"][ao._DQ_UNDECIDABLE] == 1
 
 

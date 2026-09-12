@@ -1142,6 +1142,8 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 **Accepted risk: a deploy-boundary or compaction can mislabel a session's round sequence.** A second, distinct trigger for the same underlying round-tracking fragility: a mid-session deploy boundary or compaction can desynchronize a session's own round-open count from its ledger's `round` sequence in ways the round-number-sequence check above is built to catch. Unlike the schema-flip case above, this one is not merely accepted -- it is bounded by the round-number-mismatch exclusion above, which removes an affected session's dispatches from the headline aggregate entirely rather than leaving them to bias it silently.
 
+**Accepted risk: a ledger file's sweep-eligible mtime and its transcript's own mtime drift apart, biasing which sessions get swept first.** A ledger file's mtime only advances on `append`; a transcript's mtime advances for the life of the session. A session that reviews early then keeps working past 30 days gets its ledger swept while its transcript survives, misreading as kill-switch-clean rather than swept FAILURE. Bounded by the `_ledger_possibly_swept` exclusion below.
+
 **Accepted risk: a session spanning multiple worktrees of the same repo can drop one worktree's ledger rows.** A session spanning two worktrees of the same repo can produce two ledger files matching the same session-id glob; `_ledger_path_for_session` reads only the sorted-first one, silently dropping the other's rows. This is bounded by the round-number-mismatch check below, which excludes that session's dispatches from the headline aggregate entirely.
 
 **Accepted risk: `authoring_agent` is self-declared, not independently verified.** The reviewing session that calls `review-ledger.sh append` chooses its own `--authoring-agent` value with no check at write time. The only cross-check is the non-blocking `authoring_agent inconsistent` data-quality counter defined below, applied after the fact. The ledger row itself carries no tamper-evidence. A future consumer of the failure-share number should not treat `authoring_agent` as independently verified ground truth.
@@ -1155,6 +1157,14 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 - rows recorded out of sequence
 
 A session whose ledger is entirely legacy rows (no row carries a `round` key) or has no ledger file at all is not evaluated by this check. A session that fails this check has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
+
+**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round but no ledger file, cold enough to be swept" when all three hold:
+
+- It opened >=1 `code-review` round.
+- It has zero ledger rows and no matching ledger file at all.
+- Its own newest record's timestamp is older than `review-ledger.sh`'s 30-day sweep window.
+
+This can't tell a genuinely swept ledger apart from a session the kill switch simply ran clean for its entire (now-cold) lifetime, since both leave the identical zero-rows-no-file signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on any record is not evaluated by this check.
 
 **The `authoring_agent inconsistent` counter's own denominator.** Rows with an empty or `unknown` `authoring_agent` are skipped rather than miscounted -- either a pre-migration row, or one that simply never declared the flag. Every other matching row's `authoring_agent` is compared against the transcript-derived determination for that round: whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
 
@@ -1174,6 +1184,7 @@ Data quality
   rounds co-authored by >1 dispatch                                                 3
   rounds with a marker write but no ledger row (kill-switch inferred clean)         0
   sessions whose ledger round sequence doesn't match the transcript's round-opens   0
+  sessions with a code-review round but no ledger file, cold enough to be swept     0
   dispatches with no paired tool_result (undecidable)                               0
   authoring_agent inconsistent with the transcript join                             1
 ```
