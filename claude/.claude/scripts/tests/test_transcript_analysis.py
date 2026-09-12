@@ -22428,3 +22428,547 @@ class TestCmdPrCostEndToEndViaRealArgparse:
         assert len(rows) == 1
         out = capsys.readouterr().out
         assert "recorded 1 of 1 declared accounts (0 not opted in, 0 skipped)" in out
+
+
+# ---------------------------------------------------------------------------
+# handoff-signal-response
+# ---------------------------------------------------------------------------
+
+def _handoff_signal_response_args(
+    *, projects: str = "*", this_repo: bool = False, config_dir: str | None = None,
+    no_redact: bool = False, sample: int = 0, seed: int | None = None,
+    output_format: str = "json",
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "config_dir": config_dir,
+        "no_redact": no_redact,
+        "sample": sample,
+        "seed": seed,
+        "output_format": output_format,
+    })()
+
+
+def _check_result_json(
+    *, status: str = "ok", over_threshold: bool = False, already_fired: bool = False,
+    estimate: int = 200_000, threshold: int = 150_000,
+) -> str:
+    """The exact JSON shape nudge-handoff-near-context-cap.sh --check prints
+    (run_check_mode's own jq -n object)."""
+    return json.dumps({
+        "status": status, "session_id": "s", "estimate": estimate, "threshold": threshold,
+        "over_threshold": over_threshold, "model": "claude-sonnet-5", "context_window": 1_000_000,
+        "model_recognized": True, "already_fired": already_fired, "nudge_disabled": False,
+    })
+
+
+def _handoff_advisory_attachment() -> dict:
+    """The real advisory-fire attachment record shape (a "hook_success"
+    attachment whose stdout is nudge-handoff-near-context-cap.sh's own
+    injected-additionalContext JSON envelope)."""
+    return {
+        "type": "attachment",
+        "attachment": {
+            "type": "hook_success",
+            "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh",
+            "hookEvent": "PostToolBatch",
+            "stdout": json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolBatch",
+                    "additionalContext": (
+                        "Context is past this session's handoff-nudge threshold (150000 tokens)."
+                        " If the current task is not close to done, suggest running /handoff to the"
+                        " user. If the task is nearly complete, ignore this and finish -- judge that"
+                        " by what the remaining work costs, not by how many steps are left."
+                    ),
+                },
+            }),
+            "stderr": "",
+            "exitCode": 0,
+        },
+    }
+
+
+def _handoff_hard_block_attachment() -> dict:
+    """The real hard-block attachment record shape ("hook_stopped_continuation",
+    carrying "message" but no "command"/"stdout" -- nudge-handoff-near-context-cap.sh
+    lines 644-649)."""
+    return {
+        "type": "attachment",
+        "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": (
+                "[~/.claude/hooks/nudge-handoff-near-context-cap.sh]: Context (507297 tokens) is"
+                " past this session's handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=470000),"
+                " after 4 ignored re-arms. Blocking rather than advising: run /handoff now -- it"
+                " captures state in a /tmp file and resumes in a fresh session."
+            ),
+            "hookName": "PostToolBatch",
+            "hookEvent": "PostToolBatch",
+        },
+    }
+
+
+def _check_call_turn(tool_id: str = "chk1", **usage_kwargs) -> dict:
+    """A main-thread assistant turn whose only tool call is the real --check
+    invocation (handoff/SKILL.md's own command text)."""
+    return _priced(
+        "claude-sonnet-5",
+        content=[_bash_use(tool_id, "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")],
+        **usage_kwargs,
+    )
+
+
+class TestHandoffSignalDetectorHelpers:
+    """Unit coverage for the small Bash-command/tool_use classifiers
+    _handoff_signal_response_session_rows' own single pass reuses."""
+
+    def test_bash_check_call_detected_in_plain_invocation(self):
+        block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
+        assert _mod._handoff_signal_bash_check_call(block) is True
+
+    def test_bash_check_call_detected_inside_chained_segment(self):
+        block = _bash_use("t1", "cd /tmp && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
+        assert _mod._handoff_signal_bash_check_call(block) is True
+
+    def test_bash_call_without_check_flag_is_not_a_check_call(self):
+        block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh")
+        assert _mod._handoff_signal_bash_check_call(block) is False
+
+    def test_non_bash_tool_use_is_not_a_check_call(self):
+        block = _skill_use("t1", "handoff")
+        assert _mod._handoff_signal_bash_check_call(block) is False
+
+    def test_marker_activate_ready_for_review_detected(self):
+        block = _bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "activate"
+
+    def test_marker_deactivate_ready_for_review_detected(self):
+        block = _bash_use("m1", "~/.claude/scripts/marker.sh deactivate ready-for-review")
+        assert _mod._handoff_signal_marker_transition(block) == "deactivate"
+
+    def test_marker_transition_for_a_different_skill_is_ignored(self):
+        """A marker.sh call for a DIFFERENT skill (e.g. handoff's own) must
+        not be misread as a ready-for-review transition."""
+        block = _bash_use("m1", "~/.claude/scripts/marker.sh activate handoff")
+        assert _mod._handoff_signal_marker_transition(block) is None
+
+    def test_skill_handoff_invocation_is_a_handoff_event(self):
+        assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "handoff")) is True
+
+    def test_skill_invocation_for_a_different_skill_is_not_a_handoff_event(self):
+        assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "plan-review")) is False
+
+    def test_write_to_handoffs_file_is_a_handoff_event(self):
+        block = _write_use("w1", "body", path="/repo/.claude/handoffs/my-task-handoff.md")
+        assert _mod._handoff_signal_is_handoff_event(block) is True
+
+    def test_write_to_an_unrelated_path_is_not_a_handoff_event(self):
+        block = _write_use("w1", "body", path="/repo/scratch/notes.md")
+        assert _mod._handoff_signal_is_handoff_event(block) is False
+
+
+class TestHandoffSignalExcerptEligibility:
+    """The source-turn-eligibility filter: an excerpt candidate is only
+    ever a main-thread assistant record's own "text" content block."""
+
+    _RATIONALIZATION_TEXT = "nearly complete, ignore this and finish -- no cost reasoning needed"
+
+    def test_tool_use_block_inside_an_assistant_record_is_never_excerpt_eligible(self):
+        """The record itself IS type=="assistant" -- pins that eligibility is
+        filtered at the block level (type=="text" only), not merely by the
+        record's own top-level type."""
+        rec = _priced("claude-sonnet-5", content=[_bash_use("t1", f"echo '{self._RATIONALIZATION_TEXT}'")])
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_tool_result_record_is_never_excerpt_eligible(self):
+        rec = _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)])
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_plain_user_turn_record_is_never_excerpt_eligible(self):
+        rec = _user_msg(self._RATIONALIZATION_TEXT)
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_sidechain_assistant_text_is_not_excerpt_eligible(self):
+        """A subagent's own text turn: the nudge never fires inside a
+        subagent, so this isn't the orchestrating session's own rationalization."""
+        rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
+        rec["isSidechain"] = True
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
+
+    def test_plain_main_thread_assistant_text_is_excerpt_eligible(self):
+        rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
+        assert _mod._handoff_signal_excerpt_eligible_text(rec) == self._RATIONALIZATION_TEXT
+
+    def test_excerpt_skips_ineligible_records_and_finds_next_eligible_assistant_text(self):
+        deduped = [
+            _priced("claude-sonnet-5", content=[_bash_use("t1", "echo hi")], request_id="r1"),
+            _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)]),
+            _priced(
+                "claude-sonnet-5", request_id="r2",
+                content=[{"type": "text", "text": "Continuing because remaining steps are few."}],
+            ),
+        ]
+        assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
+            "Continuing because remaining steps are few."
+        )
+
+
+class TestHandoffSignalResponseSessionRows:
+    """_handoff_signal_response_session_rows' own signal-detection and
+    row-composition contract, per
+    .claude/plans/handoff-nudge-rationalization-gap.md."""
+
+    def test_over_threshold_true_already_fired_false_emits_one_check_signal(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=False))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_CHECK
+
+    def test_over_threshold_false_already_fired_true_emits_one_check_signal(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_CHECK
+
+    def test_over_threshold_and_already_fired_both_true_is_still_one_row_not_two(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=True))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+
+    def test_neither_over_threshold_nor_already_fired_emits_no_signal(self):
+        records = [
+            _check_call_turn(input=50_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=False))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+    def test_cannot_resolve_status_emits_no_signal(self):
+        """A --check refusal (status != "ok") must never be misread as a
+        qualifying over_threshold/already_fired result."""
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", json.dumps({"status": "cannot-resolve", "reason": "transcript-not-found"}))]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows == []
+
+    def test_session_with_check_and_advisory_signals_emits_two_distinct_rows(self):
+        records = [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _handoff_advisory_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert [r["kind"] for r in rows] == [_mod._HANDOFF_SIGNAL_CHECK, _mod._HANDOFF_SIGNAL_ADVISORY]
+
+    def test_advisory_then_later_hard_block_emits_two_distinct_rows_not_collapsed(self):
+        """The only shape a hard-block signal occurs in: an earlier
+        same-session advisory record (the hook's LAST_FIRED_AT invariant
+        makes a session's first-ever fire always advisory) followed by a
+        later hard-block record."""
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r2"),
+            _handoff_hard_block_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert [r["kind"] for r in rows] == [_mod._HANDOFF_SIGNAL_ADVISORY, _mod._HANDOFF_SIGNAL_HARD_BLOCK]
+        assert rows[0]["record_index"] < rows[1]["record_index"]
+
+    def test_hard_block_record_shape_alone_is_detected_in_isolation(self):
+        """Parser-level supplement to the session-level fixture above --
+        does not substitute for it."""
+        records = [
+            _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r1"),
+            _handoff_hard_block_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert len(rows) == 1
+        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_HARD_BLOCK
+
+    def test_marker_active_state_reflects_the_most_recent_transition_at_signal_time(self):
+        records = [
+            _priced(
+                "claude-sonnet-5", input=160_000, output=1_000, request_id="r1",
+                content=[_bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")],
+            ),
+            _handoff_advisory_attachment(),
+            _priced(
+                "claude-sonnet-5", input=480_000, output=1_000, request_id="r2",
+                content=[_bash_use("m2", "~/.claude/scripts/marker.sh deactivate ready-for-review")],
+            ),
+            _handoff_hard_block_attachment(),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["marker_active"] is True
+        assert rows[1]["marker_active"] is False
+
+    def test_handoff_followed_true_when_handoff_skill_invoked_after_signal_same_session(self):
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2", content=[_skill_use("h1", "handoff")]),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["handoff_followed"] is True
+
+    def test_handoff_followed_false_when_no_handoff_event_this_session(self):
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2"),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["handoff_followed"] is False
+
+    def test_handoff_followed_true_via_write_to_handoffs_file(self):
+        records = [
+            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
+            _handoff_advisory_attachment(),
+            _priced(
+                "claude-sonnet-5", input=170_000, output=1_000, request_id="r2",
+                content=[_write_use("w1", "body", path="/repo/.claude/handoffs/task-handoff.md")],
+            ),
+        ]
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+        assert rows[0]["handoff_followed"] is True
+
+    def test_turns_and_dollars_after_signal_count_only_turns_strictly_after_the_signal(self):
+        rec_before = _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1")
+        rec_after_1 = _priced("claude-sonnet-5", input=170_000, output=2_000, request_id="r2")
+        rec_after_2 = _priced("claude-sonnet-5", input=180_000, output=2_000, request_id="r3")
+        records = [rec_before, _handoff_advisory_attachment(), rec_after_1, rec_after_2]
+
+        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
+
+        dollars_after_1, _ctx1, _u1 = _mod._price_turn("claude-sonnet-5", rec_after_1["message"]["usage"])
+        dollars_after_2, _ctx2, _u2 = _mod._price_turn("claude-sonnet-5", rec_after_2["message"]["usage"])
+        expected_dollars = sum(dollars_after_1.values()) + sum(dollars_after_2.values())
+
+        assert rows[0]["turns_after_signal"] == 2
+        assert rows[0]["dollars_after_signal"] == pytest.approx(expected_dollars)
+
+
+class TestCmdHandoffSignalResponseScopeAndRedaction:
+    """cmd_handoff_signal_response's own CLI-boundary contract: the
+    resolved-scope banner and the context-distribution-style multi-root
+    --no-redact refusal (.claude/plans/handoff-nudge-rationalization-gap.md)."""
+
+    def test_resolved_scope_banner_reports_a_single_root(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
+        out = capsys.readouterr().out
+        assert "HANDOFF SIGNAL RESPONSE SOURCES" in out
+        assert "1 root" in out
+
+    @pytest.mark.parametrize("sample", [0, 5])
+    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, sample):
+        """sample=5 pins the higher-risk curation-card path (raw excerpts and
+        text), which sample=0's aggregate-only fixture never reached."""
+        _two_declared_roots(tmp_path, monkeypatch)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True, sample=sample))
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--no-redact" in err
+        assert "more than one root" in err
+
+    def test_no_redact_allowed_and_stamps_banner_at_single_root(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+
+
+class TestCmdHandoffSignalResponseSampleCards:
+    """--sample curation-card output: session-id redaction and the excerpt
+    join against the real (re-read) session file."""
+
+    def test_sample_redacts_session_id_by_default(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 1
+        assert cards[0]["session_id"] == "session-1"
+        assert cards[0]["session_id"] != "sess"  # "sess" is the real jsonl.stem this must not leak
+
+    def test_sample_no_redact_emits_raw_session_id(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        # DO NOT PUBLISH banner (stdout) + resolved-scope header precede the JSON array.
+        json_start = out.index("[")
+        cards = json.loads(out[json_start:])
+        assert len(cards) == 1
+        assert cards[0]["session_id"] == "sess"
+
+    def test_sample_card_excerpt_matches_next_eligible_assistant_text_turn(self, fake_projects, capsys):
+        """Drives the excerpt seam through the real CLI path (file write ->
+        cmd_handoff_signal_response -> card), not just the in-memory unit
+        test. _handoff_signal_response_cards re-reads the session file
+        independently of the initial scan's own deduped list."""
+        excerpt_text = "Continuing because remaining steps are few, not because of cost."
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced(
+                "claude-sonnet-5", input=210_000, output=500, request_id="r2",
+                content=[{"type": "text", "text": excerpt_text}],
+            ),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert cards[0]["excerpt"] == excerpt_text
+
+
+class TestCmdHandoffSignalResponseSampleTruncation:
+    """--sample N truncates the shuffled row set to exactly N cards.
+    TestCmdHandoffSignalResponseSampleCards' own fixtures build exactly one
+    signal-bearing session each, so truncation itself is untested there."""
+
+    def test_sample_n_truncates_more_than_n_signal_rows_to_exactly_n_cards(self, fake_projects, capsys):
+        for i in range(8):
+            _write_jsonl(fake_projects / f"sess{i}.jsonl", [
+                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=3, seed=1, output_format="json"))
+        out = capsys.readouterr().out
+        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
+        assert len(cards) == 3
+
+
+class TestHandoffSignalResponseAggregateReport:
+    """_handoff_signal_response_aggregate_report's own conversion-rate and
+    per-group breakdown math, pinned against hand-computed values for a
+    mixed kind/marker-context row set -- the census run's headline numbers."""
+
+    def test_conversion_rate_and_breakdown_match_hand_computed_values(self, capsys):
+        rows = [
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 1.0},
+            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_ADVISORY, "marker_active": True,
+             "handoff_followed": False, "dollars_after_signal": 3.0},
+            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": True,
+             "handoff_followed": False, "dollars_after_signal": 2.0},
+            {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": False,
+             "handoff_followed": True, "dollars_after_signal": 5.0},
+        ]
+        _mod._handoff_signal_response_aggregate_report(rows, log_diagnostic=None)
+        out = capsys.readouterr().out
+
+        assert "Sessions with at least one signal: 3" in out
+        assert "Conversion rate (a same-session /handoff followed the signal): 50.0% (2/4)" in out
+
+        def _breakdown_row(label: str) -> list[str]:
+            for line in out.splitlines():
+                if line.startswith(label):
+                    return line[len(label):].split()
+            raise AssertionError(f"breakdown row not found for {label!r}")
+
+        # By signal kind: check={rows 0,2} advisory={row 1} hard-block={row 3}.
+        assert _breakdown_row("check") == ["2", "50.0%", "1.50", "1.50"]
+        assert _breakdown_row("advisory") == ["1", "0.0%", "3.00", "3.00"]
+        assert _breakdown_row("hard-block") == ["1", "100.0%", "5.00", "5.00"]
+
+        # By ready-for-review active-marker context: active={rows 1,2} inactive={rows 0,3}.
+        assert _breakdown_row("active") == ["2", "0.0%", "2.50", "2.50"]
+        assert _breakdown_row("inactive") == ["2", "100.0%", "3.00", "3.00"]
+
+
+class TestFormatHandoffSignalCardsAsMarkdown:
+    """_format_handoff_signal_cards_as_markdown's own document shape --
+    mirrors _format_samples_as_markdown's own curation-card format."""
+
+    _CARD = {
+        "session_id": "session-1",
+        "kind": _mod._HANDOFF_SIGNAL_CHECK,
+        "position": 10,
+        "context_at_turn": 200_000,
+        "threshold": 150_000,
+        "marker_active": False,
+        "handoff_followed": True,
+        "turns_after_signal": 3,
+        "dollars_after_signal": 1.23,
+        "excerpt": "Confirmed over threshold, running /handoff now.",
+    }
+
+    def test_header_names_signal_count_sample_n_and_seed(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=5, seed=7)
+        assert out.startswith("# handoff-signal-response curation — 1 signal(s)")
+        assert "--sample 5" in out
+        assert "--seed 7" in out
+
+    def test_header_reports_unset_seed_as_none_placeholder(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=5, seed=None)
+        assert "--seed (none)" in out
+
+    def test_one_section_header_per_card(self):
+        cards = [dict(self._CARD, session_id=f"session-{i}") for i in range(3)]
+        out = _mod._format_handoff_signal_cards_as_markdown(cards, sample_n=3, seed=1)
+        section_headers = [line for line in out.splitlines() if line.startswith("## ")]
+        assert len(section_headers) == 3
+
+    def test_section_names_session_kind_and_position(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1)
+        assert "session `session-1` — check signal at turn 10" in out
+
+    def test_excerpt_is_interpolated_into_a_blockquote(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1)
+        assert "> Confirmed over threshold, running /handoff now." in out
+
+    def test_empty_excerpt_renders_the_no_eligible_text_placeholder(self):
+        card = dict(self._CARD, excerpt="")
+        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1)
+        assert "> (no eligible assistant text turn followed the signal)" in out
+
+    def test_verdict_checklist_present_in_each_section(self):
+        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1)
+        assert "Verdict: [ ] cost-grounded" in out
+
+
+class TestCmdHandoffSignalResponseMarkdownFormat:
+    """cmd_handoff_signal_response(..., output_format='md') integration:
+    --format md produces the curation document, not the JSON array. Models
+    the sibling audit-routing-samples subcommand's own md-format test shape."""
+
+    def test_format_md_emits_curation_document_with_a_verdict_checklist(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        ])
+        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="md"))
+        out = capsys.readouterr().out
+        assert "# handoff-signal-response curation" in out
+        assert "Verdict: [ ] cost-grounded" in out

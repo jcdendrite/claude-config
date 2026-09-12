@@ -1171,6 +1171,92 @@ A `nudged` log line whose session id has no match in the resolved scope (a since
 
 ---
 
+## handoff-signal-response
+
+**Purpose.** A *signal* is an observed context-budget event: a `--check` result carrying `over_threshold` or `already_fired` true, the advisory nudge's own injected `additionalContext`, or the hard-block stderr. Per session, this subcommand locates every signal and reports:
+
+- whether a `/handoff` invocation followed it in that **same session's own transcript** before the transcript ends
+- how many main-thread turns and priced dollars elapsed after it
+- whether a live `ready-for-review` active-bypass marker applied at signal time
+
+It mechanically measures how often the rationalization gap `.claude/plans/handoff-nudge-rationalization-gap.md` fixes actually recurred in this repo's own corpus. This is distinct from `spend-over-threshold`/`handoff-ratio`: neither of those keys on an *observed* signal, so neither can separate "the session was deep" from "the agent was told and continued anyway."
+
+A `--check` result is invisible in `<config-dir>/.handoff-nudge.log` (it writes no log line — see "Querying the current estimate" in `docs/handoff-nudge.md`), so this subcommand detects all three signal kinds directly from each session's own transcript records, never from the log. Cross-checked against `.handoff-nudge.log`'s `nudged` lines as a corroborating diagnostic only; no per-session row depends on it.
+
+Field definitions:
+
+- `context_at_turn` — from the nearest preceding main-thread turn's own priced usage (`_price_turn`), never from a signal's own embedded text (which for the advisory case states only the threshold, not the live estimate).
+- `position` — the main-thread turn ordinal (0-based) the signal was observed at or immediately after.
+- `turns_after_signal` — main-thread turns following the signal, from the same priced-usage pass.
+- `dollars_after_signal` — main-thread dollars only, past the signal's own turn.
+- `threshold` — `_hook_effective_fire_threshold` for that turn's own model.
+- `handoff_followed` — same-session only: a `/handoff` Skill invocation, or a Write/Edit to a `<config-dir>/handoffs/<slug>-handoff.md` path, occurring anywhere after the signal before the transcript ends.
+  - Deliberately not a cross-session join: a signal's intended remedy invokes `/handoff` in the same session that saw the signal, so the fresh session that resumes afterward is a separate transcript this metric never needs to look at.
+
+**Excerpt source-turn eligibility (curation cards only).** An excerpt is never sourced from a `tool_use` block, a `tool_result` block, or any user-type record, however unambiguous its content — only a main-thread assistant record's own `"text"` content blocks are excerpt-eligible. This closes the cross-turn leak vector: a pasted path, diff, stack trace, or credential that reached the agent via tool output or a user message can never become a published excerpt. It does not catch an assistant turn that paraphrases such content in its own words — a manual redaction read over the sampled set is still required before anything from `--sample`/`--no-redact` output ships anywhere public.
+
+**Flags.**
+- `--config-dir PATH` — top-level flag (precedes the subcommand name), resolves sessions under `PATH/projects` instead of the default config dir. Composes with `--this-repo`/`--projects` the same way every non-`cost`-family subcommand does (`_resolve_scan_roots`) — this subcommand is not in `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR`, so it has no separate, repeatable per-subcommand `--config-dir` of its own the way `cost`/`context-distribution` do.
+- `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
+- `--no-redact` — emit raw session IDs in `--sample` curation cards instead of a run-scoped opaque label (`session-1`, `session-2`, ...), and print the `DO NOT PUBLISH` banner. Refused (exit 2) once scope resolves to more than one root — matching `context-distribution`'s own contract, not `audit-routing-samples`' (which has no redaction of any kind). Narrow to a single root first, e.g. `--this-repo` with no additional declared roots.
+- `--sample N` — emit a random sample of N signal rows as curation cards instead of the aggregate census report
+- `--seed N` — seed for `--sample`'s reproducible shuffle (default: unseeded)
+- `--format json|md` — `--sample` output format: `json` (default) or `md` (a human curation document with a verdict checklist, mirroring `audit-routing-samples`' own card shape)
+
+**Sample output (synthetic, illustrative counts only).**
+```
+HANDOFF SIGNAL RESPONSE SOURCES (this repo (N project dirs); 1 root (~/.claude/transcript-config-dirs declared but contributed no additional root))
+
+## Handoff signal response (1,850 signal(s) in scope)
+
+Sessions with at least one signal: 640
+Conversion rate (a same-session /handoff followed the signal): 88.0% (1,628/1,850)
+
+Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): 720 joined (245 excluded -- no matching session in scope), median lag 64,000 tokens past the fire point
+
+### By signal kind
+
+Group           Signals  Handoff%  Median $ after  Mean $ after
+---------------------------------------------------------------
+advisory          1,290     85.5%            4.10          6.80
+check               500     93.0%            0.85          1.60
+hard-block           60    100.0%            2.00          2.40
+
+### By ready-for-review active-marker context
+
+Group           Signals  Handoff%  Median $ after  Mean $ after
+---------------------------------------------------------------
+active              610     76.5%            3.60          5.90
+inactive          1,240     93.6%            2.05          4.40
+```
+
+**Sample output (`--sample 1 --format json`, redacted, synthetic, illustrative values only).**
+```json
+[
+  {
+    "session_id": "session-1",
+    "kind": "check",
+    "position": 40,
+    "context_at_turn": 160000,
+    "threshold": 150000,
+    "marker_active": false,
+    "handoff_followed": true,
+    "turns_after_signal": 10,
+    "dollars_after_signal": 0.50,
+    "excerpt": "Usage is now over the configured threshold; wrapping up before handing off."
+  }
+]
+```
+
+**Instrument sanity check.** A wrongly-narrowed scan (a stray `--config-dir`, a missing `--this-repo`) reads identically to "no evidence exists," and the resolved-scope header is the only line that would catch it. Before trusting a census run's numbers, confirm both, against `--config-dir ~/.claude --this-repo`'s own header (`HANDOFF SIGNAL RESPONSE SOURCES (this repo (N project dirs); 1 root (...))`):
+
+- Root count reads `1 root`, never `2 roots` or more — a multi-root run here means `--no-redact` is unavailable and every session-id label in a curation card is opaque.
+- Project-dir count (`N`) matches this repo's own worktree count in that account's `<config-dir>/projects/`.
+
+**When to reach for it.** Run the census to get the corpus-wide conversion rate and post-signal spend distribution; run `--sample N --seed S --format md --no-redact` (single root only) to build a curation deck for a manual read of whether a rationalization pattern (step-count-for-cost substitution) actually recurred in the sampled excerpts — see `.claude/plans/handoff-nudge-rationalization-gap.md` for the classification rubric this deck feeds.
+
+---
+
 ## plan-boundary
 
 **Purpose.** Re-price each Opus-anchored session's own post-plan-boundary main-thread turn sequence under three pricing arms — the report's own labels for continuing on Opus, switching the session to Sonnet in place, and handing off to a fresh Sonnet session — holding the observed work (turns, output tokens) fixed and varying only the price schedule and the context-rebuild penalty. A session is Opus-anchored when its first main-thread turn's model family is Opus. Its plan boundary is the first main-thread (non-sidechain) assistant turn that calls `ExitPlanMode` (harness plan mode) or invokes the `plan-review` Skill (the non-plan-mode path) — a later occurrence of either signal in the same session is re-planning inside work this measurement already treats as post-boundary, not a second transition to price separately. A session with no such turn, or where the boundary is the session's own final main-thread turn (no post-boundary work to reprice), is excluded from the repriced total but counted in the report's own breakdown.
