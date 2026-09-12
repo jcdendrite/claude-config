@@ -16,7 +16,9 @@ So is any of:
 - a raw pooled cost or duration total
 - a figure that composes with another published figure into a barred total
 - a cadence-revealing figure
-- a time series of an otherwise-permitted whole-period figure
+- a time series of an otherwise-permitted whole-period figure, or a
+  before/after split that fails any condition of the carve-out's one
+  permitted split
 
 Give a rounded or generalized figure more scrutiny, not less. The six
 always-on structural detectors already catch raw pastes, so what reaches

@@ -966,6 +966,9 @@ class TestLockedWorktreeRemoveFailsCleanly:
         assert "unlocked stale lock" in result.stdout
         assert "remove failed (manual step needed)" in result.stdout
         assert "contains modified or untracked files" in result.stdout
+        # `git status --porcelain` output for the untracked file, printed
+        # alongside git's own refusal message.
+        assert "?? leftover.txt" in result.stdout
         # Worktree dir and its content must survive
         assert wt_path.exists()
         assert (wt_path / "leftover.txt").exists()

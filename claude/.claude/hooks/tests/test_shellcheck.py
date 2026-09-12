@@ -49,6 +49,7 @@ KNOWN_EXTENSIONLESS_SHELL_FILES = frozenset(
         "claude/.local/bin/resume-context",
         "claude/.local/bin/token-analyzer",
         "claude/.local/bin/update-claude-config-plugins",
+        "claude/.local/bin/worktree-removal-status",
         "plugins/lovable-cloud/scripts/new-migration",
     }
 )
