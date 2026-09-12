@@ -10,7 +10,7 @@ The operator observed costs rising and suspected prompt-cache invalidation,
 citing an external suggestion to route Claude Code through a MITM proxy and
 inspect raw payloads for cache-busting bytes.
 
-Ad-hoc analysis over the full declared-roots corpus (all 6 config dirs in
+Ad-hoc analysis over the full declared-roots corpus (every declared config dir in
 `~/.claude/transcript-config-dirs`; 30 days; 4,039 transcripts, 145,786
 requestId-deduped API calls, 1,091,605,888 cache-write tokens) found the
 suspicion is directionally right but the mechanism is not what was proposed,
@@ -18,12 +18,10 @@ and this repo's own docs record the opposite conclusion:
 
 | Measure | Value |
 |---|---|
-| Total corpus spend, 30d, list price | $12,794 |
 | Corpus-wide cache write:read token ratio | 3.6% |
 | Calls writing >= 100k | 1,960 (1.3% of calls) |
 | Share of that tail attributable to idle-gap TTL expiry | **81.1%** |
 | Idle-gap rebuilds | 1,590 (~53/day) |
-| Excess vs. a warm-cache read, 30 days, list price | **~$2,162** |
 | That excess as a share of total spend | **16.9%** |
 
 The mechanism is TTL expiry, not payload mutation: the prompt bytes across the
@@ -35,10 +33,10 @@ prefix at 1.25x-2x input rate instead of a 0.1x read.
 each idle gap by whether any other transcript — in any account — was active
 during it:
 
-| During the gap | Rebuilds | Excess |
-|---|---|---|
-| Another session was active (terminal switching) | 1,480 (93.1%) | $2,022 |
-| Everything idle (a real break) | 110 (6.9%) | $140 |
+| During the gap | Rebuilds |
+|---|---|
+| Another session was active (terminal switching) | 1,480 (93.1%) |
+| Everything idle (a real break) | 110 (6.9%) |
 
 Sessions switched away from go cold within the 5-minute TTL and rebuild on
 return. Breaks are under 7% of the cost and are not worth optimizing.
@@ -82,8 +80,8 @@ order.
 
 ### Assumption ledger
 
-**Root problem:** ~$2,162 / 30 days of avoidable list-price spend — 16.9% of
-total corpus spend — is spent
+**Root problem:** 16.9% of total 30-day corpus spend, at list price, is
+avoidable spend
 re-writing prefixes whose cached copies expired during gaps created by
 switching between concurrent sessions, and the repo's own docs record this
 cause as ruled out.
@@ -155,8 +153,8 @@ cause as ruled out.
   ~:4985 already implement both]
 - **The headline does not depend on the "large rebuild" threshold.** A
   sensitivity sweep over six definitions — absolute cutoffs at 50k/100k/200k and
-  ratio cutoffs at 30/50/70/90% of prefix rewritten — puts idle-gap excess
-  between $1,869 and $2,290, with the reported $2,162 inside that range; ratio
+  ratio cutoffs at 30/50/70/90% of prefix rewritten — keeps idle-gap excess
+  within a narrow band around the reported figure; ratio
   definitions yield *more* rebuilds (up to 2,044), so 100k is conservative.
   [verified: sensitivity sweep this session, to be reproduced by the
   subcommand's `--threshold` flag per Verification item 5]
@@ -234,7 +232,7 @@ is introduced.
    exactly what this revision changed, and it is where a running total reset
    per-root, or `requestId` dedup scoped per-root instead of post-union, would
    hide. This replaces asserting the live figures: transcripts roll off on a
-   ~30-day window, so a test pinned to "1,590 rebuilds / $2,162" would false-fail
+   ~30-day window, so a test pinned to "1,590 rebuilds" or a fixed dollar figure would false-fail
    within days of merge regardless of code correctness.
 
    Separately, register `cache-rebuild` in the existing
@@ -243,7 +241,8 @@ is introduced.
    not belong in the manual live run below.
 5. **One-time manual sign-off (not CI).** Before merge, run `cache-rebuild`
    against the live corpus and confirm it reproduces ~1,590 idle-gap rebuilds and
-   ~$2,162, and that `--threshold` sweeps reproduce the $1,869-$2,290 band. Check
+   a dollar excess in the same range this plan's own sensitivity sweep found, and
+   that `--threshold` sweeps stay within a comparably narrow band. Check
    the resolved-scope header's root count against the number of currently-valid
    lines in `~/.claude/transcript-config-dirs` at run time — that file is
    operator-editable, so a hardcoded expectation would go stale silently. Record

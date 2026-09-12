@@ -9,8 +9,8 @@ waste-screen audit already filed (F1/#555, F3/#557, F4/#558), building on the
 `cost` subcommand that shipped in #552.
 
 Why now: a fresh `cost --since 30d` run (posted to #554 this session) shows
-total spend up 18.6% over the audit's original snapshot ($8,047.76 →
-$9,547.35) with composition essentially unchanged — the "is it climbing"
+total spend up 18.6% over the audit's original snapshot, with composition
+essentially unchanged — the "is it climbing"
 feeling is real at the aggregate level, but nothing in the toolkit yet
 attributes *why*, and `audit-routing` — the tool a reader would reach for —
 still headlines an output-token-only figure representing under 12% of spend.

@@ -129,7 +129,7 @@ branch's base, `origin/main`).
 ### B. Transcript audit — historical full-suite fallback cases
 
 Corpus: `transcript-analysis.py sessions --this-repo --paths
---include-subagents` (80 project dirs, 6 declared roots, 3,572 transcript
+--include-subagents` (80 project dirs, every declared root, 3,572 transcript
 files), sessions dated 2026-08-06 through 2026-08-30.
 
 **Category A — raw pytest invoked directly, select-tests.py never

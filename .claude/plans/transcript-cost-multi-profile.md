@@ -138,7 +138,7 @@ Rejected, each heavier or wrong:
   that global silently changes the corpus for publish-safe paths like
   `skill-invocation` — a redaction regression, not a feature.
 - **A shell wrapper looping the existing binary per profile** — each invocation
-  re-parses the full corpus; that is what made a 7-profile loop time out.
+  re-parses the full corpus; that is what made a loop across every profile time out.
 - **Post-hoc `--redact` scrubbing as the disclosure control** — the file itself
   documents the opposite at lines 1589-1601: safety "rests on WHAT records are
   read, not on scrubbing names after the fact … scoping is" the boundary. Scope
@@ -188,10 +188,10 @@ regression. Scanning outside the default config dir hits the same silent-zero
 failure mode this plan exists to fix if a bad root degrades quietly.
 
 **Step 1a — State and enforce the wall-clock budget.**
-The corpus at review time was ~1.19 GB / 39 project dirs by default, parsing at
-~75 MB/s warm; three account profiles add ~340 MB. A `--redact` run (the
+The corpus at review time was ~1.19 GB by default, parsing at
+~75 MB/s warm; the additional account profiles add ~340 MB. A `--redact` run (the
 default) re-scans the full matched dir set unconditionally
-(`_build_redact_map`), so a 4-root run does two full passes over ~1.5 GB, not
+(`_build_redact_map`), so a run across every root does two full passes over ~1.5 GB, not
 one. State the measured warm-run wall-clock for the widest realistic invocation
 (all known profiles, `--redact` on) in the PR description, and if it exceeds
 whatever timeout the operator's shell tooling defaults to, document the
@@ -213,7 +213,7 @@ billed twice off a billing report.
 cannot filter foreign roots. Reject the combination at argparse with a message
 naming both flags.
 *Why:* an operator would otherwise believe output is repo-scoped while it reads
-three other clients' profiles.
+other clients' profiles.
 
 **Step 4 — Build the redact map over the union of roots, account-namespaced.**
 `_build_redact_map` currently calls `iter_sessions(PROJECTS_DIR, "*")` and fails
@@ -271,7 +271,7 @@ unchanged code and guard nothing. Four states are currently collapsed into one:
 
 Define the warning predicate as **zero transcripts opened for a requested
 scope**, covering (a) and (b) only, and emit it **per root** — otherwise one
-empty profile in a four-profile run is masked by the others' non-zero total,
+empty profile in a multi-profile run is masked by the others' non-zero total,
 which is the original bug wearing a different hat. Keep it distinct from the
 existing unpriced-tokens line.
 *Why:* (a)/(b) are the bug; (c)/(d) are legitimate zeros. Conflating them is the

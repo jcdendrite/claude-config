@@ -518,8 +518,9 @@ def compute_reviewer_yield_data(
         # bookkeeping can't inflate Active for a dispatch with no real fix
         # work behind it. See cmd_reviewer_yield's docstring for which
         # writes that covers.
-        # Cost: measured at ~104s added wall-clock over a 6-root --since 30d run
-        # (53.8s parent-only vs 157.7s subagent-inclusive; see docs/transcript-analysis.md).
+        # Cost: measured at ~104s added wall-clock over a --since 30d run across
+        # every declared root (53.8s parent-only vs 157.7s subagent-inclusive;
+        # see docs/transcript-analysis.md).
         reviewer_scans = _scan_reviewer_transcripts(records, dispatch_index)
         reviewer_write_ids = _reviewer_write_tool_use_ids(reviewer_scans)
         edit_index = _index_session_edits(records, since_ts, reviewer_write_tool_use_ids=reviewer_write_ids)

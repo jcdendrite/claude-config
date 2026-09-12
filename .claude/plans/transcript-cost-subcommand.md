@@ -42,28 +42,27 @@ Opus-scoped command would make its output mean two things.
 
 ### Corpus and measurements
 
-30 days (2026-07-03 → 2026-08-02), all projects: **268 sessions, 56,358 priced turns,
-$5,906 at list price.**
+30 days (2026-07-03 → 2026-08-02), all projects: **268 sessions, 56,358 priced turns.**
 
-| Component | $ | Share |
-|---|---|---|
-| cache read | $3,037 | 51.4% |
-| cache write (5m, 1.25×) | $1,533 | 26.0% |
-| cache write (1h, 2×) | $572 | 9.7% |
-| **output** | **$755** | **12.8%** |
-| input | $8 | 0.1% |
-| **context (read + writes)** | **$5,143** | **87.1%** |
+| Component | Share |
+|---|---|
+| cache read | 51.4% |
+| cache write (5m, 1.25×) | 26.0% |
+| cache write (1h, 2×) | 9.7% |
+| **output** | **12.8%** |
+| input | 0.1% |
+| **context (read + writes)** | **87.1%** |
 
 Mean context per turn: 263,835 tokens. **68.4% of spend lands on turns carrying ≥200k
-tokens of context.** By model: Sonnet 5 $4,850 (82.1%), Opus 5 $674 (11.4%), Opus 4.8
-$289 (4.9%), Sonnet 4.6 $93 (1.6%) — Opus totals $963, **16.3% of spend**.
+tokens of context.** By model: Sonnet 5 82.1%, Opus 5 11.4%, Opus 4.8 4.9%, Sonnet 4.6
+1.6% — Opus totals **16.3% of spend**.
 
 **Four hypotheses tested and killed** (recorded so a later revision does not re-raise them):
 - *Prefix-cache invalidation.* Cache-writes average 11.7k tokens/turn — a normal
   incremental delta, not repeated whole-prefix rebuilds.
 - *Long-session tail.* Spend by session-progress decile is nearly flat (8.1% → 12.6%).
   The driver is turn volume at large context, not session length.
-- *Instruction-preamble bloat.* CLAUDE.md at ~4k tokens over ~56k turns is ~$0.04/month.
+- *Instruction-preamble bloat.* CLAUDE.md at ~4k tokens over ~56k turns is negligible.
   The fixed preamble is not the problem; accumulated tool output is.
 - *A >200k long-context premium.* The pricing page's "Long context pricing" section states
   Claude 4.6+ include the full 1M window **at standard pricing**. Every model in the
@@ -73,8 +72,8 @@ $289 (4.9%), Sonnet 4.6 $93 (1.6%) — Opus totals $963, **16.3% of spend**.
 
 **F1 — The efficiency toolkit is denominated in the wrong unit.** `token-analyzer.py`
 prints unpriced token counts. `audit-routing` headlines a Sonnet-tier estimate computed
-from output tokens: 2,369,227 tokens, which at Opus 5 $25/MTok → Sonnet 5 $10/MTok is
-**~$36/month, 0.6% of spend**. The 87.1% context share has no instrumentation. (Axis 1)
+from output tokens that, at Opus 5 $25/MTok → Sonnet 5 $10/MTok, comes to
+**0.6% of spend**. The 87.1% context share has no instrumentation. (Axis 1)
 
 **F2 — `nudge-handoff-near-context-cap.sh` is calibrated to a retired constant.**
 `THRESHOLD=120000`, self-documented at lines 115-117 as "≈ 60% of a 200k context window,
@@ -82,13 +81,13 @@ source: claude-sonnet-4-x and claude-opus-4-x at 200k context." Claude 4.6+ ship
 window, so it fires at **12%** of the real window. 71% of sessions cross it (median peak
 context 229,388; p90 534,766; max 929,946), and the injected string asserts "Context is
 near 60% of the model window" — false by ~5×, injected as fact into the model's context.
-`handoff-ratio` shows 50 handoffs vs 7 compactions. (Axis 3)
+`handoff-ratio` shows handoffs outnumbering compactions roughly 7 to 1. (Axis 3)
 
-**F3 — The review gate's own bookkeeping is the top permission-denial source.** 547
-permission-rule denials in 30 days; of 443 denied Bash commands, **101 (23%) are
-`marker.sh activate/write/deactivate/status`** — the script whose only job is to record
-that a review happened. Also denied: 83 `Agent` dispatches, 38 `git commit`, 22
-`git checkout`, 19 `git push`. Distinct from #421, which concerns the worktree-enforcement
+**F3 — The review gate's own bookkeeping is the top permission-denial source.** Of
+denied Bash commands, **23% are `marker.sh activate/write/deactivate/status`** — the
+script whose only job is to record that a review happened. Other command types are
+also denied, including `Agent` dispatches, `git commit`, `git checkout`, and
+`git push`. Distinct from #421, which concerns the worktree-enforcement
 *hook* regexing command strings; this is `permissions.allow` exact-match rules not matching
 the shapes the skills themselves prescribe. Three live instances occurred while producing
 this plan: a `marker.sh` call denied for a trailing `; echo`, three specialist dispatches
@@ -99,8 +98,7 @@ containing `bin/git` as a git invocation. (Axis 2)
 **F4 — Reviewer fan-out is the largest discretionary workload and its yield is
 unmeasured.** 856 of 1,144 subagent dispatches (75%) are reviewer agents — staff-sdet 237,
 ciso-reviewer 180, staff-platform-engineer 172, staff-backend 89, skill-fidelity 67,
-staff-product 64, staff-frontend 36. Plus 190 `/code-review`, 87 `/plan-review`, 75
-`/ready-for-review` invocations. `review-trace` counts spawns but nothing links a dispatch
+staff-product 64, staff-frontend 36. `review-trace` counts spawns but nothing links a dispatch
 to a finding, or a finding to a diff change. (Axis 2)
 
 ### Issue structure: one tracking issue, four children
@@ -599,8 +597,8 @@ not just the tracking issue.
 - **Fixing** F2, F3, or F4 — each is filed for separate triage. Only F1's tooling ships here.
 - Re-litigating CLAUDE.md's Model Routing section. The 0.6% figure is a cost observation;
   routing also serves quality and latency, which this audit did not measure.
-- A new issue for the worktree-enforcement hook — #421 carries a stronger census (1,120
-  denials / 335 sessions, 92% FP). It gets a corroborating comment, not a duplicate.
+- A new issue for the worktree-enforcement hook — #421 carries a stronger census (92% FP,
+  the largest denial count of any hook). It gets a corroborating comment, not a duplicate.
 - Performance work on `iter_sessions`' redact first pass, which fully JSON-parses every
   record solely to read `jsonl.parent.name` (a wasted full parse of ~785 MB). Deriving
   labels from `PROJECTS_DIR.glob()` paths is the right fix; it touches a shared function

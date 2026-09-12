@@ -16,13 +16,13 @@ This surfaced from a real session (2026-09-02) that rebased 42 commits onto
 a moved default branch with zero conflicts, then had to re-ingest and
 re-review the entire ~1,687-line cumulative diff, prompting direct user
 pushback on the expense. A `transcript-analysis` pass across a 30-day,
-~1,700-transcript, 6-account corpus (658 `ready-for-review` invocations)
-found this exact pattern in 1 confirmed and 1 probable instance, plus ≥4
+~1,700-transcript corpus spanning every declared account found this exact pattern occurring,
+plus ≥4
 sessions where the agent already self-detected "byte-identical diff, skip
 re-spawn" informally and skipped re-review by judgment call alone — proof
 the optimization is already happening, just inconsistently, with no
 persisted record backing the skip decision. Estimated impact is
-$50–300/month against $21,762.57 total 30-day corpus spend (<1.5%) — real
+$50–300/month against total 30-day corpus spend (<1.5%) — real
 but modest, per the toolkit's phase-level cost limitations (order-of-
 magnitude, not a computed sum).
 
@@ -73,7 +73,7 @@ Add a fifth content-addressed completion-marker kind, `cumulative-review`, whose
 9. `claude/.claude/skills/ready-for-review/SKILL.md` is exactly 200 lines against a 200-line cap, so the step-3 edit has zero headroom and must be net-zero or net-negative — `[verified: Read of the file; claude/.claude/hooks/check-skill-length.sh:71-81]`.
 10. `_EXPECTED_SCOPE_ANCHORS` is an exact set covering only the `SCOPE_RULE:`/`SCOPE_EXEMPT_ROW` namespaces, and `_extract_scope_anchor_region` is already parameterized over the marker name, so a new anchor namespace reuses the parser but needs its own registry entry to be enforced at all — `[verified: claude/.claude/skills/tests/test_skills.py:2263-2299]`.
 11. `docs/scripts.md` pins the shape count as "The 16 valid invocation shapes" and must move to 17 — `[verified: docs/scripts.md:54]`.
-12. The engineer chose the formal content-addressed marker over prose-only formalization and over declining, having weighed the measured impact (<1.5% of 30-day corpus spend; 1 confirmed and 1 probable instance) against build cost — `[engineer-verified]`.
+12. The engineer chose the formal content-addressed marker over prose-only formalization and over declining, having weighed the measured impact (<1.5% of 30-day corpus spend; the confirmed and probable instances found) against build cost — `[engineer-verified]`.
 13. Scope is `ready-for-review` step 3 only; §34's narrowing mechanism and `/code-review`'s ad-hoc and presentation paths are untouched — `[engineer-verified]`.
 
 **Mechanisms:**

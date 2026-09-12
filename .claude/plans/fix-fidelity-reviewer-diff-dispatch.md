@@ -138,13 +138,13 @@ Surfaced by this investigation; neither belongs in this change.
 
 1. **`Explore` does not run on Haiku.** `claude/.claude/CLAUDE.md:77` asserts
    "`Explore` is pinned to Haiku" and instructs *not* to pass `model` to it.
-   Measured: **103 runs, $198.39, Haiku in 1 run / 67 of 3,585 requests
+   Measured: **103 runs, Haiku in 1 run / 67 of 3,585 requests
    (1.9%)** — 1,372 requests on `claude-opus-5`, 1,107 on `claude-opus-4-8`.
    `Explore` is a built-in with no local agent file, so like `general-purpose`
    it inherits the parent model; the CLAUDE.md carve-out exempting it from the
    explicit-`model` rule is what causes this. Two possible outcomes — a real
    routing fix, or correcting a false CLAUDE.md line with no spend change — and
-   the issue should say so rather than promising $198 of savings.
+   the issue should say so rather than promising a specific dollar saving.
 2. **`code-writer` at $672 / 19.3 Mtok per run** — the largest single cost
    center measured, 10× this agent's lifetime total.
 

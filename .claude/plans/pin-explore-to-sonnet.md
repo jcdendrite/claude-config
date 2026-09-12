@@ -165,7 +165,7 @@ on both; observed / requested / declared model columns per `agentType` on
 already reports a model split and byte totals and `cmd_subagent_mix` already counts
 dispatches per `agentType`; a third would create a third definition of "a run."
 (b) a shell wrapper looping per config dir — each invocation re-parses the full
-corpus, which is what made a prior 7-profile loop time out.
+corpus, which is what made a prior loop across every profile time out.
 
 **Four method terms the scratchpad scripts left implicit.** Each admits several
 readings that produce different numbers; Step 2 fixes them:
