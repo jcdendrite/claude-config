@@ -37,7 +37,7 @@ from _config_dir import config_dir
 # scope.PROJECTS_DIR below) -- scope is the only one this file's own code reads bare, as
 # scope.PROJECTS_DIR.
 from transcript_analysis import corpus, cost, pricing, redaction, render, reviewer_yield, scope  # noqa: F401
-from transcript_analysis.author_outcome import cmd_author_outcome
+from transcript_analysis.author_outcome import _AUTHORING_AGENT_CODE_WRITER, cmd_author_outcome
 from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,
     _index_subagent_dispatches,
@@ -11868,7 +11868,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_project_scope_args(p_author_outcome)
     p_author_outcome.add_argument(
-        "--agent", metavar="NAME", default="code-writer",
+        "--agent", metavar="NAME", default=_AUTHORING_AGENT_CODE_WRITER,
         help="subagent_type to join dispatches against (default: code-writer).",
     )
     p_author_outcome.add_argument(

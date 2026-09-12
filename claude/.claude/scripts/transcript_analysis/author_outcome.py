@@ -24,6 +24,7 @@ import argparse
 import itertools
 import json
 import os
+import sys
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
@@ -313,7 +314,7 @@ def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
 def compute_author_outcomes(
     session_iter: Iterator[tuple[Path, list[dict]]],
     *,
-    agent_type: str = "code-writer",
+    agent_type: str = _AUTHORING_AGENT_CODE_WRITER,
     since_ts: float | None = None,
 ) -> dict:
     """Single pass over session_iter (main-thread only, no subagent merge --
@@ -410,10 +411,10 @@ def compute_author_outcomes(
             declared = row.get("authoring_agent") or ""
             if declared in ("", _AUTHORING_AGENT_UNKNOWN):
                 continue
-            if declared == _AUTHORING_AGENT_MIXED:
-                consistent = transcript_side == _AUTHORING_AGENT_CODE_WRITER
-            else:
-                consistent = declared == transcript_side
+            consistent = (
+                transcript_side == agent_type if declared == _AUTHORING_AGENT_MIXED
+                else declared == transcript_side
+            )
             if not consistent:
                 data_quality[_DQ_AUTHORING_AGENT_INCONSISTENT] += 1
 
@@ -431,7 +432,16 @@ def cmd_author_outcome(args: argparse.Namespace) -> None:
     output shape, every named bias/counter, and this subcommand's
     documented scope gaps (e.g. a cross-session handoff split).
     """
-    agent_type: str = getattr(args, "agent", None) or "code-writer"
+    agent_type: str = getattr(args, "agent", None) or _AUTHORING_AGENT_CODE_WRITER
+    # Exact-case match only -- a near-miss (e.g. "INLINE") doesn't collide with
+    # the sentinel this guards against, so it's accepted, not normalized.
+    if agent_type == _AUTHORING_AGENT_INLINE:
+        print(
+            f"author-outcome: --agent {_AUTHORING_AGENT_INLINE!r} is a reserved sentinel value "
+            "(no dispatch attributed), not a valid --agent value",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     since_ts, since_raw = scope._parse_since_nd_arg(args, "author-outcome")
 
     roots = scope.resolve_scan_roots(args)

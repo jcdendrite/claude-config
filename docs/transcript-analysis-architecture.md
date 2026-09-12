@@ -119,10 +119,10 @@ for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code
 that judged its diff (`compute_author_outcomes`), by completion-index ordering against
 `review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by reading that
 session's own review-narrative-ledger file directly. `_ledger_path_for_session` locates the file
-by a session-id glob under `<config_dir_root>/review-narrative-ledger/`, correct only under the
-precondition that at most one repo-hash writes a ledger file for a given session id (see
-`docs/transcript-analysis.md`'s author-outcome section for the "Accepted risk" this precondition's
-violation currently falls back on). Ledger rows are
+by a session-id glob under `<config_dir_root>/review-narrative-ledger/`. See
+`docs/transcript-analysis.md`'s author-outcome section ("Ledger lookup") for the
+at-most-one-repo-hash-per-session-id precondition this assumes and the "Accepted risk" its
+violation falls back on. Ledger rows are
 matched to a round by exact `round`-field equality against that round's own 1-indexed position in
 the transcript's round-open sequence. The transcript is still the sole source for round-open
 positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`

@@ -293,9 +293,8 @@ case "$SUBCOMMAND" in
     # branches on it.
     EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # jq -nc (one record per line) for an atomic O_APPEND write below. See
-    # docs/transcript-analysis-architecture.md's ledger append-lock section
-    # for why and its local-filesystem-only caveat.
+    # jq -nc emits one compact JSON object per line, matching the single
+    # write(2) call the O_APPEND write below relies on for atomicity.
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
     # schema_version carries no reader that branches on it today. It's for
@@ -320,6 +319,9 @@ case "$SUBCOMMAND" in
     # _lib_jq call on top of the LINE build above, so one append can add up
     # to ~10.25s of worst-case latency (two 5s jq caps plus the append
     # lock's bounded retry sleep) when timeout/gtimeout is on PATH.
+    # On a machine with neither on PATH, this doubles the number of
+    # uncapped-jq-hang exposure points per append from one to two
+    # (pre-existing risk, now wider).
     _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
       '{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}'
 

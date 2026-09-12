@@ -69,6 +69,19 @@ class TestIsCleanMarkerWrite:
     def test_path_qualified_marker_write_still_matches_via_basename(self):
         assert ao._is_clean_marker_write("~/.claude/scripts/marker.sh write code-review") is True
 
+    def test_unbalanced_quote_falls_back_to_naive_split(self):
+        """shlex.split raises ValueError on the dangling quote below;
+        str.split() doesn't interpret quoting at all, so the "&&" inside
+        what would have been a single quoted token instead splits into its
+        own segment -- the actual, documented behavior of the fallback,
+        not shlex's quote-aware one."""
+        command = 'marker.sh write code-review "note && oops'
+        assert corpus.split_command_segments(command) == [
+            ["marker.sh", "write", "code-review", '"note'],
+            ["oops"],
+        ]
+        assert ao._is_clean_marker_write(command) is True
+
 
 class TestConfigDirRootForSession:
     def test_derives_the_owning_root_for_two_distinct_config_dir_roots(self, tmp_path):
@@ -443,6 +456,23 @@ class TestInlineAndCoAuthored:
         assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 1
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
 
+    def test_two_ledger_rows_for_one_round_each_add_their_own_inconsistency(self, fake_projects):
+        """Two ledger rows matching the same round, each with its own
+        authoring_agent value independently inconsistent with the round's
+        transcript_side, must each increment the counter -- not collapse
+        into a single per-round flag."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="ADDRESS", authoring_agent="code-writer"),
+            _ledger_row(round=1, disposition="DEFER", authoring_agent="mixed"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 2
+
     def test_mixed_declared_against_zero_attributing_dispatches_is_inconsistent(self, fake_projects):
         """declared "mixed" against a round with zero attributing
         code-writer dispatches (transcript_side "inline") -- the
@@ -529,6 +559,25 @@ class TestInlineAndCoAuthored:
         ])
         result = ao.compute_author_outcomes(_session_iter(fake_projects), agent_type="some-other-agent")
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
+
+    def test_mixed_declared_against_a_non_default_agent_type_is_consistent(self, fake_projects):
+        """The "mixed" branch must compare transcript_side against the
+        actual agent_type too, not a hardcoded "code-writer" literal -- a
+        round attributed to a "general-purpose" dispatch with "mixed"
+        declared in the ledger is consistent, which a hardcoded comparison
+        against "code-writer" would have missed (it would have read
+        transcript_side "general-purpose" != "code-writer" and reported
+        inconsistent)."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="DEFER", authoring_agent="mixed")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z", agent_type="general-purpose"),
+            _dispatch_complete("a1", "2026-08-01T10:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), agent_type="general-purpose")
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
 
     def test_authoring_agent_code_writer_declared_against_a_zero_dispatch_round_is_inconsistent(self, fake_projects):
         """declared "code-writer" against a round with zero attributing
@@ -627,6 +676,29 @@ class TestSinceFilterBifurcation:
         result = ao.compute_author_outcomes(_session_iter(fake_projects), since_ts=since_ts)
         assert sum(result["outcomes"].values()) == 0
         assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 1
+
+    def test_round_number_mismatch_still_increments_when_the_only_dispatch_is_out_of_since_scope(self, fake_projects):
+        """_DQ_ROUND_NUMBER_MISMATCH is computed from the ledger/transcript
+        round-open comparison alone, before any --since filtering -- it must
+        still increment even when the session's only dispatch falls entirely
+        outside the --since cutoff and so contributes zero to "Dispatches in
+        scope"."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="DEFER"),
+            _ledger_row(round=3, disposition="DEFER"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T09:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T09:00:10.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:00:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s2", "code-review")]),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:02:00.000Z", content=[_skill_block("s3", "code-review")]),
+        ])
+        since_ts = corpus._parse_ts("2026-08-01T09:30:00.000Z")
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), since_ts=since_ts)
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert sum(result["outcomes"].values()) == 0
 
 
 class TestRoundNumberMismatchIntegration:
@@ -842,6 +914,13 @@ class TestCmdAuthorOutcomeReport:
         assert "Dispatches in scope" in out
         assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in out
         assert "Data quality" in out
+
+    def test_agent_inline_is_rejected_as_a_reserved_sentinel(self, fake_projects, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            _mod.cmd_author_outcome(self._args(agent=ao._AUTHORING_AGENT_INLINE))
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "reserved sentinel" in err
 
     def test_report_prints_zero_resolved_dispatches_without_zero_division(self, fake_projects, capsys):
         """A session with only an UNRESOLVED dispatch (no code-review round
