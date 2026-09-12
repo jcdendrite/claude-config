@@ -5,6 +5,7 @@ import importlib.util
 import json
 import math
 import os
+import random
 import re
 import shutil
 import stat
@@ -22853,9 +22854,9 @@ class TestCmdHandoffSignalResponseSampleCards:
 
 
 class TestCmdHandoffSignalResponseSampleTruncation:
-    """--sample N truncates the shuffled row set to exactly N cards.
-    TestCmdHandoffSignalResponseSampleCards' own fixtures build exactly one
-    signal-bearing session each, so truncation itself is untested there."""
+    """--sample N ranks by post-signal spend and truncates to exactly N
+    cards. TestCmdHandoffSignalResponseSampleCards' own fixtures build exactly
+    one signal-bearing session each, so truncation itself is untested there."""
 
     def test_sample_n_truncates_more_than_n_signal_rows_to_exactly_n_cards(self, fake_projects, capsys):
         for i in range(8):
@@ -22867,6 +22868,117 @@ class TestCmdHandoffSignalResponseSampleTruncation:
         out = capsys.readouterr().out
         cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
         assert len(cards) == 3
+
+
+class TestCmdHandoffSignalResponseSampleRanking:
+    """--sample ranks by post-signal spend (.claude/plans/handoff-nudge-rationalization-gap.md
+    row 14): the highest-spend rows are where a wrong continue-decision
+    actually cost something."""
+
+    @staticmethod
+    def _signal_session(post_signal_output: int) -> list[dict]:
+        return [
+            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _priced("claude-sonnet-5", input=200_000, output=post_signal_output, request_id="r2"),
+        ]
+
+    def test_sample_sorted_descending_by_dollars_after_signal(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "low.jsonl", self._signal_session(1_000))
+        _write_jsonl(fake_projects / "mid.jsonl", self._signal_session(20_000))
+        _write_jsonl(fake_projects / "high.jsonl", self._signal_session(50_000))
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=3, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert [c["session_id"] for c in cards] == ["high", "mid", "low"]
+
+    def test_seed_produces_reproducible_tie_break_order_across_invocations(self, fake_projects, capsys):
+        """Multiple $0.00 rows (no turns after the signal) tie on
+        dollars_after_signal; a given --seed must break the tie the same way
+        every run, via a pre-shuffle before the stable sort."""
+        names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        for name in names:
+            _write_jsonl(fake_projects / f"{name}.jsonl", [
+                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            ])
+        expected_order = list(names)
+        random.Random(99).shuffle(expected_order)
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=6, seed=99, output_format="json", no_redact=True)
+        )
+        first_out = capsys.readouterr().out
+        first_order = [c["session_id"] for c in json.loads(first_out[first_out.index("["):])]
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=6, seed=99, output_format="json", no_redact=True)
+        )
+        second_out = capsys.readouterr().out
+        second_order = [c["session_id"] for c in json.loads(second_out[second_out.index("["):])]
+
+        assert first_order == second_order == expected_order
+
+    def test_omitting_seed_keeps_ties_in_scan_order_and_is_repeatable(self, fake_projects, capsys):
+        """No --seed means no shuffle at all, not an unseeded-but-fixed RNG:
+        ties keep the rows' scan order (alphabetical by session filename),
+        deterministically across repeated runs."""
+        names = ["alpha", "bravo", "charlie", "delta"]
+        for name in names:
+            _write_jsonl(fake_projects / f"{name}.jsonl", [
+                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
+                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            ])
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=4, output_format="json", no_redact=True)
+        )
+        first_out = capsys.readouterr().out
+        first_order = [c["session_id"] for c in json.loads(first_out[first_out.index("["):])]
+
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=4, output_format="json", no_redact=True)
+        )
+        second_out = capsys.readouterr().out
+        second_order = [c["session_id"] for c in json.loads(second_out[second_out.index("["):])]
+
+        assert first_order == second_order == names
+
+    def test_sample_with_no_signal_rows_in_scope_produces_empty_cards(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
+        _mod.cmd_handoff_signal_response(
+            _handoff_signal_response_args(sample=5, seed=1, output_format="json", no_redact=True)
+        )
+        out = capsys.readouterr().out
+        cards = json.loads(out[out.index("["):])
+        assert cards == []
+
+
+class TestRankSignalRowsBySpend:
+    """_rank_signal_rows_by_spend's own ranking/tie-break contract, exercised
+    directly against fabricated rows rather than through the CLI."""
+
+    def test_ranks_descending_by_dollars_after_signal(self):
+        rows = [
+            {"dollars_after_signal": 1.0, "session_id": "low"},
+            {"dollars_after_signal": 5.0, "session_id": "high"},
+            {"dollars_after_signal": 3.0, "session_id": "mid"},
+        ]
+        ranked = _mod._rank_signal_rows_by_spend(rows, sample_n=3, seed=None)
+        assert [r["session_id"] for r in ranked] == ["high", "mid", "low"]
+
+    def test_seeded_tie_break_is_reproducible_across_calls(self):
+        rows = [{"dollars_after_signal": 0.0, "session_id": name} for name in "abcdef"]
+        first = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=99)
+        second = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=99)
+        assert [r["session_id"] for r in first] == [r["session_id"] for r in second]
+
+    def test_omitting_seed_keeps_ties_in_input_order(self):
+        rows = [{"dollars_after_signal": 0.0, "session_id": name} for name in "abcdef"]
+        ranked = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=None)
+        assert [r["session_id"] for r in ranked] == list("abcdef")
 
 
 class TestHandoffSignalResponseAggregateReport:

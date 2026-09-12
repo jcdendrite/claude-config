@@ -11356,6 +11356,16 @@ def _handoff_signal_response_session_rows(records: Sequence[dict]) -> tuple[list
     return rows, deduped, trace
 
 
+def _rank_signal_rows_by_spend(rows: list[dict], sample_n: int, seed: int | None) -> list[dict]:
+    """Return the top `sample_n` rows descending by `dollars_after_signal`,
+    with a seeded pre-shuffle tie-break; with no seed, ties keep input order."""
+    if seed is not None:
+        rng = random.Random(seed)
+        rows = list(rows)
+        rng.shuffle(rows)
+    return sorted(rows, key=lambda row: row["dollars_after_signal"], reverse=True)[:sample_n]
+
+
 def _handoff_signal_response_cards(sampled: list[dict], redact: bool) -> list[dict]:
     """Attach a curation-card excerpt to each sampled row, re-reading only
     the sampled rows' own sessions (not the whole scanned corpus) -- see
@@ -11528,9 +11538,11 @@ def cmd_handoff_signal_response(args: argparse.Namespace) -> None:
         )
 
     if sample_n:
-        rng = random.Random(seed)
-        rng.shuffle(all_rows)
-        sampled = all_rows[:sample_n]
+        # Rank by post-signal spend, since that is where a wrong
+        # continue-decision actually cost something -- not the whole
+        # population. See _rank_signal_rows_by_spend's own docstring for the
+        # tie-break contract.
+        sampled = _rank_signal_rows_by_spend(all_rows, sample_n, seed)
         cards = _handoff_signal_response_cards(sampled, redact)
         output_format: str = getattr(args, "output_format", "json") or "json"
         if output_format == "md":
@@ -12398,11 +12410,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_handoff_signal_response.add_argument(
         "--sample", type=int, default=0, metavar="N",
-        help="Emit a random sample of N signal rows as curation cards instead of the aggregate report.",
+        help=(
+            "Emit the top N signal rows by post-signal spend as curation cards instead of the"
+            " aggregate report."
+        ),
     )
     p_handoff_signal_response.add_argument(
         "--seed", type=int, default=None, metavar="N",
-        help="Seed for --sample's reproducible shuffle (default: unseeded/nondeterministic).",
+        help=(
+            "Seed for reproducible tie-breaking among equal-spend rows in --sample (default:"
+            " unseeded -- ties keep scan order)."
+        ),
     )
     p_handoff_signal_response.add_argument(
         "--format", dest="output_format", choices=("json", "md"), default="json",

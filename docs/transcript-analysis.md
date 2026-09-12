@@ -1199,8 +1199,8 @@ Field definitions:
 - `--config-dir PATH` — top-level flag (precedes the subcommand name), resolves sessions under `PATH/projects` instead of the default config dir. Composes with `--this-repo`/`--projects` the same way every non-`cost`-family subcommand does (`_resolve_scan_roots`) — this subcommand is not in `_SUBCOMMANDS_WITH_OWN_CONFIG_DIR`, so it has no separate, repeatable per-subcommand `--config-dir` of its own the way `cost`/`context-distribution` do.
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--no-redact` — emit raw session IDs in `--sample` curation cards instead of a run-scoped opaque label (`session-1`, `session-2`, ...), and print the `DO NOT PUBLISH` banner. Refused (exit 2) once scope resolves to more than one root — matching `context-distribution`'s own contract, not `audit-routing-samples`' (which has no redaction of any kind). Narrow to a single root first, e.g. `--this-repo` with no additional declared roots.
-- `--sample N` — emit a random sample of N signal rows as curation cards instead of the aggregate census report
-- `--seed N` — seed for `--sample`'s reproducible shuffle (default: unseeded)
+- `--sample N` — emit the top N signal rows by post-signal spend (`dollars_after_signal` descending) as curation cards instead of the aggregate census report
+- `--seed N` — seed for reproducible tie-breaking among equal-spend rows in `--sample` (default: unseeded — ties keep scan order)
 - `--format json|md` — `--sample` output format: `json` (default) or `md` (a human curation document with a verdict checklist, mirroring `audit-routing-samples`' own card shape)
 
 **Sample output (synthetic, illustrative counts only).**
