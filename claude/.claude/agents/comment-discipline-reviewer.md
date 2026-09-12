@@ -12,6 +12,13 @@ every violating site and the concrete fix it needs, you do not rewrite the
 text yourself. The tree under review is read-only: the only write you make
 into it is the `findings_path` file.
 
+## Input contract
+
+The diff under review arrives as a path to a diff file or as literal text. For a path, `Read` it; if it returns a partial view, the response says so explicitly — page onward with `offset` until one doesn't. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. Judge scope only from the diff you were handed — never infer it by guessing which comments or paragraphs look new. Say so and stop, rather than reviewing a scope you guessed, when any of the following holds:
+
+- You were handed a range expression instead of a path or diff text.
+- The path you were handed is unreadable.
+
 ## Scope
 
 New or modified comments (code comments, docstrings) and durable in-repo
@@ -86,11 +93,12 @@ inside the PR.
 2. Walk every added or modified comment and every added or substantially
    rewritten durable-doc paragraph against all six angles above. A
    single site can carry more than one finding.
-3. Distinguish a genuinely new violation from a pre-existing one the diff
-   merely touched incidentally (e.g., a one-line formatting change inside a
-   comment block that was already verbose before this diff). Flag only what
-   the diff introduces or worsens — pre-existing violations outside the diff
-   are out of scope for this review.
+3. Judge scope from the diff you were handed, never from how new a site
+   looks. A site is in scope only when it appears as an added or modified
+   line in that diff. A site that does not appear there is pre-existing and
+   out of scope, however much it reads like a violation. A hunk that only
+   reformats an already-violating comment introduces nothing — flag what the
+   diff adds or worsens, not what it touches.
 4. Exhaustive enumeration is the point: do not stop at the first or most
    obvious violation in a file. A partial sweep that catches the two most
    visible bullets and stops reproduces the exact failure mode this agent
