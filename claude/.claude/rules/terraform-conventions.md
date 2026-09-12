@@ -29,9 +29,10 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   versioning status) is a legitimate boolean-convenience idiom the
   ecosystem's own registry modules use deliberately — not every
   two-valued provider enum needs flagging.
-- **Prefer `ENABLED` over `LEGACY` for `prevent_user_existence_errors`** —
-  `LEGACY` reintroduces a user-enumeration side channel during sign-in,
-  sign-up, and password-recovery flows.
+- **Prefer `ENABLED` over `LEGACY` for `prevent_user_existence_errors`**
+  (e.g. concretely applying the carve-out below) — `LEGACY` reintroduces
+  a user-enumeration side channel during sign-in, sign-up, and
+  password-recovery flows.
 - **Pair the variable with a `validation` block enumerating the
   provider's documented legal values**, rather than leaving the type as a
   bare `string` with no guard against a typo or an unsupported value.
@@ -41,7 +42,12 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   provider's documented default is itself the less-secure or
   otherwise-inferior of two legal values: mirror the recommended value
   instead (as with `prevent_user_existence_errors`, which AWS defaults
-  to `LEGACY`), and state why the two diverge in a comment.
+  to `LEGACY`), and state why the two diverge in a comment. On a
+  **retrofit** — an existing variable whose effective default is
+  changing for callers that don't already override it — treat this the
+  same as any other behavior-changing default to a shared module: check
+  existing callers or diff a `terraform plan` across consumers before
+  merging, not just documenting the divergence.
 - **Word the `validation` error message to name the staleness risk it
   carries** — a block enumerating literal values is a maintenance surface:
   when the provider adds a new legal value, Terraform's own schema accepts

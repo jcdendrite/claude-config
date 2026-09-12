@@ -311,10 +311,9 @@ class TestSpecialistSkillTriggerContracts:
         ("test-conventions", "test-evaluation"),
         ("test-evaluation", "test-conventions"),
         ("agent-review", "skill-review"),
-        # No reciprocal row: feature-flags is `skillOverrides: name-only` and
-        # cannot description-auto-trigger, so config-environments has nothing
-        # to exclude — it is meant to keep firing on toggle-adjacent env-var
-        # questions rather than decline to a skill that can't reach them itself.
+        # No reciprocal row: name-only means feature-flags won't normally
+        # auto-fire, so config-environments should keep firing on
+        # toggle-adjacent questions rather than exclude it.
         ("feature-flags", "config-environments"),
     ])
     def test_do_not_trigger_names_adjacent_skill(self, skill_name, adjacent_skill):

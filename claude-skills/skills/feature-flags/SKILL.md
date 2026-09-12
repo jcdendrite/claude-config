@@ -88,12 +88,22 @@ changes alongside a deploy is config, not a toggle.
    When the toggle gates a security-sensitive or privileged path
    (disabling an auth check, bypassing a rate limit, skipping a
    verification step), the write path needs its own authorization
-   check, scoped to a narrower principal set than the datastore's
-   general write grant — not merely a separate code path the same
-   principals can still pass — and enforced at every writer capable of
-   setting that field (application code, migrations, admin tooling,
-   background jobs), not only the primary write path. An audit record
-   after the fact is not a substitute for gating the write itself.
+   check:
+
+   - Scoped to a narrower principal set than the datastore's general
+     write grant, not merely a separate code path the same principals
+     can still pass.
+   - Enforced at every writer capable of setting that field —
+     application code, migrations, admin tooling, background jobs, and
+     direct datastore access (a console `UPDATE`, an ad hoc SQL fix, a
+     broad table-write role). The first four are application-layer
+     concerns; direct datastore access needs its own datastore-level
+     control (a column-level grant, a row-level policy, or restricting
+     who holds the table's write role at all), since an
+     application-layer check cannot intercept a write issued directly
+     against the datastore.
+   - Not substituted for by an audit record after the fact — logging
+     the write is not the same as gating it.
 3. **Multi-variant targeting, percentage rollout, or experimentation
    with metrics attribution** — a dedicated platform, and only here. A
    vendor's SaaS/cloud-hosted tier means the per-subject targeting
@@ -102,13 +112,9 @@ changes alongside a deploy is config, not a toggle.
    comparison in `REFERENCES.md`.
 
 **One narrower anti-pattern**, not a category-wide claim: a boolean that
-only encodes a capability already tracked in billing or domain data
-(e.g. `user.plan == 'pro'`) is domain-model state, not a toggle at all —
-the "default-suspect over-powered primitives" principle applied
-recursively lands on no flag layer whatsoever. Don't conflate this with
-a genuine Permissioning Toggle, which does need per-subject routing for
-the premium-feature case step 3 already covers — the anti-pattern is
-only the degenerate case where no toggle was needed at all.
+only mirrors state already tracked elsewhere (e.g. `user.plan == 'pro'`)
+is domain-model state, not a toggle — unlike a genuine Permissioning
+Toggle needing per-subject routing (step 3).
 
 ## What this skill does not own
 
