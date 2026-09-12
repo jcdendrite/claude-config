@@ -178,6 +178,11 @@ only within one figure read alone.
    isn't arbitrary. The bin's fixed ladder (below) covers every count,
    so its limit isn't arbitrary either. A further instance needs a PR
    amending this document, not a fresh proposal under it.
+
+   Only a split or a bin published under this carve-out spends this
+   allowance. Content predating this carve-out does not, whatever
+   shape it takes. Where such content sits beside a new proposal, the
+   composition bar below governs instead.
 3. **Composition is publication.** This bar reaches any set of
    published figures that together produce a barred result, whether
    they land in one artifact or in separate publications months apart.
@@ -371,14 +376,28 @@ regardless of which channel carries the approval citation.
 
 Doubt about pool diversity goes to the owner as part of the proposal,
 not a reason to publish anyway. The proposal also names where the
-agent looked and what it found: any prior publication of the same or
-a composing statistic. For a split or a bin, it additionally searches
-this repository's own history for a prior instance of either published
-under this carve-out, and names what it finds. That search is
-diligence, not enforcement. The owner is the one continuous witness,
-across this repository and any other publication artifact, to what
-has already shipped under it. Finding nothing is not approval to
-publish.
+agent looked and what it found: any prior publication of the same or a
+composing statistic, whether or not it was published under this
+carve-out. Where one exists, the proposal states what the combination
+would newly disclose.
+
+*Worked disclosure.* A new split's before-side window overlaps a
+pre-existing publication's own dated activity checkpoints — say, the
+pre-existing publication states pooled activity volumes as of two
+dated checkpoints, and the new split's before-side window falls
+between them. Neither figure states a pool size on its own, but a
+reader combining the split's share with the pre-existing publication's
+dated checkpoints can narrow the window the split's own before-side
+activity falls in more tightly than either figure discloses alone.
+That narrowing — not merely the pre-existing publication's existence —
+is what the proposal must name.
+
+For a split or a bin, it additionally searches this repository's own
+history for a prior instance of either published under this
+carve-out, and names what it finds. That search is diligence, not
+enforcement. The owner is the one continuous witness, across this
+repository and any other publication artifact, to what has already
+shipped under it. Finding nothing is not approval to publish.
 
 Absent the durable citation this gate requires, the whole carve-out is
 closed by default, the same as the blocklist tier's "if in doubt,
