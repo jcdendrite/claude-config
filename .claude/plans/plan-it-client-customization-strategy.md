@@ -5,16 +5,16 @@
 Decide how to reuse the ticket-assignment-and-planning workflow (fetch a
 ticket, claim it, run `/plan-it`, post the plan back as a comment) across
 private downstream repos instead of hand-writing a bespoke `plan-issue` skill
-per project. This matters now because a third project is being onboarded and
+per project. This matters now because a new project is being onboarded and
 its ticket tracker (Atlassian/Jira) is structurally different from the
-Linear-based trackers both existing projects use, and the two existing
+Linear-based trackers the existing projects use, and the existing
 `plan-issue` implementations have already drifted from each other (one
 claims the ticket before planning, the other doesn't) and duplicate a
 near-identical `linear-formatting` skill almost verbatim. The intended
 outcome is an architecture decision — generic templatized skill,
 private-repo scaffolding playbook, or a hybrid — plus enough initial
-implementation to act on it, so the third project's setup doesn't repeat the
-ad hoc duplication of the first two.
+implementation to act on it, so a future project's setup doesn't repeat the
+ad hoc duplication of the earlier ones.
 
 ### Evidence gathered
 
@@ -36,20 +36,20 @@ of touching someone else's or a closed ticket). The other skips claiming
 entirely — confirmed with the engineer to be an oversight, not a deliberate
 per-project choice.
 
-**A near-identical support skill is duplicated almost verbatim.** Both
-projects' `linear-formatting` skill (issue-link formatting conventions for
+**A near-identical support skill is duplicated almost verbatim.** The
+existing projects' `linear-formatting` skill (issue-link formatting conventions for
 tracker writes) differ only in a handful of tokens: the tracker MCP server's
 tool-name prefix and the issue-ID prefix baked into examples/regex. This is
 a value-level difference, not a structural one — the underlying tracker
-(Linear) is the same shape for both.
+(Linear) is the same shape for each.
 
-**The third project breaks the value-level-only assumption.** The third
-project's tracker is Atlassian/Jira, not Linear. Jira's assignee/status/
+**The new project breaks the value-level-only assumption.** Its
+tracker is Atlassian/Jira, not Linear. Jira's assignee/status/
 comment model and MCP surface differ structurally from Linear's — Jira
 workflow/status schemes are commonly defined per-project rather than as one
-global vocabulary — so the swap that worked between the two Linear-based
+global vocabulary — so the swap that worked between the Linear-based
 downstream repos (tool-name prefix + ID-prefix substitution) does not
-obviously extend to a third, differently-shaped tracker.
+obviously extend to a differently-shaped tracker.
 
 **claude-config already has a precedent for generic-but-narrow-audience
 content.** `plugins/lovable-cloud/` is a public, generic plugin scoped to
@@ -69,7 +69,7 @@ be new content there under any option that uses it.
 - Claiming the ticket (assignee + status transition) becomes the **default**
   behavior of the shared shape, not an optional per-project behavior.
   [engineer-verified]
-- The third project's tracker is Atlassian/Jira, confirmed structurally
+- The new project's tracker is Atlassian/Jira, confirmed structurally
   different from Linear. [engineer-verified]
 - Where the generic piece lives — a public claude-config plugin, a private
   scaffold in one of the engineer's other repos, or a hybrid — is explicitly
@@ -79,19 +79,19 @@ be new content there under any option that uses it.
 
 ## Approach
 
-Split the problem by what actually varies, and stop treating `plan-issue` as one templatizable artifact. The tracker-*invariant* part is procedure, not code — it becomes a template plus an onboarding playbook in the private consulting-playbook repo that mints a complete, self-contained `plan-issue` skill per project. The tracker-*specific but project-invariant* part is the Linear comment-formatting conventions — that becomes a public `plugins/linear-formatting/` plugin in claude-config that both Linear-based downstream repos install, deleting their two duplicated copies. Claude-config's only other change is one sentence recording why a `plan-issue-*` project-layer glob was the wrong reach, so a future onboarding doesn't re-derive it.
+Split the problem by what actually varies, and stop treating `plan-issue` as one templatizable artifact. The tracker-*invariant* part is procedure, not code — it becomes a template plus an onboarding playbook in the private consulting-playbook repo that mints a complete, self-contained `plan-issue` skill per project. The tracker-*specific but project-invariant* part is the Linear comment-formatting conventions — that becomes a public `plugins/linear-formatting/` plugin in claude-config that the Linear-based downstream repos install, deleting their duplicated copies. Claude-config's only other change is one sentence recording why a `plan-issue-*` project-layer glob was the wrong reach, so a future onboarding doesn't re-derive it.
 
 **Why not a public `plan-issue` base skill plus a `plan-issue-*` project-layer glob** (the option that most naturally extends the proven `plan-it-*`/`code-review-*` convention). Every one of the five base skills carrying that glob treats the layer as an *additive refinement*: the base performs a complete review or a complete plan on its own, and the layer adds project-specific checks to that same flow. All five explicitly "proceed without a layer" when none matches (`docs/skills.md:182`). A `plan-issue` base has no such standalone flow — fetch, claim, and post are each a tracker tool call the base cannot name, so a layerless run does nothing at all, and the "zero matches → proceed" degradation is incoherent. Worse, the Jira project does not want a *refinement* of the Linear flow; it wants a different mechanism (a workflow transition rather than a settable status field), which is a substitutive technique, not an additive one. Layering a substitution onto a base that cannot run alone produces a shared artifact functional only when wired to a specific private system.
 
-**Why not extend `/plan-it` itself with a ticket-ingress step** (the lightest option of all — zero new skills, reusing the Step 2.5 glob and layer files both projects already have). This resolves against itself on its own strongest point: the claim must happen *before* branch creation, because `branch-management` wants the ticket ID in the branch name and `/plan-it` Step 1 creates the branch. Ticket ingress is therefore upstream of `/plan-it`, not inside it. It also fails `.claude/rules/skill-and-agent-self-review.md`'s platform-agnosticism rule — `/plan-it` is stowed to every consumer, most of whom have no tracker MCP server at all.
+**Why not extend `/plan-it` itself with a ticket-ingress step** (the lightest option of all — zero new skills, reusing the Step 2.5 glob and layer files the existing projects already have). This resolves against itself on its own strongest point: the claim must happen *before* branch creation, because `branch-management` wants the ticket ID in the branch name and `/plan-it` Step 1 creates the branch. Ticket ingress is therefore upstream of `/plan-it`, not inside it. It also fails `.claude/rules/skill-and-agent-self-review.md`'s platform-agnosticism rule — `/plan-it` is stowed to every consumer, most of whom have no tracker MCP server at all.
 
 **Why not a hybrid that also publishes the invariant doctrine in claude-config.** The doctrine's only reader is a consultant standing up a new engagement, and the playbook that mints the skill has to restate the same steps to be usable. Two sites, one of them the wrong audience. The doctrine gets one home, in the repo whose readers need it.
 
-The residual this accepts: three minted `plan-issue` skills can still drift. The template buys two things: the claim gate ships in every mint, so the second project's omission cannot recur. A future divergence is also diagnosable against a named source instead of against a sibling copy.
+The residual this accepts: minted `plan-issue` skills can still drift. The template buys two things: the claim gate ships in every mint, so the existing omission cannot recur. A future divergence is also diagnosable against a named source instead of against a sibling copy.
 
 ### Assumption ledger
 
-**Root problem.** Three downstream repos need the same ticket → claim → plan → comment workflow, but only its *policy* is shared; every executable step is tracker-specific. Copy-and-edit has already lost the claim step in one of two copies and produced a near-verbatim duplicate support skill, and a third, structurally different tracker makes the copy source no longer applicable.
+**Root problem.** Multiple downstream repos need the same ticket → claim → plan → comment workflow, but only its *policy* is shared; every executable step is tracker-specific. Copy-and-edit has already lost the claim step in one copy and produced a near-verbatim duplicate support skill, and a new, structurally different tracker makes the copy source no longer applicable.
 
 **Givens** (conditions the design treats as fixed, beyond its own reach):
 
@@ -102,27 +102,27 @@ The residual this accepts: three minted `plan-issue` skills can still drift. The
 
 **Material assumptions:**
 
-1. Claiming the ticket (assignee + status transition) is the **default** behavior of the shared shape, not per-project optional; the second project's omission is a bug to fix at mint time. `[engineer-verified]`
-2. The third project's tracker is Atlassian/Jira and is structurally, not just lexically, different from Linear. `[engineer-verified]`
-3. The two existing projects' `linear-formatting` bodies differ only in three tokens: the MCP tool-name prefix, the issue-ID prefix used in examples and regexes, and a one-verb-vs-two-verb document tool split on one server. `[verified: read of both projects' linear-formatting/SKILL.md files during plan authoring]`
+1. Claiming the ticket (assignee + status transition) is the **default** behavior of the shared shape, not per-project optional; the existing omission is a bug to fix at mint time. `[engineer-verified]`
+2. The new project's tracker is Atlassian/Jira and is structurally, not just lexically, different from Linear. `[engineer-verified]`
+3. The existing projects' `linear-formatting` bodies differ only in three tokens: the MCP tool-name prefix, the issue-ID prefix used in examples and regexes, and a one-verb-vs-two-verb document tool split on one server. `[verified: read of the existing projects' linear-formatting/SKILL.md files during plan authoring]`
    - **Correction:** this verification covered token-level differences correctly only for the sections the published plugin does cover. The same read missed that three whole sections — Attribution, real-newlines-not-escape-sequences, and the repeated-issue-reference auto-linker-drop workaround — were present verbatim (modulo the same three tokens) in both source copies. Those three sections were absent from the published `plugins/linear-formatting` plugin. That is a section-level omission, not a token-level diff the "differ only in three tokens" framing accounted for.
-4. Those two MCP registrations differ only by server-name prefix (`mcp__linear__*` vs `mcp__linear-server__*`), so a body naming the tool by role and listing both observed prefixes is complete for both consumers without placeholders. `[verified: same read]`
+4. Those two MCP registrations differ only by server-name prefix (`mcp__linear__*` vs `mcp__linear-server__*`), so a body naming the tool by role and listing both observed prefixes is complete for every consumer without placeholders. `[verified: same read]`
 5. All five base skills carrying a project-layer glob treat the layer as additive and proceed without one when absent. `[verified: plan-it/SKILL.md:33, plan-review/SKILL.md:73, code-review/SKILL.md:25, pr-description/SKILL.md:28-29, test-conventions/SKILL.md:15; docs/skills.md:176-182; test_skills.py:1248]`
 6. A newly added plugin is exempt from the commit-time version-bump gate — the hook `continue`s when the plugin's manifest has no blob at the merge-base. `[verified: plugins/plugin-semver/hooks/require-plugin-version-bump.sh:235-238]`
 7. A new `plugins/*/skills/*/SKILL.md` is already covered by the existing skill suite and by `select-tests.py`'s plugin-skills rule, but a new plugin manifest and the root marketplace edit are unmapped paths that hit the unmatched-path fallback and widen the run. `[verified: select-tests.py:51-57, 317; test_plugin_manifests.py:26-27]`
 8. `disable-model-invocation: true` blocks `Skill()` invocation, so a plugin skill meant to be reached by name from a project's `plan-issue` must stay model-invokable and therefore must carry `TRIGGER when:` / `DO NOT TRIGGER when:` blocks. `[verified: test_skills.py:1238-1246 and 1219-1235]`
-9. Which Jira MCP server the third project will use, and whether it exposes a workflow-transition tool at all, is unknown. `[unverified]` — the template handles this by degradation (row M2), not by assuming a capability.
+9. Which Jira MCP server the new project will use, and whether it exposes a workflow-transition tool at all, is unknown. `[unverified]` — the template handles this by degradation (row M2), not by assuming a capability.
 10. `/plan-it` itself needs no change: its `argument-hint` already accepts a ticket id, Step 1 already handles a `<TICKET-ID>/<slug>` branch name, and Step 7 already routes a non-committed plan through "the project's own tracker or documentation tool." `[verified: claude/.claude/skills/plan-it/SKILL.md:10, 23, 133-135]`
 11. The private consulting-playbook repo holds `methodology/`, `tools/`, `templates/`, and `playbooks/`, with no existing artifact for standing up a project's ticket-workflow skill. `[verified: read of that repo's top-level layout during plan authoring]`
 12. Nothing mechanically prevents the three minted `plan-issue` skills from drifting again; G1 puts them outside any shared CI. `[unverified]` — accepted as a residual, see Out of scope.
 
 **Mechanisms:**
 
-- **M1 — a new public `plugins/linear-formatting/` plugin holding one `linear-formatting` skill, replacing both projects' local copies.** `anchors: row3, row4` — the duplication is value-level only, and rows 3 and 4 establish that the three varying tokens can be written generically rather than as placeholders, so the shared body stands alone.
+- **M1 — a new public `plugins/linear-formatting/` plugin holding one `linear-formatting` skill, replacing the existing projects' local copies.** `anchors: row3, row4` — the duplication is value-level only, and rows 3 and 4 establish that the three varying tokens can be written generically rather than as placeholders, so the shared body stands alone.
 
-  *Over-powered-primitive check.* A new marketplace plugin is heavier than a file edit, so three lighter primitives were weighed against it. (i) **Leave the duplication in place** — fails: this is the status quo that already produced the divergence in row 1's sibling skill, and it has no shared source to diff a future divergence against. (ii) **A consulting-playbook template both projects copy from** — fails: it still yields two derived copies, and adds a third site for content that carries no project identity at all, so a private home buys nothing it doesn't also cost. (iii) **A stowed user-scope skill under `claude/.claude/skills/`** — fails: it would load for every stow consumer on every machine regardless of tracker, and `.claude/rules/skill-and-agent-self-review.md` bars exactly this (platform tokens such as Linear MCP tool names in the stowed tree). The plugin is the primitive claude-config already has for "generic content, narrow audience, per-project install," and its supporting machinery (marketplace entry, semver gate, `select-tests.py` mapping, skill test coverage) costs nothing marginal.
+  *Over-powered-primitive check.* A new marketplace plugin is heavier than a file edit, so three lighter primitives were weighed against it. (i) **Leave the duplication in place** — fails: this is the status quo that already produced the divergence in row 1's sibling skill, and it has no shared source to diff a future divergence against. (ii) **A consulting-playbook template the projects copy from** — fails: it still yields derived copies, and adds a third site for content that carries no project identity at all, so a private home buys nothing it doesn't also cost. (iii) **A stowed user-scope skill under `claude/.claude/skills/`** — fails: it would load for every stow consumer on every machine regardless of tracker, and `.claude/rules/skill-and-agent-self-review.md` bars exactly this (platform tokens such as Linear MCP tool names in the stowed tree). The plugin is the primitive claude-config already has for "generic content, narrow audience, per-project install," and its supporting machinery (marketplace entry, semver gate, `select-tests.py` mapping, skill test coverage) costs nothing marginal.
 
-- **M2 — a template plus an onboarding playbook in the private consulting-playbook repo that mints a complete, self-contained `plan-issue` skill per project.** `anchors: root, row1, row2, row9, row11` — the invariant content is procedure with no executable tracker-agnostic core (root), the claim gate must be non-optional in every mint (row 1), the third tracker is structurally different so no code factors out (row 2), the Jira capability is unknown so the template must carry a degradation clause (row 9), and the playbook repo has no such artifact yet (row 11). This is documentation, the lightest mechanism available; the heavier alternatives it displaces are argued in the Approach lead.
+- **M2 — a template plus an onboarding playbook in the private consulting-playbook repo that mints a complete, self-contained `plan-issue` skill per project.** `anchors: root, row1, row2, row9, row11` — the invariant content is procedure with no executable tracker-agnostic core (root), the claim gate must be non-optional in every mint (row 1), the new tracker is structurally different so no code factors out (row 2), the Jira capability is unknown so the template must carry a degradation clause (row 9), and the playbook repo has no such artifact yet (row 11). This is documentation, the lightest mechanism available; the heavier alternatives it displaces are argued in the Approach lead.
 
 - **M3 — one-sentence amendment to `.claude/rules/skill-and-agent-self-review.md`'s "Global skill bodies stay platform-agnostic" bullet, adding the additive-vs-substitutive boundary on the project-layer glob.** `anchors: row5` — that bullet currently states the unqualified "put stack-specific checks in a project-layer skill," which is exactly the sentence that would send a future onboarding session down the rejected path. The rule file is auto-loaded when editing a `SKILL.md`, which is the moment the mistake would be made; `docs/skills.md` §Project-specific layers stays mechanism-only so the normative rule has one home.
 
@@ -165,7 +165,7 @@ The residual this accepts: three minted `plan-issue` skills can still drift. The
 
   The playbook is the interview that fills the per-tracker blanks above.
 - **Each Linear-based downstream repo:** delete the local `linear-formatting` skill and add the project-scope plugin install *in the same commit* — the plugin skill deliberately keeps the same name, so a window where both exist is a listing collision. Migrate both, not one; leaving a copy behind reintroduces the drift the plugin exists to end.
-- **The Jira-based downstream repo:** a new `plan-issue` skill in its `.claude/skills/`, minted from the template. The second Linear project's `plan-issue` also gets the missing claim step, minted the same way (row 1).
+- **The Jira-based downstream repo:** a new `plan-issue` skill in its `.claude/skills/`, minted from the template. The other Linear project's `plan-issue` also gets the missing claim step, minted the same way (row 1).
 
 ## Verification
 
@@ -180,8 +180,8 @@ The end-to-end behavior — a minted `plan-issue` claiming a ticket, planning, a
 
 ## Out of scope
 
-- **A Jira sibling plugin (`plugins/jira/`).** One consumer, and row 9 leaves the variability uncharacterized — the MCP server is not yet chosen. Revisit once that project's `plan-issue` exists and its actual tool surface is known; the Linear plugin's structure is the template.
-- **Cross-repo drift detection, or a provenance header pinning each minted skill to a template version.** Three consumers across three repos with no shared CI (G1). Row 12's residual is accepted deliberately: the template fixes mint-time fidelity, and a divergence stays diagnosable against a named source. Adding machinery here would be a second defensive layer over a problem the first layer has not yet been shown to leave open.
+- **A Jira sibling plugin (`plugins/jira/`).** Too few consumers to justify a shared plugin yet, and row 9 leaves the variability uncharacterized — the MCP server is not yet chosen. Revisit once that project's `plan-issue` exists and its actual tool surface is known; the Linear plugin's structure is the template.
+- **Cross-repo drift detection, or a provenance header pinning each minted skill to a template version.** Multiple consumers across multiple repos with no shared CI (G1). Row 12's residual is accepted deliberately: the template fixes mint-time fidelity, and a divergence stays diagnosable against a named source. Adding machinery here would be a second defensive layer over a problem the first layer has not yet been shown to leave open.
 - **Adding a sixth base skill with a `plan-issue-*` project-layer glob.** Rejected in the Approach lead and recorded here so it is not re-litigated during implementation.
 - **Any change to `/plan-it`, `/plan-review`, or another stowed skill body** (row 10).
 - **Adding `linear-formatting` to claude-config's own `.claude/settings.json` `enabledPlugins`.** `install.sh` installs this repo's own enabled plugins at project scope when run from claude-config's checkout; claude-config is not a Linear-tracked project, so the entry would install a skill nothing here uses.

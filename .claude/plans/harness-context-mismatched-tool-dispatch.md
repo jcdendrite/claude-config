@@ -15,7 +15,9 @@ The user surfaced a concrete instance this session ("plan-architect is
 running now... That tool wasn't the right fit here (it's for /loop
 sessions) — cancelled it.") and asked for `transcript-analysis` to find
 other examples before deciding how to respond. That search (scope:
-`SESSIONS SOURCES (*; 4 roots)`, spanning multiple accounts, including
+`SESSIONS SOURCES (*; N roots)` — the root count elided per
+`docs/transcript-analysis.md`'s sample-output convention — spanning multiple
+accounts, including
 private-project transcripts) confirmed the pattern recurring across
 many different session types — `/plan-it`, `/code-review`,
 `/ready-for-review`, `/plan-review`, plain chat, and an eval harness —

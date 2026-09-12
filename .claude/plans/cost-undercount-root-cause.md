@@ -6,14 +6,14 @@
 window, and close whichever gaps turn out to be real bugs.**
 
 A comparison surfaced what looked like a ~23% gap between `transcript-analysis
-cost`'s output (~$1,979 for a 13-day window) and a figure the investigating
-session was handed as ground truth ($2,555.49). That comparison turned out to
-be against the wrong source: the $2,555.49 came from Anthropic's "Claude Code
+cost`'s output for a 13-day window and a figure the investigating
+session was handed as ground truth. That comparison turned out to
+be against the wrong source: the ground-truth figure came from Anthropic's "Claude Code
 usage" analytics dashboard, which Anthropic's own UI labels an *estimate*
 ("Spend figures are estimates for analytics purposes. For actual costs, refer
 to the cost dashboard."). Checked against the actual Cost dashboard
 (platform.claude.com/cost) instead, the account's real August-to-date figure
-is $2,141.06 against this tool's $1,982.72 for the same window — a ~7.4% gap,
+and this tool's figure for the same window differ by ~7.4%,
 not ~23%.
 
 This plan documents that correction, ranks every hypothesis this session
@@ -26,7 +26,7 @@ apply.
 ## Findings — ranked, with evidence
 
 Investigated one account's config dir on this machine (called "the account"
-below — see redaction note); Anthropic's live pricing page was fetched fresh
+below — see Verification); Anthropic's live pricing page was fetched fresh
 this session for every rate cited.
 
 **1. RESOLVED — wrong comparison baseline (primary cause of the reported
@@ -73,7 +73,7 @@ moment either surface is used, on this account or any other.
 
 **6. RULED OUT — multi-account misattribution.** [verified: ran `cost
 --by-project` against every other Claude Code account on this machine
-(personal + 4 client accounts), scoped to the same 13-day window] No
+(personal and client accounts), scoped to the same 13-day window] No
 project matching the investigated account's name surfaced in any sibling
 account.
 
@@ -92,7 +92,7 @@ logic.
 **8. OPEN — residual ~7.4% gap.** Not chased further per the engineer's
 steer (see Approach). Plausible, unconfirmed contributors: live-accrual
 timing drift between when each figure was captured (this account accrues
-roughly $150/day, so an hours-wide gap between snapshots is real money), and
+cost continuously, so an hours-wide gap between snapshots is real money), and
 the same corpus-start boundary as finding 7 (any activity between account
 creation on 2026-07-30 and the first local transcript on 2026-08-01 would
 count on the Cost dashboard but has no local transcript to be scanned at

@@ -17,7 +17,7 @@ carrying the triage record plus the settled fixes, and a set of issues carrying
 the rest with their evidence attached.
 
 **Evidence base.** Corroboration ran against this machine's transcript corpus —
-42 project directories, 725 sessions with main-thread activity in the six-week
+725 sessions with main-thread activity in the six-week
 window 2026-06-12 → 2026-07-24 — using `transcript-analysis.py` plus direct
 JSONL parsing, since the tool's own output was partly what was under test. This
 is a corroboration pass, not a fresh `/error-mode-analysis` report: the goal was
@@ -39,12 +39,12 @@ config that ships to every user of this repo.
 | 2 | `review-trace` also derives session *model* from the first record; no other subcommand does. | `[verified: transcript-analysis.py:840-846]` |
 | 3 | Mid-session branch transitions are common, not an edge case. | `[verified: 168/725 sessions carry >1 gitBranch; 134 start on main/master and move to a feature branch; worst case hides 771 of 989 records]` |
 | 4 | The reported date-range mismatch is **not** a date-parsing bug. | `[verified: buckets day-level output matched true min/max timestamps exactly across the 3 largest project dirs; no mtime/filename-derived dates anywhere in the tool]` |
-| 5 | The real mechanism is cross-project branch-name collision under an unscoped default `--projects` glob. | `[verified: _projects_glob defaults to "*"; buckets keys on the literal gitBranch string with no project scoping; branch "main" pools 26 projects / 543 files spanning 2026-06-19 → 2026-07-24]` |
+| 5 | The real mechanism is cross-project branch-name collision under an unscoped default `--projects` glob. | `[verified: _projects_glob defaults to "*"; buckets keys on the literal gitBranch string with no project scoping; branch "main" pools many projects across many files spanning 2026-06-19 → 2026-07-24]` |
 | 6 | `error-mode-analysis` Step 3 prescribes three `gh api` commands that `require-respond-pr.sh` denies — the skill's own documented procedure is self-blocking. | `[verified: error-mode-analysis/SKILL.md:33-37 vs require-respond-pr.sh:71-79]` |
 | 7 | `gh api graphql` matches none of the gate's three regexes, **same-repo included**, for both read queries and comment-posting mutations. | `[verified: the regex chain at require-respond-pr.sh:71-79 falls through to `exit 0` at line 78 before the cross-repo check at line 81 is ever reached, so repo targeting is irrelevant to the miss; confirmed by a dry run of the hook against synthetic same-repo read and `addComment` payloads — both allowed, while a REST `pulls/1/comments` payload denied]` — records the pre-Edit-4 state. Edit 4 gates the comment-write mutations (inline, multi-line, and file-sourced bodies) and leaves reads allowed by design. Not total closure of the GraphQL write surface: mutations that alter comment visibility or thread state rather than authoring text stay allowed on purpose. The `-R`-shaped-substring spoof was reachable through this arm — a mutation body carrying `-R other/repo` released the write `[verified: hook run against that payload allowed it; the same mutation with an ordinary body denied]` — and Edit 5 closes it by confining the bypass to reads |
 | 8 | A single GraphQL query retrieves all three comment kinds; `gh pr view --json` recovers only two, having no field for inline diff comments. | `[verified: counts matched paginated REST ground truth 4=4, 2=2, 38=38 on a public external PR; the CLI's own field-validation error output lists every supported --json field and none covers inline comments]` |
-| 9 | The worktree hook denies frequently and has never let a main-tree write land. | `[verified: 517 denials / 235 sessions / per-session max 26; 2 bypass candidates examined — one false match, one correct recovery into a linked worktree]` |
-| 10 | The sandbox cwd reset is high-volume and self-correcting. | `[verified: 1603 occurrences / 173 sessions; verbatim text "Shell cwd was reset to <path>"; max-count session re-prefixed `cd X && cmd` on every call after the first notice]` |
+| 9 | The worktree hook denies frequently and has never let a main-tree write land. | `[verified: 235 sessions; 2 bypass candidates examined — one false match, one correct recovery into a linked worktree]` |
+| 10 | The sandbox cwd reset is high-volume and self-correcting. | `[verified: 173 sessions; verbatim text "Shell cwd was reset to <path>"; max-count session re-prefixed `cd X && cmd` on every call after the first notice]` |
 | 11 | Whether agents adapt *because they read the notice* or because `cd X && cmd` is already habitual is not determinable from transcripts. | `[unverified]` |
 | 12 | Finding 5 (tracker rewrote link text after resolving a hand-written internal ID) has one confirmed occurrence and no second data point. | `[unverified]` — not corroborable here; tracker usage differs between machines |
 | 13 | Finding 6 is a prose-quality failure with no mechanical transcript signature. | `[unverified]` — accepted as unmeasurable, not as unreal |
@@ -56,7 +56,7 @@ config that ships to every user of this repo.
 | 19 | `buckets`' "Date range" column is descriptive of whatever the glob matched, not a filter, and `buckets` accepts no date flags at all — so Step 1's instruction to "identify the … date range under analysis" cannot be satisfied by the tool it names. | `[verified: transcript-analysis.py:424-468 computes the column as min/max over every matching record; `--since`/`--until` are absent from buckets' argparse block at 3038-3041, and SKILL.md:16 itself scopes those flags to `review-trace`]` |
 | 20 | `gh issue comment` reached the same comment-posting endpoint as `gh pr comment` while matching neither the arm chain nor the write-signal list. | `[verified: against the pre-fix hook, `gh issue comment 5 --body hi` allowed while `gh pr comment 5 --body hi` denied; after the fix both deny, and `gh issue list` / `gh issue view 5` still allow]` — found by `/code-review`, not present in 472 |
 | 21 | A lowercase `-X delete` executed as a real DELETE while reading to the gate as a non-write, because the mutating-method pattern matched only uppercase. | `[verified: against the pre-fix hook, `gh api repos/other/repo/issues/comments/12345 -X delete` allowed while the same command with `-X DELETE` denied]` |
-| 22 | This repo has **no** per-worktree project directory under `~/.claude/projects/`; only the main-tree slug exists, because sessions start in the main tree even when their edits land in a worktree. | `[verified: of 36 project directories, exactly one matches this repo and it is the main-tree slug; the sole worktree-shaped directory on the machine belongs to a different repo]` — this reverses the premise of an earlier draft of Edit 3b, which assumed each linked worktree gets its own directory |
+| 22 | This repo has **no** per-worktree project directory under `~/.claude/projects/`; only the main-tree slug exists, because sessions start in the main tree even when their edits land in a worktree. | `[verified: of this machine's project directories, exactly one matches this repo and it is the main-tree slug; the sole worktree-shaped directory on the machine belongs to a different repo]` — this reverses the premise of an earlier draft of Edit 3b, which assumed each linked worktree gets its own directory |
 | 23 | A REST URL wrapped with a backslash line-continuation slipped every arm even after flattening, because flattening substituted a space where the shell removes the pair entirely. | `[verified: `gh api repos/foo/bar/pulls/1/\<newline>comments` allowed against the one-step flattening and denies against the two-step form; the argument-boundary and mid-path shapes both deny now, and two unrelated commands on separate lines still allow]` |
 | 24 | The read-side decoy tradeoff is real and remains accepted: a *bare* `other/repo` token in a quoted body does not release a current-repo read, but a *full* `repos/OWNER/REPO/pulls/N/comments` path embedded in one does. | `[verified: both shapes run against the shipped hook — bare token denies, full path allows]` — this is the "both extractions scan raw command text" caveat the hook's own comment already names; the confinement means the most it can release is a read, so it is not closed here |
 
@@ -66,7 +66,7 @@ config that ships to every user of this repo.
 |---|---|---|---|
 | 1 | Branch attribution from first record, tool-wide | **Confirmed, narrower** — 2 of 17 subcommands, not tool-wide | Issue 1 |
 | — | Printed date range mismatched raw timestamps | **Not reproduced; misdiagnosed** — the tool is correct; Step 1's own guidance produces the misreading | **Fix here (Edit 3)** |
-| 2 | Worktree hook fires repeatedly; low priority | **Confirmed, larger** — 517 denials vs the 4-8 reported | Issue 4 |
+| 2 | Worktree hook fires repeatedly; low priority | **Confirmed, dramatically larger than the handful originally reported** | Issue 4 |
 | 3 | Comment-fetch gate blocks read-only analysis | **Confirmed** — and the skill's own Step 3 is self-blocking | **Fix here (Edit 2)** |
 | 4 | Sandboxed `cd` silently resets | **Confirmed, far larger** — 173 sessions vs the 3 reported | **Dropped** — see below |
 | 5 | Hand-built cross-reference tag overwritten by ID resolution | **Uncorroborated, plausible** | Issue 5 |
@@ -569,7 +569,7 @@ does not re-derive them.
    an identifier before scrubbing, several mid-quote, which is the missed-span
    risk the two-artifact design exists to prevent.
 4. **Not filed — watch-item, recorded here.** **Worktree-enforcement denial
-   volume** — 517 denials / 235 sessions / max 26,
+   volume** — 235 sessions,
    zero main-tree writes landed. The hook is correct; the open question is
    whether a session-start reminder earns its context cost. There is no
    prescribed fix to file against, so the numbers live here until one exists.
@@ -680,7 +680,7 @@ does not re-derive them.
   (Edit 3a). All three stay well clear of the 200-line cap.
 - **Edit 3 regression check.** Run the scoped `buckets` command from the revised
   Step 1 verbatim and confirm the `main` row's Date range narrows to this
-  project's actual span — the unscoped run pools 26 projects across
+  project's actual span — the unscoped run pools many projects across
   2026-06-19 → 2026-07-24, so the delta is the check. **Run it from a linked
   worktree, not only from the main tree.** The main tree is the one cwd where a
   `pwd`-derived slug and a repo-root-derived one coincide, so a main-tree-only

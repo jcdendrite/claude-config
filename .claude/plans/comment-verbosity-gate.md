@@ -7,26 +7,28 @@ spot a human points at and abandoning the rest of the diff — first by fixing a
 malformed instruction that delivers the rule, then by adding a reviewer that
 enumerates violations from a context the authoring session never touched.
 
-The rule has failed three times, and the shape is identical each time — not
-ignorance of the rule, but **partial application** of it:
+The rule has failed repeatedly, and the shape is identical each time — not
+ignorance of the rule, but **partial application** of it. Recurring examples
+share that shape:
 
-1. **#544 / PR #546** — verbose `#` blocks in shell diffs. Fixed by adding
+1. **#544 / PR #546** — verbose `#` blocks in shell diffs, fixed by adding
    advisory rule text.
-2. **#564** — two hooks written with 40- and 21-line headers *after* that rule
-   existed and was surfaced to the session twice independently. The session
-   fixed the two most obvious bullets and stopped; the engineer caught the rest.
-3. **A cross-repo incident, a different Claude account** — a private
-   repository carrying its own equivalent rule. Two independent human
-   reviewers flagged the same defect. Earlier in that review a reviewer
-   flagged one 14-line block with a single word ("Verbose."), it was fixed, and
-   every comparably-verbose block elsewhere in the diff was left untouched until
-   two *new* reviewers caught them.
+2. **#564** — two hooks written with 40- and 21-line headers *after* that
+   rule existed and was surfaced to the session twice independently, where
+   the session fixed the two most obvious bullets and stopped and the
+   engineer caught the rest.
+3. A cross-repo incident, under a different Claude account, where a private
+   repository carrying its own equivalent rule caught the same defect via
+   two independent human reviewers — an earlier pass in that same review had
+   already fixed one 14-line block flagged with a single word ("Verbose."),
+   while every comparably-verbose block elsewhere in the diff went untouched
+   until two *new* reviewers caught them.
 
-**Why now:** #564 asked for a judgment call on whether a third occurrence tips
-the balance toward mechanical enforcement. It does. What "mechanical" should mean
+**Why now:** #564 asked for a judgment call on whether a further occurrence
+tips the balance toward mechanical enforcement. It does. What "mechanical" should mean
 here is narrower than a gate, for two independent reasons: an unrelated
 instruction defect turned up in `code-writer` that is worth fixing on its own
-merits (Part 1, warranted by ledger row 2 — *not* by these three incidents), and
+merits (Part 1, warranted by ledger row 2 — *not* by this recurrence), and
 the enforcement mechanism that best fits the observed failure is an independent
 reviewer rather than a predicate (Part 2).
 
@@ -52,8 +54,8 @@ One sentence, six distinct concerns, the comment rule fifth and trailing.
 that says *"one line, not a paragraph"* is itself a six-fact run-on, which is
 the defect it describes.
 
-**What this is not.** This defect is *not* established as the cause of the three
-incidents above. #564's own narrative is a main-session one — "I (Claude) wrote
+**What this is not.** This defect is *not* established as the cause of the
+recurring incidents above. The #564 incident's own narrative is a main-session one — "I (Claude) wrote
 two new hooks," with the rule arriving via `shell-script-conventions.md`
 auto-loading on `.sh` edit and via the `claude-hook-review` checklist invoked
 directly. Nothing in #564, #544, or the cross-repo incident shows a dispatched `code-writer`
@@ -64,7 +66,7 @@ otherwise.
 Its warrant is separate and narrower: the engineer reports observing
 `code-writer` handle the comment rule poorly in practice (ledger row 2). Fixing
 a real instruction defect on the strength of that observation is worth ten lines
-regardless of whether it also explains the three incidents.
+regardless of whether it also explains the recurring incidents.
 
 ### Part 2 — an independent reviewer
 
@@ -179,7 +181,7 @@ WHY comments") is untouched — it governs comment *deletion*, a different conce
 
 **Root problem:** the comment-verbosity rule reaches the model and is applied
 only at the site a human names, leaving the rest of the diff unswept — observed
-three times across two repos and two Claude accounts.
+repeatedly across more than one repo and more than one Claude account.
 
 **Givens** (fixed, outside this design's reach):
 

@@ -6,16 +6,16 @@ GH-421
 
 **Goal:** eliminate the false-positive flood from `require-worktree-for-git-writes.sh` by replacing raw-command-string regex/sed parsing with real shell tokenization and completing the read-only allowlist — while preserving the ~30 true positives that make the gate worth keeping and keeping the gate **fail-closed** on every uncertainty.
 
-A full census of hook denials (1120 denials / 335 sessions, 2026-07-02) found this hook produced 391 denials — the largest of any hook — of which **361 (92%) were false positives**. The root cause is the mechanism: the hook judges git discipline by regexing/sed-splitting the raw Bash command string, which cannot distinguish live command words from prose inside quotes, heredoc bodies, or arguments, and cannot see the effective cwd a leading `cd` produces. The problem is specific to command-string-regex hooks; the census puts the state-checking gates (review markers, push gate, routing read) at 0–10% FP.
+A full census of hook denials (2026-07-02) found this hook produced the largest denial count of any hook, of which **92% were false positives**. The root cause is the mechanism: the hook judges git discipline by regexing/sed-splitting the raw Bash command string, which cannot distinguish live command words from prose inside quotes, heredoc bodies, or arguments, and cannot see the effective cwd a leading `cd` produces. The problem is specific to command-string-regex hooks; the census puts the state-checking gates (review markers, push gate, routing read) at 0–10% FP.
 
 This misparse reproduced **three times live during planning** — Bash commands whose `echo` prose contained the literal `git subcommands` / `git -C` were denied as if they invoked git.
 
 **Threat model (sets the design budget):** this is a *developer-machine guardrail* against the agent *accidentally* writing to the main working tree while a concurrent session is staged there. It is not an adversarial security boundary — the agent is cooperative, not an attacker probing for bypasses. So the design target is: kill the accidental-friction FPs, keep the genuine main-tree-write catches, and when a command is genuinely ambiguous, **deny** (the agent's fallback is trivial). It is explicitly *not* a target to model every exotic shell construct precisely — ambiguity resolves to deny, which is both safe and simple.
 
-The 361 FPs break into three classes, and each maps to a piece of the fix:
-- **157 read-only operations** (`status`, `log`, `merge-base`, `symbolic-ref`, `diff-tree`, `grep`, `ls-files`, `branch`) blocked by allowlist gaps or chain-misparse. Killed by completing the allowlist + not misparsing chains. **No cwd logic needed — reads are allowed regardless of cwd.**
-- **17 data-as-code misparses** — git-adjacent prose inside heredocs/quotes/args extracted as bogus subcommands (`'git git'`, `'git state'`, `'git 4'`). Killed by quote/heredoc-aware tokenization: shlex won't find `git` inside a quoted string or heredoc body.
-- **186 sanctioned-pattern chains** — `cd <worktree> && git <write>`, currently blanket-denied. Killed by resolving effective cwd for the write **only in the simple literal case**.
+These false positives break into three classes, and each maps to a piece of the fix:
+- **Read-only operations** (~43%: `status`, `log`, `merge-base`, `symbolic-ref`, `diff-tree`, `grep`, `ls-files`, `branch`) blocked by allowlist gaps or chain-misparse. Killed by completing the allowlist + not misparsing chains. **No cwd logic needed — reads are allowed regardless of cwd.**
+- **Data-as-code misparses** (~5%) — git-adjacent prose inside heredocs/quotes/args extracted as bogus subcommands (`'git git'`, `'git state'`, `'git 4'`). Killed by quote/heredoc-aware tokenization: shlex won't find `git` inside a quoted string or heredoc body.
+- **Sanctioned-pattern chains** (~52%) — `cd <worktree> && git <write>`, currently blanket-denied. Killed by resolving effective cwd for the write **only in the simple literal case**.
 
 ## Approach
 

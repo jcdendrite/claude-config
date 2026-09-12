@@ -91,7 +91,7 @@ Ship `"ScheduleWakeup"` as a second bare tool-name entry in `claude/.claude/sett
 - **G2.** `/loop` is harness-native with no `SKILL.md` anywhere on this filesystem, so this repo cannot instrument its entry or exit. `[verified: §41 G2, independently re-confirmed by E4's install-dir, plugin-cache, and npm-root search]`
 - **G3.** `permissions.deny` carries no mode-conditional or active-skill-conditional key, so a deny cannot be scoped to "outside `/loop`." Anthropic owns the settings schema. `[verified: E2, against code.claude.com/docs/en/permissions and the settings schema]`
 - **G4.** `~/.claude/settings.local.json` corresponds to no documented Claude Code settings scope, so there is no user-scope personal override file for this machine. `[verified: docs/design-decisions.md §43]`
-- **G5.** The transcript corpus behind E3 and E4 mixes private-project and public transcripts, so any count, ratio, median, or duration that would reveal the private half's composition or magnitude cannot be published in this repo. A null count (zero corpus-wide instances of something) and the corpus's own root-count (already public at `docs/case-studies/targeted-read-discipline.md:24`, "four config dirs") carry no such risk and are used where they appear below. Dissolving this would require re-deriving from a public-only corpus, which the prior plan already declined as a decision outside its scope. `[engineer-verified]`
+- **G5.** The transcript corpus behind E3 and E4 mixes private-project and public transcripts, so any count, ratio, median, or duration that would reveal the private half's composition or magnitude cannot be published in this repo. A null count (zero corpus-wide instances of something) and the corpus's own multi-root scope (already stated, without a specific count, at `docs/case-studies/targeted-read-discipline.md:24`) carry no such risk and are used where they appear below. Dissolving this would require re-deriving from a public-only corpus, which the prior plan already declined as a decision outside its scope. `[engineer-verified]`
 
 **Assumptions:**
 
@@ -134,7 +134,7 @@ Ship `"ScheduleWakeup"` as a second bare tool-name entry in `claude/.claude/sett
 **Over-powered-primitive check.** The deny is wider in one dimension than the observed problem — global across every consumer and repo, against one owner's measured misfires. Five lighter primitives were enumerated from the settings and CLI surface and each fails:
 
 - **A scoped `ScheduleWakeup(<specifier>)` deny.** Leaves the tool in context and rejects on call, failing row 20's bar; and G3 means no specifier grammar could distinguish a legitimate `/loop` call anyway.
-- **A project-scoped deny in this repo's `.claude/settings.json`.** Genuinely lighter — zero effect on other consumers — but reaches only `claude-config` sessions, while E3's misfires span four roots (row 19).
+- **A project-scoped deny in this repo's `.claude/settings.json`.** Genuinely lighter — zero effect on other consumers — but reaches only `claude-config` sessions, while E3's misfires span every declared root (row 19).
 - **`skillOverrides: {"loop": "off"}`.** Has no effect on built-in tools, so it cannot reach `ScheduleWakeup` at all (E2).
 - **`disableModelInvocation`.** Exists only for skills; E2 confirms no built-in-tool analog.
 - **`--disallowedTools ScheduleWakeup` in a wrapper script.** Lightest of all, but reaches only wrapper-started sessions — the same defect that sank it for `EnterPlanMode` at `.claude/plans/plan-mode-workflow-discipline.md:118-120`.
@@ -148,7 +148,7 @@ The two *heavier* primitives are already-rejected: a `PreToolUse` gate costs a s
 - That fixed-interval `/loop <interval> <prompt>` survives intact, confirmed directly.
 - That the entry ships to every stow consumer with a tracked-file edit as the only opt-out (row 18), confirmed directly against three override attempts.
 
-Do not settle this by inference from the corpus's zero `/loop` invocations — that measures this owner's four roots, not the consumer population (row 19).
+Do not settle this by inference from the corpus's zero `/loop` invocations — that measures this owner's declared roots, not the consumer population (row 19).
 
 **Dispatch split.** One phase, written by the session holding this plan rather than dispatched to `code-writer`. Two reasons:
 

@@ -4,7 +4,7 @@
 
 **Goal:** add a claude-config skill-layer guardrail that stops sessions from writing brittle regex/string-matching test assertions over **runtime/structured output** when a parser library or the production parse/validate function is the correct tool — grounded in a cross-project transcript investigation and primary-source verification.
 
-The user observed, across all projects, sessions adding brittle regex-based tests where a library or business-logic method was preferable. A confirmatory read-only pass over the transcript corpus (**4,742 JSONL transcripts across 53 project dirs**, via `~/.claude/scripts/transcript-analysis.py`'s storage layout) confirms regex-in-test is real and recurring — but reframes the scope:
+The user observed, across all projects, sessions adding brittle regex-based tests where a library or business-logic method was preferable. A confirmatory read-only pass over the transcript corpus (via `~/.claude/scripts/transcript-analysis.py`'s storage layout) confirms regex-in-test is real and recurring — but reframes the scope:
 
 - **~99% of the JS/TS signal and ~65% of the Python signal is the *source-scanning sibling*** — reading a file's source/DDL text as a string and regex-matching substrings — which `test-conventions` §9 **already covers** (line 199), and which `test-evaluation` §4 mirrors (line 69).
 - The **genuinely-distinct** pattern — *regex-parsing runtime/structured output (log lines, XML/docx, JSON, generated config) instead of using a parser library or calling the production parse/validate function* — is real but a **minority** (clearest in the Python tooling tests: `re.findall`/`re.match` over emitted log lines and WordprocessingML).

@@ -6,7 +6,7 @@ Fix `transcript-analysis.py cost` so a multi-root, `--redact` (default) run
 no longer crashes with `AssertionError: cost: redact map has no entry for a
 project label under root N ... — the redact map's roots are out of sync with
 the session iterator's roots`. This surfaced incidentally while ranking
-sessions by cost (`cost --top`) against a real 6-root corpus. It currently
+sessions by cost (`cost --top`) against every declared root. It currently
 blocks any multi-root `cost` report against a corpus that happens to contain
 a project directory whose only priced content is subagent-dispatched — and
 `--no-redact` is not a workaround, since `cost` already refuses `--no-redact`

@@ -54,12 +54,12 @@ cost ($3,787.74 over 8 days scoped to this repo) and his own public PR throughpu
 yielding ~$82/PR. Both are his own figures, and the PR count is already derivable from this
 repo's public history. **Withheld, as in the merged predecessor:** per-account totals, the
 mapping of any account to a real engagement, and any per-session or per-project breakdown.
-Note this denominator is narrower than the predecessor's four-account aggregate — recorded here
+Note this denominator is narrower than the predecessor's every-account aggregate — recorded here
 as a deliberate decision so the boundary is explicit rather than drifting by precedent. Publishing
 both figures together lets a reader subtract and infer that roughly 65% of the predecessor's
 8-day spend falls outside this named public repo — business-volume shape, not an engagement
-identity, and no more than the predecessor's own text already disclosed ("four Claude accounts,"
-mapping withheld). Accepted deliberately, not overlooked.
+identity, and no more than the predecessor's own text already discloses (mapping withheld).
+Accepted deliberately, not overlooked.
 
 ## Approach
 

@@ -3,7 +3,7 @@
 ## Context
 
 The monthly transcript analysis (`~/.claude/research/transcript-analysis-2026-06-02.md`)
-surfaced four findings across six projects. Fixes land in **claude-config**, since
+surfaced four findings across several projects. Fixes land in **claude-config**, since
 that is where the shared hooks, skills, and reviewer agents live; the other repos
 consume them on `git pull`. The goal of this plan is to act on the findings that
 are genuine claude-config *mechanism* fixes, and to record an explicit disposition

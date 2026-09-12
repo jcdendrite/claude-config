@@ -18,10 +18,10 @@ What survives is token mass, not call count: whole-file reads are 53.8% of calls
 The `read-scope` subcommand of `claude/.claude/scripts/transcript-analysis.py` does one pass over the transcript corpus, producing every figure below from one scan.
 
 ```
-transcript-analysis.py read-scope --config-dir <profile-1> --config-dir <profile-2> --config-dir <profile-3>
+transcript-analysis.py read-scope --config-dir <profile-N>  # repeated once per additional declared account profile
 ```
 
-Snapshot taken 2026-08-10 across four config dirs — the default plus three additional account profiles. Once `~/.claude/transcript-config-dirs` is populated, the flags are unnecessary; `_resolve_cost_roots` consults `declared_transcript_roots()` and picks up every declared account. Honest limits:
+Snapshot taken 2026-08-10 across every config dir — the default plus every additional declared account profile. Once `~/.claude/transcript-config-dirs` is populated, the flags are unnecessary; `_resolve_cost_roots` consults `declared_transcript_roots()` and picks up every declared account. Honest limits:
 
 - **Point-in-time, and the corpus moves faster than the effects being measured.** Two runs of the same command minutes apart differed by **481,294 tokens** of prompt-token growth (0.16%) — because the session doing the measuring writes large transcripts into the corpus it is scanning. That sets the floor on precision here: it is larger than the entire six-part denominator correction described below. Only classification *behavior* is reproducible, via `TestReadScope` and `TestScanReadScopeSession`.
 - **The numerator is estimated; the denominator is measured.** `Read`-result tokens are `chars // 4`. Prompt-token growth comes from real `usage` fields. Every ratio mixing them inherits that. The self-consistent cross-check below (both sides `chars // 4`) is the control.
@@ -31,7 +31,7 @@ Snapshot taken 2026-08-10 across four config dirs — the default plus three add
 
 ## The numbers
 
-**22,687 `Read` calls**, all four config dirs combined.
+**22,687 `Read` calls**, every config dir combined.
 
 | cohort | calls | share of calls | result tokens | share of Read tokens |
 |---|---|---|---|---|
@@ -66,7 +66,7 @@ One corpus fact worth recording for anyone reimplementing this: **a subagent tra
 
 ## What this cannot tell you
 
-The corpus is one engineer's, on one machine. The instruction ships to every stow consumer, on every repo they open. The measurement carries direct evidence against assuming it generalizes: across this engineer's own four account profiles, targeted-read share spans **33.2% to 48.2%** — a 15-point spread driven by nothing but which work each account does. A consumer whose work is weighted toward unfamiliar-codebase exploration, where whole-file reads are more often the right call, is not described by any number above.
+The corpus is one engineer's, on one machine. The instruction ships to every stow consumer, on every repo they open. The measurement carries direct evidence against assuming it generalizes: across this engineer's own account profiles, targeted-read share varies meaningfully, driven by nothing but which work each account does. A consumer whose work is weighted toward unfamiliar-codebase exploration, where whole-file reads are more often the right call, is not described by any number above.
 
 A further asymmetry: **77.1% of whole-file-read tokens are inside subagents**, whose context is discarded on return rather than re-billed for the rest of the session. A token saved there is worth less than one saved on the main thread, so the realized benefit sits below the growth-denominated share.
 

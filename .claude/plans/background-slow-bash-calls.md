@@ -74,7 +74,7 @@ the repo records that, so the next investigation will re-derive it.
 
 1. The multi-minute Bash-call durations behind the brief are not command
    execution time. `[verified: 30-day corpus scan reproduced this session over
-   the default 6-root scope, 621 session files — 1,178 main-thread Bash calls
+   the default declared-roots scope, 621 session files — 1,178 main-thread Bash calls
    with a tool_use-to-tool_result gap of 5 minutes or more, whose command
    shapes include `cd` (170), `git status` (45), `echo` (30) and `pwd` (30)
    beside `gh pr view` (200) and `git push` (94); the longest single gaps

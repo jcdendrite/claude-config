@@ -7,8 +7,8 @@ from an ordinary incremental append, then use it to root-cause the cold
 re-writes that carry the largest addressable share of this repo owner's
 Claude Code bill.**
 
-Monthly spend on one private project's account exceeded $2,000 for August,
-with commercial consequences. Prior cost work has closed seven plans' worth
+Monthly spend on one private project's account rose enough in August to draw
+commercial consequences. Prior cost work has closed seven plans' worth
 of levers (`docs/cost-levers-considered.md`), and an external reviewer's
 five suggestions (GH-638) were evaluated against the code and found to have
 no net merit — one claim factually false (review gates do not read file
@@ -21,7 +21,7 @@ rejected on stronger reasoning (severity tiers, rejected as a disposition
 axis at `claude/.claude/skills/code-review/SKILL.md:306,310`), and one
 withdrawn by its author.
 
-Measuring across all six declared config roots surfaced a cost driver that
+Measuring across every declared config root surfaced a cost driver that
 no closed lever addresses and no existing subcommand reports.
 **87.7% of corpus spend is context tokens** (cache read plus both
 cache-write tiers); output is 12.2%. An ad-hoc scan, using the provisional
@@ -178,8 +178,8 @@ is a settings key within reach, and Step 0 changes it.
 
 | # | Assumption | Tag |
 |---|---|---|
-| 1 | All six accounts run the byte-identical stowed harness | `[verified: filesystem inventory — same 24,707-byte CLAUDE.md symlink, 27 skills, 40 hooks, 12 agents, 4 rules per root]` |
-| 2 | No sidechain stream on any account receives 1h TTL, and exactly one account's main thread receives none | `[verified: direct read of cache_creation.ephemeral_1h_input_tokens over 155,000+ assistant turns across all six roots, including the four-level subagent path]` |
+| 1 | Every declared account runs the byte-identical stowed harness | `[verified: filesystem inventory — same 24,707-byte CLAUDE.md symlink, 27 skills, 40 hooks, 12 agents, 4 rules per root]` |
+| 2 | No sidechain stream on any account receives 1h TTL, and exactly one account's main thread receives none | `[verified: direct read of cache_creation.ephemeral_1h_input_tokens over 155,000+ assistant turns across every declared root, including the four-level subagent path]` |
 | 3 | The existing main-vs-subagent attribution is correct; the gap is that `cmd_cost` carries no drift canary — only `cmd_subagents` and `cmd_skill_pair` call it, at `transcript-analysis.py:1200,4098` | `[verified: code trace]` |
 | 4 | Cache TTL differs by account despite identical settings, so it is account-scoped (plan tier or usage-overage state) rather than config-scoped | `[verified: one account's main thread shows 0 one-hour-TTL tokens across 22,290 turns while the other five all show non-zero]` |
 | 5 | `write > read` indicates a cold prefix | `[verified: docs/case-studies/cold-cache-attribution.md — falsified]` Named misclassification modes confirmed: 93.4% true-positive vs the read-collapse rule's 100%, at a marginally higher false-positive rate. Superseded by row 6. |
@@ -447,7 +447,7 @@ is at `../../../../.venv/`.
   classifier is settled and a versioned-schema migration can be designed on
   its own terms rather than smuggled in behind a metrics change.
 - **All cost fixes.** Delegating `/code-review`'s inline Base checklist to a
-  Sonnet subagent, reducing the 1,452 measured hook denials, and prefix
+  Sonnet subagent, reducing hook-denial friction, and prefix
   trimming are gated on this plan's findings.
 - **The outlier account's missing one-hour TTL.** Real, separable, and the
   clearest single lever found, but it is an account-plan or usage-overage
