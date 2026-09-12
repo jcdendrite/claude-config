@@ -95,9 +95,9 @@ def _env_with_gh_shim_and_failing_mv(tmp_path: Path, base_ref: str | None, fail_
 def _git_diff_shim_source(fail_when_args_contain: str) -> str:
     """Return source for a `git` shim that fails only a `git diff` call
     whose arguments contain fail_when_args_contain, delegating to the real
-    git otherwise -- lets a test force one git-diff call to fail (merge-base
-    resolution, checkouts, and the fixture's own setup calls all still hit
-    the real git)."""
+    git otherwise. Merge-base resolution, checkouts, and the fixture's own
+    setup calls all still hit the real git, so only the targeted `git diff`
+    call is forced to fail."""
     real_git = shutil.which("git")
     assert real_git is not None
     return textwrap.dedent(f"""\
@@ -1037,6 +1037,25 @@ class TestStagedMode:
         # Same isolated CLAUDE_CONFIG_DIR _isolate_transcript_corpus_lookups
         # pins for this whole test tree, matching TestDiffFileFlag's own fixture.
         _seed_session(tmp_path / "isolated-claude-config", self.SID)
+
+    def test_staged_bare_invocation_stdout_matches_git_diff_cached(self, tmp_path):
+        """The --staged analogue of test_bare_invocation_stdout_unchanged_by_
+        diff_file_flag's cumulative-mode check: for --staged alone with no
+        --diff-file, a non-empty staged diff produces stdout identical to an
+        independently-run `git diff --cached`, not just flag-invariant."""
+        local, _bare = _make_repo_with_remote(tmp_path)
+        env = _env_with_gh_shim(tmp_path, "main")
+
+        (local / "staged.txt").write_text("staged content\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=local, check=True)
+
+        result = _run_script(local, env, staged=True)
+        assert result.returncode == 0, result.stderr
+
+        raw_diff = subprocess.run(
+            ["git", "diff", "--cached"], cwd=local, capture_output=True, text=True, check=True,
+        ).stdout
+        assert result.stdout == raw_diff.rstrip("\n") + "\n"
 
     def test_staged_diff_file_succeeds_where_merge_base_resolution_cannot(self, tmp_path):
         """A fixture with no origin remote at all guarantees the cumulative

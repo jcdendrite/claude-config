@@ -3987,6 +3987,17 @@ def test_code_review_staged_diff_instruction_lives_in_the_change_type_row_only()
         "the Change-type row only -- not duplicated into Step 0"
     )
 
+    for literal in (
+        "DIFF_EMPTY:",
+        "pasted-snippet or ad-hoc review with no git diff behind it at all",
+        "quote the script's own stderr line",
+        "halt the review",
+    ):
+        assert literal in row_text, (
+            f"{skill_md_path}: the comment-discipline-reviewer row no longer carries "
+            f"the exact literal {literal!r}"
+        )
+
     pr_diff_script_source = (SCRIPTS_DIR / "pr-diff-against-base.sh").read_text()
     assert "--staged)" in pr_diff_script_source, (
         "pr-diff-against-base.sh: expected the --staged case-arm label, not just "
