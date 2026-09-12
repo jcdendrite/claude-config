@@ -184,9 +184,10 @@ leaves it inferring scope by correlating file content. Left to that
 inference, it flags pre-existing prose the diff never touched.
 `/code-review` now resolves an artifact with
 `pr-diff-against-base.sh --staged --diff-file` immediately before that one
-spawn and passes the path. The cost verdict is unchanged: the
-handoff still lands below the noise floor, which is why this ships as a
-correctness fix and not a cost lever. The eight Bash-having reviewers named
+spawn and passes the path. The direct cost verdict is unchanged: the
+handoff still lands below the noise floor. Fewer false-positive findings
+should also cut review-churn cost indirectly, but that effect isn't
+measured here, so this ships as a correctness fix, not a cost lever. The eight Bash-having reviewers named
 in the row above are unaffected. Each already fetches its own diff, scoped
 to its lane. Handing them the shared unscoped artifact instead would widen
 what each reads.

@@ -14,11 +14,10 @@ into it is the `findings_path` file.
 
 ## Input contract
 
-The diff under review arrives as a path to a diff file or as literal text. For a path, `Read` it and continue with `offset` until a read returns no further lines. A single `Read` caps at 2,000 lines by default, so a longer diff would otherwise be silently truncated. You have no `Bash`; you cannot run `git diff`. Review the diff you were handed: never reconstruct one by judging which comments or paragraphs look new. A range expression (e.g. `main...HEAD`) is neither a path nor diff text. Say so and stop rather than reviewing a scope you guessed when any of the following holds:
+The diff under review arrives as a path to a diff file or as literal text. For a path, `Read` it; if the read comes back a partial view, page onward with `offset` until you have the whole file. Never review a partial diff. You have no `Bash`; you cannot run `git diff`. A range expression (e.g. `main...HEAD`) is neither a path nor diff text; if you were handed one instead, say so and stop, do not try to reconstruct it. Judge scope only from the diff you were handed — never infer it by guessing which comments or paragraphs look new. Say so and stop, rather than reviewing a scope you guessed, when any of the following holds:
 
 - You were handed a range expression instead of a path or diff text.
 - The path you were handed is unreadable.
-- You cannot confirm the read reached the end of the file.
 
 ## Scope
 

@@ -57,22 +57,21 @@ DIFF_INPUT_NO_BASH_AGENTS = (
     "skill-fidelity-reviewer.md",
 )
 
-# Each no-Bash agent's Input contract wording is its own natural-language
-# voice, not a shared template. Each agent therefore gets its own literals
-# below, checked only against its own section, rather than one tuple
-# checked against every agent.
-DIFF_INPUT_CONTRACT_LITERALS = {
-    "comment-discipline-reviewer.md": (
-        "a path to a diff file",
-        "continue with `offset` until a read returns no further lines",
-        "never reconstruct one",
-    ),
-    "skill-fidelity-reviewer.md": (
-        "a path to a diff file",
-        "continuing with `offset` until a read returns no further lines",
-        "do not try to reconstruct it",
-    ),
-}
+# These are the sentences every no-Bash agent must state verbatim in its
+# Input contract section; checked against each agent's section here, not
+# per-agent, so the copies can't drift. The paging-instruction sentence is
+# also pinned independently in claude-skills/skills/tests/test_skills.py's
+# test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path — update
+# both on a wording change.
+DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
+    "For a path, `Read` it; if the read comes back a partial view, page "
+    "onward with `offset` until you have the whole file.",
+    "Never review a partial diff.",
+    "You have no `Bash`; you cannot run `git diff`.",
+    "A range expression (e.g. `main...HEAD`) is neither a path nor diff "
+    "text; if you were handed one instead, say so and stop, do not try to "
+    "reconstruct it.",
+)
 
 # Agents that exist in the directory but are not code-review dispatched
 # reviewers — they do not receive findings_path and do not need the canary.
@@ -259,11 +258,13 @@ class TestDiffInputContractAgents:
             "Bash needs this section to know how to read the diff artifact it "
             "is handed."
         )
-        section = self._extract_input_contract_section(path)
-        for literal in DIFF_INPUT_CONTRACT_LITERALS[name]:
-            assert literal in section, (
-                f"{name}: expected literal {literal!r} missing from the "
-                "Input contract section."
+        section = " ".join(self._extract_input_contract_section(path).split())
+        for sentence in DIFF_INPUT_CONTRACT_SHARED_SENTENCES:
+            normalized = " ".join(sentence.split())
+            assert normalized in section, (
+                f"{name}: expected shared sentence {sentence!r} missing from "
+                "the Input contract section — every no-Bash agent states "
+                "this identically."
             )
         fm = parse_frontmatter(path)
         tools_value = fm.get("tools") or ""

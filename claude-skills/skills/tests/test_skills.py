@@ -3905,7 +3905,9 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
     reuse-vs-recompute literals below are anchored-phrase-presence checks.
     An ordering check further asserts the reuse literal precedes the
     cache-hit literal, catching a branch-assignment swap between the two
-    clauses. This is not a full-clause anchor pin.
+    clauses. This is not a full-clause anchor pin. The trailing
+    `reviewer_body` assertions guard `skill-fidelity-reviewer`'s own
+    Input contract wording, which Step 4's prose points a reader at.
     """
     skill_md_path = _skill_file("ready-for-review")
     lines = skill_md_path.read_text().splitlines(keepends=True)
@@ -3951,7 +3953,9 @@ def test_ready_for_review_step4_hands_the_reviewer_a_diff_file_path() -> None:
 
     reviewer_body = _agent_body("skill-fidelity-reviewer")
     assert "a path to a diff file" in reviewer_body
-    assert "continuing with `offset` until a read returns no further lines" in reviewer_body
+    # Also pinned independently in claude/.claude/hooks/tests/test_agent_roster.py's
+    # DIFF_INPUT_CONTRACT_SHARED_SENTENCES — update both on a wording change.
+    assert "page onward with `offset` until you have the whole file" in reviewer_body
 
 
 def test_code_review_staged_diff_instruction_lives_in_the_change_type_row_only() -> None:
