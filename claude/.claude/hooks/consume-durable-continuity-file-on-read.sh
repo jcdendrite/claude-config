@@ -95,7 +95,7 @@ set -uo pipefail
 # An unresolvable config dir leaves no kill-switch/continuity-directory/
 # script location to check, so this hook fails open (Read proceeds
 # unconsumed) rather than guess.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0

@@ -159,7 +159,8 @@ def _restricted_path_without_python3(fake_bin: Path) -> str:
 
 def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     """Build a PATH with only the binaries this hook's code path invokes
-    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
+    superset entry this hook's own bootstrap does not call,
     `mkdir`/`find` for the checkpoint dir, `python3` for
     transcript-analysis.py, `touch` for the enabled-marker fixture),
     omitting both timeout(1) and gtimeout(1). Mirrors

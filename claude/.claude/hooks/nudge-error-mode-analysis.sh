@@ -55,7 +55,7 @@ INPUT=$(cat 2>/dev/null)
 # 1. Source _lib.sh and resolve the active config directory before any
 # ~/.claude-rooted path is built. Fail-open per this hook's own contract
 # (see header): an unresolvable config dir just leaves the nudge dormant.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 CONFIG_DIR=$(_lib_config_dir) || exit 0
