@@ -506,6 +506,22 @@ class TestConventionSkillWiring:
         assert "write the handoff file in the same turn" in body
 
 
+class TestReviewLedgerAuthoringEffortLiteral:
+    """Asserts code-review's `--authoring-effort` literal equals
+    `code-writer`'s own `effort:` frontmatter. Effort is subagent-definition
+    frontmatter, not a per-dispatch parameter, so a literal that drifted from
+    the agent's actual value would silently mislabel every ledger line."""
+
+    def test_authoring_effort_literal_matches_code_writer_frontmatter(self):
+        # Substring check, not a regex extraction -- catches drift on either
+        # side without hand-parsing prose text (test-conventions §9).
+        code_writer_effort = parse_frontmatter(_AGENTS_DIR / "code-writer.md")["effort"]
+        assert f"--authoring-effort {code_writer_effort}" in _skill_body("code-review"), (
+            f"code-review/SKILL.md's --authoring-effort literal must match "
+            f"code-writer.md's own effort: frontmatter ({code_writer_effort!r})"
+        )
+
+
 class TestMemorySkillSectionOrdinalCrossReferences:
     """Pin every cross-reference this repo rewrote when
     ai-instruction-and-memory-files/SKILL.md's sections were renumbered

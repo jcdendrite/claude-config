@@ -29,6 +29,10 @@ join, reused recursively by `review_rounds.py`'s nested-dispatch descent since t
 transcript file). No dependency on scope resolution, redaction, or pricing — every other module
 (and the shim) builds on this one.
 
+Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
+as the single source of truth for two consumers: the shim's own mutating-git classifier, and
+`author_outcome.py`'s clean-marker-write matcher (`_is_clean_marker_write`).
+
 ### `scope.py`
 
 Scan-root and project-scope resolution: `PROJECTS_DIR`, `resolve_scan_roots`,
@@ -104,7 +108,39 @@ when absent, and every record inside that round's window is attributed to it, ne
 `cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
 never needs. `REVIEW_SKILLS` is the one public name here, back-imported by
 the still-unmigrated `cmd_judgment_pair` in the shim for its own `--skills` default — a second
-entry in the one-directional exception noted above.
+entry in the one-directional exception noted above. `detect_round_windows` is public (no leading
+underscore) for the same reason: `author_outcome.py` is a second consumer, reading only each
+window's own `open_idx`/`skill`.
+
+### `author_outcome.py`
+
+The author-outcome command family: `cmd_author_outcome` and every helper used only by it —
+for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code-review` round
+that judged its diff (`compute_author_outcomes`), by completion-index ordering against
+`review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by reading that
+session's own review-narrative-ledger file directly. `_ledger_path_for_session` locates the file
+by a session-id glob under `<config_dir_root>/review-narrative-ledger/`. See
+`docs/transcript-analysis.md`'s author-outcome section ("Ledger lookup") for the
+at-most-one-repo-hash-per-session-id precondition this assumes and the "Accepted risk" its
+violation falls back on. Ledger rows are
+matched to a round by exact `round`-field equality against that round's own 1-indexed position in
+the transcript's round-open sequence. The transcript is still the sole source for round-open
+positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`
+fallback signal used only when a round has no ledger row at all (`_is_clean_marker_write`).
+
+**Ledger append-lock primitives (`claude/.claude/hooks/_lib.sh`).**
+`review-ledger.sh`'s schema-v2 append dedups a candidate line against
+`{round, finding, disposition, rationale, source, authoring_agent,
+authoring_effort}` via a caller-supplied jq projection, not whole-line
+matching. `author_outcome.py`'s read side depends on that row shape staying
+stable. See `_lib.sh`'s own `_lib_acquire_append_lock` and
+`_lib_append_json_line_locked` docstrings for the lock/eviction/atomicity
+mechanism itself.
+
+Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module
+(attribute access), matching `review_rounds.py`'s own convention. See
+`docs/transcript-analysis.md`'s author-outcome section for the full failure definition, output
+shape, and documented scope gaps.
 
 ## Sibling scripts
 
@@ -124,5 +160,8 @@ per-command-group test file the decomposition has produced; it loads its own ind
 `test_transcript_analysis.py` uses, rather than importing that file's `_mod`. `tests/conftest.py`
 carries the shared fixtures that reach across the shim/package boundary and across both test files
 (`fake_projects`, `fake_config_dir_factory`, `_table_cols`, `cost_ledger_file`); see its own
-docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and the shim's still-independent
-`config_dir` binding.
+docstrings for why `fake_projects` patches both `scope.PROJECTS_DIR` and
+the shim's still-independent `config_dir` binding. `author_outcome.py`'s own tests live in
+`tests/test_author_outcome.py`: most exercise the package module directly
+(`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
+shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.

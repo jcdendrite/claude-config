@@ -4,6 +4,7 @@ cmd_* subcommand, scope resolution, redaction, or pricing.
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -172,3 +173,39 @@ def _parse_ts(ts_str: str | None) -> float | None:
 # shape -- used by both reviewer-yield's parent-edit index and audit-routing's
 # per-turn classifier.
 _CODE_WRITE_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+
+# Shell operators that chain multiple invocations into one Bash command --
+# splitting on these keeps one invocation from hiding in a later segment of
+# e.g. "cd worktree && git commit -m wip". Shared by turn-shape's
+# mutating-git classifier (transcript-analysis.py's
+# _bash_command_is_mutating_git) and author_outcome's ledger-append/
+# clean-marker-write matchers.
+_SHELL_OPERATOR_TOKENS: frozenset[str] = frozenset({"&&", "||", ";", "|"})
+
+
+def split_command_segments(command: str) -> list[list[str]]:
+    """Tokenize a raw shell command string, then split into &&/||/;/| segments.
+
+    shlex.split raises ValueError on unbalanced quoting; falls back to
+    str.split() in that case, matching every existing call site's documented
+    fallback. A quoted operator (e.g. a commit message containing "&&")
+    survives as part of its enclosing token from shlex.split and is never
+    treated as a separator here, since it can't equal one of these bare
+    operator tokens.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in _SHELL_OPERATOR_TOKENS:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments

@@ -314,6 +314,14 @@ def _bash_use(tool_id: str, command: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}
 
 
+def _skill_block(tool_id: str, skill: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
+
+
+def _slash_user(skill: str, *, branch: str = "main", ts: str | None = None) -> dict:
+    return _user_msg(f"<command-name>/{skill}</command-name>", branch=branch, ts=ts)
+
+
 def _tool_result(tool_id: str, text: str) -> dict:
     return {"type": "tool_result", "tool_use_id": tool_id, "content": text}
 
@@ -325,6 +333,55 @@ def _agent_use(tool_id: str, subagent_type: str, *, tool_name: str = "Agent", pr
         "name": tool_name,
         "input": {"subagent_type": subagent_type, "description": "x", "prompt": prompt},
     }
+
+
+def _ledger_row(
+    *,
+    round: int | None,
+    disposition: str,
+    finding: str = "some finding",
+    rationale: str = "why",
+    source: str = "n/a",
+    authoring_agent: str = "",
+    authoring_effort: str = "",
+    schema_version: int = 2,
+    event_time: str = "2026-08-01T10:00:00Z",
+) -> dict:
+    """One review-narrative-ledger row, review-ledger.sh's own schema v2
+    shape. round=None omits the `round` key entirely rather than setting it
+    null, modeling a pre-schema-v2 legacy row -- review-ledger.sh itself
+    never writes a null round."""
+    row = {
+        "schema_version": schema_version,
+        "finding": finding,
+        "disposition": disposition,
+        "rationale": rationale,
+        "source": source,
+        "authoring_agent": authoring_agent,
+        "authoring_effort": authoring_effort,
+        "event_time": event_time,
+    }
+    if round is not None:
+        row["round"] = round
+    return row
+
+
+def _write_ledger_file(
+    config_dir_root: Path, session_id: str, rows: list[dict], *, repo_hash: str = "0" * 64,
+) -> Path:
+    """Write one review-narrative-ledger file for a synthetic session.
+
+    author_outcome.py's own ledger read path locates it by session-id glob
+    under <config_dir_root>/review-narrative-ledger/, mirroring
+    review-ledger.sh's own $LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl naming
+    -- the repo-hash prefix is irrelevant to that glob, so a fixed
+    placeholder is fine here.
+    """
+    ledger_dir = config_dir_root / "review-narrative-ledger"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    path = ledger_dir / f"{repo_hash}.{session_id}.jsonl"
+    _write_jsonl(path, rows)
+    return path
 
 
 def _opus(
