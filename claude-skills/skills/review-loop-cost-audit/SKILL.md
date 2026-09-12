@@ -70,7 +70,7 @@ python3 ~/.claude/scripts/transcript-analysis.py review-round-cost --this-repo -
 - Tip newer than the newest round in Step (b)'s table → the branch moved after the last round the corpus observed.
 - Tip moved during this audit (re-read the ref after Step (c) and compare SHAs) → the corpus was read mid-flight.
 
-Either one returns **Inconclusive — branch still active** (Step 4). Report the tip SHA with the verdict so a later re-run can tell whether the branch moved since. An in-flight branch has no freeze to partition at.
+Either one returns **Inconclusive — branch still active** (Step 4), but run Step (g)'s gate-denial scan first. That scan needs no freeze date, so a still-active branch can still carry a **Gate-denial churn** verdict. Report the tip SHA with the verdict so a later re-run can tell whether the branch moved since. An in-flight branch has no freeze to partition at.
 
 **(e) Partition.** Split Step (b)'s round table at the code-freeze instant and report the rounds and dollars that fall after it. When the freeze instant is at or after the newest round, say **partition vacuous — no rounds fall after the freeze** and return **Inconclusive**. Never report that case as zero post-freeze rounds. Zero-by-construction and zero-after-checking are different findings; only the second is a clean bill of health.
 
@@ -84,7 +84,7 @@ python3 ~/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --bran
 ```
 Per-session granularity is unavailable under multi-root scope. Use the aggregate run's `Top subagent types` column, the per-branch dispatch-count breakdown, as the skew signal instead.
 
-**(g) Characterize the post-freeze rounds.** Required before any thrash verdict in Step 4, and skipped only when Step (e) found no post-freeze rounds. The counts from Steps (b)–(f) establish that rounds ran after the freeze, never what they did — invoke `transcript-narrative` for the branch and establish three things:
+**(g) Characterize the post-freeze rounds.** Required before any thrash verdict in Step 4, and skipped only when Step (e) found no post-freeze rounds. The gate-denial scan below is the exception: it needs no freeze date and runs even when Step (d2) or Step (e) already returned Inconclusive. The counts from Steps (b)–(f) establish that rounds ran after the freeze, never what they did — invoke `transcript-narrative` for the branch and establish three things:
 
 - Whether successive rounds of the same skill raised new findings each time or re-surfaced ones already raised.
 - Whether repeated `ready-for-review` rounds re-ran an identical denial with the command shape unadapted.
@@ -94,7 +94,7 @@ Where the narrative cannot settle which of these applies, the verdict is **Incon
 
 ## Step 4 — Verdict rubric
 
-The **post-freeze round share** — post-freeze rounds as a fraction of the branch's rounds — is the only discriminating signal. Never decide from the outside-review-window share: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
+The **post-freeze round share** — post-freeze rounds as a fraction of the branch's rounds — is the only discriminating signal, and it yields a candidate rather than a verdict. Step 3(g)'s narrative read is what confirms or rejects the label. Never decide from the outside-review-window share: a stuck loop or plan-grinding branch and ordinary large-diff work can land in the same outside-review-window-share band, so the metric alone does not discriminate between them.
 
 Report Step 3(f)'s skew and dispatches-per-round as descriptive context, never as criteria. Neither tracks the freeze partition: a branch with no post-freeze rounds can carry the corpus's highest within-branch skew. Requiring them as co-signals suppresses true positives.
 
@@ -107,6 +107,8 @@ Report Step 3(f)'s skew and dispatches-per-round as descriptive context, never a
 - **Inconclusive** — Tier 3, a single squashed commit (Step 3d), a branch still active (Step 3d2), or a vacuous partition (Step 3e).
 
 A high post-freeze round share is not by itself unproductive review. Session crashes, stale worktree locks, and resumed handoffs all fragment one stretch of work across many sessions and inflate the round count without re-litigating anything. Check what the rounds did before naming a thrash verdict; where the transcript cannot settle it, return **Inconclusive** rather than the thrash label.
+
+Treat a thrash label as a claim Step 3(g) must evidence, never as a validated threshold.
 
 State the non-discrimination rule in words. Carry no dollar total, no per-branch cost share, and no figure from either corpus into the verdict text — this is a repo-wide publication rule, not a per-branch choice.
 
