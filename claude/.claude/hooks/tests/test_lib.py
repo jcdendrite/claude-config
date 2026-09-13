@@ -19,6 +19,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -4919,6 +4920,19 @@ def _assert_valid_tree_oid(repo: Path, oid: str) -> None:
     assert result.returncode == 0, f"{oid!r} is not a valid tree oid"
 
 
+def _git_supports_sha256_object_format() -> bool:
+    """Probed once at collection time: whether this git binary can create a
+    SHA-256 repository (`git init --object-format=sha256`). Gates the
+    SHA-256 fixture below rather than failing outright on a git build too
+    old for the flag, or one built without SHA-256 support."""
+    with tempfile.TemporaryDirectory() as probe_dir:
+        result = subprocess.run(
+            ["git", "init", "-q", "--object-format=sha256", "-b", "main", probe_dir],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+
 class TestGitInprogressStateDetection:
     def test_detects_merge(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -5211,6 +5225,37 @@ class TestGateDiffBaseTrustedAnchor:
         base_result = _gate_diff_base(clone)
         assert base_result.returncode == 0
         _assert_valid_tree_oid(clone, base_result.stdout)
+
+
+@pytest.mark.skipif(
+    not _git_supports_sha256_object_format(),
+    reason="git build does not support --object-format=sha256",
+)
+class TestGateDiffBaseSha256ObjectFormat:
+    def test_sha256_repo_mid_revert_returns_valid_64_hex_tree_oid(
+        self, tmp_path: Path
+    ) -> None:
+        """state_oid's shape validation accepts both a 40-hex SHA-1 and a
+        64-hex SHA-2 oid (_lib.sh's `_lib_gate_diff_base`), but every other
+        fixture in this file builds an ordinary SHA-1 repo -- this is the
+        only one that exercises the 64-hex branch end-to-end."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", "--object-format=sha256", "-b", "main", str(repo)],
+            check=True,
+        )
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        build_conflicted_revert(repo)
+
+        result = _gate_diff_base(repo)
+
+        assert result.returncode == 0
+        assert re.fullmatch(r"[0-9a-f]{64}", result.stdout), (
+            f"expected a 64-hex SHA-256 tree oid, got {result.stdout!r}"
+        )
+        _assert_valid_tree_oid(repo, result.stdout)
 
 
 class TestGateDiffBaseUntrustedAnchor:

@@ -868,12 +868,12 @@ _lib_gate_diff_base() {
   case "$tree_status" in
     124 | 125 | 126 | 127 | 137) return 2 ;;
   esac
-  # tree_status itself is not the validation signal: `merge-tree
-  # --write-tree` exits 1 (not 0) whenever the merge it computed conflicts
-  # -- the expected, common case here, since resolving that conflict is the
-  # whole reason this function exists -- while still writing a valid tree
-  # (with embedded conflict markers) on its first stdout line. Whether that
-  # first line resolves to a real tree is the actual check, below.
+  # tree_status is not the validation signal. `merge-tree --write-tree`
+  # exits 1 (not 0) whenever the merge it computed conflicts -- the
+  # expected, common case here, since resolving that conflict is the whole
+  # reason this function exists. It still writes a valid tree, with
+  # embedded conflict markers, on its first stdout line. Whether that first
+  # line resolves to a real tree is the actual check, below.
   local tree_oid="${tree_out%%$'\n'*}"
   [ -n "$tree_oid" ] || return 1
 
@@ -1338,13 +1338,15 @@ _lib_command_concludes_commit_shape() {
 # _lib_command_concludes_commit COMMAND
 # Tri-state, true for `git commit` and for `git <merge|rebase|cherry-pick|
 # revert> --continue` -- the full set of PreToolUse-visible shapes that
-# conclude one of those four operations with new content. Shared by every
-# gate whose recourse on a bad commit is mechanical (unstage a value,
-# shorten a file, remove a session key) rather than a review, so narrowing
-# this predicate to skip a verb would silently disarm those gates for that
-# verb's `--continue` form. See _lib_command_concludes_marker_gated_commit
+# conclude one of those four operations with new content. Intended to be
+# shared by every gate whose recourse on a bad commit is mechanical (unstage
+# a value, shorten a file, remove a session key) rather than a review, so
+# narrowing this predicate to skip a verb would silently disarm those gates
+# for that verb's `--continue` form once wired in. See
+# _lib_command_concludes_marker_gated_commit
 # below for the narrower sibling used by the two gates whose recourse is a
 # review.
+# Not yet called from any hook in this codebase.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1356,12 +1358,14 @@ _lib_command_concludes_commit() {
 # anchor in the ordinary case (see _lib_gate_diff_base), so gating a review
 # marker on it would mean demanding a full review at every conflicted step
 # of a rebase against content that, for the most part, already passed
-# review at its own original commit time. The two gates that consume this
-# narrower predicate still deny an ordinary `git commit` made mid-rebase
-# without `--continue`, and the five gates that consume the broad predicate
-# above stay armed on `git rebase --continue` -- this predicate narrows
+# review at its own original commit time. Once wired in, the two gates
+# intended to consume this narrower predicate would still deny an ordinary
+# `git commit` made mid-rebase without `--continue`, while the five gates
+# intended to consume the broad predicate above would stay armed on
+# `git rebase --continue` -- this predicate is designed to narrow
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
+# Not yet called from any hook in this codebase.
 _lib_command_concludes_marker_gated_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_MARKER_GATED"
@@ -3122,11 +3126,13 @@ _lib_reviewer_round_state_key() {
 #
 # Capped-git-call count varies by branch: 3 in the common case outside any
 # in-progress merge/rebase/cherry-pick/revert (HEAD rev-parse, the gitdir
-# rev-parse inside _lib_gate_diff_base, the diff itself), up to 8
-# mid-operation (adds the ref-file cat, up to two merge-base anchor checks,
-# the merge-tree computation, and the tree verification, all inside
-# _lib_gate_diff_base) -- a future added capped call here pushes the
-# mid-operation ceiling higher still.
+# rev-parse inside _lib_gate_diff_base, the diff itself), up to 13
+# mid-operation, all inside _lib_gate_diff_base (the ref-file cat, up to 5
+# from _lib_default_branch_or_guess's own origin/HEAD-then-candidate chain,
+# up to two merge-base anchor checks, the merge-tree computation, and the
+# tree verification) -- a future added capped call here pushes the
+# mid-operation ceiling higher still. At _lib_capped's 5s-per-call cap, that
+# ceiling is up to 65s of worst-case wall-clock time for one gate call.
 #
 # Determinism contract (read side and write side must agree byte-for-byte):
 # both halves are captured into variables and tested for emptiness rather

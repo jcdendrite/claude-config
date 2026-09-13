@@ -90,28 +90,25 @@ fi
 # Resolved once for this hook invocation and threaded through both the
 # empty-diff check below and the marker hash further down -- a second
 # resolution here would double the merge-tree cost per commit for the exact
-# same result. Empty BASE means no in-progress state was trusted (status 1)
-# or the base could not be computed (status 2); either way the empty-diff
-# check below issues plain `git diff --cached`, with no base argument.
+# same result. Status 1: no in-progress state was trusted. Status 2: the
+# base could not be computed. Either way, the check below uses plain
+# `git diff --cached` with no base argument.
 GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
 GATE_DIFF_BASE_STATUS=$?
 
-# Empty literal `git diff --cached`, with no trusted in-progress state to
-# substitute a base for: this commit authors nothing at all --
-# amend-message-only, --allow-empty, or nothing staged. Unaffected by the
-# base substitution below -- there is no trusted-but-forgeable anchor in
-# play here, so this stays a plain, unconditional early exit with no base
-# argument.
-# deny-invisible-commit-content.sh is what makes an empty diff here mean this
-# commit authors an empty commit, not that no commit will happen — do not
-# remove either half independently.
-#
-# A non-empty GATE_DIFF_BASE never takes this early exit, even on an empty
-# base-relative diff, since that emptiness could be a forged anchor rather
-# than an honest resolution. The marker comparison below still catches a
-# forged base: its value binds to GATE_DIFF_BASE's identity instead of
-# collapsing to sha256(""), so a marker from one base's empty-diff case
-# can't validate a different base.
+# Only taken when no trusted in-progress state is in effect (GATE_DIFF_BASE
+# empty): an empty `git diff --cached` here means this commit authors
+# nothing at all -- amend-message-only, --allow-empty, or nothing staged.
+# With a trusted base, an empty base-relative diff could instead be a
+# forged anchor rather than an honest "nothing staged", so that case must
+# reach the marker comparison below instead of taking this exit.
+# _lib_code_review_marker_value's docstring covers the forgery mechanism:
+# its value binds to GATE_DIFF_BASE's identity instead of collapsing to
+# sha256(""), so a marker from one base's empty-diff case can't validate a
+# different base.
+# deny-invisible-commit-content.sh depends on this branch meaning "this
+# commit authors an empty commit" -- do not remove either half
+# independently.
 if [ -z "$GATE_DIFF_BASE" ]; then
   EMPTY_DIFF_CHECK=$(_lib_capped git -C "$REPO_ROOT" diff --cached 2>/dev/null)
   if [ -z "$EMPTY_DIFF_CHECK" ]; then
