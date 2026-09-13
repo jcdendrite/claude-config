@@ -174,6 +174,32 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    def test_agpl_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo):
+        """AGPL is allowlisted by prefix, the same unbounded-digit tradeoff
+        GPT/GH/BUG/JDK above already accept — an implausible version number
+        is still allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Licensed under AGPL-99999999'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    def test_bsd_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo):
+        """BSD is allowlisted by prefix, the same unbounded-digit tradeoff
+        GPT/GH/BUG/JDK above already accept — an implausible clause number
+        is still allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Licensed under BSD-99999999-Clause'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(

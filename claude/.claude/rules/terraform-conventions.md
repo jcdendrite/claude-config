@@ -29,8 +29,7 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
     `aws_cognito_user_pool`'s `user_pool_tier` argument, `LITE`,
     `ESSENTIALS`, `PLUS`.
 
-  A stable true/false enum (e.g. an S3 bucket's `Enabled`/`Suspended`
-  versioning status) is a legitimate boolean-convenience idiom the
+  A stable true/false enum is a legitimate boolean-convenience idiom the
   ecosystem's own registry modules use deliberately — not every
   two-valued provider enum needs flagging.
 - **Pair the variable with a `validation` block enumerating the
@@ -46,11 +45,22 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   `aws_cognito_user_pool_client`'s `prevent_user_existence_errors`
   defaults to `LEGACY`; prefer `ENABLED`, since `LEGACY` reintroduces a
   user-enumeration side channel during sign-in and password-recovery
-  flows. `ENABLED` closes those unconditionally, but the initial
-  registration call (`SignUp`) is a separate, provider-independent
-  disclosure this setting doesn't reach — the application must handle it
-  itself, e.g. by not surfacing `UsernameExistsException` verbatim, or by
-  accepting the trade-off as a deliberate product decision.
+  flows.
+  - `ENABLED` normalizes the error content across `AdminInitiateAuth`,
+    `AdminRespondToAuthChallenge`, `InitiateAuth`,
+    `RespondToAuthChallenge`, `ForgotPassword`, `ConfirmForgotPassword`,
+    `ConfirmSignUp`, and `ResendConfirmationCode`.
+  - AWS documents this as a content change, not a timing guarantee.
+  - The CWE-208 timing side channel `ciso-reviewer.md`'s
+    account-existence-disclosure angle covers is a separate concern this
+    setting doesn't close.
+  - The initial registration call (`SignUp`) is outside this setting's
+    coverage entirely, since AWS documents `SignUp` as unconditionally
+    throwing `UsernameExistsException` regardless of this setting:
+    - **Suppress it**: don't surface `UsernameExistsException` verbatim
+      from `SignUp`.
+    - **Accept it**: treat the trade-off as a deliberate product
+      decision.
 - **On a retrofit**, an existing variable's effective default changes
   for callers that don't already override it. Treat it with the same
   scrutiny as any other behavior-changing default to a shared module;

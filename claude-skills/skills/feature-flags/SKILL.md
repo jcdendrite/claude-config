@@ -103,11 +103,14 @@ changes alongside a deploy is config, not a toggle.
      column-level grant, a row-level policy, or restricting who holds
      the table's write role at all. An application-layer check can't
      intercept a write issued directly against the datastore.
-   - Not substituted for by an audit record after the fact — logging
-     the write is not the same as gating it. When a security-sensitive
-     toggle does keep an audit trail, that trail should itself be
-     append-only and tamper-evident, the same bar `ciso-reviewer`
-     applies to any privileged-action log.
+   - Logged:
+     - The change must produce a log entry of its own, append-only and
+       tamper-evident — the same bar `ciso-reviewer` applies to any
+       privileged-action log.
+     - Additive to, not a substitute for, the authorization check
+       above.
+     - Not substituted for by an audit record after the fact — logging
+       the write is not the same as gating it.
    - Scoped per subject, not only per role, when the toggle is
      per-subject: the caller's authority must reach the specific target
      subject named in the write, not merely membership in the narrower
@@ -126,8 +129,8 @@ changes alongside a deploy is config, not a toggle.
 
 **One narrower anti-pattern**, not a category-wide claim: a boolean that
 only mirrors state already tracked elsewhere (e.g. `user.plan == 'pro'`)
-is domain-model state, not a toggle — unlike a genuine Permissioning
-Toggle needing per-subject routing (step 3).
+is domain-model state, not a toggle. A genuine Permissioning Toggle, by
+contrast, needs per-subject routing (step 3).
 
 ## What this skill does not own
 

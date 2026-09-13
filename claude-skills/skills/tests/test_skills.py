@@ -354,27 +354,45 @@ class TestSpecialistSkillTriggerContracts:
 # feature-flags is skillOverrides: name-only (see TestNameOnlySkillContracts),
 # so it cannot auto-trigger by description match — its sole reachability
 # mechanism is these hand-off pointer sentences naming it by string.
+# config-environments/SKILL.md has two droppable pointer sentences, hence
+# two entries below.
 _FEATURE_FLAGS_POINTER_SITES = [
-    "claude-skills/skills/config-environments/SKILL.md",
-    "claude-skills/skills/code-review/SKILL.md",
-    "claude/.claude/agents/staff-product-engineer.md",
-    "claude/.claude/agents/staff-backend-engineer.md",
-    "claude/.claude/rules/terraform-conventions.md",
+    (
+        "claude-skills/skills/config-environments/SKILL.md",
+        "the `feature-flags` skill's call, not this one's",
+    ),
+    (
+        "claude-skills/skills/config-environments/SKILL.md",
+        "Toggle placement is the `feature-flags` skill's call",
+    ),
+    (
+        "claude-skills/skills/code-review/SKILL.md",
+        "For where the toggle should live in the first place, invoke the `feature-flags` skill",
+    ),
+    (
+        "claude/.claude/agents/staff-product-engineer.md",
+        "For where the toggle should live and whether it needs a platform, Read `~/.claude/skills/feature-flags/SKILL.md`",
+    ),
+    (
+        "claude/.claude/agents/staff-backend-engineer.md",
+        "For where the toggle should live and whether it needs a platform, Read `~/.claude/skills/feature-flags/SKILL.md`",
+    ),
+    (
+        "claude/.claude/rules/terraform-conventions.md",
+        "the `feature-flags` skill's call — this rule doesn't decide it",
+    ),
 ]
 
 
-@pytest.mark.parametrize("relative_path", _FEATURE_FLAGS_POINTER_SITES)
-def test_feature_flags_pointer_sites_still_name_the_skill(relative_path):
-    """Each hand-off pointer site must still name feature-flags by string.
-
-    feature-flags is name-only, so nothing routes to it by description
-    match — dropping the literal string from any of these five files
-    silently strands that site with no test failure to catch it.
-    """
+@pytest.mark.parametrize("relative_path, pointer_phrase", _FEATURE_FLAGS_POINTER_SITES)
+def test_feature_flags_pointer_sites_still_name_the_skill(relative_path, pointer_phrase):
+    """Pins each site's exact pointer phrase (not a "feature-flags"
+    substring) so a meaning-reversing rewrite that keeps the word is
+    still caught."""
     content = (REPO_ROOT / relative_path).read_text()
-    assert "feature-flags" in content, (
-        f"{relative_path} no longer contains the string 'feature-flags' — "
-        "this file is one of feature-flags' five hand-off pointer sites, "
+    assert pointer_phrase in content, (
+        f"{relative_path} no longer contains {pointer_phrase!r} — "
+        "this site is one of feature-flags' six hand-off pointer sites, "
         "its sole reachability mechanism since the skill is name-only"
     )
 

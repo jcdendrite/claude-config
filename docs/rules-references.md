@@ -222,10 +222,15 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   — that doc's own description carries no enumerated valid-values line for
   this argument. The enum instead comes from AWS's own API reference,
   `docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html`,
-  on the `PreventUserExistenceErrors` field:
+  on the `PreventUserExistenceErrors` field. These are two separate
+  fragments of that field's description, not adjacent in the source —
+  the affected-operations list and other field metadata sit between
+  them:
   > Valid Values: `LEGACY | ENABLED`
-  >
+
+  and, further down the same field description:
   > Defaults to `LEGACY`.
+
   That same field's description names the operations it affects:
   `AdminInitiateAuth`, `AdminRespondToAuthChallenge`, `InitiateAuth`,
   `RespondToAuthChallenge`, `ForgotPassword`, `ConfirmForgotPassword`,
@@ -236,7 +241,7 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   when the username is taken, regardless of this setting.
 - **Custom Validation Rules (the `validation` block)** — VERIFIED at
   `developer.hashicorp.com/terraform/language/values/variables` §
-  "Custom Validation Rules":
+  "Reference Variable Values", illustrating the `environment` variable:
   > ```
   > validation {
   >   condition     = contains(["dev", "staging", "prod"], var.environment)
@@ -251,7 +256,10 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   `developer.hashicorp.com/terraform/language/block/variable`: "Enabling
   the `nullable` argument lets module consumers assign the value `null`
   to the variable." Defaults to `true`; when `false`, the variable must
-  have a non-null value.
+  have a non-null value. That same page: "If nullable is true and the
+  variable has a default argument, you can explicitly set the variable
+  value to null, overwriting the default argument" — the mechanism the
+  rule's null-validation-branch guidance rests on.
 - **Type a provider-native string enum as its own type, not a `bool`
   mapped through a ternary — confirmed negative as a HashiCorp
   recommendation.** Neither the Style Guide nor the Types reference

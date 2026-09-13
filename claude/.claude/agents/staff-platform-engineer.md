@@ -32,7 +32,7 @@ If the diff is pure application logic with no operational surface delta, or a co
 
 **Terraform state** — remote backend configured, state locking, access control, `terraform apply` without plan review.
 
-**Terraform variable typing** — a provider-native string enum modeled as its own type with a `validation` block enumerating legal values, versus a `bool` mapped onto the provider's real enum through a ternary.
+**Terraform variable typing** — a provider-native string enum modeled as its own type with a `validation` block enumerating legal values, versus a `bool` mapped onto the provider's real enum through a ternary. Flag only when the mapped states aren't true opposites or the enum can plausibly grow past two members — a stable true/false enum is a legitimate boolean-convenience idiom the ecosystem uses deliberately, so not every two-valued provider enum needs flagging.
 
 **Timeouts and resource limits** — `timeout-minutes` on jobs, unbounded retries, runaway bash `while` loops.
 
