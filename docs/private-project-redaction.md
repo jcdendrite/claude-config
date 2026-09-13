@@ -180,22 +180,36 @@ only within one figure read alone.
    Cadence bullet above excludes. The one exception is the split
    below. A boundary-crossing pooled Count is a one-time disclosure
    under this bar for the same reason: a second one published later
-   forms a barred two-point series. It cannot qualify as the split,
-   since the split requires single-account, single-machine scope.
-2. **One split, ever.** This carve-out defines exactly one narrow
-   exception to "No time series" above: the split. Across everything
-   ever published under this carve-out, at most one split may ever be
-   published. Once one lands, in this repository or any other
-   artifact, no further split is permitted, regardless of label or
-   statistic, same or different. This repository's history offers a
-   commit near any date a reader would want, so the split's limit
-   isn't arbitrary. A further instance needs a PR amending this
-   document, not a fresh proposal under it.
+   forms a barred two-point series. Whether it may be the figure a
+   split reports is governed by that split's own account and machine
+   condition below.
+2. **One pivot per artifact.** This carve-out defines exactly one
+   narrow exception to "No time series" above: the split. Each
+   published artifact may carry at most one pivot. Every figure that
+   artifact splits rides that same pivot. Several statistics may share
+   that one pivot. One statistic may also be reported at several
+   parameter values of its own, so long as all of them split at the
+   same commit. A second pivot in the same artifact is barred,
+   regardless of label or statistic, same or different. Reporting one
+   statistic across several parameter values of one pivot adds no
+   calendar point, which is why the cap counts pivots and not figures.
 
-   Only a split published under this carve-out spends this allowance.
-   Content predating this carve-out does not, whatever shape it takes.
-   Where such content sits beside a new proposal, the composition bar
-   below governs instead.
+   The cap is per artifact, not a running total across everything ever
+   published. Two artifacts each splitting at their own pivot are two
+   permitted splits. What they may not do is compose: where a later
+   artifact's split would extend or restate an earlier one's into more
+   than two calendar points for the same statistic, "Composition is
+   publication" below governs and bars it. This same-statistic check
+   is necessary, not exhaustive. Bar 1's time-series test above still
+   reaches whole-period figures that together form a series across
+   different statistics. Bar 3's general composition test below still
+   reaches any set of published figures — split or not, pivoted the
+   same or differently — that together yield a barred result.
+
+   Only a split published under this carve-out spends an artifact's
+   pivot. Content predating this carve-out does not, whatever shape it
+   takes. Where such content sits beside a new proposal, the
+   composition bar below governs instead.
 3. **Composition is publication.** This bar reaches any set of
    published figures that together produce a barred result, whether
    they land in one artifact or in separate publications months apart.
@@ -215,7 +229,7 @@ only within one figure read alone.
    dimension (see "Scope — two closed lists" above, which bars the
    same for machine) is what keeps this reconstruction from starting.
 
-### The one permitted split
+### The permitted split
 
 A whole-period figure may be reported once as a before value and an
 after value either side of a pivot. Every condition below must hold.
@@ -238,13 +252,28 @@ after value either side of a pivot. Every condition below must hold.
   any statistic, Counts included, even where the base list permits a
   total outside a split. The split adds a second point in time, never
   a new form.
-- **One account, one machine.** Both sides resolve to a single
-  `CLAUDE_CONFIG_DIR` account and machine. Neither of "Account and
-  machine scope" below's two exceptions — Cost's cross-account/
-  cross-machine share mode, or Counts' unscoped reporting — extends to
-  a split.
+- **One account, one machine, unless the statistic's own mode already
+  crosses.** Both sides resolve to a single `CLAUDE_CONFIG_DIR`
+  account and machine, subject to:
+  - Only two modes carry a split across that boundary: Cost's
+    dimensionless share-of-spend mode, and Counts' unscoped reporting
+    — both granted by "Account and machine scope" below. Nothing else
+    does.
+  - A Cost rate, median, or total stays single-account and
+    single-machine on both sides.
+  - Every Duration figure stays single-account and single-machine on
+    both sides, since Duration has no crossing mode to inherit.
+  - Where a split does cross, both sides pool the same accounts and
+    machines. A before side drawn from one machine against an after
+    side pooling two is a change of composition dressed as a change
+    over time, and neither side's value means what the pair implies.
 - **Exhaustive partition.** Together, the two sides cover exactly the
   period the whole-period figure covered.
+- **Held-out transition window.** One transition window bracketing the
+  pivot may be held out instead, where the change needs time to
+  stabilize. State its bounds. Publish no figure computed on it. A
+  held-out window's own value is a third calendar point, which the "No
+  time series" bar withholds.
 - **No per-side pool size.** Neither side's own pool size is
   published. A count on one side of a pivot is pool volume dated
   against calendar time — the cadence the "No time series" bar
@@ -354,14 +383,33 @@ else's comment, however definitive it reads, does not satisfy this
 gate. A narrative claim that approval occurred is not a citation
 either. Absent that citation, don't publish.
 
-For a split under "The one permitted split" above, the proposal
-additionally discloses two things, both approval-only input:
+For a split under "The permitted split" above, the proposal
+additionally discloses three things, all approval-only input:
 
 - the transcript turn where the pivot was named: a session identifier
   plus turn index or timestamp. This must be as locatable and
   independently-checkable as the pivot's own citation;
-- each side's window bounds and pool size, so the owner can judge
-  whether either side is thin enough to isolate one engagement.
+- each side's pool size, and the held-out transition window's pool
+  size, so the owner can judge whether either side — or the held-out
+  window — is thin enough to isolate one engagement. Window bounds are
+  not part of this disclosure: "Held-out transition window" above
+  already requires the held-out window's bounds in the published
+  artifact, and each main side's bounds follow from the pivot's own
+  public citation;
+- where the split crosses an account or machine boundary under "One
+  account, one machine, unless the statistic's own mode already
+  crosses" above:
+  - Which accounts or machines contribute to each side.
+  - Any already-published or routinely-automated single-account or
+    single-machine exact figure of the same quantity, so the owner can
+    weigh whether the crossing side and that exact figure together
+    isolate one account's or machine's own value by subtraction. The
+    pooled-Count paragraph below carries the same disclosure duty for
+    the analogous case.
+  - Whether subtracting that same exact figure from both sides
+    reconstructs a second, unapproved before/after pair for the
+    excluded account or machine, since a split publishes two pooled
+    values, one on each side of the pivot.
 
 For a pooled Count that spans more than one account or machine, the
 proposal additionally discloses two things, both approval-only input:
@@ -398,12 +446,16 @@ activity falls in more tightly than either figure discloses alone.
 That narrowing — not merely the pre-existing publication's existence —
 is what the proposal must name.
 
-For a split, it additionally searches this repository's own history
-for a prior instance published under this carve-out, and names what
-it finds. That search is diligence, not enforcement. The owner is the
-one continuous witness, across this repository and any other
-publication artifact, to what has already shipped under it. Finding
-nothing is not approval to publish.
+For a split, the proposal additionally names any split already
+published under this carve-out that reports the same statistic, and
+states what that split and this one would together disclose. The cap
+is per artifact, so a prior split elsewhere does not by itself
+disqualify a new one; composing with it into more than two calendar
+points for the same statistic does. That search is diligence, not
+enforcement. The owner is the one continuous witness, across this
+repository and any other publication artifact, to what has already
+shipped under this carve-out. Finding nothing is not approval to
+publish.
 
 Absent the durable citation this gate requires, the whole carve-out is
 closed by default, the same as the blocklist tier's "if in doubt,

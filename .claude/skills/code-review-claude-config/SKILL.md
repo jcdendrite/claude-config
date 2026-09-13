@@ -17,8 +17,17 @@ So is any of:
 - a figure that composes with another published figure into a barred total
 - a cadence-revealing figure
 - a time series of an otherwise-permitted whole-period figure, or a
-  before/after split that fails any condition of the carve-out's one
+  before/after split that fails any condition of the carve-out's
   permitted split
+- a second before/after pivot in the same artifact
+- a per-side pool size on either side of a before/after pivot
+- any computed figure (including pool size) for a held-out transition
+  window bracketing a before/after pivot
+- two sides of a before/after pivot drawn from different account or
+  machine compositions
+- a split of the same statistic already published under this
+  carve-out in another artifact, composing with this one into more
+  than two calendar points
 
 Give a rounded or generalized figure more scrutiny, not less. The six
 always-on structural detectors already catch raw pastes, so what reaches
