@@ -8321,6 +8321,44 @@ def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dic
     return dict(zip(labels, rows[0].split(), strict=False))
 
 
+def _ttl_verdict_5m_tier_adopt_records() -> list[dict]:
+    """Record list for a clean 5m-tier root that reaches --ttl-verdict's
+    'adopt' verdict (W5m=1,000,000, X=500,000, comfortably clearing
+    margin), shared by test_main_bucket_5m_tier_root_reaches_adopt and by
+    root_a in
+    test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+        _priced(
+            "claude-sonnet-5", ephemeral_5m=500_000,
+            ts="2026-08-01T10:06:00.000Z", request_id="m2",
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=300_000,
+            ts="2026-08-01T10:12:00.000Z", request_id="m3",
+        ),
+    ]
+
+
+def _ttl_verdict_1h_tier_non_wash_disagreement_records() -> list[dict]:
+    """Record list for a 1h-tier root whose dollar accounting and
+    tiebreaker disagree (W1h=1,000,000, primary Z=800,000, favors 1h,
+    does not clear), shared by
+    test_1h_tier_root_declines_on_a_non_wash_disagreement and by root_b in
+    test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict."""
+    return [
+        _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
+        _priced(
+            "claude-sonnet-5", cache_read=800_000,
+            ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
+        ),
+        _priced(
+            "claude-sonnet-5", cache_read=400_000,
+            ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
+        ),
+    ]
+
+
 def _tool_result_record(tool_id: str, *, ts: str, text: str = "ok") -> dict:
     """A user record carrying one tool_result block, for
     _attribute_idle_gap_cause's direct unit tests below."""
@@ -10482,17 +10520,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         its own clears (see
         test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash
         below for the same root reaching 'adopt' with no read at all)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
-            _priced(
-                "claude-sonnet-5", ephemeral_5m=500_000,
-                ts="2026-08-01T10:06:00.000Z", request_id="m2",
-            ),
-            _priced(
-                "claude-sonnet-5", cache_read=300_000,
-                ts="2026-08-01T10:12:00.000Z", request_id="m3",
-            ),
-        ])
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_5m_tier_adopt_records())
         _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
@@ -10608,35 +10636,17 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         """Two roots landing in the same bucket but on different tiers must
         both feed that bucket's verdict through the real accumulation loop,
         not just the pure verdict function directly. account-1 (5m-tier)
-        reuses test_main_bucket_5m_tier_root_reaches_adopt's own fixture
-        (W5m=1,000,000, X=500,000, favors 1h, clears); account-2 (1h-tier)
-        reuses test_1h_tier_root_declines_on_a_non_wash_disagreement's own
-        fixture (W1h=1,000,000, Z=800,000, favors 1h, does not clear). Both
-        roots favor the same direction, so the bucket verdict is 'decline'
-        rather than 'roots disagree' -- uniform direction with at least one
-        root not clearing."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
-            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
-            _priced(
-                "claude-sonnet-5", ephemeral_5m=500_000,
-                ts="2026-08-01T10:06:00.000Z", request_id="m2",
-            ),
-            _priced(
-                "claude-sonnet-5", cache_read=300_000,
-                ts="2026-08-01T10:12:00.000Z", request_id="m3",
-            ),
-        ])
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
-            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
-            _priced(
-                "claude-sonnet-5", cache_read=800_000,
-                ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
-            ),
-            _priced(
-                "claude-sonnet-5", cache_read=400_000,
-                ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
-            ),
-        ])
+        reuses _ttl_verdict_5m_tier_adopt_records; account-2 (1h-tier)
+        reuses _ttl_verdict_1h_tier_non_wash_disagreement_records -- closing
+        the multi-tier wiring gap those single-root tests can't cover on
+        their own."""
+        root_a = _write_cost_root(
+            tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
+        )
+        root_b = _write_cost_root(
+            tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
+            _ttl_verdict_1h_tier_non_wash_disagreement_records(),
+        )
         _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
@@ -10813,17 +10823,7 @@ class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
         Gating Z's own increment on the sensitivity boundary instead of
         the primary one would total 1,200,000, a different printed X/Z
         figure than the 800,000 asserted below."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
-            _priced(
-                "claude-sonnet-5", cache_read=800_000,
-                ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
-            ),
-            _priced(
-                "claude-sonnet-5", cache_read=400_000,
-                ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
-            ),
-        ])
+        _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_1h_tier_non_wash_disagreement_records())
         _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
