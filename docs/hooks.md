@@ -86,7 +86,7 @@ Not every opt-in or opt-out sentinel gates a hook. `${CLAUDE_CONFIG_DIR:-$HOME/.
 
 Unlike a presence-only sentinel (`worktree-required`, `autonomous-shipping-required`), `pr-cost-disclosure`'s content is a **mode**, not just a presence check: exactly `dollars` enables the PR body's cost block; absent, empty, or any unrecognized value disables it. It is also scoped to the Claude account rather than to the repo — cost is an organizational fact, and each account is its own billing entity — so it lives outside any repo's working tree at `$CLAUDE_CONFIG_DIR` (when set and absolute) or `$HOME/.claude`, resolved to exactly one of those paths and never both. Resolving only one path is what keeps one account's opt-in from activating disclosure under another.
 
-The fields it discloses (session count, priced-turn count, per-class token volume, per-model-ID dollars) are not neutral even in aggregate form — see `docs/transcript-analysis.md`'s `cost` section, "The disclosed fields are not neutral."
+The fields it discloses (session count, priced-turn count, per-class token volume, per-model-ID dollars, per-review-skill round counts, per-agent-type spawn counts) are not neutral even in aggregate form — see `docs/transcript-analysis.md`'s `cost` section, "The disclosed fields are not neutral."
 
 Account scoping has one residual travel path, accepted rather than closed: bootstrapping a new Claude account by copying an existing `$CLAUDE_CONFIG_DIR` tree carries the sentinel forward into the new account with no prompt. `install.sh`'s account row reports the resolved path and mode at every run, so an operator inspecting a freshly bootstrapped account sees an inherited file rather than having to suspect one.
 

@@ -1,6 +1,7 @@
 """Tests for transcript_analysis/review_rounds.py (review-round-cost)."""
 import importlib.util
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -706,6 +707,192 @@ class TestComputeReviewRoundCosts:
         assert set(data["branch_totals"]) == {(0, "feat"), (1, "feat")}
         assert data["branch_totals"][(0, "feat")] == pytest.approx(0.20)
         assert data["branch_totals"][(1, "feat")] == pytest.approx(0.40)
+
+
+def _corpus_multi_window(fake_projects) -> None:
+    """Skill-shape round immediately followed by a /slash-shape round, zero
+    fresh-user-prompt records between them -- one session, two windows."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _slash_user("plan-review", branch="feat", ts="2026-08-01T10:01:00.000Z"),
+        _priced("claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        _user_msg("done", branch="feat", ts="2026-08-01T10:03:00.000Z"),
+    ])
+
+
+def _corpus_nested_dispatch(fake_projects) -> None:
+    """A round whose own subagent dispatch itself dispatches a further
+    nested subagent."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+    nested_spawn_rec = _priced(
+        "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:10.000Z",
+        content=[_agent_use("n1", "staff-sdet")],
+    )
+    nested_spawn_rec["isSidechain"] = True
+    _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [nested_spawn_rec])
+    nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
+    nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")
+    nested_rec["isSidechain"] = True
+    _write_subagent_dispatch(fake_projects, nested_session_id, "agent-2", "n1", [nested_rec])
+
+
+def _corpus_slash_path_open(fake_projects) -> None:
+    """A /slash-shape round with no Skill tool_use block anywhere."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _slash_user("code-review", branch="feat", ts="2026-08-01T10:00:00.000Z"),
+        _user_msg("done reviewing", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+
+
+def _corpus_dedup_affecting_requestid_run(fake_projects) -> None:
+    """Two contiguous same-requestId records, each carrying a Skill
+    tool_use block for the same skill -- models the harness splitting one
+    API call's content across multiple JSONL records. Without dedup running
+    before detection, this opens two rounds instead of one."""
+    _write_jsonl(fake_projects / "sess-1.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=50_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            request_id="req-1", content=[_skill_block("s1", "code-review")],
+        ),
+        _priced(
+            "claude-sonnet-5", input=50_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            request_id="req-1", content=[_skill_block("s2", "code-review")],
+        ),
+        _user_msg("done", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+
+
+def _corpus_branch_carry_forward_mid_window(fake_projects) -> None:
+    """A round's window drifts to a different gitBranch mid-window; the
+    round's own branch stays the opening record's branch."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ),
+        _priced(
+            "claude-sonnet-5", input=200_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+            content=[_agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat-b", ts="2026-08-01T10:02:00.000Z"),
+    ])
+    _write_subagent_dispatch(
+        fake_projects, session_id, "agent-1", "a1",
+        [_priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:01:10.000Z")],
+    )
+
+
+def _corpus_non_round_dollar_interleaving(fake_projects) -> None:
+    """Non-round dollars before and after one round window, plus a
+    dispatch outside the window -- proves round detection isn't perturbed
+    by unrelated dollar-bearing activity."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _priced("claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T09:00:00.000Z"),
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+            content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+        ),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        _priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T11:00:00.000Z",
+            content=[_agent_use("a2", "staff-sdet")],
+        ),
+    ])
+    _write_subagent_dispatch(
+        fake_projects, session_id, "agent-1", "a1",
+        [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z")],
+    )
+    _write_subagent_dispatch(
+        fake_projects, session_id, "agent-2", "a2",
+        [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T11:00:10.000Z")],
+    )
+
+
+# Every distinct round shape TestComputeReviewRoundCosts already exercises
+# elsewhere in this file, reused for the bidirectional agreement guard below
+# rather than one new hand-picked corpus.
+_ROUND_SHAPE_CORPUS_BUILDERS = [
+    pytest.param(_corpus_multi_window, id="multi_window_skill_then_slash"),
+    pytest.param(_corpus_nested_dispatch, id="nested_dispatch"),
+    pytest.param(_corpus_slash_path_open, id="slash_path_open"),
+    pytest.param(_corpus_dedup_affecting_requestid_run, id="dedup_affecting_requestid_run"),
+    pytest.param(_corpus_branch_carry_forward_mid_window, id="branch_carry_forward_mid_window"),
+    pytest.param(_corpus_non_round_dollar_interleaving, id="non_round_dollar_interleaving"),
+]
+
+
+class TestComputeReviewRoundCounts:
+    """compute_review_round_counts: count-only round detection, exercised
+    directly against exact per-skill counts."""
+
+    def test_skill_and_slash_invocations_both_counted(self, fake_projects):
+        _corpus_multi_window(fake_projects)
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts == {"code-review": 1, "plan-review": 1, "ready-for-review": 0}
+
+    def test_absent_skills_report_zero(self, fake_projects):
+        """Every REVIEW_SKILLS member is a key in the result, zeros
+        included, even when a skill has no invocations anywhere in scope."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts == {"code-review": 1, "plan-review": 0, "ready-for-review": 0}
+
+    def test_branch_filter_narrows_counts_to_matching_branch(self, fake_projects):
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-b", ts="2026-08-01T10:01:00.000Z",
+                content=[_skill_block("s2", "plan-review")],
+            ),
+        ])
+        counts = review_rounds.compute_review_round_counts(
+            _session_iter(fake_projects), branch_filter={"feat-a"},
+        )
+        assert counts == {"code-review": 1, "plan-review": 0, "ready-for-review": 0}
+
+    def test_dedup_merges_split_requestid_run_before_counting(self, fake_projects):
+        """Without dedup running before detection, this would open two
+        rounds instead of one -- guards compute_review_round_counts's own
+        dedup-before-detection contract."""
+        _corpus_dedup_affecting_requestid_run(fake_projects)
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts["code-review"] == 1
+
+
+class TestReviewRoundCountsAgreesWithComputeReviewRoundCosts:
+    """compute_review_round_counts must never disagree with
+    compute_review_round_costs's own rounds list about how many rounds of
+    each skill exist -- checked across every distinct round shape this
+    file's dollar tests already exercise, not one new hand-picked corpus."""
+
+    @pytest.mark.parametrize("build_corpus", _ROUND_SHAPE_CORPUS_BUILDERS)
+    def test_per_skill_tally_matches_across_shapes(self, fake_projects, build_corpus):
+        build_corpus(fake_projects)
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        costs_data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        expected = Counter(r["skill"] for r in costs_data["rounds"])
+        assert counts == {skill: expected.get(skill, 0) for skill in review_rounds.REVIEW_SKILLS}
 
 
 class TestCmdReviewRoundCost:
