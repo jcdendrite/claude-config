@@ -84,6 +84,15 @@ class TestSchema:
             if row.resolution == "config-dir-or-home":
                 assert row.type == "bool", f"{key} is config-dir-or-home but type={row.type!r}"
 
+    def test_every_enum_row_has_false_default(self):
+        """"false" is the conventional off/fail-safe value for an enum:*
+        key -- pins that every enum row's own `default` column is that
+        literal, never its own bare enum token, so a key's off state is
+        always the same value across every enum-typed row in the schema."""
+        for key, row in schema().items():
+            if row.type.startswith("enum:"):
+                assert row.default == "false", f"{key} is enum-typed but default={row.default!r}"
+
 
 # ---------------------------------------------------------------------------
 # config_value() / config_enabled()
@@ -275,6 +284,48 @@ class TestSchemaTypeValidationOnRead:
         assert "malformed line" in err
         assert 'worktree_required = "notabool"' in err
 
+    @pytest.mark.parametrize(
+        "key",
+        ["round_consult_gate", "commit_stall_block", "authorization_boundary_restore"],
+    )
+    def test_presence_disables_key_non_boolean_value_falls_closed_without_legacy_file(
+        self, tmp_path, monkeypatch, capsys, key
+    ):
+        """A malformed row for a presence-disables key is skipped exactly
+        like a fully-absent row, falling through to its own legacy-file
+        check -- absent here, so it resolves "true" (armed), the same as
+        the key's own fail-closed schema default."""
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text(f'{key} = "notabool"\n')
+        assert config_value(key) == "true"
+        assert config_enabled(key) is True
+        err = capsys.readouterr().err
+        assert "malformed line" in err
+        assert f'{key} = "notabool"' in err
+
+    @pytest.mark.parametrize(
+        "key,legacy_filename",
+        [
+            ("round_consult_gate", ".round-consult-gate-disabled"),
+            ("commit_stall_block", ".commit-stall-block-disabled"),
+            ("authorization_boundary_restore", ".authorization-boundary-disabled"),
+        ],
+    )
+    def test_presence_disables_key_non_boolean_value_resolves_legacy_opt_out(
+        self, tmp_path, monkeypatch, capsys, key, legacy_filename
+    ):
+        """The same malformed row, with its coexisting legacy opt-out file
+        also present, resolves "false" (disarmed) -- the malformed row
+        never becomes authoritative just because a legacy file happens to
+        coexist with it."""
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text(f'{key} = "notabool"\n')
+        (home / ".claude" / legacy_filename).touch()
+        assert config_value(key) == "false"
+        assert config_enabled(key) is False
+        err = capsys.readouterr().err
+        assert "malformed line" in err
+
 
 class TestEnumValueQuotingGrammar:
     """Genuine TOML writes a boolean bare and any other scalar quoted, so
@@ -295,6 +346,20 @@ class TestEnumValueQuotingGrammar:
         (home / ".claude" / "claude-config.toml").write_text('pr_cost_disclosure = "dollars"\n')
         assert config_value("pr_cost_disclosure") == "dollars"
         assert capsys.readouterr().err == ""
+
+    def test_bare_boolean_value_on_enum_key_is_rejected_as_malformed(self, tmp_path, monkeypatch, capsys):
+        """`true`/`false` are always grammar-valid bare tokens, so a bare
+        `true` on an enum-typed key passes the bareness gate the sibling
+        test above exercises and instead reaches the enum:* schema-type
+        check, which must reject it too -- pins today's behavior against a
+        future loosening of that case arm that might otherwise accept a
+        bare boolean as meaning "enabled"."""
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text("pr_cost_disclosure = true\n")
+        assert config_value("pr_cost_disclosure") == "false"
+        err = capsys.readouterr().err
+        assert "malformed line" in err
+        assert "pr_cost_disclosure = true" in err
 
 
 class TestUnrecognizedLegacyPolarityFallback:

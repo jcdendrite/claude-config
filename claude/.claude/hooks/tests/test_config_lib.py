@@ -284,6 +284,19 @@ class TestEnumValueQuotingGrammar:
         assert result.stdout == "dollars"
         assert result.stderr == ""
 
+    def test_bare_boolean_value_on_enum_key_is_rejected_as_malformed(self, isolated_home):
+        """`true`/`false` are always grammar-valid bare tokens, so a bare
+        `true` on an enum-typed key passes the bareness gate the sibling
+        test above exercises and instead reaches the enum:* schema-type
+        check, which must reject it too -- pins today's behavior against a
+        future loosening of that case arm that might otherwise accept a
+        bare boolean as meaning "enabled"."""
+        _write_state_file(isolated_home, "pr_cost_disclosure = true\n")
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+        assert "malformed line" in result.stderr
+        assert "pr_cost_disclosure = true" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # Legacy-polarity coverage: presence-enables, presence-disables,
@@ -726,6 +739,48 @@ class TestSchemaTypeValidationOnRead:
         assert 'worktree_required = "notabool"' in result.stderr
         assert _run("_config_enabled worktree_required").returncode == 1
 
+    @pytest.mark.parametrize(
+        "key",
+        ["round_consult_gate", "commit_stall_block", "authorization_boundary_restore"],
+    )
+    def test_presence_disables_key_non_boolean_value_falls_closed_without_legacy_file(
+        self, isolated_home, key
+    ):
+        """A malformed row for a presence-disables key is skipped exactly
+        like a fully-absent row, falling through to its own legacy-file
+        check -- absent here, so it resolves "true" (armed), the same as
+        the key's own fail-closed schema default."""
+        _write_state_file(isolated_home, f'{key} = "notabool"\n')
+        result = _run(f"_config_value {key}")
+        assert result.stdout == "true"
+        assert result.returncode == 0
+        assert "malformed line" in result.stderr
+        assert f'{key} = "notabool"' in result.stderr
+        assert _run(f"_config_enabled {key}").returncode == 0
+
+    @pytest.mark.parametrize(
+        "key,legacy_filename",
+        [
+            ("round_consult_gate", ".round-consult-gate-disabled"),
+            ("commit_stall_block", ".commit-stall-block-disabled"),
+            ("authorization_boundary_restore", ".authorization-boundary-disabled"),
+        ],
+    )
+    def test_presence_disables_key_non_boolean_value_resolves_legacy_opt_out(
+        self, isolated_home, key, legacy_filename
+    ):
+        """The same malformed row, with its coexisting legacy opt-out file
+        also present, resolves "false" (disarmed) -- the malformed row
+        never becomes authoritative just because a legacy file happens to
+        coexist with it."""
+        _write_state_file(isolated_home, f'{key} = "notabool"\n')
+        (isolated_home / ".claude" / legacy_filename).touch()
+        result = _run(f"_config_value {key}")
+        assert result.stdout == "false"
+        assert result.returncode == 0
+        assert "malformed line" in result.stderr
+        assert _run(f"_config_enabled {key}").returncode == 1
+
 
 # ---------------------------------------------------------------------------
 # _config_set's atomic, comment/order-preserving rewrite, and its
@@ -904,6 +959,25 @@ class TestConfigScaffold:
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
         assert not state_file.exists() or state_file.read_text() == ""
+
+    def test_enum_key_with_no_legacy_polarity_gets_a_quoted_default_row(self, isolated_home, tmp_path):
+        """An enum-typed key with an empty legacy-polarity column (a schema
+        shape none of today's real enum:* rows carry -- see
+        test_every_enum_row_has_false_default in test_config_py.py for why
+        that's currently true) reaches the default-fill loop, so its default
+        must be quoted the same way _config_set quotes its own writes --
+        _config_quote_value_for_write is the shared helper both call."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        (isolated_hooks_dir / "config-keys.psv").write_text(
+            "brand_new_enum|enum:widgets|widgets|config-dir|false||||Brand new enum|docs/x.md\n"
+        )
+        result = _run_with_schema(isolated_hooks_dir, "_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == 'brand_new_enum = "widgets"\n'
 
     def test_write_failure_leaves_state_file_untouched_and_cleans_up_temp_file(
         self, isolated_home, monkeypatch, tmp_path

@@ -337,7 +337,7 @@ _migrate_process_key() {
   return 0
 }
 
-# Phase 2: offer to delete each legacy file _migrate_process_key actually
+# Offer to delete each legacy file _migrate_process_key actually
 # imported this run. Reads $_MIGRATE_TTY and $_MIGRATE_RECORDS from the
 # caller's scope (main's own locals, visible here via bash's dynamic
 # scoping) rather than taking them as parameters -- a separate function

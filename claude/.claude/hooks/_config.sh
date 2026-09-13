@@ -674,6 +674,25 @@ _config_enabled() {
   return 0
 }
 
+# _config_quote_value_for_write KEY_TYPE VALUE
+# Sets _CONFIG_QUOTE_RESULT (global) to the literal _config_set/
+# _config_scaffold must write for VALUE given KEY_TYPE ("bool" or
+# "enum:X"): an `enum:X` key's own literal is quoted (`"dollars"`),
+# matching _config_line_key_value's read-side rule that only `true`/
+# `false` may be bare. `false` itself, and every `bool`-typed value, stay
+# bare. Shared by both writers so a future one can't quote this
+# differently from the other.
+# Sets a global rather than printing for $(...) capture -- same reasoning
+# as _config_trim above, since _config_scaffold calls this once per
+# config-keys.psv row in its default-fill loop.
+_config_quote_value_for_write() {
+  local key_type="$1" value="$2"
+  _CONFIG_QUOTE_RESULT="$value"
+  case "$key_type" in
+    enum:*) [ "$value" = "false" ] || _CONFIG_QUOTE_RESULT="\"$value\"" ;;
+  esac
+}
+
 # _config_set KEY VALUE [CONFIG_DIR_OVERRIDE]
 # The only writer. Preserves comments, blank lines, and key order: rewrites
 # KEY's own line in place at its existing position if present (normalizing
@@ -687,9 +706,9 @@ _config_enabled() {
 # declared config-keys.psv type: a `bool` key accepts only `true`/`false`;
 # an `enum:X` key accepts only `false` or the literal `X`. VALUE itself is
 # always passed bare (e.g. `dollars`, never `"dollars"`). The line actually
-# written quotes an `enum:X` key's own literal (`key = "dollars"`), matching
-# _config_line_key_value's read-side rule that only `true`/`false` may be
-# bare. `false` itself stays bare for either key type.
+# written quotes an `enum:X` key's own literal (`key = "dollars"`) via
+# _config_quote_value_for_write above. `false` itself stays bare for either
+# key type.
 #
 # Atomicity: mktemp targets the SAME directory as the state file, not a
 # bare `mktemp` (which defaults to $TMPDIR, commonly a different filesystem
@@ -745,10 +764,9 @@ _config_set() {
   # The value actually written to the line -- see this function's own
   # header for why an enum literal is quoted here but VALUE itself is
   # taken bare.
-  local write_value="$value"
-  case "$key_type" in
-    enum:*) [ "$value" = "false" ] || write_value="\"$value\"" ;;
-  esac
+  local write_value
+  _config_quote_value_for_write "$key_type" "$value"
+  write_value="$_CONFIG_QUOTE_RESULT"
   local config_dir
   if [ -n "$config_dir_override" ]; then
     config_dir="$config_dir_override"
@@ -828,7 +846,10 @@ _config_set() {
 # legacy-polarity check below.
 #
 # Same mkdir-p and atomic same-directory mktemp-then-mv guarantee as
-# _config_set.
+# _config_set. The default row written for each key goes through the same
+# _config_quote_value_for_write helper _config_set uses, so an enum-typed
+# key's default is quoted the same way a hand-written `_config_set` call
+# would quote it.
 _config_scaffold() {
   local exclude_list="${1:-}" config_dir_override="${2:-}"
   local config_dir
@@ -902,7 +923,8 @@ _config_scaffold() {
     case "$legacy_polarity" in
       presence-enables | presence-disables | content-matches) continue ;;
     esac
-    content+="$schema_key = $default"$'\n'
+    _config_quote_value_for_write "$type" "$default"
+    content+="$schema_key = $_CONFIG_QUOTE_RESULT"$'\n'
   done < "$_CONFIG_SCHEMA_FILE"
 
   local tmp_file
