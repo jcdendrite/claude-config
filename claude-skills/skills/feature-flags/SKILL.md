@@ -131,7 +131,15 @@ changes alongside a deploy is config, not a toggle.
      broad table-write role) bypasses any application-layer check
      entirely. It needs its own datastore-level control: a column-level
      grant, a row-level policy, or a restriction on who holds the
-     table's write role at all.
+     table's write role at all. That control must be at least as
+     narrow as the mutator's own principal set from the first bullet.
+     A broader datastore-level grant reopens the door the first bullet
+     just closed.
+   - A separate principal with write access to the cache tier backing
+     the toggle's read path can flip the effective state without going
+     through the mutator, the audit log, or the datastore-level
+     control. The cache-population and cache-invalidation path must be
+     gated by the same authorization check as the mutator itself.
    - A toggle that disables a security control globally must use a
      stronger bar than a single-subject grant: a time-boxed override or
      two-person approval.

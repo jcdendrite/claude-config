@@ -401,7 +401,7 @@ def test_feature_flags_pointer_sites_still_name_the_skill(relative_path, pointer
 # Matching is whitespace-normalized, so a benign re-wrap passes but a
 # word change doesn't. Each param pins a bullet's full text, not just its
 # first sentence, so a carve-out or remediation clause added later can't
-# be silently dropped either. This guards all six parallel write-path
+# be silently dropped either. This guards all seven parallel write-path
 # invariants in feature-flags/SKILL.md.
 _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
     pytest.param(
@@ -435,8 +435,20 @@ _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
         "broad table-write role) bypasses any application-layer check "
         "entirely. It needs its own datastore-level control: a "
         "column-level grant, a row-level policy, or a restriction on who "
-        "holds the table's write role at all.",
+        "holds the table's write role at all. That control must be at "
+        "least as narrow as the mutator's own principal set from the "
+        "first bullet. A broader datastore-level grant reopens the door "
+        "the first bullet just closed.",
         id="datastore-level-control",
+    ),
+    pytest.param(
+        "A separate principal with write access to the cache tier "
+        "backing the toggle's read path can flip the effective state "
+        "without going through the mutator, the audit log, or the "
+        "datastore-level control. The cache-population and "
+        "cache-invalidation path must be gated by the same "
+        "authorization check as the mutator itself.",
+        id="cache-write-bypass",
     ),
     pytest.param(
         "A toggle that disables a security control globally must use a "
@@ -449,7 +461,7 @@ _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
 
 @pytest.mark.parametrize("sentence", _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES)
 def test_feature_flags_write_path_invariant_pinned_verbatim(sentence):
-    """Each of the six parallel write-path security invariants in
+    """Each of the seven parallel write-path security invariants in
     feature-flags/SKILL.md must survive verbatim (whitespace-normalized) --
     see _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES."""
     content = re.sub(
@@ -463,9 +475,9 @@ def test_feature_flags_write_path_invariant_pinned_verbatim(sentence):
 
 # Matching is whitespace-normalized, so a benign re-wrap passes but a word
 # change doesn't. Guards terraform-conventions.md's major-version-signal
-# paragraph against a silent revert -- e.g. reintroducing the old "additive
-# widening still forces major version" overclaim, or dropping the
-# Enumerable/Open distinction.
+# paragraph against a silent revert to treating purely-additive widening
+# as always a major bump, or against dropping the Enumerable/Open
+# distinction.
 _TERRAFORM_CONVENTIONS_MAJOR_VERSION_SIGNAL_SENTENCES = (
     pytest.param(
         "Narrowing the legal-value set is unconditionally at least as "
@@ -496,7 +508,7 @@ def test_terraform_conventions_major_version_signal_pinned_verbatim(sentence):
     content = re.sub(
         r"\s+",
         " ",
-        (REPO_ROOT / "claude" / ".claude" / "rules" / "terraform-conventions.md").read_text(),
+        (CLAUDE_DIR / "rules" / "terraform-conventions.md").read_text(),
     )
     assert sentence in content, (
         f"terraform-conventions.md is missing a pinned major-version-signal "
