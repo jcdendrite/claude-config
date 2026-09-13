@@ -70,6 +70,20 @@ def _stage_repo_root_skill_change(git_repo):
     )
 
 
+def _stage_project_layer_skill_change(git_repo):
+    """Stage a SKILL.md change under this repo's own project-layer skills
+    (.claude/skills/**/SKILL.md), distinct from the stowed and
+    plugin-scoped pathspecs."""
+    skill_file = git_repo / ".claude" / "skills" / "test-project-layer" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True, exist_ok=True)
+    skill_file.write_text("## test project-layer skill\n")
+    subprocess.run(
+        ["git", "add", str(skill_file.relative_to(git_repo))],
+        cwd=git_repo,
+        check=True,
+    )
+
+
 def _stage_routing_md_change(git_repo, body: str = ""):
     """Stage a plan-review/ROUTING.md change so the hook has a non-empty
     ROUTING.md diff to check. `body` appends extra content, so a second call
@@ -393,8 +407,8 @@ class TestRequireSkillReview:
         self, isolated_home, git_repo
     ):
         """The same recipe-vs-hook agreement as the test above, for the third
-        of the three SKILL.md-content pathspecs the write side scopes its
-        hash to (stowed, plugin, repo-root).
+        of the four SKILL.md-content pathspecs the write side scopes its
+        hash to (stowed, plugin, repo-root, project-layer).
 
         Staging a repo-root-located SKILL.md (skills/**/SKILL.md) is what
         makes this pathspec load-bearing for the assertion — a drift here
@@ -426,11 +440,54 @@ class TestRequireSkillReview:
             "the hook — write and read side disagree on the repo-root pathspec"
         )
 
+    def test_skill_marker_write_command_covers_a_project_layer_skill_diff(
+        self, isolated_home, git_repo
+    ):
+        """The same recipe-vs-hook agreement as the test above, for the
+        fourth of the four SKILL.md-content pathspecs the write side scopes
+        its hash to.
+
+        The write side also hashes `.claude/skills/**/SKILL.md`, this repo's
+        own project-layer skills. Dropping that pathspec from both sides
+        would not surface here: `require-skill-review.sh`'s earlier
+        `SKILL_DIFF` early-exit also misses `.claude/skills/**/SKILL.md`
+        pre-fix, so it returns `allow` before ever reaching the
+        `CURRENT_HASH` comparison this test targets. Staging a project-layer
+        SKILL.md is what makes the fourth pathspec load-bearing for the
+        assertion. The deny-path test
+        (`test_project_layer_skill_no_marker_denies_commit`) is what actually
+        pins the `SKILL_DIFF` early-exit against this pathspec."""
+        sid = "test-session-skill-cmd-project-layer"
+        _seed_session(isolated_home, sid)
+
+        _stage_project_layer_skill_change(git_repo)
+        skill_command = extract_skill_command(SKILL_REVIEW_SKILL, "skill-review-marker-write")
+        run_skill_command(skill_command, cwd=git_repo, isolated_home=isolated_home)
+
+        # Sanity check: catches "the recipe never wrote anything" (a
+        # crash-shaped failure) by name, but not a pathspec that silently
+        # never fires — see the deny-path sibling test for that.
+        assert skill_review_marker_path(isolated_home, git_repo, session_id=sid).exists(), (
+            "SKILL.md marker-write recipe ran but no marker landed at the "
+            "path the hook computes — the skill and hook disagree on layout."
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=sid),
+                cwd=git_repo,
+            )
+            == "allow"
+        ), (
+            "a marker written for a project-layer SKILL.md must satisfy the "
+            "hook — write and read side disagree on the project-layer pathspec"
+        )
+
     def test_skill_marker_write_command_covers_a_routing_md_diff(
         self, isolated_home, git_repo
     ):
         """The same recipe-vs-hook agreement as the tests above, for the
-        fourth of the four pathspecs the write side scopes its hash to.
+        fifth of the five pathspecs the write side scopes its hash to.
 
         Staging a ROUTING.md-only diff is what makes this pathspec
         load-bearing for the assertion — a drift here would leave both sides
@@ -497,6 +554,7 @@ class TestRequireSkillReview:
                 "claude-skills/skills/**/SKILL.md",
                 "plugins/*/skills/**/SKILL.md",
                 "skills/**/SKILL.md",
+                ".claude/skills/**/SKILL.md",
                 "claude-skills/skills/plan-review/ROUTING.md",
             ],
             capture_output=True,
@@ -654,6 +712,18 @@ class TestRequireSkillReview:
             == "deny"
         )
 
+    def test_project_layer_skill_no_marker_denies_commit(self, isolated_home, git_repo):
+        """Project-layer SKILL.md (.claude/skills/**/SKILL.md) is gated like stowed skills."""
+        _stage_project_layer_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
     def test_plugin_skill_correct_hash_marker_allows(self, isolated_home, git_repo):
         """Plugin-path SKILL.md allows when the marker covers the plugin diff hash."""
         _stage_plugin_skill_change(git_repo)
@@ -718,6 +788,25 @@ class TestRequireSkillReview:
         staged — the combined hash differs from the repo-root-only hash, so the gate must deny."""
         _stage_repo_root_skill_change(git_repo)
         # Write marker that covers only the repo-root SKILL.md diff.
+        write_skill_review_marker(isolated_home, git_repo)
+        # Stage an additional stowed SKILL.md; combined hash now differs from stored marker.
+        _stage_skill_change(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_mixed_project_layer_and_stowed_skill_stale_project_layer_only_marker_denies(
+        self, isolated_home, git_repo
+    ):
+        """A marker written for a project-layer-only diff is stale when a stowed SKILL.md is
+        later staged — the combined hash differs from the project-layer-only hash, so the gate must deny."""
+        _stage_project_layer_skill_change(git_repo)
+        # Write marker that covers only the project-layer SKILL.md diff.
         write_skill_review_marker(isolated_home, git_repo)
         # Stage an additional stowed SKILL.md; combined hash now differs from stored marker.
         _stage_skill_change(git_repo)
@@ -865,6 +954,84 @@ class TestRequireSkillReview:
             "fake venv python was not invoked; the script did not select "
             "${CLAUDE_PLUGIN_DATA}/venv/bin/python as expected"
         )
+
+    @pytest.mark.timing
+    def test_structural_validator_timeout_denies_with_timeout_message(
+        self, isolated_home, git_repo, tmp_path, monkeypatch
+    ):
+        """A validator that hangs past the 10s cap must deny with a
+        timeout-specific message, not the generic wrapped-stderr message --
+        timeout(1) SIGTERMs the hung process before it can flush stderr, so
+        the generic message would otherwise render an empty/misleading
+        reason."""
+        import shutil
+        import time
+
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available in PATH")
+
+        plugin_data = tmp_path / "plugin-data-with-hanging-venv"
+        venv_bin = plugin_data / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        # Sleeps well past the 10s cap so the assertion below proves the cap
+        # actually fired rather than the process finishing on its own.
+        fake_python.write_text("#!/bin/bash\nsleep 60\n")
+        fake_python.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
+
+        _stage_skill_change(git_repo)
+
+        start = time.monotonic()
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        elapsed = time.monotonic() - start
+
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "timed out after 10s" in reason, reason
+        assert elapsed < 30, f"validator call took {elapsed:.1f}s — the 10s cap did not fire"
+
+    def test_structural_validator_denies_real_violation_when_timeout_binaries_absent(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """Without timeout(1) or gtimeout(1) on PATH, _lib_capped_for's
+        uncapped fallback still runs the validator, which must still catch
+        and deny a real structural violation -- not crash with "command not
+        found" (the pre-fix regression on a bare `timeout 10s` call) and not
+        silently skip validation."""
+        import shutil
+
+        bin_dir = tmp_path / "bin-without-timeout"
+        bin_dir.mkdir()
+        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
+            cmd_path = shutil.which(cmd)
+            if not cmd_path:
+                pytest.skip(f"{cmd} not found in PATH")
+            (bin_dir / cmd).symlink_to(cmd_path)
+
+        skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        # Broken YAML (unclosed flow sequence fails yaml.safe_load) — a real
+        # structural violation, not a hang.
+        skill_file.write_text("---\nname: broken\ndescription: [unclosed\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+            extra_env={"PATH": str(bin_dir)},
+        )
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "structural validator" in reason
+        assert "timed out" not in reason
 
     def test_chained_marker_write_then_commit_allowed_without_existing_marker(
         self, isolated_home, git_repo
@@ -1255,7 +1422,13 @@ class TestRequireSkillReview:
 class TestRequireSkillReviewHonorsConfigDir:
     """CLAUDE_CONFIG_DIR relocates the skill-review marker directory the same
     way for marker.sh (write) and this hook (read) -- see marker.sh and the
-    cross-account bypass this closes (ledger row 7)."""
+    cross-account bypass this closes (ledger row 7).
+
+    Also the regression guard for a sessions_dir/config_dir mismatch bug in
+    helpers.py's write_skill_review_marker (fixed earlier this branch): if
+    that bug recurs, marker.sh write fails and these tests surface it as an
+    unlabeled subprocess.CalledProcessError from write_skill_review_marker's
+    `check=True` rather than a named assertion failure here."""
 
     def test_marker_under_matching_config_dir_allows(self, isolated_home, git_repo, tmp_path):
         """CLAUDE_CONFIG_DIR-set happy path: a marker written under the
@@ -1342,6 +1515,26 @@ def _stage_oversized_corpus(git_repo, num_skills: int = 6, chars_each: int = 150
         )
 
 
+def _stage_oversized_project_layer_corpus(
+    git_repo, num_skills: int = 6, chars_each: int = 1500
+) -> None:
+    """Stage multiple project-layer SKILL.md files (.claude/skills/**/SKILL.md)
+    whose combined description chars exceed the 8000-char budget, with no
+    stowed or plugin-scoped skill staged alongside them. `chars_each` stays
+    under the 1536-char per-skill structural-validator cap so only the
+    corpus-budget check (not the structural validator) fires."""
+    for i in range(num_skills):
+        skill_file = git_repo / ".claude" / "skills" / f"corpus-skill-{i}" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        description = "x" * chars_each
+        skill_file.write_text(f"---\ndescription: {description!r}\n---\n# body\n")
+        subprocess.run(
+            ["git", "add", str(skill_file.relative_to(git_repo))],
+            cwd=git_repo,
+            check=True,
+        )
+
+
 class TestCorpusBudgetWarning:
     """Corpus budget check emits a non-blocking stderr warning on skill-touching commits.
 
@@ -1368,6 +1561,26 @@ class TestCorpusBudgetWarning:
             "deny" not in result.stdout
         ), f"unexpected deny: {result.stdout}"
         # Warning must appear on stderr.
+        assert "corpus budget warning" in result.stderr, (
+            f"expected corpus budget warning on stderr; got: {result.stderr!r}"
+        )
+
+    def test_project_layer_skills_alone_count_toward_corpus_budget(
+        self, isolated_home, git_repo
+    ):
+        """Project-layer SKILL.md files (.claude/skills/**/SKILL.md) are
+        included in the corpus-budget pathspec, not just stowed and
+        plugin-scoped skills."""
+        _stage_oversized_project_layer_corpus(git_repo)
+        write_skill_review_marker(isolated_home, git_repo)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+            cwd=git_repo,
+        )
+        assert result.returncode == 0 and not result.stdout.strip(), (
+            f"unexpected deny: {result.stdout}"
+        )
         assert "corpus budget warning" in result.stderr, (
             f"expected corpus budget warning on stderr; got: {result.stderr!r}"
         )

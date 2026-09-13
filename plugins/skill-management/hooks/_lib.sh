@@ -1,7 +1,7 @@
 #!/bin/bash
 # Trimmed shared helper library for skill-management plugin hooks.
 # Source this file (do NOT invoke it). Contains only the helpers needed by
-# require-skill-review.sh: _lib_config_dir, _lib_jq,
+# require-skill-review.sh: _lib_config_dir, _lib_jq, _lib_capped_for,
 # _lib_parse_tool_input_or_deny, _marker_lib_repo_hash,
 # _lib_marker_value_present, and _lib_chains_marker_write_before_commit. No
 # git helpers, no worktree-enforcement helpers.
@@ -54,6 +54,30 @@ _lib_jq() {
     timeout 5 jq "$@"
   else
     jq "$@"
+  fi
+}
+
+# _lib_capped_for SECONDS CMD [ARGS...]
+# Same probe-then-fallback shape as _lib_jq above, generalized to any
+# command: probe timeout(1), then gtimeout(1) (Homebrew coreutils'
+# g-prefixed name), and run CMD uncapped only when neither is on PATH.
+# Without this fallback, a bare `timeout 10s cmd` on stock macOS (neither
+# binary present) fails with "command not found" (exit 127) instead of
+# running cmd at all. A caller that reads any nonzero exit as a real
+# failure would then deny permanently on that class of machine.
+# Duplicated from claude/.claude/hooks/_lib.sh's function of the same name
+# (see this file's header for why plugin hooks duplicate rather than
+# source). Callers MUST check the exit status themselves -- this wrapper
+# does not fail closed on its own.
+_lib_capped_for() {
+  local seconds="${1:?_lib_capped_for requires a seconds argument}"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    "$@"
   fi
 }
 
