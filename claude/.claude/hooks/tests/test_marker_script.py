@@ -16,6 +16,7 @@ from helpers import (
     SCRIPTS_DIR,
     TRAVERSAL_SESSION_ID,
     agent_input,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     edit_input,
@@ -34,7 +35,7 @@ from helpers import (
     write_skill_review_marker,
 )
 
-from .conftest import _seed_session, assert_cap_engaged
+from .conftest import _seed_session
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 PR_DIFF_SCRIPT = SCRIPTS_DIR / "pr-diff-against-base.sh"
@@ -2620,11 +2621,6 @@ class TestMarkerScriptCumulativeReview:
     write-side tests above."""
 
     SID = "test-session-cumulative-review"
-    # Lower bound for proving _lib_cumulative_diff_hash's 15s cap fired,
-    # not just any cap. Above the shared 5s _lib_capped default (so a
-    # silent regression back to that cap still fails this assertion) and
-    # safely under 15s (so cap-plus-overhead reliably clears it).
-    CUMULATIVE_DIFF_CAP_FLOOR_SECONDS = 12
 
     def test_write_creates_marker_with_diff_hash(
         self, isolated_home, cumulative_diff_repo, tmp_path
@@ -2950,7 +2946,7 @@ class TestMarkerScriptCumulativeReview:
 
     @pytest.mark.timing
     def test_status_degrades_to_absent_on_timeout_rather_than_erroring(
-        self, isolated_home, cumulative_diff_repo, gh_timeout_shim
+        self, isolated_home, cumulative_diff_repo, gh_timeout_shim, tmp_path
     ):
         """status is a report, not a write -- a hung `gh pr view` must
         degrade the cumulative-review line to absent rather than crashing
@@ -2960,7 +2956,7 @@ class TestMarkerScriptCumulativeReview:
         _lib_capped cap elsewhere."""
         _seed_session(isolated_home, self.SID)
         env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
-        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+        with assert_cap_engaged(tmp_path, production_cap=15):
             result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
         assert result.returncode == 0, result.stderr
         assert "cumulative-review: absent" in result.stdout
@@ -2991,7 +2987,7 @@ class TestMarkerScriptCumulativeReview:
         assert write_result.returncode == 0, write_result.stderr
 
         timeout_env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
-        with assert_cap_engaged(floor=self.CUMULATIVE_DIFF_CAP_FLOOR_SECONDS):
+        with assert_cap_engaged(tmp_path, production_cap=15):
             result = _run(
                 ["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=timeout_env
             )

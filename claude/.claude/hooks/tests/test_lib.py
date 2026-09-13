@@ -29,6 +29,7 @@ from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
     _run_git,
+    assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
     build_conflicted_cherry_pick,
@@ -46,7 +47,7 @@ from helpers import (
     staged_diff_hash_at_base,
 )
 
-from .conftest import _worktree_lock_reason, assert_cap_engaged
+from .conftest import _worktree_lock_reason
 from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
@@ -580,6 +581,8 @@ def test_hung_jq_denied_within_timeout(tmp_path: Path) -> None:
     assert elapsed < 6, f"hung-jq test took {elapsed:.1f}s — timeout did not fire within 6s"
 
 
+# Deliberately builds a PATH with no timeout(1): installing any fake timeout here removes the absent-binary
+# condition this test is named for, and the OK assertion below would still pass.
 def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> None:
     """Without timeout(1), valid payload still returns OK via bare jq."""
     import shutil
@@ -611,6 +614,8 @@ def test_timeout_absent_fallback_valid_payload_returns_ok(tmp_path: Path) -> Non
     assert result.stdout.startswith("OK:Bash:ls"), repr(result.stdout)
 
 
+# The one cap-boundary test that runs against the real timeout(1) with nothing interposed, so the suite keeps
+# end-to-end evidence that the binary itself enforces a cap.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> None:
     """timeout(1) on PATH, no gtimeout: _lib_capped_for kills a hung command at the given cap, exit 124."""
@@ -647,6 +652,8 @@ def test_lib_capped_for_enforces_cap_when_timeout_present(tmp_path: Path) -> Non
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the timeout branch did not fire"
 
 
+# A fake timeout(1) on this PATH would win _lib_capped_for's first probe, so the gtimeout branch under test
+# would never execute and the exit-124 assertion would still pass.
 @pytest.mark.timing
 def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: Path) -> None:
     """timeout(1) absent, gtimeout(1) present (Homebrew coreutils naming): _lib_capped_for still enforces the cap."""
@@ -685,6 +692,7 @@ def test_lib_capped_for_enforces_cap_via_gtimeout_when_timeout_absent(tmp_path: 
     assert elapsed < 3, f"capped sleep took {elapsed:.1f}s — the gtimeout branch did not fire"
 
 
+# Both binaries are absent on purpose: a fake timeout(1) here would cap the call and invert the uncapped result this asserts.
 def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     tmp_path: Path,
 ) -> None:
@@ -720,6 +728,8 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+# Probe order is the subject: a fake timeout(1) here would be the binary that wins, so the test would prove
+# the fake was preferred rather than the real one.
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
     """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
 

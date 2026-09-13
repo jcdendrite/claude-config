@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
+from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -1522,6 +1526,179 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+# -- Scaled timeout(1) shim for cap-boundary tests ---------------------------
+#
+# A cap-boundary test proves timeout(1) actually killed a hung command by
+# installing a fake `timeout` into its own PATH-prepended bin dir that
+# divides the caller-supplied duration by TIMEOUT_SCALE_DIVISOR before
+# running the real binary, so the test waits a fraction of the production
+# cap. Production hooks never see this shim, so their behavior is
+# unaffected. The same shim is the suite's evidence a cap fired: it appends
+# the duration it was asked for to a `started` log before running the real
+# binary, and appends it again to a `completed` log only when the real
+# binary reports the command finished on its own. A duration present in
+# `started` with no matching `completed` entry is a killed invocation.
+
+TIMEOUT_SCALE_DIVISOR = 3
+
+_SCALED_TIMEOUT_MARKER_DIRNAME = "scaled-timeout-markers"
+
+
+def write_scaled_timeout_shim(bin_dir: Path) -> bool:
+    """Write a `timeout` shim into `bin_dir` that divides an integer
+    duration by TIMEOUT_SCALE_DIVISOR before running the real
+    timeout(1)/gtimeout(1), recording each invocation's duration in a
+    started/completed log pair under bin_dir. Returns False, writing
+    nothing, when neither binary is on PATH -- every scaled value is then
+    left unscaled by the caller.
+
+    Only a `timeout` fake is written, never a `gtimeout` one:
+    _lib_capped_for probes `timeout` first, so a `gtimeout` fake would be
+    unreachable on every host.
+    """
+    real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if real_timeout is None:
+        return False
+    marker_dir = bin_dir / _SCALED_TIMEOUT_MARKER_DIRNAME
+    marker_dir.mkdir(exist_ok=True)
+    started_log = marker_dir / "started"
+    completed_log = marker_dir / "completed"
+    shim_path = bin_dir / "timeout"
+    # A surviving symlink (the two closed-PATH sites that symlink the real
+    # timeout binary into place) would send write_text through to the real
+    # binary rather than replacing it.
+    shim_path.unlink(missing_ok=True)
+    shim_path.write_text(
+        "#!/bin/bash\n"
+        "# Test-only: scales an integer timeout(1) duration down so a cap-boundary test waits a fraction of the production cap.\n"
+        "# Only a 1-9-leading integer scales: bash arithmetic reads a leading zero as an octal prefix,\n"
+        "# so every other $1 runs at the caller's own duration.\n"
+        'if [[ "$1" =~ ^[1-9][0-9]*$ ]]; then\n'
+        '  requested="$1"\n'
+        f"  scaled_ms=$(( requested * 1000 / {TIMEOUT_SCALE_DIVISOR} ))\n"
+        "  printf -v scaled '%d.%03d' \"$(( scaled_ms / 1000 ))\" \"$(( scaled_ms % 1000 ))\"\n"
+        "  shift\n"
+        "  # One appended line per invocation, so a hook making several capped calls is counted rather than overwritten.\n"
+        f"  printf '%s\\n' \"$requested\" >> {shlex.quote(str(started_log))}\n"
+        f'  {shlex.quote(str(real_timeout))} "$scaled" "$@"\n'
+        "  status=$?\n"
+        "  # Assumes exit 124 only comes from timeout's own kill; a race with\n"
+        "  # an external kill (OOM, outer test-runner) is a test-infra\n"
+        "  # concern only, not production-reachable.\n"
+        f"  [[ $status -eq 124 ]] || printf '%s\\n' \"$requested\" >> {shlex.quote(str(completed_log))}\n"
+        '  exit "$status"\n'
+        "fi\n"
+        f'exec {shlex.quote(str(real_timeout))} "$@"\n'
+    )
+    shim_path.chmod(0o755)
+    return True
+
+
+def _scaled_timeout_log_counts(bin_dir: Path, name: str) -> Counter[str]:
+    log = bin_dir / _SCALED_TIMEOUT_MARKER_DIRNAME / name
+    if not log.exists():
+        return Counter()
+    return Counter(log.read_text().splitlines())
+
+
+def caps_that_fired(bin_dir: Path) -> Counter[str]:
+    """Caller-supplied cap durations whose invocation started and never completed."""
+    return _scaled_timeout_log_counts(bin_dir, "started") - _scaled_timeout_log_counts(bin_dir, "completed")
+
+
+def scaled_cap(production_seconds: float) -> float:
+    """The scaled `timeout` shim's own view of a production cap -- what it
+    actually enforces once write_scaled_timeout_shim is installed."""
+    return production_seconds / TIMEOUT_SCALE_DIVISOR
+
+
+def scaled_shim_sleep(seconds: float) -> int:
+    """Round a shim sleep up so it keeps outlasting its scaled cap --
+    rounding down could let the sleep finish before a working cap fires,
+    turning a real regression into a false pass."""
+    return math.ceil(seconds / TIMEOUT_SCALE_DIVISOR)
+
+
+def scaled_under_cap_sleep(seconds: float) -> float:
+    """Divide with no rounding, for the one site whose shim sleep must
+    finish inside its scaled cap rather than outlast it -- rounding up
+    would walk that sleep toward the cap it has to stay under."""
+    return seconds / TIMEOUT_SCALE_DIVISOR
+
+
+def _cap_key(production_cap: float) -> str:
+    """Format a production cap the way the scaled `timeout` shim recorded
+    it -- the bare, unpadded integer string a hook actually passed to
+    timeout(1)."""
+    return str(int(production_cap))
+
+
+@contextmanager
+def assert_cap_engaged(bin_dir: Path, production_cap: float | None = None, killed_calls: int = 1):
+    """Assert a timeout(1) cap killed the wrapped block's capped call(s),
+    read from the scaled `timeout` shim's started/completed logs rather
+    than a wall-clock floor. 124 is timeout(1)'s documented exit status for
+    "the command was killed by the cap" -- the discriminator this observes.
+
+    Snapshots both logs on entry so a second hook run inside the same
+    bin_dir isn't double-counted. Raises when the shim recorded nothing at
+    all (never invoked), with a message distinct from "every invocation
+    completed on its own" (invoked, but nothing killed).
+    """
+    started_before = _scaled_timeout_log_counts(bin_dir, "started")
+    completed_before = _scaled_timeout_log_counts(bin_dir, "completed")
+    yield
+    started_delta = _scaled_timeout_log_counts(bin_dir, "started") - started_before
+    completed_delta = _scaled_timeout_log_counts(bin_dir, "completed") - completed_before
+    if not started_delta:
+        raise AssertionError(
+            f"expected a capped timeout(1) call inside {bin_dir}, but the scaled "
+            "timeout shim was never invoked"
+        )
+    fired_delta = started_delta - completed_delta
+    if not fired_delta:
+        raise AssertionError(
+            f"expected a capped timeout(1) call to be killed inside {bin_dir}, but "
+            "every invocation completed on its own"
+        )
+    if production_cap is None:
+        assert sum(fired_delta.values()) == killed_calls, (
+            f"expected {killed_calls} kill(s) inside {bin_dir}, got {dict(fired_delta)}"
+        )
+    else:
+        key = _cap_key(production_cap)
+        assert fired_delta[key] == killed_calls, (
+            f"expected {killed_calls} kill(s) at cap {key}s inside {bin_dir}, got {dict(fired_delta)}"
+        )
+
+
+@contextmanager
+def assert_cap_not_engaged(bin_dir: Path, production_cap: float | None = None):
+    """The inverse of assert_cap_engaged: the scaled `timeout` shim must
+    have run inside the wrapped block (at `production_cap`, when given) and
+    nothing it wrapped may have been killed. For the one site whose shim
+    sleep must finish inside its cap rather than outlast it.
+    """
+    started_before = _scaled_timeout_log_counts(bin_dir, "started")
+    fired_before = caps_that_fired(bin_dir)
+    yield
+    started_delta = _scaled_timeout_log_counts(bin_dir, "started") - started_before
+    if not started_delta:
+        raise AssertionError(
+            f"expected the scaled timeout shim to run inside {bin_dir}, but it was "
+            "never invoked"
+        )
+    if production_cap is not None:
+        key = _cap_key(production_cap)
+        assert started_delta[key] >= 1, (
+            f"expected an invocation at cap {key}s inside {bin_dir}, got {dict(started_delta)}"
+        )
+    fired_delta = caps_that_fired(bin_dir) - fired_before
+    assert not fired_delta, (
+        f"expected no capped timeout(1) kill inside {bin_dir}, but got {dict(fired_delta)}"
+    )
 
 
 # (first_line, expect_consult, id) rows behind plan-architect consult
