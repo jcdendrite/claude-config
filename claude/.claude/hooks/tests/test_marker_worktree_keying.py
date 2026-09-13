@@ -292,15 +292,17 @@ class TestMarkerScriptRefusalTradeoffRemovingTheWorktreeReopensMainTreeWrites:
         assert marker.exists()
 
 
-@pytest.mark.parametrize("skill", ["code-review", "skill-review", "plan-review", "ready-for-review"])
+@pytest.mark.parametrize(
+    "skill", ["code-review", "skill-review", "plan-review", "ready-for-review", "verification"]
+)
 class TestMarkerScriptRefusalCoversEveryWriteArm:
     """The refusal (`_refuse_main_tree_under_enforcement`, called from
     `_resolve_repo_root`) runs as the second step of every `write` arm, before
     any arm-specific precondition — the staged SKILL.md diff, the active plan
-    set, HEAD — is even read. A regression that bypassed `_resolve_repo_root`
-    in one arm only would leave the other three refusing correctly, so a
-    deny-path test that covers a single arm cannot catch it. This class
-    exercises all four.
+    set, HEAD, the committed tree — is even read. A regression that bypassed
+    `_resolve_repo_root` in one arm only would leave the other arms refusing
+    correctly, so a deny-path test that covers a single arm cannot catch it.
+    This class exercises all five.
 
     Each arm's minimal setup is chosen so that, absent the refusal, the write
     would otherwise succeed -- meaning "writes a marker", not merely "exits
@@ -318,6 +320,14 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
     - plan-review: with no `.claude/plans/` at all, the hash computes
       cleanly over an empty plan set, which is itself a successful write,
       not a failure exit.
+    - verification: `_stage_a_change` stages a diff, which the write-time
+      guard below would itself refuse. The allow-path test commits that
+      staged change first, so `HEAD^{tree}` resolves against a clean tree and
+      the write reaches the marker, proving the refusal doesn't fire from a
+      linked worktree. The deny-path test leaves the change staged: `write
+      verification`'s own guard code never runs there, since
+      `_resolve_repo_root`'s refusal fires and exits first, so that test
+      exercises the refusal only, not the guard.
 
     That is what makes returncode 2 attributable to the refusal
     specifically, not to some other precondition failing.
@@ -347,6 +357,14 @@ class TestMarkerScriptRefusalCoversEveryWriteArm:
         _stage_a_change(wt)
         if skill == "skill-review":
             _stage_a_skill_md_change(wt)
+        if skill == "verification":
+            # The write-time guard refuses on any uncommitted change, so
+            # land the staged change rather than leave it staged.
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "land the staged change"],
+                cwd=wt,
+                check=True,
+            )
 
         result = _run_marker(["write", skill], cwd=wt, home=isolated_home)
 
