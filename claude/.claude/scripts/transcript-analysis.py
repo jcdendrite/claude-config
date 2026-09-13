@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
 pr-link is the only subcommand that touches the network (via gh).
-judgment-pair --out writes a file; all other subcommands are read-only.
+Every subcommand is read-only except an explicit write flag: judgment-pair
+--out, pr-cost --record, and pr-cost-export --out each write a file.
 """
 
 import argparse
@@ -8330,10 +8331,10 @@ def _parse_pr_cost_ledger_row_cells(cells: list[str], line_no: int) -> dict:
     """Validate and coerce one already-split, already-tab-separated data
     row's cells into a typed row dict. Raises _PrCostLedgerParseError naming
     the offending line on any field that doesn't match its column's
-    contract. Never embeds a cell's raw value in this message; only the
-    column name and line number are included. pr-cost-export's
-    malformed-ledger path echoes this message to stderr, where another
-    account's session may be watching concurrently."""
+    contract. Never embeds a cell's raw value in this message, since
+    pr-cost-export echoes it to stderr where another account's concurrent
+    session may be watching. Only the column name and line number are
+    included."""
     if len(cells) != len(_PR_COST_LEDGER_COLUMNS):
         raise _PrCostLedgerParseError(
             f"line {line_no}: expected {len(_PR_COST_LEDGER_COLUMNS)} columns, got {len(cells)}"
@@ -9529,10 +9530,9 @@ def _collapse_pr_cost_rows_to_current(rows: Sequence[dict]) -> list[tuple[dict, 
     """One (row, correction_count) pair per distinct (host, repo, pr_number,
     machine) key in `rows`, keeping only the current (latest by
     captured_at) row for each key -- the append-only ledger's full history
-    collapsed to current state. Must run on raw, untokenized, untruncated
-    rows: _latest_pr_cost_row compares pr_number as a typed int. A same-day
-    tie must also resolve on full-precision captured_at, not a date already
-    truncated to lose the second-level distinction.
+    collapsed to current state. Must run before tokenization: _latest_pr_cost_row
+    compares pr_number as a typed int. Must also run before date-truncation: a
+    same-day tie needs full-precision captured_at to resolve correctly.
     correction_count is the number of other rows sharing that key (total
     captures minus one) -- 0 means this is the only capture ever recorded
     under that key.
@@ -9577,34 +9577,18 @@ def _redact_pr_cost_row_for_export(
     exported["merged_at"] = _pr_cost_export_date_only(row["merged_at"])
     exported["captured_at"] = _pr_cost_export_date_only(row["captured_at"])
     exported["correction_count"] = correction_count
+    del exported["head_branch"]
+    del exported["supersedes"]
     return exported
 
 
 def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, int, int, list[str]]:
-    """Read every resolved root's own pr-cost ledger and return
+    """Read every resolved root's own pr-cost ledger. Returns
     (formatted_rows, declared, opted_in, skipped_no_sentinel,
-    legacy_header_accounts, corpus_identities) -- fully materialized (never
-    a generator) and with no filesystem writes of its own, so a mid-loop
-    malformed ledger exits before --out is ever created and no partial
-    file can exist.
-
-    Accounts are visited in _redaction_ordinals order, not `roots`' own
-    order, so two exports of the same declared-roots file under different
-    active profiles produce byte-identical row order. Each account's rows
-    are collapsed to current state, then redacted, then date-truncated,
-    then formatted, in that order. The same four redact maps are reused
-    across every account, since _assign_root_scoped_redact_label's own key
-    already namespaces by ordinal.
-
-    corpus_identities carries one `captured_at|machine` string per
-    participating account. An account participates if it's opted in and its
-    ledger holds at least one row. The string is taken from that ledger's
-    own first data row. That row is stable under append-only writes, since
-    the first row never moves. _pr_cost_export_provenance_line hashes the
-    full corpus_identities set into its corpus= digest. It's threaded back
-    through this same per-account loop rather than read a second time from
-    each ledger, since a second read pass would double the I/O and risk a
-    result that disagrees with the rows actually exported.
+    legacy_header_accounts, corpus_identities), fully materialized, with no
+    filesystem writes of its own. See docs/pr-cost.md's "Redacted
+    cross-account export" section for account iteration order and
+    corpus_identities' construction.
     """
     ordinals = _redaction_ordinals(roots)
     root_by_resolved = {root.resolve(): root for root in roots}
@@ -9658,6 +9642,9 @@ def _pr_cost_export_rows(roots: Sequence[Path]) -> tuple[list[str], int, int, in
         if not raw_rows:
             continue
 
+        # Threaded through this same per-account loop rather than re-read from
+        # each ledger a second time, to avoid double I/O and a result that
+        # could disagree with the rows actually exported.
         corpus_identities.append(f"{raw_rows[0]['captured_at']}|{raw_rows[0]['machine']}")
         for row, correction_count in _collapse_pr_cost_rows_to_current(raw_rows):
             exported = _redact_pr_cost_row_for_export(
@@ -9676,21 +9663,10 @@ def _pr_cost_export_provenance_line(
     *, exported_at: datetime, declared: int, opted_in: int, skipped_no_sentinel: int,
     legacy_header_accounts: int, corpus_identities: Sequence[str], corpus_override: bool,
 ) -> str:
-    """The single provenance line, marked with a leading "#", written above the TSV header.
-    corpus= is a short sha256 prefix of the sorted corpus_identities set,
-    mirroring _corpus_fingerprint's own construction. Two exports share it
-    only when their participating account sets match, which is what
-    licenses comparing their account-K ordinals against each other. It is a
-    same-corpus indicator only, never a security boundary. Unlike
-    scope._DO_NOT_PUBLISH_BANNER, nothing enforces this marker at runtime,
-    which is why it states that fact inline rather than reusing that
-    banner's text. corpus_override=1 flags a run against an overridden
-    (synthetic) root set rather than this machine's real declared accounts
-    -- see declared_roots_file_is_overridden()'s own docstring (_config_dir.py)
-    for which env vars this checks, and docs/transcript-analysis.md's
-    "Corpus scope: the declared-roots file" section's "Testing against a
-    synthetic corpus" subsection for what corpus_override=1 means for
-    publication.
+    """Builds the provenance line. corpus= is a same-corpus indicator only,
+    never a security boundary -- see docs/pr-cost.md's "Redacted
+    cross-account export" section for its construction and for what
+    corpus_override=1 means.
     """
     digest = hashlib.sha256("\n".join(sorted(corpus_identities)).encode()).hexdigest()[:12]
     exported_at_str = exported_at.isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -9776,12 +9752,12 @@ def cmd_pr_cost_export(args: argparse.Namespace) -> None:
     )
     file_text = "\n".join([provenance_line, _PR_COST_EXPORT_HEADER_LINE, *formatted_rows]) + "\n"
 
-    # Re-derived from the operator's own --out, not from resolved_out above.
-    # The parent chain is resolved, so a symlinked parent directory still
-    # lands inside the git-tree check's target.
-    # The final component is left exactly as named, so O_EXCL's own symlink
-    # refusal actually fires instead of silently following the link to
-    # wherever it points.
+    # Re-derived from the operator's own --out, not from resolved_out above:
+    # the final component here is left exactly as named (unlike
+    # resolved_out), so O_EXCL's own symlink refusal actually fires instead
+    # of silently following the link to wherever it points. The parent is
+    # still resolved, though, so a symlinked parent directory lands inside
+    # the same target the git-tree check above already validated.
     open_path = Path(out).parent.resolve() / Path(out).name
     try:
         fd = os.open(str(open_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

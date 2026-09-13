@@ -28122,22 +28122,34 @@ class TestPrCostExportRedaction:
         assert str(distinctive_pr) not in written
         assert "account-1/pr-1" in written
 
-    def test_identical_stored_head_branch_label_across_two_accounts_re_tokenizes_to_distinct_tokens(
-        self, tmp_path, monkeypatch,
+    @pytest.mark.parametrize(
+        "row_kwargs,export_column",
+        [
+            ({"host": "github.com"}, "host"),
+            ({"repo": "owner/repo"}, "repo"),
+            ({"pr_number": 42}, "pr_number"),
+            ({"head_branch": "account-1/branch-1"}, "head_branch_label"),
+        ],
+        ids=["host", "repo", "pr_number", "head_branch"],
+    )
+    def test_identical_raw_value_across_two_accounts_re_tokenizes_to_distinct_tokens(
+        self, tmp_path, monkeypatch, row_kwargs, export_column,
     ):
-        """head_branch is re-tokenized on export even though it already
-        holds an opaque placeholder from the write path. Two accounts whose
-        stored head_branch is the identical literal "account-1/branch-1"
-        (_sample_pr_cost_row's own default) must export to different
-        tokens -- proving re-tokenization ran rather than being skipped
-        because the input already looked redacted."""
+        """Each of the four tokenized columns is namespaced per account
+        through its own map keyed by (ordinal, raw value) -- two accounts
+        sharing the identical raw value must not collapse to the same
+        export token. head_branch is re-tokenized on export even though it
+        already holds an opaque placeholder from the write path. Its
+        identical stored value ("account-1/branch-1", _sample_pr_cost_row's
+        own default) must still re-tokenize to two distinct labels rather
+        than being skipped because the input already looked redacted."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         acct_a, acct_b = roots[0].parent, roots[1].parent
         for account_config_dir in (acct_a, acct_b):
             (account_config_dir / ".pr-cost-enabled").touch()
             _mod._write_pr_cost_ledger_file(
                 account_config_dir / "pr-cost-ledger.tsv",
-                [_sample_pr_cost_row(head_branch="account-1/branch-1")],
+                [_sample_pr_cost_row(**row_kwargs)],
             )
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
@@ -28145,9 +28157,9 @@ class TestPrCostExportRedaction:
         _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         rows = out_path.read_text().splitlines()[2:]
-        labels = [dict(zip(_mod._PR_COST_EXPORT_COLUMNS, r.split("\t"), strict=True))["head_branch_label"] for r in rows]
-        assert len(labels) == 2
-        assert labels[0] != labels[1]
+        tokens = [dict(zip(_mod._PR_COST_EXPORT_COLUMNS, r.split("\t"), strict=True))[export_column] for r in rows]
+        assert len(tokens) == 2
+        assert tokens[0] != tokens[1]
 
 
 class TestPrCostExportSchema:
@@ -28184,6 +28196,40 @@ class TestPrCostExportSchema:
             if col in transformed_columns:
                 continue
             assert exported_cells[col] == source_cells[col], col
+
+
+class TestRedactPrCostRowForExportColumnShape:
+    def test_returned_dict_keys_exactly_match_export_columns(self):
+        """_redact_pr_cost_row_for_export must return a dict scoped exactly
+        to _PR_COST_EXPORT_COLUMNS -- the sole caller pins columns= to that
+        same tuple, but a future caller that iterates .items() instead
+        should not silently inherit the ledger's own stale head_branch/
+        supersedes keys."""
+        result = _mod._redact_pr_cost_row_for_export(_sample_pr_cost_row(), 1, 0, {}, {}, {}, {})
+        assert set(result) == set(_mod._PR_COST_EXPORT_COLUMNS)
+
+    def test_every_ledger_column_is_triaged_for_export_redaction(self):
+        """Guards against a new _PR_COST_LEDGER_COLUMNS member reaching the
+        export unredacted: every column must already be triaged below as
+        tokenized, date-truncated, or an explicitly-approved passthrough."""
+        tokenized = {"host", "repo", "pr_number", "head_branch"}
+        date_truncated = {"merged_at", "captured_at"}
+        renamed_to_correction_count = {"supersedes"}
+        approved_passthrough = {
+            "machine", "rate_stamp", "join_confidence", "status",
+            "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
+            "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
+            "unpriced_turns", "unpriced_tokens", "turn_count", "session_count",
+            "opus_dollars", "opus_dollar_share_pct", "sum_context_at_turn", "mean_context_at_turn",
+            "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
+            "distinct_top_level_dirs", "distinct_file_extensions",
+            "tests_changed", "plan_file_added", "risk_surface_flag",
+        }
+        triaged = tokenized | date_truncated | renamed_to_correction_count | approved_passthrough
+        assert triaged == set(_mod._PR_COST_LEDGER_COLUMNS), (
+            "a new ledger column would silently reach the cross-account export unredacted "
+            "unless triaged above"
+        )
 
 
 class TestCollapsePrCostRowsToCurrent:
@@ -28239,6 +28285,18 @@ class TestCollapsePrCostRowsToCurrent:
         assert len(collapsed) == 2
         assert {row["machine"] for row, _cc in collapsed} == {"ci1", "ci2"}
 
+    def test_newer_degraded_row_wins_over_an_older_ok_row(self):
+        """docs/pr-cost.md's documented invariant: collapse never prefers an
+        older ok row over a newer, still-current correction, even when that
+        correction is itself degraded -- inverting an operator's own
+        explicit correction would be worse."""
+        older_ok = _sample_pr_cost_row(status="ok", captured_at="2026-01-01T00:00:00Z")
+        newer_degraded = _sample_pr_cost_row(status="degraded_network", captured_at="2026-01-02T00:00:00Z")
+        collapsed = _mod._collapse_pr_cost_rows_to_current([older_ok, newer_degraded])
+        assert len(collapsed) == 1
+        row, _correction_count = collapsed[0]
+        assert row["status"] == "degraded_network"
+
 
 class TestPrCostExportCollapseAndTieBreakIntegration:
     def test_three_rows_two_sharing_an_identical_captured_at_last_appended_wins(
@@ -28277,6 +28335,17 @@ class TestLatestPrCostRowTieBreakLastWins:
         row_a = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
         row_b = _sample_pr_cost_row(additions=2, captured_at="2026-01-01T00:00:00Z")
         result = _mod._latest_pr_cost_row([row_a, row_b], "github.com", "owner/repo", 42, "ci1")
+        assert result["additions"] == 2
+
+    def test_distinct_captured_at_values_pick_the_chronologically_latest_row(self):
+        """The ordinary (non-tie) case at this same call site: three
+        candidates with distinct captured_at values, appended out of
+        chronological order, must still resolve to the latest by
+        captured_at rather than by append order."""
+        row_a = _sample_pr_cost_row(additions=1, captured_at="2026-01-02T00:00:00Z")
+        row_b = _sample_pr_cost_row(additions=2, captured_at="2026-01-03T00:00:00Z")
+        row_c = _sample_pr_cost_row(additions=3, captured_at="2026-01-01T00:00:00Z")
+        result = _mod._latest_pr_cost_row([row_a, row_b, row_c], "github.com", "owner/repo", 42, "ci1")
         assert result["additions"] == 2
 
 
@@ -28380,6 +28449,73 @@ class TestPrCostExportOptIn:
         assert summary_counts is not None
         assert tuple(int(n) for n in summary_counts.groups()) == (1, 1, 2)
         assert str(out_path) in out
+
+    def test_fully_skipped_run_with_no_opted_in_account_exits_0_with_header_only_file(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """The realistic first-run experience for a stow consumer who tries
+        pr-cost-export before opting in anywhere: the sole declared account
+        has no .pr-cost-enabled sentinel at all, not merely an empty
+        ledger (TestPrCostExportEmptyLedger covers that separate case).
+        Must still exit 0 and write a valid header-only file, not crash or
+        divide by a zero opted-in count somewhere upstream."""
+        # No .pr-cost-enabled sentinel created.
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        text = out_path.read_text()
+        lines = text.splitlines()
+        assert lines[1] == _mod._PR_COST_EXPORT_HEADER_LINE
+        assert lines[2:] == []
+        # Same parse-into-dict pattern as
+        # TestPrCostExportProvenanceLine.test_provenance_line_present_above_header_and_parses_as_key_value_tokens,
+        # not a substring check -- "declared=1" would also match "declared=10".
+        parsed = dict(t.split("=", 1) for t in lines[0].split(" ")[3:])
+        assert parsed["declared"] == "1"
+        assert parsed["opted_in"] == "0"
+        assert parsed["skipped_no_sentinel"] == "1"
+
+    def test_symlinked_sentinel_opts_both_accounts_into_export_together(self, tmp_path, monkeypatch):
+        """Mirrors pr-cost --all-accounts' own
+        test_symlinked_sentinel_opts_both_accounts_in_together: the sentinel
+        check is a plain Path.exists(), which follows symlinks -- an
+        account whose .pr-cost-enabled is a symlink to another account's
+        real sentinel is included in the export too, with no separate
+        consent of its own. Export is the higher-stakes consumer of this
+        same gate, since inclusion here means the row leaves the machine."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        acct_a, acct_b = roots[0].parent, roots[1].parent
+        (acct_a / ".pr-cost-enabled").touch()
+        os.symlink(acct_a / ".pr-cost-enabled", acct_b / ".pr-cost-enabled")
+        _mod._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        _mod._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        text = out_path.read_text()
+        lines = text.splitlines()
+        rows = lines[2:]
+        assert len(rows) == 2
+        parsed = dict(t.split("=", 1) for t in lines[0].split(" ")[3:])
+        assert parsed["opted_in"] == "2"
+
+    def test_dangling_symlinked_sentinel_is_skipped_not_included(self, tmp_path, fake_projects, monkeypatch):
+        """Inverse of the live-symlink case above: Path.exists() follows a
+        symlink to a nonexistent target and returns False, so a dangling
+        .pr-cost-enabled is treated the same as no sentinel at all."""
+        os.symlink(tmp_path / "nonexistent-target", tmp_path / ".pr-cost-enabled")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        parsed = dict(t.split("=", 1) for t in out_path.read_text().splitlines()[0].split(" ")[3:])
+        assert parsed["opted_in"] == "0"
+        assert parsed["skipped_no_sentinel"] == "1"
 
 
 class TestPrCostExportEmptyLedger:
@@ -28772,7 +28908,11 @@ class TestPrCostExportRefusals:
         """_format_pr_cost_ledger_row's tab/newline guard has a second call
         site -- _pr_cost_export_rows' own per-row formatting under
         _PR_COST_EXPORT_COLUMNS -- distinct from the ledger-round-trip call
-        the malformed-ledger tests above exercise."""
+        the malformed-ledger tests above exercise. This test exercises
+        _pr_cost_export_rows' own exception handling at this call site, not
+        the guard's tab/newline detection (covered separately by the
+        malformed-ledger tests above). A fake value is required here because
+        no real _PR_COST_EXPORT_COLUMNS value can contain a tab."""
         (tmp_path / ".pr-cost-enabled").touch()
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
@@ -28963,3 +29103,30 @@ class TestPrCostExportArgparseWiring:
         assert args.out is None
         assert args.extra_config_dirs is None
         assert args.func == _mod.cmd_pr_cost_export
+
+    def test_config_dir_wires_to_extra_config_dirs(self):
+        parser = _mod.build_parser()
+        args = parser.parse_args(["pr-cost-export", "--config-dir", "X"])
+        assert args.extra_config_dirs == ["X"]
+
+    def test_config_dir_extra_root_is_scanned_and_its_row_appears(
+        self, tmp_path, fake_projects, fake_config_dir_factory, monkeypatch,
+    ):
+        """Only args.extra_config_dirs is None is asserted elsewhere -- this
+        pins the populated case, so cmd_pr_cost_export not forwarding
+        args.extra_config_dirs to _resolve_cost_roots would fail here instead
+        of passing every existing test silently."""
+        (tmp_path / ".pr-cost-enabled").touch()
+        _mod._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        acct_b = fake_config_dir_factory("acct-b")
+        (acct_b / ".pr-cost-enabled").touch()
+        _mod._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path), extra_config_dirs=[str(acct_b)]))
+
+        text = out_path.read_text()
+        assert "declared=2" in text.splitlines()[0]
+        rows = text.splitlines()[2:]
+        assert len(rows) == 2
