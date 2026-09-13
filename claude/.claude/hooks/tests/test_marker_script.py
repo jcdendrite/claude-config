@@ -79,6 +79,48 @@ def _cumulative_review_diff_artifact_path(home, repo, session_id: str):
     return home / ".claude" / "cumulative-review-diff-markers" / f"{repo_hash}.{session_id}"
 
 
+def _verification_marker_path(home, repo, session_id: str):
+    """Same repo-hash recipe as _cumulative_review_marker_path above, just
+    the verification dir."""
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    return home / ".claude" / "verification-markers" / f"{repo_hash}.{session_id}"
+
+
+def _write_verification_marker(home, repo, tree_hash: str, session_id: str):
+    """Hand-writes a verification marker, mirroring helpers.write_marker's
+    shape for the code-review dir -- no shared helper exists for this kind."""
+    marker = _verification_marker_path(home, repo, session_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(tree_hash + "\n")
+    return marker
+
+
+def _head_tree_hash(repo) -> str:
+    """Independently computed `git rev-parse HEAD^{tree}`, for comparing
+    against what marker.sh's write/check arms produce -- calling
+    _lib_head_tree_hash itself here would let a shared-recipe bug hide
+    behind the two sides merely agreeing."""
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _commit_the_fixtures_staged_change(repo):
+    """git_repo's own fixture leaves file.txt's modification staged, not
+    committed -- `verification`'s write guard now refuses on any
+    uncommitted change, so a test whose actual purpose is unrelated to that
+    guard must land this staged change first to reach the write."""
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "land the fixture's staged change"],
+        cwd=repo,
+        check=True,
+    )
+
+
 def _record_subject(
     repo, home, extra_env: dict | None = None
 ) -> subprocess.CompletedProcess:
@@ -1240,7 +1282,13 @@ class TestMarkerDirectoryNamingConvention:
         # gives every arm the same preconditions so the loop stays uniform.
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
-        (plans_dir / "p.md").write_text("# plan\n")
+        plan_file = plans_dir / "p.md"
+        plan_file.write_text("# plan\n")
+        # Staged, not left untracked: plan-review's active-set detection
+        # (untracked OR tracked-and-modified-vs-HEAD) still counts a staged
+        # new file. `verification`'s write arm now refuses on any untracked
+        # file, so it must stay off this fixture's tree regardless.
+        subprocess.run(["git", "add", str(plan_file)], cwd=git_repo, check=True)
         if skill == "skill-review":
             # A staged SKILL.md-matching path: otherwise the pathspec-scoped
             # diff is empty and the write arm exits 0 without writing a
@@ -1261,6 +1309,11 @@ class TestMarkerDirectoryNamingConvention:
             _arm_default_branch_ref_and_second_commit(git_repo)
             extra_env = _env_with_gh_shim(tmp_path, None)
             assert _record_subject(git_repo, isolated_home, extra_env).returncode == 0
+        if skill == "verification":
+            # `verification`'s write arm refuses on any uncommitted change,
+            # so land git_repo's own staged file.txt diff plus the plan file
+            # staged above rather than leave either staged.
+            _commit_the_fixtures_staged_change(git_repo)
 
         result = _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=extra_env)
         assert result.returncode == 0, result.stderr
@@ -1286,12 +1339,23 @@ class TestMarkerDirectoryNamingConvention:
         _seed_session(isolated_home, self.SID)
         plans_dir = git_repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
-        (plans_dir / "p.md").write_text("# plan\n")
+        plan_file = plans_dir / "p.md"
+        plan_file.write_text("# plan\n")
+        # Staged, not left untracked: plan-review's active-set detection
+        # (untracked OR tracked-and-modified-vs-HEAD) still counts a staged
+        # new file. `verification`'s write arm now refuses on any untracked
+        # file, so it must stay off this fixture's tree regardless.
+        subprocess.run(["git", "add", str(plan_file)], cwd=git_repo, check=True)
         extra_env = None
         if skill == "cumulative-review":
             _arm_default_branch_ref_and_second_commit(git_repo)
             extra_env = _env_with_gh_shim(tmp_path, None)
             assert _record_subject(git_repo, isolated_home, extra_env).returncode == 0
+        if skill == "verification":
+            # `verification`'s write arm refuses on any uncommitted change,
+            # so land git_repo's own staged file.txt diff plus the plan file
+            # staged above rather than leave either staged.
+            _commit_the_fixtures_staged_change(git_repo)
 
         assert (
             _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=extra_env).returncode == 0
@@ -3402,6 +3466,7 @@ class TestMarkerScriptVerification:
 
     def test_write_creates_marker_with_tree_hash(self, isolated_home, git_repo):
         sid = self.SID
+        _commit_the_fixtures_staged_change(git_repo)
         _seed_session(isolated_home, sid)
         result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -3410,8 +3475,8 @@ class TestMarkerScriptVerification:
         assert len(files) == 1
         assert files[0].name.endswith(f".{sid}")
         content = files[0].read_text().strip()
-        assert re.fullmatch(r"[0-9a-f]+", content), (
-            f"expected a hex object-id digest, got {content!r}"
+        assert re.fullmatch(r"[0-9a-f]{40}", content), (
+            f"expected a 40-hex-char SHA-1 tree hash, got {content!r}"
         )
 
     def test_write_touches_no_other_marker_directory(self, isolated_home, git_repo):
@@ -3419,6 +3484,7 @@ class TestMarkerScriptVerification:
         (a copy-paste slip between adjacent `case` arms) would leave the
         assertion above green, since that arm's own directory is created
         too."""
+        _commit_the_fixtures_staged_change(git_repo)
         _seed_session(isolated_home, self.SID)
         assert _run(["write", "verification"], cwd=git_repo, home=isolated_home).returncode == 0
         strays = sorted(
@@ -3441,6 +3507,7 @@ class TestMarkerScriptVerification:
         recomputable value (e.g. HEAD itself) that would happen to also look
         like a plausible object-id digest."""
         sid = self.SID
+        _commit_the_fixtures_staged_change(git_repo)
         _seed_session(isolated_home, sid)
         result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
@@ -3461,11 +3528,165 @@ class TestMarkerScriptVerification:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"an unresolvable tree hash must not write a marker: {stray}"
 
+    def test_write_succeeds_with_no_untracked_files(self, isolated_home, git_repo):
+        """Allow path for the write guard: a tree with no uncommitted
+        changes at all must proceed normally."""
+        _commit_the_fixtures_staged_change(git_repo)
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        assert list(marker_dir.iterdir()) != []
+
+    def test_write_aborts_when_untracked_file_present(self, isolated_home, git_repo):
+        """`HEAD^{tree}` addresses tracked, committed content only, so an
+        untracked file present when step 2's checks ran would be invisible
+        to the cache key -- write must refuse rather than record a marker
+        that doesn't cover it."""
+        (git_repo / "untracked.txt").write_text("not tracked\n")
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an untracked file must not write a marker: {stray}"
+
+    def test_write_aborts_when_a_tracked_file_has_a_staged_modification(
+        self, isolated_home, git_repo
+    ):
+        """git_repo's own fixture stages a tracked-file modification
+        (file.txt) on top of its committed content -- exactly the shape the
+        widened guard must catch, since a staged change is just as invisible
+        to `HEAD^{tree}` as an untracked file."""
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a staged tracked-file modification must not write a marker: {stray}"
+
+    def test_write_aborts_when_a_tracked_file_has_an_unstaged_modification(
+        self, isolated_home, git_repo
+    ):
+        """Lands the fixture's own staged change first so the tree starts
+        clean, then edits the tracked file without staging it -- pins the
+        guard's other blind spot: an unstaged modification is just as
+        invisible to `HEAD^{tree}` as a staged or untracked one."""
+        _commit_the_fixtures_staged_change(git_repo)
+        (git_repo / "file.txt").write_text("first\nsecond\nthird\n")
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], (
+            f"an unstaged tracked-file modification must not write a marker: {stray}"
+        )
+
+    def test_write_aborts_when_untracked_file_is_inside_a_new_directory(
+        self, isolated_home, git_repo
+    ):
+        """`git status --porcelain` collapses an untracked directory to one
+        `?? dir/` line rather than listing each file inside it -- confirms
+        the guard's `^??` match still catches that collapsed form."""
+        nested_dir = git_repo / "untracked_dir"
+        nested_dir.mkdir()
+        (nested_dir / "nested.txt").write_text("not tracked\n")
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"an untracked nested file must not write a marker: {stray}"
+
+    def test_write_aborts_when_untracked_check_itself_fails(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """`git status --porcelain` failing (corrupt index, permissions,
+        and similar) must fail closed -- the same stub-git technique as
+        test_write_aborts_in_a_commit_less_repo above, retargeted at the
+        guard's own status call rather than the tree-hash call."""
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "status" ] && [ "$4" = "--porcelain" ] && [ "$#" -eq 4 ]; then\n'
+            '  exit 1\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        result = _run(
+            ["write", "verification"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        )
+        assert result.returncode == 2
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a failed untracked-file check must not write a marker: {stray}"
+
+    def test_write_succeeds_when_untracked_file_deleted_before_write(
+        self, isolated_home, git_repo
+    ):
+        """Pins the accepted TOCTOU boundary named in the 6th residual of
+        docs/design-decisions/ready-for-review-verification-cache.md: the
+        guard is a write-time snapshot of the tree, not a checks-time one,
+        so a file untracked and present during step 2's checks but deleted
+        before `write verification` runs leaves the write unblocked."""
+        _commit_the_fixtures_staged_change(git_repo)
+        untracked = git_repo / "untracked.txt"
+        untracked.write_text("not tracked\n")
+        untracked.unlink()
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        assert list(marker_dir.iterdir()) != []
+
+    def test_write_succeeds_when_untracked_file_is_gitignored(self, isolated_home, git_repo):
+        """Pins the gitignore-blind-spot residual named in
+        docs/design-decisions/ready-for-review-verification-cache.md: `git
+        status --porcelain` never surfaces a gitignored path, so an
+        untracked-but-ignored file must not block the write the way a plain
+        untracked file does."""
+        (git_repo / ".gitignore").write_text("ignored.txt\n")
+        subprocess.run(["git", "add", "-A"], cwd=git_repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "land the fixture's staged change plus .gitignore"],
+            cwd=git_repo,
+            check=True,
+        )
+        (git_repo / "ignored.txt").write_text("ignored content\n")
+        _seed_session(isolated_home, self.SID)
+        result = _run(["write", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        marker_dir = isolated_home / ".claude" / "verification-markers"
+        assert list(marker_dir.iterdir()) != []
+
     def test_check_match_when_marker_hash_equals_current_tree(self, isolated_home, git_repo):
         _seed_session(isolated_home, self.SID)
         _write_verification_marker(
             isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
         )
+        result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip().startswith("match")
+
+    def test_check_match_unaffected_by_an_untracked_file(self, isolated_home, git_repo):
+        """The widened guard is write-only: `check verification` must still
+        report match with an untracked file present, since check never runs
+        the guard -- it only compares the stored hash to the current tree."""
+        _seed_session(isolated_home, self.SID)
+        _write_verification_marker(
+            isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
+        )
+        (git_repo / "untracked.txt").write_text("not tracked\n")
         result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().startswith("match")
@@ -3554,8 +3775,22 @@ class TestMarkerScriptVerification:
 
     def test_status_live_when_hash_matches_current_tree(self, isolated_home, git_repo):
         sid = self.SID
+        _commit_the_fixtures_staged_change(git_repo)
         _seed_session(isolated_home, sid)
         assert _run(["write", "verification"], cwd=git_repo, home=isolated_home).returncode == 0
+        result = _run(["status"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        assert "verification: live" in result.stdout
+
+    def test_status_unaffected_by_an_untracked_file(self, isolated_home, git_repo):
+        """Mirrors test_check_match_unaffected_by_an_untracked_file for
+        `status`: an untracked file's presence must not flip verification's
+        reported state away from what the tree hash actually matches."""
+        _seed_session(isolated_home, self.SID)
+        _write_verification_marker(
+            isolated_home, git_repo, _head_tree_hash(git_repo), self.SID
+        )
+        (git_repo / "untracked.txt").write_text("not tracked\n")
         result = _run(["status"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
         assert "verification: live" in result.stdout
@@ -3588,6 +3823,7 @@ class TestMarkerScriptVerification:
     def test_write_and_check_recipes_agree(self, isolated_home, git_repo):
         """write and check must compute the identical value for the same
         tree -- a fresh write must immediately read back as a match."""
+        _commit_the_fixtures_staged_change(git_repo)
         _seed_session(isolated_home, self.SID)
         assert _run(["write", "verification"], cwd=git_repo, home=isolated_home).returncode == 0
         result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
@@ -3756,6 +3992,49 @@ class TestMarkerScriptVerification:
         )
         result = _run(["check", "verification"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
+
+    @pytest.mark.timing
+    def test_status_head_tree_hash_computation_times_out_gracefully(
+        self, isolated_home, git_repo, tmp_path, gh_timeout_shim
+    ):
+        """`status`'s `verification` line also calls `_lib_head_tree_hash
+        capped`. `test_head_tree_hash_computation_times_out_to_no_match`
+        already proves `check`'s call site degrades gracefully; this test
+        proves the same for `status`'s independent call site. It reuses
+        `test_code_review_value_computation_times_out_gracefully`'s stub-git
+        technique. The gh stub keeps status's cumulative-review line off a
+        real `gh pr view` call, same as this file's other status timing
+        tests."""
+        if not shutil.which("timeout"):
+            pytest.skip("timeout(1) not available — BSD/macOS without coreutils")
+        real_git = shutil.which("git")
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(
+            '#!/bin/bash\n'
+            'if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD^{tree}" ] && [ "$#" -eq 4 ]; then\n'
+            '  sleep 10\n'
+            'fi\n'
+            f'exec {real_git} "$@"\n'
+        )
+        stub.chmod(0o755)
+
+        _seed_session(isolated_home, self.SID)
+        env = gh_timeout_shim(
+            '[ "$1" = "pr" ] && [ "$2" = "view" ]', fake_output="main", sleep_seconds=0
+        )
+        env["PATH"] = f"{stub_dir}:{env['PATH']}"
+        with assert_cap_engaged():
+            result = _run(
+                ["status"],
+                cwd=git_repo,
+                home=isolated_home,
+                extra_env=env,
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert "verification: absent" in result.stdout
 
 
 
