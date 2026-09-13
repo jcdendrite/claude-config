@@ -31,7 +31,7 @@ The `reason` text names the next step explicitly: `/code-review` → commit (pat
 ! printf 'commit_stall_block = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Set it back to `true` to re-enable (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
+Set it back to `true` to re-enable — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
 ! printf 'commit_stall_block = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"

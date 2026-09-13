@@ -75,6 +75,23 @@ def _isolated_hooks_dir_missing_key_row(tmp_path: Path, key: str) -> Path:
     return isolated_hooks_dir
 
 
+def _isolated_hooks_dir_with_truncated_key_row(tmp_path: Path, key: str, truncated_row: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir, replacing
+    KEY's own row with TRUNCATED_ROW (missing one or more trailing columns)
+    -- every other row is left untouched, so this exercises a schema file
+    truncated mid-row (an interrupted stow-relink/git-pull caught partway
+    through rewriting one row), not a wholly synthetic or empty schema."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = [
+        truncated_row if line.startswith(f"{key}|") else line
+        for line in _CONFIG_KEYS_PSV.read_text().splitlines()
+    ]
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
 def _isolated_hooks_dir_with_legacy_polarity_override(tmp_path: Path, key: str, polarity: str) -> Path:
     """Copies the real config-keys.psv into an isolated hooks dir, replacing
     KEY's own legacy-polarity column (field 8 of 11) with POLARITY --
@@ -195,6 +212,49 @@ class TestExitCodeContract:
         assert result.returncode == 4
         assert result.stdout == ""
         assert "parsed zero rows" in result.stderr
+
+    def test_mid_row_truncation_returns_exit_4_not_a_silent_grant(self, tmp_path):
+        """Security regression: a config-keys.psv row present but cut off
+        after the key/type fields (an interrupted stow-relink/git-pull
+        caught mid-row, rather than mid-file) must not resolve as an empty
+        string that _config_enabled's any-value-but-false rule would then
+        read as enabled. autonomous_shipping is the key this matters most
+        for: every other enforcement-critical key's safe direction is
+        "stays armed" regardless of this bug, but autonomous_shipping's safe
+        direction is "not shipping" -- a silent exit 0 with an empty
+        resolution/default here would silently grant it."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "autonomous_shipping", "autonomous_shipping|bool"
+        )
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value autonomous_shipping")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "autonomous_shipping" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled autonomous_shipping")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
+
+    def test_truncation_after_resolution_column_still_returns_exit_4(self, tmp_path):
+        """Security regression: a row truncated one column later than the
+        case above -- key/type/default/resolution all intact, only
+        legacy-probe-on-resolution-failure and beyond missing -- must still
+        return exit 4, not fall through to exit 2 (config-dir-resolution-
+        failure). worktree_required is the key this matters most for: its
+        row is the one real row whose legacy-probe-on-resolution-failure
+        column is `true`, and _lib_worktree_enforcement_active treats exit 2
+        as "not enforced" but exit 3/4 as "stays enforced" -- so this exact
+        truncation shape would otherwise silently disarm worktree_required
+        enforcement."""
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "worktree_required", "worktree_required|bool|false|config-dir-or-home"
+        )
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "worktree_required" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
 
 
 # ---------------------------------------------------------------------------

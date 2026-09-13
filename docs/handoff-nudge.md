@@ -47,7 +47,7 @@ Set the `handoff_nudge` config key to `false` to suppress nudges globally:
 printf 'handoff_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Set it back to `true` to re-enable (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
+Set it back to `true` to re-enable — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
 printf 'handoff_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"

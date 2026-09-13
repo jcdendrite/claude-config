@@ -26,6 +26,7 @@ import pytest
 from helpers import DEFAULT_TEST_SESSION_ID, HOOKS_DIR, bash_input, build_path_without, run_hook
 
 from .conftest import _worktree_lock_reason, assert_cap_engaged
+from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -3797,6 +3798,31 @@ class TestAutonomousShippingSentinelPresent:
         )
         assert result.returncode == 3
 
+    def test_absent_when_config_keys_psv_readable_but_missing_autonomous_shipping_row(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors the exit-3 test above, but for config-keys.psv readable
+        and non-empty while missing autonomous_shipping's own row (the
+        interrupted stow-relink/git-pull shape, distinct from the wholly-
+        unreadable case) -- must propagate its own distinct exit code (4),
+        the same fail-toward-NOT-shipping direction as every other
+        resolution failure. Every other enforcement-critical key already
+        has both an exit-3 and exit-4 test; this closes the one asymmetry
+        for autonomous_shipping."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "autonomous_shipping")
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_autonomous_shipping_sentinel_present'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 4
+
 
 # _lib_autonomous_shipping_active — direct unit coverage.
 #
@@ -3983,6 +4009,35 @@ class TestAutonomousShippingActive:
         isolated_lib_sh = _lib_sh_with_unreadable_schema(tmp_path)
         result = subprocess.run(
             ["bash", "-c", f'. "{isolated_lib_sh}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_inactive_when_config_keys_psv_readable_but_missing_autonomous_shipping_row(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirrors TestWorktreeEnforcementActive's own
+        test_active_when_config_keys_psv_readable_but_missing_worktree_required_row,
+        but through the full _lib_autonomous_shipping_active entry point
+        rather than only the lower-level
+        _lib_autonomous_shipping_sentinel_present function above -- a
+        config-keys.psv that is readable and non-empty but missing
+        autonomous_shipping's own row (the interrupted stow-relink/git-pull
+        shape) must fail toward NOT shipping here too, the opposite
+        direction from worktree_required's own stays-armed verdict for the
+        identical schema shape."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "autonomous-shipping-required").touch()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "autonomous_shipping")
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_autonomous_shipping_active "$1"', "bash", str(repo)],
             capture_output=True,
             text=True,
             env={"HOME": str(home), "PATH": os.environ["PATH"]},

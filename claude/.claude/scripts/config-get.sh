@@ -7,8 +7,10 @@ set -uo pipefail
 # Exit 0 = enabled.
 # Exit 1 = disabled.
 # Exit 2 = unknown key, including a reserved/disallowed subcommand (see below).
-# Exit 3 = environment failure: config dir unresolvable, or config-keys.psv
-# itself missing/unreadable (a partial stow-relink or interrupted `git pull`).
+# Exit 3 = environment failure: config dir unresolvable, config-keys.psv
+# itself missing/unreadable, or KEY's own row present but truncated after
+# an earlier column (a partial stow-relink or interrupted `git pull`, in
+# every case).
 #
 # Prints the effective value on stdout for a human — the exit code is the
 # sole authority, matching the phrasing CLAUDE.md already uses for
@@ -79,6 +81,15 @@ if [ "$STATUS" -eq 3 ]; then
   # passed, but config-keys.psv became unreadable before this later
   # _config_value call ran.
   echo "config-get.sh: schema file not found or unreadable: $_CONFIG_SCHEMA_FILE -- a partial stow-relink or interrupted git pull, not a typo'd key name" >&2
+  exit 3
+fi
+if [ "$STATUS" -eq 4 ]; then
+  # _config_value's own row-truncated shape (KEY's row present but a
+  # resolution-critical column empty) -- must not fall through to printing
+  # an empty VALUE, which "$VALUE" != "false" below would then read as
+  # enabled. Treated identically to exit 3 per _config.sh's own header
+  # directive that every caller must fold 3 and 4 the same way.
+  echo "config-get.sh: schema row for '$KEY' present but truncated -- a partial stow-relink or interrupted git pull, not a typo'd key name" >&2
   exit 3
 fi
 

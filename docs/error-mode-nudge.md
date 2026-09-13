@@ -12,7 +12,7 @@ The hook is **opt-in** — dormant unless the `error_mode_nudge` config key reso
 printf 'error_mode_nudge = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-Set it back to `false` to disable it again (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
+Set it back to `false` to disable it again — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
 printf 'error_mode_nudge = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"

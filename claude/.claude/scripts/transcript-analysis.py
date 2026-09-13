@@ -7754,6 +7754,17 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
             file=sys.stderr,
         )
         sys.exit(1)
+    except _config.ConfigSchemaRowTruncatedError:
+        # cost_ledger_recording's own row is present but truncated after an
+        # earlier column (see that class's own docstring) -- a torn schema
+        # row, not a renamed or typo'd key literal at this call site.
+        print(
+            "cost-ledger: --record found cost_ledger_recording's config-keys.psv"
+            " row truncated (partial stow-relink or interrupted git pull)"
+            " -- see docs/cost-ledger.md",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except KeyError as exc:
         if _config.schema():
             # config-keys.psv parsed fine (schema() returned rows), so this
@@ -9047,6 +9058,18 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             print(
                 "pr-cost: --record found config-keys.psv empty or malformed"
                 " (no parseable schema rows) -- see docs/pr-cost.md",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except _config.ConfigSchemaRowTruncatedError:
+            # pr_cost_recording's own row is present but truncated after an
+            # earlier column (see that class's own docstring) -- a torn
+            # schema row, not a renamed or typo'd key literal at this call
+            # site.
+            print(
+                "pr-cost: --record found pr_cost_recording's config-keys.psv"
+                " row truncated (partial stow-relink or interrupted git pull)"
+                " -- see docs/pr-cost.md",
                 file=sys.stderr,
             )
             sys.exit(1)

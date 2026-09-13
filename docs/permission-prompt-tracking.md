@@ -22,7 +22,7 @@ On each fire, the hook:
 
 ## How to disable
 
-Set the key back to `false` (edit the existing line rather than appending a duplicate — see [`docs/config-file.md`](config-file.md)):
+Set the key back to `false` — see [`docs/config-file.md`](config-file.md) for the file's hand-edit contract:
 
 ```bash
 printf 'permission_prompt_tracking = false\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"

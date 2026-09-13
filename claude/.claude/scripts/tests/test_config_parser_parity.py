@@ -21,6 +21,7 @@ from helpers import HOOKS_DIR
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _config import schema  # noqa: E402
+from hooks.tests.test_config_lib import _isolated_hooks_dir_with_truncated_key_row  # noqa: E402
 
 CONFIG_SH = HOOKS_DIR / "_config.sh"
 CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
@@ -563,6 +564,71 @@ class TestReadableButEmptySchemaFile:
             "a readable-but-empty schema must degrade as silently as an "
             "ordinary unknown key, not print a warning"
         )
+
+
+class TestSchemaRowTruncatedMidRow:
+    """Security regression: a config-keys.psv row present but cut off after
+    the key/type fields (an interrupted stow-relink/git-pull caught mid-row,
+    rather than mid-file) must not resolve as an empty string that
+    config_enabled's any-value-but-false rule would then read as enabled.
+    autonomous_shipping is the key this matters most for: every other
+    enforcement-critical key's safe direction is "stays armed" regardless of
+    this bug, but autonomous_shipping's safe direction is "not shipping" -- a
+    silent empty resolution/default here would silently grant it. Bash-side
+    counterpart: test_config_lib.py's
+    test_mid_row_truncation_returns_exit_4_not_a_silent_grant."""
+
+    def test_truncated_row_raises_row_truncated_error_not_a_silent_grant(self, tmp_path, monkeypatch) -> None:
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "autonomous_shipping", "autonomous_shipping|bool"
+        )
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value autonomous_shipping'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 4
+        assert bash_result.stdout == ""
+        assert "autonomous_shipping" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(_config.ConfigSchemaRowTruncatedError):
+            _config.config_value("autonomous_shipping")
+
+    def test_truncation_after_resolution_column_still_raises_row_truncated_error(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Security regression: a row truncated one column later than the
+        case above -- key/type/default/resolution all intact, only
+        legacy-probe-on-resolution-failure and beyond missing -- must still
+        raise ConfigSchemaRowTruncatedError. worktree_required is the key
+        this matters most for: its row is the one real row whose
+        legacy-probe-on-resolution-failure column is `true`, so a naive bool
+        coercion of the truncated (empty) column is indistinguishable from a
+        legitimate `false` unless the raw string is checked instead. Bash-side
+        counterpart: test_config_lib.py's
+        test_truncation_after_resolution_column_still_returns_exit_4."""
+        _make_home(tmp_path, monkeypatch)
+        isolated_hooks_dir = _isolated_hooks_dir_with_truncated_key_row(
+            tmp_path, "worktree_required", "worktree_required|bool|false|config-dir-or-home"
+        )
+
+        bash_result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value worktree_required'],
+            capture_output=True, text=True,
+        )
+        assert bash_result.returncode == 4
+        assert bash_result.stdout == ""
+        assert "worktree_required" in bash_result.stderr
+
+        import _config
+
+        monkeypatch.setattr(_config, "_SCHEMA_FILE", isolated_hooks_dir / "config-keys.psv")
+        with pytest.raises(_config.ConfigSchemaRowTruncatedError):
+            _config.config_value("worktree_required")
 
 
 class TestGenuineToml:

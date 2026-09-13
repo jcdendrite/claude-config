@@ -2,7 +2,8 @@
 # Shared config-key reader/writer for every bash consumer: hooks (sourced
 # transitively via _lib.sh, which sources this file), install.sh (sourced
 # directly by repo-relative path, since install.sh runs before stow exists),
-# and migrate-legacy-config.sh.
+# migrate-legacy-config.sh, and config-get.sh (also sourced directly by
+# repo-relative path).
 # This file is the only definition of how a config key resolves to a value
 # -- config-keys.psv is its schema, claude-config.toml is its state file, and
 # _config.py is the Python-runtime counterpart pinned to identical behavior
@@ -336,14 +337,22 @@ _config_read_key_from_file() {
 # Returns 3 (nothing printed, plus a distinct stderr warning naming the
 # schema file) when config-keys.psv itself is missing or unreadable -- a
 # partial stow-relink or interrupted `git pull`.
-# Returns 4 (nothing printed, plus a distinct stderr warning) for either of
-# two schema-file shapes that leave KEY's row undeterminable: the file is
-# readable and parses at least one row, but none of them is KEY's own; or
-# the file is readable but parses to zero rows at all (empty, or
-# comments/blank-lines-only content).
-# Both shapes are the same interrupted-stow-relink/git-pull race, just
-# caught at a different truncation point, and neither is a genuinely
-# unknown key.
+# Returns 4 (nothing printed, plus a distinct stderr warning) for any of
+# three schema-file shapes that leave KEY's own value for FIELD
+# undeterminable: the file is readable and parses at least one row, but none
+# of them is KEY's own; the file is readable but parses to zero rows at all
+# (empty, or comments/blank-lines-only content); or KEY's own row is present
+# but FIELD is one of the four resolution-critical columns (type, default,
+# resolution, legacy-probe-on-resolution-failure) and its value is empty --
+# a row present but truncated after an earlier column, the same
+# interrupted-stow-relink/git-pull race just caught mid-row instead of at
+# the row or file boundary. The other seven columns (legacy-import-locations,
+# legacy-filename, legacy-polarity, human-name, docs-anchor,
+# prompt-description) have a documented legitimate empty value (see this
+# file's own header on config-keys.psv's grammar), so an empty value there is
+# never treated as truncation.
+# All three shapes are variants of the same race, just caught at a different
+# point, and none is a genuinely unknown key.
 # Every caller must treat 3 and 4 identically to whatever direction it
 # takes for 3 already, never collapsed into 1 -- see _config_value's own
 # exit-code comment for why, and _lib.sh's enforcement-critical callers for
@@ -359,7 +368,7 @@ _config_schema_field() {
     return 3
   fi
   local row_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
-  local saw_any_row=""
+  local saw_any_row="" value=""
   while IFS='|' read -r row_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do
     case "$row_key" in
       ''|'#'*) continue ;;
@@ -367,18 +376,24 @@ _config_schema_field() {
     saw_any_row=1
     [ "$row_key" = "$key" ] || continue
     case "$field" in
-      type) printf '%s' "$type" ;;
-      default) printf '%s' "$default" ;;
-      resolution) printf '%s' "$resolution" ;;
-      legacy-probe-on-resolution-failure) printf '%s' "$legacy_probe" ;;
-      legacy-import-locations) printf '%s' "$legacy_import" ;;
-      legacy-filename) printf '%s' "$legacy_filename" ;;
-      legacy-polarity) printf '%s' "$legacy_polarity" ;;
-      human-name) printf '%s' "$human_name" ;;
-      docs-anchor) printf '%s' "$docs_anchor" ;;
-      prompt-description) printf '%s' "$prompt_description" ;;
+      type) value="$type" ;;
+      default) value="$default" ;;
+      resolution) value="$resolution" ;;
+      legacy-probe-on-resolution-failure) value="$legacy_probe" ;;
+      legacy-import-locations) printf '%s' "$legacy_import"; return 0 ;;
+      legacy-filename) printf '%s' "$legacy_filename"; return 0 ;;
+      legacy-polarity) printf '%s' "$legacy_polarity"; return 0 ;;
+      human-name) printf '%s' "$human_name"; return 0 ;;
+      docs-anchor) printf '%s' "$docs_anchor"; return 0 ;;
+      prompt-description) printf '%s' "$prompt_description"; return 0 ;;
       *) return 1 ;;
     esac
+    if [ -z "$value" ]; then
+      printf '_config.sh: warning: matched row for %s has an empty required column %s -- schema row truncated? (schema: %s)\n' \
+        "$key" "$field" "$_CONFIG_SCHEMA_FILE" >&2
+      return 4
+    fi
+    printf '%s' "$value"
     return 0
   done < "$_CONFIG_SCHEMA_FILE"
   if [ -n "$saw_any_row" ]; then
@@ -577,11 +592,13 @@ _config_location_value() {
 # the union (see above).
 _config_value() {
   local key="$1" config_dir_override="${2:-}"
-  local resolution resolution_status legacy_probe
+  local resolution resolution_status legacy_probe legacy_probe_status
   resolution=$(_config_schema_field "$key" resolution)
   resolution_status=$?
   [ "$resolution_status" -eq 0 ] || return "$resolution_status"
   legacy_probe=$(_config_schema_field "$key" legacy-probe-on-resolution-failure)
+  legacy_probe_status=$?
+  [ "$legacy_probe_status" -eq 0 ] || return "$legacy_probe_status"
 
   local primary_dir=""
   if [ -n "$config_dir_override" ]; then

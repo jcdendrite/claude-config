@@ -34,13 +34,19 @@ _STATE_FILENAME = "claude-config.toml"
 @dataclass(frozen=True)
 class SchemaRow:
     """One config-keys.psv row -- see that file's header comment for what
-    each column means."""
+    each column means.
+
+    legacy_probe_on_resolution_failure_raw carries the column's raw string
+    ("true"/"false"/"") alongside the coerced bool, since the bool alone
+    cannot distinguish a legitimate "false" from a truncated-empty column --
+    config_value() uses the raw form for that truncation check."""
 
     key: str
     type: str
     default: str
     resolution: str
     legacy_probe_on_resolution_failure: bool
+    legacy_probe_on_resolution_failure_raw: str
     legacy_import_locations: str
     legacy_filename: str
     legacy_polarity: str
@@ -103,6 +109,7 @@ def schema() -> dict[str, SchemaRow]:
             default=default,
             resolution=resolution,
             legacy_probe_on_resolution_failure=(legacy_probe == "true"),
+            legacy_probe_on_resolution_failure_raw=legacy_probe,
             legacy_import_locations=legacy_import,
             legacy_filename=legacy_filename,
             legacy_polarity=legacy_polarity,
@@ -120,12 +127,25 @@ class ConfigSchemaEmptyError(KeyError):
     This is the same mid-write-truncation or stow-relink race _config.sh's
     own _config_schema_known_keys names in its matching comment.
     _config.sh's own _config_value degrades identically here: a clean exit
-    1, the same code an ordinary typo'd key gets, since a readable but
-    momentarily rowless schema is indistinguishable from "this key isn't
-    in the schema" at that layer.
+    4, the same code KEY's row being entirely absent from an otherwise
+    readable schema gets.
+    A readable but momentarily rowless schema is indistinguishable from
+    "this key isn't in the schema" at that layer.
     Still a KeyError subtype, so an `except KeyError` catch written before
     this class existed (transcript-analysis.py's two call sites) keeps
     working unchanged."""
+
+
+class ConfigSchemaRowTruncatedError(KeyError):
+    """Raised by config_value()/config_enabled() when KEY's config-keys.psv
+    row is present but one of its resolution-critical columns (type,
+    default, resolution, or legacy-probe-on-resolution-failure) is empty --
+    a row present but truncated after an earlier column.
+    This is the same interrupted-stow-relink/git-pull race _config.sh's own
+    _config_schema_field guards against with its own exit 4 (see that
+    function's docstring for why only these columns, not every empty
+    column, signal truncation).
+    Still a KeyError subtype, for the same reason ConfigSchemaEmptyError is."""
 
 
 class _MalformedStateLine(Exception):
@@ -317,11 +337,16 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     """KEY's effective value ("true", "false", or an enum literal), or None
     if the config dir could not be resolved and KEY's schema row does not
     authorize a raw $HOME/.claude fallback on that failure
-    (legacy_probe_on_resolution_failure) -- this module's counterpart to
-    _config.sh's exit code 2. Raises KeyError if KEY has no schema row (see
-    module docstring), or ConfigSchemaEmptyError (a KeyError subtype) if
-    config-keys.psv was read successfully but produced zero rows at all --
-    see that class's own docstring.
+    (legacy_probe_on_resolution_failure). This None case is this module's
+    counterpart to _config.sh's exit code 2.
+
+    Raises KeyError if KEY has no schema row (see module docstring).
+    Raises ConfigSchemaEmptyError (a KeyError subtype) if config-keys.psv
+    was read successfully but produced zero rows at all -- see that
+    class's own docstring.
+    Raises ConfigSchemaRowTruncatedError (also a KeyError subtype) if
+    KEY's own row is present but missing one of its resolution-critical
+    columns.
 
     config_dir_override lets a caller that already has its own config dir
     (e.g. transcript-analysis.py's --all-accounts loop, one
@@ -330,11 +355,12 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     CONFIG_DIR_OVERRIDE parameter. An empty-string override is treated the
     same as no override at all, matching _config.sh's `[ -n
     "$config_dir_override" ]` test -- but only for a `str` argument. A
-    `Path("")` argument is NOT treated as "no override": pathlib normalizes
-    `Path("")` to the truthy `PosixPath('.')`, so the `if config_dir_override`
-    check above passes and resolves against cwd. Not currently reachable --
-    no call site in this repo constructs a `Path("")` override -- but a
-    future caller that does would silently get cwd instead of "no override".
+    `Path("")` argument is NOT treated as "no override".
+    pathlib normalizes `Path("")` to the truthy `PosixPath('.')`, so the
+    `if config_dir_override` check above passes and resolves against cwd.
+    This is not currently reachable -- no call site in this repo constructs
+    a `Path("")` override. A future caller that does would silently get
+    cwd instead of "no override".
 
     Union semantics: for a config-dir-or-home key, the value is
     OR'd across BOTH locations' own independently-resolved effective value
@@ -347,6 +373,24 @@ def config_value(key: str, config_dir_override: Path | str | None = None) -> str
     if not all_rows and os.access(_SCHEMA_FILE, os.R_OK):
         raise ConfigSchemaEmptyError(key)
     row = all_rows[key]
+    if (
+        not row.type
+        or not row.default
+        or not row.resolution
+        or not row.legacy_probe_on_resolution_failure_raw
+    ):
+        # A row present but truncated after an earlier column (type,
+        # default, resolution, and legacy-probe-on-resolution-failure are
+        # never legitimately empty -- see config-keys.psv's own header) --
+        # the same interrupted-stow-relink/git-pull race ConfigSchemaEmptyError
+        # covers for a whole-file truncation, just caught mid-row. An empty
+        # value here must not resolve as an authoritative "" that
+        # config_enabled's any-value-but-false rule would then read as
+        # enabled. The raw string form is checked here, not the coerced
+        # legacy_probe_on_resolution_failure bool, since a legitimate "false"
+        # also coerces to a falsy bool and would otherwise be
+        # indistinguishable from truncation.
+        raise ConfigSchemaRowTruncatedError(key)
     known_keys = frozenset(all_rows)
     override = str(config_dir_override) if config_dir_override else None
 
