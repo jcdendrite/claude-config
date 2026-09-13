@@ -8,23 +8,27 @@ paths:
 
 ## Terraform conventions
 
-Sources verified against `terraform-provider-aws`, the AWS Cognito API
-reference, and HashiCorp's own Terraform documentation (2026-09); see
-`docs/rules-references.md` for citations. This rule covers input-variable
-design — typing, validation, defaults, and changing a default on an
-existing module. State, backend, and apply-workflow concerns are
-`staff-platform-engineer`'s review angles, not this rule's. AWS provider
-arguments below are illustrations — apply the equivalent for your
-provider. Whether a toggle belongs in Terraform at all, versus a runtime
-layer, is the `feature-flags` skill's call — this rule doesn't decide it.
+HashiCorp's own Terraform documentation grounds the `validation`,
+`nullable`, and module-versioning guidance below; `terraform-provider-aws`
+supplies the one worked enum example. See `docs/rules-references.md` for
+citations (2026-09). This rule covers input-variable design — typing,
+validation, defaults, and changing a default on an existing module. State,
+backend, apply-workflow, and security-posture concerns are
+`staff-platform-engineer`'s and `ciso-reviewer`'s review angles, not this
+rule's. The provider argument below is an illustration — apply the
+equivalent for your provider. Whether a toggle belongs in Terraform at
+all, versus a runtime layer, is the `feature-flags` skill's call — this
+rule doesn't decide it.
 
 - **Type a provider-native string enum as its own type, not a `bool`
-  mapped through a ternary.** Flag this only when one of two conditions
+  mapped through a ternary.** Terraform has no native enum type, so this
+  is this repo's convention, not HashiCorp's. The reasoning follows the
+  `validation` mechanism below. Flag this only when one of two conditions
   holds:
-  - The mapped states aren't true opposites — e.g.
-    `aws_cognito_user_pool_client`'s `prevent_user_existence_errors`
-    argument takes `LEGACY` or `ENABLED`, which differ in security
-    posture rather than being simple negations of each other.
+  - The mapped states aren't true opposites — e.g. a `legacy` vs.
+    `current` compatibility mode, or a `retain` vs. `destroy` deletion
+    behavior, where a bare `bool` forces the reader to remember which
+    value maps to which mode.
   - The enum can plausibly grow past two members — e.g.
     `aws_cognito_user_pool`'s `user_pool_tier` argument, `LITE`,
     `ESSENTIALS`, `PLUS`.
@@ -38,20 +42,17 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   For a provider whose schema doesn't already enforce this
   server-side, a `validation` block moves a bad-value failure from
   `terraform apply` (a live provider API round trip) to `terraform
-  plan` (a local, fast check).
+  plan` (a local, fast check). A provider's closed legal-value set is
+  exactly the "uniquely restrictive requirement" HashiCorp's own Style
+  Guide reserves `validation` for — this isn't a blanket call to
+  validate every variable.
 - **Mirror the provider's own default** in the variable's `default` when
-  one exists, with a matching `validation` branch admitting `null` when
-  the underlying argument is itself optional.
-- **Exception: prefer the recommended value over an inferior provider
-  default.** When the provider's documented default is the less-secure of
-  two legal values, mirror the recommended value instead and state why
-  the two diverge in a comment. For example,
-  `aws_cognito_user_pool_client`'s `prevent_user_existence_errors`
-  defaults to `LEGACY`; prefer `ENABLED`. `ENABLED` closes only the
-  content-disclosure channel across a documented set of operations. It
-  doesn't cover `SignUp` or a timing side channel (CWE-208) — see
-  `docs/rules-references.md` for the operation list and
-  `ciso-reviewer.md`'s account-existence-disclosure angle.
+  one exists. Add a `validation` branch admitting `null` when the
+  underlying argument is itself optional, or set `nullable = false` when
+  it isn't. **Exception:** when the provider's documented default is a
+  legacy or less-secure legal value rather than its own recommendation,
+  set the recommended value instead and say why the module diverges in a
+  comment.
 - **On a retrofit** to an existing variable: a **default** change only
   affects callers that don't already override it. A **type or
   legal-value-set** change breaks callers that do — an existing caller

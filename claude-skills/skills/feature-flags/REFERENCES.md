@@ -40,5 +40,5 @@ skill's layering test: a value that only ever changes alongside a
 deploy is config, not a toggle.
 
 **Cited only for the "config is what varies between deploys" definition.**
-This section has zero hits for "feature" — never treat it as a
-feature-flag authority.
+This source has zero hits for "feature." Do not cite it as a
+feature-flag authority beyond that one deploy-vs-runtime distinction.

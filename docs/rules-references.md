@@ -215,36 +215,6 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   `raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/cognito_user_pool.html.markdown`:
   > `user_pool_tier` - (Optional) The user pool feature plan, or tier.
   > Valid values: `LITE`, `ESSENTIALS`, `PLUS`.
-- **`prevent_user_existence_errors` — confirmed negative in the provider
-  docs, enumerated in the AWS API reference instead.** `LEGACY`/`ENABLED`
-  do not appear anywhere in
-  `raw.githubusercontent.com/hashicorp/terraform-provider-aws/main/website/docs/r/cognito_user_pool_client.html.markdown`
-  — that doc's own description carries no enumerated valid-values line for
-  this argument. The enum instead comes from AWS's own API reference,
-  `docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UserPoolClientType.html`,
-  on the `PreventUserExistenceErrors` field. These are two separate
-  fragments of that field's description, not adjacent in the source —
-  the affected-operations list and other field metadata sit between
-  them:
-  > Valid Values: `LEGACY | ENABLED`
-
-  and, further down the same field description:
-  > Defaults to `LEGACY`.
-
-  That same field's description names the operations it affects:
-  `AdminInitiateAuth`, `AdminRespondToAuthChallenge`, `InitiateAuth`,
-  `RespondToAuthChallenge`, `ForgotPassword`, `ConfirmForgotPassword`,
-  `ConfirmSignUp`, and `ResendConfirmationCode`. `SignUp` is not on that
-  list —
-  `docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SignUp.html`
-  documents `SignUp` as unconditionally throwing `UsernameExistsException`
-  when the username is taken, regardless of this setting. `ENABLED`
-  normalizes error content across the operations list above. AWS
-  documents this as a content change, not a timing guarantee, so the
-  CWE-208 timing side channel is a separate concern `ciso-reviewer.md`'s
-  account-existence-disclosure angle covers. A `SignUp` caller can either
-  suppress the raw `UsernameExistsException` or accept it as a deliberate
-  product trade-off.
 - **Custom Validation Rules (the `validation` block)** — VERIFIED at
   `developer.hashicorp.com/terraform/language/values/variables` §
   "Reference Variable Values", illustrating the `environment` variable:
