@@ -1392,16 +1392,17 @@ _lib_worktree_enforcement_active() {
   # in _config_enabled itself, via worktree_required's own schema row — an
   # unresolvable config dir propagates as exit 2, which this function treats
   # the same as "not enforced" per the `*)` arm below (an accepted,
-  # pre-existing tradeoff, unlike exit 3 immediately below).
+  # pre-existing tradeoff, unlike exit 3/4 immediately below).
   _config_enabled worktree_required
   case "$?" in
     0) ;;
-    # config-keys.psv itself unreadable: worktree_required's own safe
+    # config-keys.psv itself unreadable (3), or readable but missing
+    # worktree_required's own row (4): either way, worktree_required's safe
     # direction is enforced, not disarmed, so this falls through to the
     # same opt-out check as the enabled arm above rather than "not
-    # enforced" — a transiently unreadable schema file must not silently
-    # disable worktree enforcement.
-    3) ;;
+    # enforced" — a transiently unreadable or torn schema file must not
+    # silently disable worktree enforcement.
+    3|4) ;;
     *) return 1 ;;
   esac
   [ ! -f "$repo_root/.claude/worktree-optout" ] && return 0
@@ -1420,12 +1421,14 @@ _lib_worktree_enforcement_active() {
 # Zero-arity: _config_enabled resolves and unions both locations itself, so
 # there is no CONFIG_DIR argument to thread through. Propagates
 # _config_enabled's exit code unchanged, including its exit code 2
-# (config-dir resolution failure) and exit code 3 (config-keys.psv
-# unreadable) — this function has no `case` of its own to fold either into
-# 1. Harmless because every caller (_lib_autonomous_shipping_active,
-# advance-past-commit-stall.sh) treats any nonzero exit identically via
-# `||`, and autonomous_shipping's own documented safe direction is NOT
-# shipping regardless of which failure caused it.
+# (config-dir resolution failure), exit code 3 (config-keys.psv unreadable),
+# and exit code 4 (config-keys.psv readable but missing
+# autonomous_shipping's own row) — this function has no `case` of its own to
+# fold any of them into 1. Harmless because every caller
+# (_lib_autonomous_shipping_active, advance-past-commit-stall.sh) treats any
+# nonzero exit identically via `||`, and autonomous_shipping's own
+# documented safe direction is NOT shipping regardless of which failure
+# caused it.
 _lib_autonomous_shipping_sentinel_present() {
   _config_enabled autonomous_shipping
 }
@@ -2796,17 +2799,19 @@ _lib_reviewer_round_state_value() {
 # _lib_permission_prompt_tracking_active above. Zero-arity: this sentinel is
 # machine-global with nothing repo- or session-scoped to look up. Fails
 # toward NOT disabled (i.e. the gate stays armed) on _config_enabled's exit
-# code 2 (unresolvable config dir) or exit code 3 (config-keys.psv
-# unreadable), matching every other opt-in-sentinel check in this file's
-# fail direction -- round_consult_gate's own safe direction is armed, so a
-# transiently unreadable schema must not silently disable it either.
+# code 2 (unresolvable config dir), exit code 3 (config-keys.psv unreadable),
+# or exit code 4 (config-keys.psv readable but missing round_consult_gate's
+# own row), matching every other opt-in-sentinel check in this file's fail
+# direction -- round_consult_gate's own safe direction is armed, so a
+# transiently unreadable or torn schema must not silently disable it either.
 _lib_round_consult_gate_disabled() {
   # Not a bare `! _config_enabled ...`: `!` collapses every nonzero exit
-  # code (1 disabled, 2 unresolvable config dir, 3 unreadable schema) into
-  # the same negated-true result, but this function must return 1 (not
-  # disabled, gate stays armed) for every code except 1, and 0 (disabled)
-  # only for 1 -- an explicit case distinguishes them, and the `*)` arm
-  # below already covers 2 and 3 identically with no separate case needed.
+  # code (1 disabled, 2 unresolvable config dir, 3 unreadable schema, 4
+  # schema row missing) into the same negated-true result, but this function
+  # must return 1 (not disabled, gate stays armed) for every code except 1,
+  # and 0 (disabled) only for 1 -- an explicit case distinguishes them, and
+  # the `*)` arm below already covers 2, 3, and 4 identically with no
+  # separate case needed.
   _config_enabled round_consult_gate
   case "$?" in
     1) return 0 ;;

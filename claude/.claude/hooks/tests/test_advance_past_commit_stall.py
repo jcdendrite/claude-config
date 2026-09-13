@@ -472,6 +472,43 @@ def test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed(
     )
 
 
+def test_commit_stall_block_case_statement_treats_exit_4_as_stays_armed(
+    isolated_home, dirty_repo, tmp_path
+):
+    """Direct regression test for the case "$?" statement itself
+    (advance-past-commit-stall.sh:63-66), isolated the same way the exit-3
+    test above is: config-keys.psv is readable and non-empty but missing
+    commit_stall_block's own row (the interrupted stow-relink/git-pull
+    shape, distinct from the wholly-unreadable file above), and
+    _lib_autonomous_shipping_sentinel_present is stubbed to unconditionally
+    return 0 so the hook's own commit_stall_block case arm is what actually
+    gates whether the hook proceeds to fire."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / ADVANCE_HOOK.name).symlink_to(ADVANCE_HOOK)
+    (isolated_hooks_dir / "_lib.sh.real").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    real_schema = (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
+    pruned_schema = [line for line in real_schema if not line.startswith("commit_stall_block|")]
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+    (isolated_hooks_dir / "_lib.sh").write_text(
+        "#!/bin/bash\n"
+        '. "$(dirname "${BASH_SOURCE[0]}")/_lib.sh.real"\n'
+        "_lib_autonomous_shipping_sentinel_present() { return 0; }\n"
+    )
+    result = run_hook_stop(
+        isolated_hooks_dir / ADVANCE_HOOK.name,
+        stop_input(ISSUE_QUOTE_QUESTION, session_id="s", prompt_id="p1", cwd=str(dirty_repo)),
+        cwd=dirty_repo,
+        home=isolated_home,
+    )
+    assert result is not None, (
+        "exit 4 (config-keys.psv readable but missing commit_stall_block's "
+        "own row) must leave commit_stall_block armed, not fold into exit "
+        "1's disabled branch"
+    )
+
+
 def test_legacy_home_claude_sentinel_fires_via_fast_path_union(
     armed_home, dirty_repo, tmp_path
 ):

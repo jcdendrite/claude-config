@@ -329,14 +329,25 @@ _config_read_key_from_file() {
 # Prints one column of KEY's config-keys.psv row. FIELD is one of: type,
 # default, resolution, legacy-probe-on-resolution-failure,
 # legacy-import-locations, legacy-filename, legacy-polarity, human-name,
-# docs-anchor, prompt-description. Returns 1 (nothing printed) if KEY has no
-# schema row, or FIELD is not one of the names above. Returns 3 (nothing
-# printed, plus a distinct stderr warning naming the schema file) when
-# config-keys.psv itself is missing or unreadable -- a partial stow-relink or
-# interrupted `git pull` -- a genuinely different exit code from "unknown
-# key," not just a distinct message, so a caller can map it to its own
-# fail-closed direction instead of silently treating infrastructure failure
-# the same as a misspelled key.
+# docs-anchor, prompt-description.
+# Returns 1 (nothing printed) if FIELD is not one of the names above. No
+# legitimate caller in this repo reaches this path, since every call site
+# passes a hardcoded literal field name.
+# Returns 3 (nothing printed, plus a distinct stderr warning naming the
+# schema file) when config-keys.psv itself is missing or unreadable -- a
+# partial stow-relink or interrupted `git pull`.
+# Returns 4 (nothing printed, plus a distinct stderr warning) for either of
+# two schema-file shapes that leave KEY's row undeterminable: the file is
+# readable and parses at least one row, but none of them is KEY's own; or
+# the file is readable but parses to zero rows at all (empty, or
+# comments/blank-lines-only content).
+# Both shapes are the same interrupted-stow-relink/git-pull race, just
+# caught at a different truncation point, and neither is a genuinely
+# unknown key.
+# Every caller must treat 3 and 4 identically to whatever direction it
+# takes for 3 already, never collapsed into 1 -- see _config_value's own
+# exit-code comment for why, and _lib.sh's enforcement-critical callers for
+# the concrete case arms.
 #
 # Uses install.sh:479's own `IFS='|' read -r' idiom -- reads directly from
 # the schema file rather than a bash array, since config-keys.psv is a real
@@ -348,10 +359,12 @@ _config_schema_field() {
     return 3
   fi
   local row_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description
+  local saw_any_row=""
   while IFS='|' read -r row_key type default resolution legacy_probe legacy_import legacy_filename legacy_polarity human_name docs_anchor prompt_description; do
     case "$row_key" in
       ''|'#'*) continue ;;
     esac
+    saw_any_row=1
     [ "$row_key" = "$key" ] || continue
     case "$field" in
       type) printf '%s' "$type" ;;
@@ -368,7 +381,14 @@ _config_schema_field() {
     esac
     return 0
   done < "$_CONFIG_SCHEMA_FILE"
-  return 1
+  if [ -n "$saw_any_row" ]; then
+    printf '_config.sh: warning: no schema row for key in an otherwise-readable schema file: %s (schema: %s)\n' \
+      "$key" "$_CONFIG_SCHEMA_FILE" >&2
+  else
+    printf '_config.sh: warning: schema file is readable but parsed zero rows: %s\n' \
+      "$_CONFIG_SCHEMA_FILE" >&2
+  fi
+  return 4
 }
 
 # _config_schema_known_keys
@@ -529,16 +549,16 @@ _config_location_value() {
 # be resolved and KEY's schema row does not authorize a raw $HOME/.claude
 # probe on that failure (legacy-probe-on-resolution-failure) — see
 # _config_enabled below for why this 2 is a different meaning from
-# config-get.sh's own exit code 2. Exit 1: KEY has no schema row at all —
-# no legitimate caller in this repo reaches this path (every call site
-# passes a hardcoded literal key name, and config-get.sh checks for an
-# unknown key itself before ever calling in here), so this is a defensive
-# fallback, not a validated contract. Exit 3: config-keys.psv itself is
-# missing or unreadable. This is propagated from _config_schema_field's own
-# exit 3 unchanged, never collapsed into 1. A caller must not treat it the
-# same as "KEY has no schema row," since the right failure direction differs
-# per key -- see _lib_worktree_enforcement_active/_lib_round_consult_gate_disabled
-# in _lib.sh for the enforcement-critical keys that must fail closed on it.
+# config-get.sh's own exit code 2. Exit 1: propagated unchanged from
+# _config_schema_field's own exit 1 (an unrecognized FIELD name) -- not
+# reachable here in practice, since this function always passes the
+# hardcoded, valid field literal "resolution". Exit 3 and exit 4 are both
+# propagated unchanged from _config_schema_field, never collapsed into 1 --
+# see that function's own docstring for what each covers. A caller must not
+# treat exit 3 or 4 the same as "KEY has no schema row" (exit 1), since the
+# right failure direction differs per key -- see
+# _lib_worktree_enforcement_active/_lib_round_consult_gate_disabled in
+# _lib.sh for the enforcement-critical keys that must fail closed on both.
 #
 # CONFIG_DIR_OVERRIDE lets a caller that already has its own config dir (or
 # needs a specific one — e.g. transcript-analysis.py's --all-accounts loop,
@@ -653,9 +673,10 @@ _config_value() {
 
 # _config_enabled KEY [CONFIG_DIR_OVERRIDE]
 # Boolean wrapper over _config_value: 0 (true/enabled), 1 (false/disabled),
-# 2 (config dir unresolvable), 3 (config-keys.psv unreadable) — 2 and 3 are
-# both propagated from _config_value unchanged, never collapsed into 1. Any
-# resolved value other than the literal "false" counts as enabled — an
+# 2 (config dir unresolvable), 3 (config-keys.psv unreadable), 4 (KEY's row
+# missing from an otherwise-readable, non-empty config-keys.psv) — 2, 3, and
+# 4 are all propagated from _config_value unchanged, never collapsed into 1.
+# Any resolved value other than the literal "false" counts as enabled — an
 # enum-typed key's only "off" value is "false", so e.g. pr_cost_disclosure
 # resolving to "dollars" is enabled.
 #

@@ -522,21 +522,22 @@ class TestReadableButEmptySchemaFile:
     """config-keys.psv present and readable but parsing to zero rows --
     empty, or comments/blank-lines-only content -- is a mid-write-truncation
     or stow-relink race, distinct from the fully-absent-file case above.
-    _config_schema_field's own upfront [ -r ] check passes, so
-    _config_value degrades to the same clean exit 1 an ordinary typo'd key
-    gets, not exit 3.
-    Unlike TestMissingSchemaFile, true parity is achievable here since both
-    readers already treat this the same as "unknown key".
-    Python's own equivalent is ConfigSchemaEmptyError, a KeyError subtype
+    _config_schema_field's own upfront [ -r ] check passes, so _config_value
+    now degrades the same way it does for the single-row-missing shape: exit
+    4, with a stderr warning naming the schema file (see
+    _config_schema_field's own docstring).
+    Python's own equivalent stays ConfigSchemaEmptyError, a KeyError subtype
     carrying a more specific type/message than a bare KeyError would, so a
-    caller can tell this race apart from a genuinely typo'd key literal."""
+    caller can tell this race apart from a genuinely typo'd key literal --
+    no enforcement-critical Python caller depends on numeric exit-code
+    parity with bash here."""
 
     @pytest.mark.parametrize(
         "schema_content",
         ["", "# just a comment\n\n", "\n\n\n"],
         ids=["empty-file", "comments-and-blank-lines-only", "blank-lines-only"],
     )
-    def test_readable_empty_schema_degrades_cleanly_in_both_readers(
+    def test_readable_empty_schema_returns_exit_4_in_bash_and_distinct_error_in_python(
         self, tmp_path, monkeypatch, schema_content, capsys
     ) -> None:
         _make_home(tmp_path, monkeypatch)
@@ -549,12 +550,9 @@ class TestReadableButEmptySchemaFile:
             ["bash", "-c", f'. "{isolated_hooks_dir / "_config.sh"}"; _config_value worktree_required'],
             capture_output=True, text=True,
         )
-        assert bash_result.returncode == 1
+        assert bash_result.returncode == 4
         assert bash_result.stdout == ""
-        assert bash_result.stderr == "", (
-            "a readable-but-empty schema must degrade as silently as an "
-            f"ordinary unknown key, not print the schema-unreadable warning: {bash_result.stderr!r}"
-        )
+        assert "parsed zero rows" in bash_result.stderr
 
         import _config
 

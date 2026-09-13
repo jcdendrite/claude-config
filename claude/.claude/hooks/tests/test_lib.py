@@ -3621,6 +3621,42 @@ class TestWorktreeEnforcementActive:
         )
         assert result.returncode == 0, f"stderr={result.stderr!r}"
 
+    def test_active_when_config_keys_psv_readable_but_missing_worktree_required_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A config-keys.psv that is readable and non-empty but missing
+        worktree_required's own row (the interrupted stow-relink/git-pull
+        shape, distinct from the wholly-unreadable case above) must not
+        silently disarm worktree enforcement either -- _config_enabled's
+        exit 4 for this shape routes to the same stays-armed arm as exit 3.
+        Copies the real config-keys.psv with only worktree_required's own
+        row removed."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
+        real_schema = (_LIB_SH.parent / "config-keys.psv").read_text().splitlines()
+        pruned_schema = [line for line in real_schema if not line.startswith("worktree_required|")]
+        (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_worktree_enforcement_active "$1"',
+                "bash",
+                str(repo),
+            ],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
 
 def test_sourcing_lib_sh_fails_when_config_sh_is_missing(tmp_path: Path) -> None:
     """A missing _config.sh must make _lib.sh's own sourcing fail (non-zero),
@@ -4089,6 +4125,35 @@ class TestRoundConsultGateDisabled:
             check=False,
         )
         assert result.returncode != 0, "the gate must stay armed (not disabled) when the schema is unreadable"
+
+    def test_not_disabled_when_config_keys_psv_readable_but_missing_round_consult_gate_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A config-keys.psv that is readable and non-empty but missing
+        round_consult_gate's own row (the interrupted stow-relink/git-pull
+        shape, distinct from the wholly-unreadable case above) must leave
+        the gate armed too -- _config_enabled's exit 4 for this shape falls
+        into this function's own `*)` catch-all, the same as exit 3. Copies
+        the real config-keys.psv with only round_consult_gate's own row
+        removed."""
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / ".round-consult-gate-disabled").touch()
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "_lib.sh").symlink_to(_LIB_SH)
+        (isolated_hooks_dir / "_config.sh").symlink_to(_LIB_SH.parent / "_config.sh")
+        real_schema = (_LIB_SH.parent / "config-keys.psv").read_text().splitlines()
+        pruned_schema = [line for line in real_schema if not line.startswith("round_consult_gate|")]
+        (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+        result = subprocess.run(
+            ["bash", "-c", f'. "{isolated_hooks_dir / "_lib.sh"}"; _lib_round_consult_gate_disabled'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+        )
+        assert result.returncode != 0, "the gate must stay armed (not disabled) when its schema row is missing"
 
 
 # --- Shared credential-guard constants -------------------------------------

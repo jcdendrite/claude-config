@@ -125,19 +125,20 @@ Column legend:
   0 before `commit_stall_block`'s schema row is ever read — "no kill-switch
   location to check," so the hook does not block on the strength of an
   unreadable kill switch. Config-keys.psv itself being unreadable (exit 3
-  from the later `_config_enabled` call) is different: `commit_stall_block`
+  from the later `_config_enabled` call), or readable but missing
+  `commit_stall_block`'s own row (exit 4), is different: `commit_stall_block`
   is one of the five enforcement-critical keys, and its fail-closed
   direction is "stays armed," the same class as `round_consult_gate` and
   `authorization_boundary_restore` — the `case "$?"` at the call site keeps
-  the hook running rather than collapsing exit 3 into the same "off"
+  the hook running rather than collapsing exit 3 or 4 into the same "off"
   outcome as exit 1 (explicitly disabled).
-- This exit-3 direction is masked from end-to-end observation in this hook
+- This exit-3/4 direction is masked from end-to-end observation in this hook
   by design, not merely in practice: step 3's
   `_lib_autonomous_shipping_sentinel_present` reads the same shared
   config-keys.psv, and `autonomous_shipping`'s own fail direction is "NOT
-  shipping" on any resolution failure including exit 3 — so a fully
+  shipping" on any resolution failure including exit 3/4 — so a fully
   unreadable schema always fails both checks simultaneously before this
-  key's own exit-3 arm could ever be the deciding factor end to end.
+  key's own exit-3/4 arm could ever be the deciding factor end to end.
   Covered directly, isolated from that masking, by
   `test_commit_stall_block_case_statement_treats_exit_3_as_stays_armed` in
   `test_advance_past_commit_stall.py`.

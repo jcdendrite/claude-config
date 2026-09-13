@@ -55,9 +55,10 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 # 2. Always-effective kill switch, independent of sentinel state. Delegates
 # to _config_enabled's commit_stall_block schema row (presence-disables).
 # Only exit code 1 (explicitly disabled) turns this hook off -- every other
-# outcome, including config-keys.psv being transiently unreadable, leaves
-# it armed. See config-schema-audit.md's commit_stall_block section for
-# the full fail-direction rationale.
+# outcome, including config-keys.psv being transiently unreadable (exit 3)
+# or readable but missing commit_stall_block's own row (exit 4), leaves it
+# armed. See config-schema-audit.md's commit_stall_block section for the
+# full fail-direction rationale.
 _config_enabled commit_stall_block
 case "$?" in
   1) exit 0 ;;

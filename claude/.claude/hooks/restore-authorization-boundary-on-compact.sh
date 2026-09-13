@@ -39,14 +39,15 @@ SOURCE=$(printf '%s' "$INPUT" | _lib_jq -r 'if (.source | type) == "string" then
 # Delegates to _config_enabled's authorization_boundary_restore schema row
 # (presence-disables). Exit code 2 (unresolvable) also exits here: an
 # unresolvable config dir has no kill-switch location to check, so this
-# advisory hook no-ops. Exit code 3 (config-keys.psv unreadable) does not
+# advisory hook no-ops. Exit code 3 (config-keys.psv unreadable) and exit
+# code 4 (config-keys.psv readable but missing this key's own row) do not
 # exit here: authorization_boundary_restore's own safe direction is
 # enforced (the boundary text still gets restated), unlike exit 2's
 # no-location-to-check reasoning, which does not apply to a schema failure.
 _config_enabled authorization_boundary_restore
 AUTHORIZATION_BOUNDARY_RESTORE_STATUS=$?
 case "$AUTHORIZATION_BOUNDARY_RESTORE_STATUS" in
-  0|3) ;;
+  0|3|4) ;;
   *) exit 0 ;;
 esac
 

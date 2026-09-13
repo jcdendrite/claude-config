@@ -102,6 +102,33 @@ class TestRestoreAuthorizationBoundaryOnCompact:
         ctx = _additional_context(result)
         assert "not engineer authorization" in ctx
 
+    def test_emits_output_when_config_keys_psv_readable_but_missing_row(self, isolated_home, tmp_path):
+        """A config-keys.psv that is readable and non-empty but missing
+        authorization_boundary_restore's own row (the interrupted
+        stow-relink/git-pull shape, distinct from the wholly-unreadable case
+        above) must not silently suppress this advisory restatement either
+        -- _config_enabled's exit 4 for this shape routes to the same
+        stays-armed arm as exit 3. Copies the real config-keys.psv with
+        only authorization_boundary_restore's own row removed."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "restore-authorization-boundary-on-compact.sh").symlink_to(RESTORE_BOUNDARY_HOOK)
+        (isolated_hooks_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+        (isolated_hooks_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+        real_schema = (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
+        pruned_schema = [line for line in real_schema if not line.startswith("authorization_boundary_restore|")]
+        (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(pruned_schema) + "\n")
+        result = subprocess.run(
+            [str(isolated_hooks_dir / "restore-authorization-boundary-on-compact.sh")],
+            input=json.dumps({"source": "compact"}).encode(),
+            capture_output=True,
+            env={**os.environ, "HOME": str(isolated_home)},
+            check=False,
+        )
+        assert result.returncode == 0
+        ctx = _additional_context(result)
+        assert "not engineer authorization" in ctx
+
     @pytest.mark.parametrize("token", _NAMED_TOKENS)
     def test_named_shape_token_present(self, isolated_home, token):
         """Each illustrative shape is named by its literal command/verb

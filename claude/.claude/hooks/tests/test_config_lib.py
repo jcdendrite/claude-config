@@ -61,6 +61,20 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
     )
 
 
+def _isolated_hooks_dir_missing_key_row(tmp_path: Path, key: str) -> Path:
+    """Copies the real config-keys.psv into an isolated hooks dir with KEY's
+    own row entirely removed -- every other row is left untouched, so this
+    exercises the interrupted-stow-relink/git-pull shape (a readable,
+    non-empty file missing exactly one row), not a wholly synthetic or
+    empty schema."""
+    isolated_hooks_dir = tmp_path / "isolated-hooks"
+    isolated_hooks_dir.mkdir()
+    (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+    lines = [line for line in _CONFIG_KEYS_PSV.read_text().splitlines() if not line.startswith(f"{key}|")]
+    (isolated_hooks_dir / "config-keys.psv").write_text("\n".join(lines) + "\n")
+    return isolated_hooks_dir
+
+
 def _isolated_hooks_dir_with_legacy_polarity_override(tmp_path: Path, key: str, polarity: str) -> Path:
     """Copies the real config-keys.psv into an isolated hooks dir, replacing
     KEY's own legacy-polarity column (field 8 of 11) with POLARITY --
@@ -117,7 +131,7 @@ class TestDefaultResolution:
 
 
 # ---------------------------------------------------------------------------
-# _config_enabled's four-way exit code contract
+# _config_enabled's five-way exit code contract
 # ---------------------------------------------------------------------------
 
 
@@ -148,6 +162,39 @@ class TestExitCodeContract:
         enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
         assert enabled_result.returncode == 3
         assert enabled_result.stdout == ""
+
+    def test_schema_row_missing_from_readable_file_returns_exit_4(self, tmp_path):
+        """A config-keys.psv that is readable and parses at least one row,
+        but not KEY's own -- the interrupted stow-relink/git-pull shape,
+        distinct from the wholly-unreadable file above -- must propagate a
+        distinct exit 4 unchanged from both _config_value and
+        _config_enabled, not collapse into exit 1 (indistinguishable from
+        an ordinary typo'd key) or exit 3 (wholly unreadable file)."""
+        isolated_hooks_dir = _isolated_hooks_dir_missing_key_row(tmp_path, "worktree_required")
+        value_result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert value_result.returncode == 4
+        assert value_result.stdout == ""
+        assert "worktree_required" in value_result.stderr
+        enabled_result = _run_with_schema(isolated_hooks_dir, "_config_enabled worktree_required")
+        assert enabled_result.returncode == 4
+        assert enabled_result.stdout == ""
+
+    def test_readable_empty_schema_also_returns_exit_4(self, tmp_path):
+        """A readable schema file that parses to zero rows at all (comments/
+        blank-lines-only, or truly empty) is the same interrupted-write race
+        exit 4's missing-single-row shape covers, just caught at an earlier
+        truncation point, so it must also return exit 4 with a stderr
+        warning naming the schema file, rather than the silent exit 1 an
+        ordinary typo'd key gets. Bash-side counterpart to
+        test_config_parser_parity.py's TestReadableButEmptySchemaFile."""
+        isolated_hooks_dir = tmp_path / "isolated-hooks"
+        isolated_hooks_dir.mkdir()
+        (isolated_hooks_dir / "config-keys.psv").write_text("")
+        (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
+        result = _run_with_schema(isolated_hooks_dir, "_config_value worktree_required")
+        assert result.returncode == 4
+        assert result.stdout == ""
+        assert "parsed zero rows" in result.stderr
 
 
 # ---------------------------------------------------------------------------
