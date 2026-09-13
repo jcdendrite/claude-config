@@ -10206,7 +10206,7 @@ class TestCacheRebuild1hTo5mDeltaPricing:
 
     def test_fable_5_1_uses_reduced_cache_read_multiplier_not_hardcoded_1_15(self):
         """A hardcoded (1.25 - 0.1) = 1.15 coefficient would price this
-        call's expiry leg at 1,000,000/1e6 * (12.5 - 1.0) = $11.50; the
+        call's expiry leg at 1,000,000/1e6 * (12.5 - 1.0) = $11.50. The
         correct, per-model-resolved coefficient uses Fable 5.1's own
         reduced 0.025x cache-read multiplier (read rate $0.25, expiry
         coefficient 12.5-0.25=12.25), giving $12.25 instead."""
@@ -10315,10 +10315,11 @@ class TestCacheRebuildTokenTiebreakerFavors5m:
 class TestCacheRebuildRootVerdictInput:
     """Direct unit coverage for _cache_rebuild_root_verdict_input -- the
     per-root reduction the report's own per-bucket loop calls once per
-    5m-tier root (apply_tiebreaker=False, tiebreaker never runs -- W1h is
-    always 0 for a 5m-tier root by construction, so a raw-token comparison
-    against it is degenerate) and once per 1h-tier root (apply_tiebreaker=
-    True, tiebreaker gates clears)."""
+    5m-tier root and once per 1h-tier root. For a 5m-tier root,
+    apply_tiebreaker=False and the tiebreaker never runs, since W1h is
+    always 0 for a 5m-tier root by construction, making a raw-token
+    comparison against it degenerate. For a 1h-tier root, apply_tiebreaker=
+    True and the tiebreaker gates clears."""
 
     def test_5m_tier_root_clears_despite_disagreeing_tiebreaker_value(self):
         """apply_tiebreaker is False for a 5m-tier root, so clears is
@@ -10398,6 +10399,28 @@ class TestCacheRebuildRootVerdictInput:
             apply_tiebreaker=True, tiebreaker_favors_5m=True,
         )
         assert root_input == {"favors": "5m", "clears": True}
+
+    def test_5m_tier_root_favors_5m_at_the_net_primary_zero_sign_boundary(self):
+        """favors resolves via net_primary > 0, not net_primary >= 0, so an
+        exact 0.0 net_primary -- a real dollar-delta accumulation can land
+        exactly on zero -- takes the negative_favors branch for a 5m-tier
+        root's own orientation."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=0.0, net_sensitivity=0.0, volume=10.0,
+            positive_favors="1h", negative_favors="5m",
+            apply_tiebreaker=False,
+        )
+        assert root_input == {"favors": "5m", "clears": False}
+
+    def test_1h_tier_root_favors_1h_at_the_net_primary_zero_sign_boundary(self):
+        """The same net_primary == 0.0 sign boundary, at a 1h-tier root's
+        own positive_favors/negative_favors orientation."""
+        root_input = _mod._cache_rebuild_root_verdict_input(
+            net_primary=0.0, net_sensitivity=0.0, volume=10.0,
+            positive_favors="5m", negative_favors="1h",
+            apply_tiebreaker=True, tiebreaker_favors_5m=False,
+        )
+        assert root_input == {"favors": "1h", "clears": False}
 
 
 class TestCacheRebuildTtlVerdictDecision:
@@ -10635,16 +10658,19 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert root_2["Clears"] == "False"
 
     def test_hand_computed_w1h_and_z_totals_match_known_fixture(self, fake_projects, capsys):
-        """A small, hand-computed 1h-tier fixture: call1 (session start)
-        writes 200,000 ephemeral_1h tokens (W1h only -- session start is
-        never idle-gap-caused); call2, a 6-minute-gap warm read of
-        150,000 tokens with no write at all, is idle 5m-1h under a live
-        1h tier (W1h unchanged, Z += 150,000); call3, a further 6-minute-
-        gap PURE ephemeral_1h-tier write of 100,000 tokens, reclassifies
-        unexplained (the 1h cache can't have expired inside 6 minutes), so
-        it adds to W1h but not Z. Expected totals -- W1h=300,000,
-        Z=150,000 -- are known in advance, not derived from the code under
-        test."""
+        """A small, hand-computed 1h-tier fixture.
+
+        call1 (session start) writes 200,000 ephemeral_1h tokens (W1h
+        only -- session start is never idle-gap-caused).
+        call2, a 6-minute-gap warm read of 150,000 tokens with no write
+        at all, is idle 5m-1h under a live 1h tier (W1h unchanged,
+        Z += 150,000).
+        call3, a further 6-minute-gap PURE ephemeral_1h-tier write of
+        100,000 tokens, reclassifies unexplained (the 1h cache can't have
+        expired inside 6 minutes), so it adds to W1h but not Z.
+
+        Expected totals -- W1h=300,000, Z=150,000 -- are known in
+        advance, not derived from the code under test."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_1h=200_000, ts="2026-08-01T10:00:00.000Z", request_id="w1"),
             _priced(
@@ -10771,18 +10797,22 @@ class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
 
     def test_1h_tier_root_declines_on_a_non_wash_disagreement(self, fake_projects, capsys):
         """W1h=1,000,000 (call1, session start). call2 reads 800,000
-        tokens at a 400s gap (idle at both boundaries); call3 reads a
-        further 400,000 at a 100s gap after call2 (idle only at the 60s
-        sensitivity boundary). The primary Z is 800,000 -- nonzero, unequal
-        to W1h, and (0.8 < the 1.0 tiebreaker threshold) favors dropping to
-        5m, disagreeing with the dollar accounting's own "favors 1h" sign
-        (0.8 exceeds the ~0.652 dollar break-even, so net$ is negative here
-        too -- this ratio band structurally always fails the margin
+        tokens at a 400s gap, idle at both boundaries. call3 reads a
+        further 400,000 at a 100s gap after call2, idle only at the 60s
+        sensitivity boundary.
+
+        The primary Z is 800,000: nonzero, unequal to W1h, and 0.8 below
+        the 1.0 tiebreaker threshold favors dropping to 5m, disagreeing
+        with the dollar accounting's own "favors 1h" sign.
+
+        0.8 also exceeds the ~0.652 dollar break-even, so net$ is negative
+        here too. This ratio band structurally always fails the margin
         alongside the tiebreaker, since the break-even sits below the
-        tiebreaker's own threshold). Gating Z's own increment on the
-        sensitivity boundary instead of the primary one would total
-        1,200,000, a different printed X/Z figure than the 800,000
-        asserted below."""
+        tiebreaker's own threshold.
+
+        Gating Z's own increment on the sensitivity boundary instead of
+        the primary one would total 1,200,000, a different printed X/Z
+        figure than the 800,000 asserted below."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
             _priced(
@@ -10818,12 +10848,13 @@ class TestCacheRebuildTtlVerdictSensitivityBoundary:
 
         call1 (session start) writes 1,150,000 ephemeral_1h tokens (W1h),
         contributing only the always-on base term (-$1.725) at both
-        boundaries. call2, a 100s gap, reads 900,000 tokens: at the 300s
-        boundary this call is unexplained (gap < 300) and never touches Z
-        or the expiry term, leaving net$ = +$1.725 (margin 1.725/4.6 =
-        37.5%, clears); at the 60s boundary the same call is idle 5m-1h,
-        adding a +$2.07 expiry term that flips the total to -$0.345
-        (a negative margin, failing)."""
+        boundaries. call2, a 100s gap, reads 900,000 tokens:
+        - at the 300s boundary, this call is unexplained (gap < 300) and
+          never touches Z or the expiry term, leaving net$ = +$1.725
+          (margin 1.725/4.6 = 37.5%, clears).
+        - at the 60s boundary, the same call is idle 5m-1h, adding a
+          +$2.07 expiry term that flips the total to -$0.345 (a negative
+          margin, failing)."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_1h=1_150_000, ts="2026-08-01T10:00:00.000Z", request_id="b1"),
             _priced(

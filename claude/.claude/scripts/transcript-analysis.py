@@ -6372,11 +6372,11 @@ def _cache_rebuild_root_verdict_input(
     positive_favors/negative_favors name the direction net_primary's own
     sign resolves to -- "1h"/"5m" for a 5m-tier root, "5m"/"1h" for a
     1h-tier root, since the two directions' savings-positive sign points
-    opposite ways. apply_tiebreaker is False for a 5m-tier root; clears is
-    then the dollar margin alone, since W1h is always 0 there by
-    construction (that's what "consistent 5m" means), which makes a
-    raw-token comparison against it degenerate rather than a real
-    tiebreaker. For a 1h-tier root, apply_tiebreaker is True and
+    opposite ways. apply_tiebreaker is False for a 5m-tier root, so clears
+    is the dollar margin alone. W1h is always 0 for a 5m-tier root by
+    construction -- that's what "consistent 5m" means. A raw-token
+    comparison against it would therefore be degenerate rather than a
+    real tiebreaker. For a 1h-tier root, apply_tiebreaker is True and
     tiebreaker_favors_5m must agree with the dollar accounting's own sign
     -- a None (Z == W1h wash) result never agrees, so clears is forced
     False regardless of margin.
@@ -6397,19 +6397,9 @@ def _cache_rebuild_root_verdict_input(
 
 def _cache_rebuild_ttl_verdict(root_inputs: Sequence[dict[str, object]]) -> str:
     """Reduce one bucket's own consistent-root inputs to the plan's four-way
-    verdict (Approach section's "ship rule"). Each element of root_inputs is
-    {"favors": "5m" | "1h", "clears": bool} for one consistent root --
-    "favors" is this root's own resolved direction, the dollar accounting's
-    own sign, and "clears" folds in the margin-at-both-boundaries check and,
-    for a 1h-tier root only, the tiebreaker-agreement check. No consistent
-    root at all is "no verdict", a
-    distinct state "adopt" can never reach vacuously (adopt requires at
-    least one consistent root by construction). Differing "favors" values
-    across consistent roots is "roots disagree", checked before "clears" --
-    a fundamental disagreement on direction is reported as such even when
-    every root's own margin happens to clear. Uniform direction with every
-    root clearing is "adopt"; uniform direction with at least one root not
-    clearing is "decline".
+    verdict (Approach section's "ship rule"). Roots-disagree is checked
+    before clears, so a direction conflict wins even when every root's own
+    margin happens to clear.
     """
     if not root_inputs:
         return _TTL_VERDICT_NO_VERDICT
