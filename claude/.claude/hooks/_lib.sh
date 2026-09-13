@@ -394,6 +394,10 @@ _marker_lib_repo_hash() {
 # misreport the common case as an error rather than as a clean not-found.
 # The shopt state is saved and restored so callers that rely on the default
 # glob behavior elsewhere are unaffected.
+#
+# Other filesystem/git calls in this file wrap in _lib_capped; this one
+# doesn't. It's safe uncapped only because usage today is a local
+# marker-directory grep that won't hang — re-evaluate if that changes.
 _lib_marker_value_present() {
   local markers_dir="$1" expected_value="$2"
   shift 2
@@ -636,6 +640,10 @@ _lib_active_plan_hash() {
 # subject is marker.sh's precondition, not this helper's.
 # Exit 0, non-empty stdout: the sha256 hex digest of TEXT.
 # Exit 1, empty stdout: sha256sum/awk produced no output (tool misbehavior).
+#
+# Other filesystem/git calls in this file wrap in _lib_capped; this one
+# doesn't. It's safe uncapped only because it's an in-memory pipe to
+# sha256sum that won't hang -- re-evaluate if that changes.
 _lib_hash_diff_text() {
   local text="$1"
   local digest
