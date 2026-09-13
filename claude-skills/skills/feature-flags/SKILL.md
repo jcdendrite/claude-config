@@ -113,6 +113,11 @@ changes alongside a deploy is config, not a toggle.
    for the authorization-check specifics. These properties hold
    regardless of that review's specifics:
 
+   - The writer-side mutator must itself enforce an authorization check
+     before completing the mutation. That check must be scoped to a
+     narrower principal set than the datastore's general write access.
+     An audit-log entry records that a change happened. It does not
+     substitute for preventing an unauthorized one.
    - No code path may complete the mutation without a corresponding
      audit-log entry existing. A same-transaction commit and a
      synchronous write to an isolated tamper-evident store both satisfy
@@ -127,14 +132,14 @@ changes alongside a deploy is config, not a toggle.
      entirely. It needs its own datastore-level control: a column-level
      grant, a row-level policy, or a restriction on who holds the
      table's write role at all.
-   - A toggle that disables a security control globally warrants a
-     stronger bar than a single-subject grant — consider a time-boxed
-     override or two-person approval for that case.
+   - A toggle that disables a security control globally must use a
+     stronger bar than a single-subject grant: a time-boxed override or
+     two-person approval.
 3. **Multi-variant targeting, percentage rollout, or experimentation
    with metrics attribution** — a dedicated platform, and only here. A
    vendor's SaaS/cloud-hosted tier means the per-subject targeting
-   attributes driving that rollout leave the team's infrastructure — a
-   data-egress decision distinct from the license and self-host-cap
+   attributes driving that rollout leave the team's infrastructure. That
+   data-egress decision is distinct from the license/self-host-cap
    comparison in `REFERENCES.md`. When a toggle reaching this tier is
    itself security-sensitive, the same write-path disciplines above
    apply, translated to the vendor surface: vendor console/API RBAC or

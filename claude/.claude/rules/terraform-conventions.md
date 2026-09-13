@@ -47,11 +47,11 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
   two legal values, mirror the recommended value instead and state why
   the two diverge in a comment. For example,
   `aws_cognito_user_pool_client`'s `prevent_user_existence_errors`
-  defaults to `LEGACY`; prefer `ENABLED`, which closes only the
+  defaults to `LEGACY`; prefer `ENABLED`. `ENABLED` closes only the
   content-disclosure channel across a documented set of operations. It
-  doesn't cover `SignUp` or a timing side channel — see
+  doesn't cover `SignUp` or a timing side channel (CWE-208) — see
   `docs/rules-references.md` for the operation list and
-  `ciso-reviewer.md`'s CWE-208 account-existence-disclosure angle.
+  `ciso-reviewer.md`'s account-existence-disclosure angle.
 - **On a retrofit** to an existing variable: a **default** change only
   affects callers that don't already override it. A **type or
   legal-value-set** change breaks callers that do — an existing caller
@@ -68,12 +68,14 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
     instead of a same-version flip, so a caller opts in by bumping
     their pin rather than inheriting the new behavior silently.
 
-  A type or legal-value-set change is at least as strong a
-  major-version signal as a default change, because the caller-visible
-  values themselves change. This includes purely additive widening: a
-  `validation` block can act as a caller-relied-on allow-list rather
-  than a provider-schema mirror, so widening it still changes what the
-  gate permits.
+  Narrowing the legal-value set is unconditionally at least as strong a
+  major-version signal as a default change: a previously-valid caller
+  value can now fail validation, with no opt-in. Purely additive
+  widening is backward-compatible by semver's own definition: every
+  previously-accepted value still validates. Treat it as a same-version
+  (MINOR) change for an Enumerable module. Treat it as a major-version
+  change only for an Open module, where you cannot rule out a caller
+  relying on the gate's prior rejection of the now-legal value.
 - **Word the `validation` error message to flag it as possibly-stale**,
   since the provider can add legal values the module's `validation`
   block will keep rejecting.

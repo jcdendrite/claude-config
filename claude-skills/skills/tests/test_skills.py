@@ -386,22 +386,32 @@ _FEATURE_FLAGS_POINTER_SITES = [
 def test_feature_flags_pointer_sites_still_name_the_skill(relative_path, pointer_phrase):
     """Pins each site's exact pointer phrase (not a "feature-flags"
     substring) so a meaning-reversing rewrite that keeps the word is
-    still caught."""
-    content = (REPO_ROOT / relative_path).read_text()
-    assert pointer_phrase in content, (
+    still caught. Whitespace-normalized so a benign paragraph rewrap
+    (e.g. terraform-conventions.md's hard-wrapped prose) doesn't fail
+    this test."""
+    content = re.sub(r"\s+", " ", (REPO_ROOT / relative_path).read_text())
+    normalized_phrase = re.sub(r"\s+", " ", pointer_phrase)
+    assert normalized_phrase in content, (
         f"{relative_path} no longer contains {pointer_phrase!r} — "
         "this site is one of feature-flags' six hand-off pointer sites, "
         "its sole reachability mechanism since the skill is name-only"
     )
 
 
-# Pinned (whitespace-normalized match, so a benign re-wrap is safe but a
-# word change isn't) so a future edit to feature-flags/SKILL.md's write-path
-# checklist can't silently drop one of its five parallel invariants with no
-# CI signal. Each param pins a bullet's full text, not just its first
-# sentence, so a carve-out or remediation clause added after the initial
-# rule can't be dropped without failing this test.
+# Matching is whitespace-normalized, so a benign re-wrap passes but a
+# word change doesn't. Each param pins a bullet's full text, not just its
+# first sentence, so a carve-out or remediation clause added later can't
+# be silently dropped either. This guards all six parallel write-path
+# invariants in feature-flags/SKILL.md.
 _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
+    pytest.param(
+        "The writer-side mutator must itself enforce an authorization check "
+        "before completing the mutation. That check must be scoped to a "
+        "narrower principal set than the datastore's general write access. "
+        "An audit-log entry records that a change happened. It does not "
+        "substitute for preventing an unauthorized one.",
+        id="mutator-authorization-check",
+    ),
     pytest.param(
         "No code path may complete the mutation without a corresponding "
         "audit-log entry existing. A same-transaction commit and a "
@@ -429,9 +439,9 @@ _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
         id="datastore-level-control",
     ),
     pytest.param(
-        "A toggle that disables a security control globally warrants a "
-        "stronger bar than a single-subject grant — consider a time-boxed "
-        "override or two-person approval for that case.",
+        "A toggle that disables a security control globally must use a "
+        "stronger bar than a single-subject grant: a time-boxed override "
+        "or two-person approval.",
         id="global-disable-stronger-bar",
     ),
 )
@@ -439,7 +449,7 @@ _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
 
 @pytest.mark.parametrize("sentence", _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES)
 def test_feature_flags_write_path_invariant_pinned_verbatim(sentence):
-    """Each of the five parallel write-path security invariants in
+    """Each of the six parallel write-path security invariants in
     feature-flags/SKILL.md must survive verbatim (whitespace-normalized) --
     see _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES."""
     content = re.sub(
@@ -448,6 +458,49 @@ def test_feature_flags_write_path_invariant_pinned_verbatim(sentence):
     assert sentence in content, (
         f"feature-flags/SKILL.md is missing a pinned write-path security "
         f"invariant verbatim:\n{sentence!r}"
+    )
+
+
+# Matching is whitespace-normalized, so a benign re-wrap passes but a word
+# change doesn't. Guards terraform-conventions.md's major-version-signal
+# paragraph against a silent revert -- e.g. reintroducing the old "additive
+# widening still forces major version" overclaim, or dropping the
+# Enumerable/Open distinction.
+_TERRAFORM_CONVENTIONS_MAJOR_VERSION_SIGNAL_SENTENCES = (
+    pytest.param(
+        "Narrowing the legal-value set is unconditionally at least as "
+        "strong a major-version signal as a default change: a "
+        "previously-valid caller value can now fail validation, with no "
+        "opt-in.",
+        id="narrowing-is-major-version-signal",
+    ),
+    pytest.param(
+        "Purely additive widening is backward-compatible by semver's own "
+        "definition: every previously-accepted value still validates. "
+        "Treat it as a same-version (MINOR) change for an Enumerable "
+        "module. Treat it as a major-version change only for an Open "
+        "module, where you cannot rule out a caller relying on the gate's "
+        "prior rejection of the now-legal value.",
+        id="widening-enumerable-vs-open",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "sentence", _TERRAFORM_CONVENTIONS_MAJOR_VERSION_SIGNAL_SENTENCES
+)
+def test_terraform_conventions_major_version_signal_pinned_verbatim(sentence):
+    """Both halves of terraform-conventions.md's major-version-signal
+    paragraph must survive verbatim (whitespace-normalized) -- see
+    _TERRAFORM_CONVENTIONS_MAJOR_VERSION_SIGNAL_SENTENCES."""
+    content = re.sub(
+        r"\s+",
+        " ",
+        (REPO_ROOT / "claude" / ".claude" / "rules" / "terraform-conventions.md").read_text(),
+    )
+    assert sentence in content, (
+        f"terraform-conventions.md is missing a pinned major-version-signal "
+        f"sentence verbatim:\n{sentence!r}"
     )
 
 
