@@ -480,6 +480,15 @@ class TestReviewLedgerRoundScopedDedup:
         lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
         assert len(lines) == 1, f"identical retry within the same round must dedup, got: {lines}"
 
+    def test_retried_identical_clean_call_within_same_round_still_dedups(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        args = ["append", "code-review", "--disposition", "CLEAN", "--round", "1"]
+        _run(args, cwd=git_repo, home=isolated_home)
+        result = _run(args, cwd=git_repo, home=isolated_home)
+        assert result.returncode == 0, result.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, f"identical CLEAN retry within the same round must dedup, got: {lines}"
+
 
 class TestReviewLedgerDedupFilterIsStaticLiteral:
     """_lib_append_json_line_locked's own docstring (_lib.sh) requires its
@@ -531,6 +540,35 @@ class TestReviewLedgerDedupFilterIsStaticLiteral:
         assert record["finding"] == injected
         assert record["rationale"] == injected
         assert record["source"] == injected
+
+    def test_multibyte_utf8_finding_round_trips_and_dedups_unmodified(self, isolated_home, git_repo):
+        """Mirrors test_jq_filter_special_chars_in_finding_round_trip_unmodified
+        but for multi-byte UTF-8 content: an accented character, CJK, and an
+        emoji, each spanning more than one UTF-8 byte. This asserts the
+        --arg-bound value round-trips exactly and that the
+        round-scoped dedup key still collapses an identical retry when the
+        finding contains non-ASCII bytes."""
+        _seed_session(isolated_home, SID)
+        multibyte = "café 日本語 🎉"
+        result = _run(
+            _append_args(finding=multibyte, rationale=multibyte),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert result.returncode == 0, result.stderr
+        retry = _run(
+            _append_args(finding=multibyte, rationale=multibyte),
+            cwd=git_repo,
+            home=isolated_home,
+        )
+        assert retry.returncode == 0, retry.stderr
+        lines = _ledger_path(isolated_home, git_repo).read_text().splitlines()
+        assert len(lines) == 1, (
+            f"identical retry of a non-ASCII finding within the same round must dedup, got: {lines}"
+        )
+        record = json.loads(lines[0])
+        assert record["finding"] == multibyte
+        assert record["rationale"] == multibyte
 
 
 class TestReviewLedgerFieldCaps:
