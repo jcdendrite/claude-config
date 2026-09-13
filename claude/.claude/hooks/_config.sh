@@ -94,13 +94,20 @@ _config_trim() {
 
 # _config_line_key_value LINE KEY_VAR VALUE_VAR
 # Parses one line of claude-config.toml's `key = value` grammar. The value
-# subset is exactly `true`, `false`, or a bare `[a-z0-9_-]+` token -- no
-# quoting, no escapes, no arrays, no tables, so a TOML table/array/
-# multi-line-string line always fails this check rather than being
-# partially understood. A leading UTF-8 BOM and a trailing CR (tolerating a
-# CRLF line mixed into an otherwise-LF file) are the caller's job, stripped
-# once against the whole file's content before this function ever sees a
-# single line — see _config_read_key_from_file for where that happens.
+# subset is exactly `true`, `false` (bare only), or a `[a-z0-9_-]+` token
+# wrapped in one matching pair of double quotes (e.g. `"dollars"`) -- no
+# escapes, no arrays, no tables, so a TOML table/array/multi-line-string
+# line always fails this check rather than being partially understood.
+# Genuine TOML writes a boolean bare and any other scalar quoted. `true`/
+# `false` are therefore rejected if quoted, and every other value is
+# rejected if bare. config-keys.psv holds only `bool` and `enum:X` keys
+# today, so this literal-driven rule needs no schema lookup of its own: a
+# `bool` key never accepts anything but bare `true`/`false`, and an
+# `enum:X` key's own literal is the only bare-alphanumeric value left. A
+# leading UTF-8 BOM and a trailing CR (tolerating a CRLF line mixed into an
+# otherwise-LF file) are the caller's job, stripped once against the whole
+# file's content before this function ever sees a single line — see
+# _config_read_key_from_file for where that happens.
 #
 # Exit 0: KEY_VAR/VALUE_VAR populated via `printf -v` (bash-3.1+-safe).
 # Exit 1: blank line or a full-line `#` comment — not a parse error, never
@@ -154,7 +161,20 @@ _config_line_key_value() {
   value="$_CONFIG_TRIM_RESULT"
   [[ "$key" =~ ^[A-Za-z0-9_-]+$ ]] || return 2
   value=$(LC_ALL=C tr '[:upper:]' '[:lower:]' <<< "$value")
+  # A double-quoted regex variable, not an inline `[[ =~ "..." ]]` literal
+  # -- an unquoted regex word containing a literal `"` would otherwise be
+  # re-parsed by bash's own quote removal before `=~` ever sees it.
+  local quote_re='^"([a-z0-9_-]+)"$'
+  local quoted=""
+  if [[ "$value" =~ $quote_re ]]; then
+    value="${BASH_REMATCH[1]}"
+    quoted=1
+  fi
   [[ "$value" =~ ^[a-z0-9_-]+$ ]] || return 2
+  case "$value" in
+    true|false) [ -z "$quoted" ] || return 2 ;;
+    *) [ -n "$quoted" ] || return 2 ;;
+  esac
   printf -v "$key_var" '%s' "$key"
   printf -v "$value_var" '%s' "$value"
   return 0
@@ -665,7 +685,11 @@ _config_enabled() {
 #
 # Also refuses (returns 1, no write) when VALUE doesn't match KEY's own
 # declared config-keys.psv type: a `bool` key accepts only `true`/`false`;
-# an `enum:X` key accepts only `false` or the literal `X`.
+# an `enum:X` key accepts only `false` or the literal `X`. VALUE itself is
+# always passed bare (e.g. `dollars`, never `"dollars"`). The line actually
+# written quotes an `enum:X` key's own literal (`key = "dollars"`), matching
+# _config_line_key_value's read-side rule that only `true`/`false` may be
+# bare. `false` itself stays bare for either key type.
 #
 # Atomicity: mktemp targets the SAME directory as the state file, not a
 # bare `mktemp` (which defaults to $TMPDIR, commonly a different filesystem
@@ -718,6 +742,13 @@ _config_set() {
       ;;
     *) return 1 ;;
   esac
+  # The value actually written to the line -- see this function's own
+  # header for why an enum literal is quoted here but VALUE itself is
+  # taken bare.
+  local write_value="$value"
+  case "$key_type" in
+    enum:*) [ "$value" = "false" ] || write_value="\"$value\"" ;;
+  esac
   local config_dir
   if [ -n "$config_dir_override" ]; then
     config_dir="$config_dir_override"
@@ -756,12 +787,12 @@ _config_set() {
     _config_line_key_value "${existing_lines[$i]}" key_out value_out
     status=$?
     if [ "$status" -eq 0 ] && [ "$key_out" = "$key" ]; then
-      content+="$key = $value"$'\n'
+      content+="$key = $write_value"$'\n'
     else
       content+="${existing_lines[$i]}"$'\n'
     fi
   done
-  [ "$found" -eq 0 ] || content+="$key = $value"$'\n'
+  [ "$found" -eq 0 ] || content+="$key = $write_value"$'\n'
 
   local tmp_file
   tmp_file=$(mktemp "$(dirname -- "$state_file")/.claude-config.XXXXXX") || return 1

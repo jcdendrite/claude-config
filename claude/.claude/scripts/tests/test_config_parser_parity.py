@@ -114,6 +114,29 @@ ADVERSARIAL_FIXTURES: dict[str, bytes] = {
     # either way. See TestSpecificFixtureExpectations below for the direct
     # assertion this relies on.
     "kelvin-sign-value-collapses-under-unicode-casefold": "handoff_nudge = K\n".encode(),
+    # A bare enum literal is not valid TOML (only true/false may be
+    # bare; any other scalar must be quoted) -- rejected as malformed in
+    # both readers, falling through to pr_cost_disclosure's own schema
+    # default.
+    "bare-enum-literal-is-malformed": b"pr_cost_disclosure = dollars\n",
+    "quoted-enum-literal-resolves": b'pr_cost_disclosure = "dollars"\n',
+    # A quoted boolean is not valid TOML either -- true/false must stay
+    # bare -- rejected as malformed in both readers, falling through to
+    # handoff_nudge's own schema default ("true").
+    "quoted-boolean-literal-is-malformed": b'handoff_nudge = "false"\n',
+    # The four quote-well-formedness shapes below pin the fiddlier edges of
+    # the same quoting rule, on both readers together, so a later change to
+    # either side's quote-stripping can't silently diverge on one of them.
+    "unmatched-quote-open-only": b'pr_cost_disclosure = "dollars\n',
+    "unmatched-quote-close-only": b'pr_cost_disclosure = dollars"\n',
+    "internal-quote-in-value": b'pr_cost_disclosure = "doll"ars"\n',
+    "whitespace-inside-quoted-value": b'pr_cost_disclosure = "dol lars"\n',
+    "empty-quoted-value": b'pr_cost_disclosure = ""\n',
+    # Grammar-valid (quoted) but schema-invalid for a bool key -- passes the
+    # bareness gate, then must be caught by the schema-type check instead;
+    # pins the combination TestSchemaTypeValidationOnRead exercises per-key,
+    # here on both readers together.
+    "quoted-non-boolean-value-for-bool-key": b'handoff_nudge = "notabool"\n',
 }
 
 
@@ -207,6 +230,30 @@ class TestSpecificFixtureExpectations:
         (true), not just "the two readers happen to agree on some value"."""
         home = _make_home(tmp_path, monkeypatch)
         _write_state(home, "handoff_nudge = K\n".encode())
+        values = _assert_parity()
+        assert values["handoff_nudge"] == "true"
+
+    def test_bare_enum_literal_falls_through_to_schema_default(self, tmp_path, monkeypatch):
+        """A bare (unquoted) enum literal is not valid TOML -- both readers
+        reject the row as malformed and fall through to pr_cost_disclosure's
+        own schema default ("false"), not the literal itself."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b"pr_cost_disclosure = dollars\n")
+        values = _assert_parity()
+        assert values["pr_cost_disclosure"] == "false"
+
+    def test_quoted_enum_literal_resolves_to_its_own_value(self, tmp_path, monkeypatch):
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b'pr_cost_disclosure = "dollars"\n')
+        values = _assert_parity()
+        assert values["pr_cost_disclosure"] == "dollars"
+
+    def test_quoted_boolean_literal_falls_through_to_schema_default(self, tmp_path, monkeypatch):
+        """A quoted "false" is not valid TOML for a bool key -- both readers
+        reject the row as malformed and fall through to handoff_nudge's own
+        schema default ("true"), not the literal itself."""
+        home = _make_home(tmp_path, monkeypatch)
+        _write_state(home, b'handoff_nudge = "false"\n')
         values = _assert_parity()
         assert values["handoff_nudge"] == "true"
 
@@ -518,3 +565,29 @@ class TestReadableButEmptySchemaFile:
             "a readable-but-empty schema must degrade as silently as an "
             "ordinary unknown key, not print a warning"
         )
+
+
+class TestGenuineToml:
+    """docs/config-file.md claims claude-config.toml stays genuine TOML,
+    confirmed by loading it through Python's stdlib `tomllib` -- this is
+    that test. Neither reader in this repo uses `tomllib` itself; this
+    only proves the file a hand-editor authors is what any real TOML tool
+    (a linter, an editor's syntax highlighter, `tomllib` itself) also
+    understands."""
+
+    def test_representative_state_file_parses_as_genuine_toml(self, tmp_path: Path) -> None:
+        import tomllib
+
+        lines = []
+        for key in _ALL_KEYS:
+            row = _SCHEMA[key]
+            value = '"dollars"' if key == "pr_cost_disclosure" else row.default
+            lines.append(f"{key} = {value}")
+        state_file = tmp_path / "claude-config.toml"
+        state_file.write_text("\n".join(lines) + "\n")
+
+        with state_file.open("rb") as handle:
+            parsed = tomllib.load(handle)
+
+        assert parsed["pr_cost_disclosure"] == "dollars"
+        assert len(parsed) == len(_ALL_KEYS)

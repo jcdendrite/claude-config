@@ -248,7 +248,7 @@ class TestUnionSemantics:
 
 class TestLegacyPrecedence:
     def test_state_file_value_wins_over_disagreeing_legacy_file(self, isolated_home):
-        _write_state_file(isolated_home, "pr_cost_disclosure = dollars\n")
+        _write_state_file(isolated_home, 'pr_cost_disclosure = "dollars"\n')
         (isolated_home / ".claude" / "pr-cost-disclosure").write_text("notdollars\n")
 
         result = _run("_config_value pr_cost_disclosure")
@@ -260,6 +260,29 @@ class TestLegacyPrecedence:
 
         result = _run("_config_value commit_stall_block")
         assert result.stdout == "false"
+
+
+# ---------------------------------------------------------------------------
+# The enum literal's own quoting requirement -- genuine TOML writes a
+# boolean bare and any other scalar quoted, so pr_cost_disclosure's own
+# literal ("dollars") must be quoted to parse; a bare literal is malformed,
+# not silently accepted.
+# ---------------------------------------------------------------------------
+
+
+class TestEnumValueQuotingGrammar:
+    def test_bare_enum_literal_is_rejected_as_malformed(self, isolated_home):
+        _write_state_file(isolated_home, "pr_cost_disclosure = dollars\n")
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "false"
+        assert "malformed line" in result.stderr
+        assert "pr_cost_disclosure = dollars" in result.stderr
+
+    def test_quoted_enum_literal_resolves(self, isolated_home):
+        _write_state_file(isolated_home, 'pr_cost_disclosure = "dollars"\n')
+        result = _run("_config_value pr_cost_disclosure")
+        assert result.stdout == "dollars"
+        assert result.stderr == ""
 
 
 # ---------------------------------------------------------------------------
@@ -471,11 +494,11 @@ class TestUnrecognizedKeyWarning:
         """A typo'd key (missing the trailing 'e') never matches the real
         key it was meant to be, so the real key still falls through to its
         own legacy-file-then-default chain undisturbed."""
-        _write_state_file(isolated_home, "pr_cost_disclosur = dollars\n")
+        _write_state_file(isolated_home, 'pr_cost_disclosur = "dollars"\n')
         result = _run("_config_value pr_cost_disclosure")
         assert result.stdout == "false"
         assert "unrecognized key" in result.stderr
-        assert "pr_cost_disclosur = dollars" in result.stderr
+        assert 'pr_cost_disclosur = "dollars"' in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -540,14 +563,18 @@ class TestReadKeyFromFileSchemaUnreadable:
         resolve as authoritative just because its type couldn't be
         checked -- _config_enabled's any-value-but-false rule would
         otherwise treat "banana" as enabled. Insurance against a future
-        caller reintroducing this as a live, reachable bug."""
+        caller reintroducing this as a live, reachable bug. Written quoted
+        (`"banana"`) -- a bare `banana` now fails the value's own bareness
+        grammar (only true/false may be bare) before ever reaching this
+        schema-type check, which would exercise a different code path than
+        the one this test targets."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()
         # config-keys.psv deliberately never created here, matching this
         # class's other tests.
         (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
         state_file = tmp_path / "claude-config.toml"
-        state_file.write_text("autonomous_shipping = banana\n")
+        state_file.write_text('autonomous_shipping = "banana"\n')
 
         result = _run_with_schema(
             isolated_hooks_dir,
@@ -677,21 +704,26 @@ class TestUnionBranchLocationValueFailure:
 
 class TestSchemaTypeValidationOnRead:
     def test_autonomous_shipping_non_boolean_value_warns_and_falls_through(self, isolated_home):
-        _write_state_file(isolated_home, "autonomous_shipping = notabool\n")
+        """Quoted, not bare: a bare `notabool` would hit the value-subset
+        grammar's bareness gate first (`TestEnumValueQuotingGrammar` already
+        covers that path), never reaching the schema-type check this test
+        targets."""
+        _write_state_file(isolated_home, 'autonomous_shipping = "notabool"\n')
         result = _run("_config_value autonomous_shipping")
         assert result.stdout == "false"
         assert result.returncode == 0
         assert "malformed line" in result.stderr
-        assert "autonomous_shipping = notabool" in result.stderr
+        assert 'autonomous_shipping = "notabool"' in result.stderr
         assert _run("_config_enabled autonomous_shipping").returncode == 1
 
     def test_worktree_required_non_boolean_value_warns_and_falls_through(self, isolated_home):
-        _write_state_file(isolated_home, "worktree_required = notabool\n")
+        """Quoted, not bare -- see the sibling test above for why."""
+        _write_state_file(isolated_home, 'worktree_required = "notabool"\n')
         result = _run("_config_value worktree_required")
         assert result.stdout == "false"
         assert result.returncode == 0
         assert "malformed line" in result.stderr
-        assert "worktree_required = notabool" in result.stderr
+        assert 'worktree_required = "notabool"' in result.stderr
         assert _run("_config_enabled worktree_required").returncode == 1
 
 
@@ -751,10 +783,13 @@ class TestConfigSet:
         assert state_file.read_text() == "pr_cost_disclosure = false\n"
 
     def test_enum_key_accepts_its_declared_literal(self, isolated_home):
+        """The written line quotes the enum literal (`"dollars"`) -- a bare
+        `dollars` is not valid TOML, even though the VALUE argument itself
+        stays bare."""
         result = _run("_config_set pr_cost_disclosure dollars")
         assert result.returncode == 0
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        assert state_file.read_text() == "pr_cost_disclosure = dollars\n"
+        assert state_file.read_text() == 'pr_cost_disclosure = "dollars"\n'
 
     def test_enum_key_rejects_a_literal_other_than_its_own_or_false(self, isolated_home):
         """pr_cost_disclosure is `enum:dollars`-typed -- a write value other

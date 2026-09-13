@@ -21,17 +21,19 @@ A restricted TOML subset, hand-editable with any text editor:
 worktree_required = true
 autonomous_shipping = false
 # a comment
-pr_cost_disclosure = dollars
+pr_cost_disclosure = "dollars"
 ```
 
 - One `key = value` per line. Leading-`#` lines and blank lines are
   skipped by both readers.
-- The value grammar is exactly `true`, `false`, or a bare `[a-z0-9_-]+`
-  token (an enum literal, e.g. `dollars`) — no quotes, no escapes, no
-  arrays, no tables. A line outside this grammar is skipped with a
-  stderr warning naming the file and the line, not treated as a
-  whole-document parse failure — a hand-edit typo affects only that one
-  key.
+- The value grammar is exactly `true`, `false` (bare only), or a
+  `[a-z0-9_-]+` token (an enum literal, e.g. `dollars`) wrapped in one
+  matching pair of double quotes — no escapes, no arrays, no tables. A
+  bare enum literal (`pr_cost_disclosure = dollars`, no quotes) is not
+  valid TOML and is rejected the same as any other malformed line. A line
+  outside this grammar is skipped with a stderr warning naming the file
+  and the line, not treated as a whole-document parse failure — a
+  hand-edit typo affects only that one key.
 - Values are matched case-insensitively (`TRUE`/`True`/`FALSE` all
   resolve), but keys are matched case-sensitively; this repo's own key
   names are already lowercase snake_case.

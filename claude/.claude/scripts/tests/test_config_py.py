@@ -134,7 +134,7 @@ class TestConfigValue:
 
     def test_state_file_row_wins_over_disagreeing_legacy_file(self, tmp_path, monkeypatch):
         home = _make_home(tmp_path, monkeypatch)
-        (home / ".claude" / "claude-config.toml").write_text("pr_cost_disclosure = dollars\n")
+        (home / ".claude" / "claude-config.toml").write_text('pr_cost_disclosure = "dollars"\n')
         (home / ".claude" / "pr-cost-disclosure").write_text("notdollars\n")
         assert config_value("pr_cost_disclosure") == "dollars"
 
@@ -235,11 +235,11 @@ class TestUnrecognizedKeyWarning:
 
     def test_unrecognized_key_does_not_shadow_a_similarly_named_real_key(self, tmp_path, monkeypatch, capsys):
         home = _make_home(tmp_path, monkeypatch)
-        (home / ".claude" / "claude-config.toml").write_text("pr_cost_disclosur = dollars\n")
+        (home / ".claude" / "claude-config.toml").write_text('pr_cost_disclosur = "dollars"\n')
         assert config_value("pr_cost_disclosure") == "false"
         err = capsys.readouterr().err
         assert "unrecognized key" in err
-        assert "pr_cost_disclosur = dollars" in err
+        assert 'pr_cost_disclosur = "dollars"' in err
 
 
 # ---------------------------------------------------------------------------
@@ -253,22 +253,48 @@ class TestUnrecognizedKeyWarning:
 
 class TestSchemaTypeValidationOnRead:
     def test_autonomous_shipping_non_boolean_value_warns_and_falls_through(self, tmp_path, monkeypatch, capsys):
+        """Quoted, not bare: a bare `notabool` would hit the value-subset
+        grammar's bareness gate first (`TestEnumValueQuotingGrammar` already
+        covers that path), never reaching the schema-type check this test
+        targets."""
         home = _make_home(tmp_path, monkeypatch)
-        (home / ".claude" / "claude-config.toml").write_text("autonomous_shipping = notabool\n")
+        (home / ".claude" / "claude-config.toml").write_text('autonomous_shipping = "notabool"\n')
         assert config_value("autonomous_shipping") == "false"
         assert config_enabled("autonomous_shipping") is False
         err = capsys.readouterr().err
         assert "malformed line" in err
-        assert "autonomous_shipping = notabool" in err
+        assert 'autonomous_shipping = "notabool"' in err
 
     def test_worktree_required_non_boolean_value_warns_and_falls_through(self, tmp_path, monkeypatch, capsys):
+        """Quoted, not bare -- see the sibling test above for why."""
         home = _make_home(tmp_path, monkeypatch)
-        (home / ".claude" / "claude-config.toml").write_text("worktree_required = notabool\n")
+        (home / ".claude" / "claude-config.toml").write_text('worktree_required = "notabool"\n')
         assert config_value("worktree_required") == "false"
         assert config_enabled("worktree_required") is False
         err = capsys.readouterr().err
         assert "malformed line" in err
-        assert "worktree_required = notabool" in err
+        assert 'worktree_required = "notabool"' in err
+
+
+class TestEnumValueQuotingGrammar:
+    """Genuine TOML writes a boolean bare and any other scalar quoted, so
+    pr_cost_disclosure's own literal ("dollars") must be quoted to parse;
+    a bare literal is malformed, not silently accepted. Mirrors
+    _config.sh's own TestEnumValueQuotingGrammar."""
+
+    def test_bare_enum_literal_is_rejected_as_malformed(self, tmp_path, monkeypatch, capsys):
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text("pr_cost_disclosure = dollars\n")
+        assert config_value("pr_cost_disclosure") == "false"
+        err = capsys.readouterr().err
+        assert "malformed line" in err
+        assert "pr_cost_disclosure = dollars" in err
+
+    def test_quoted_enum_literal_resolves(self, tmp_path, monkeypatch, capsys):
+        home = _make_home(tmp_path, monkeypatch)
+        (home / ".claude" / "claude-config.toml").write_text('pr_cost_disclosure = "dollars"\n')
+        assert config_value("pr_cost_disclosure") == "dollars"
+        assert capsys.readouterr().err == ""
 
 
 class TestUnrecognizedLegacyPolarityFallback:

@@ -15,9 +15,11 @@
 # type: `bool`, or `enum:<value>` for a key whose enabled state is a specific
 #   non-boolean literal (today only `enum:dollars`, for pr_cost_disclosure's
 #   content-matches semantics). The value subset every reader accepts is
-#   exactly `true`, `false`, or a bare `[a-z0-9_-]+` token (an enum literal)
-#   — see _config.sh's header for why this is decoded directly rather than
-#   via a second parser.
+#   exactly a bare `true`/`false`, or a double-quoted `[a-z0-9_-]+` token (an
+#   enum literal, e.g. `"dollars"`) — bare booleans and quoted strings are
+#   both genuine TOML; a bare enum token is not and is rejected as malformed.
+#   See _config.sh's header for why this is decoded directly rather than via
+#   a second parser.
 # default: this key's effective value when absent from the state file AND
 #   its legacy file is absent — `true` or `false`. An enum-typed key's
 #   "enabled" default, when it has one, is never `true` here; a `false`

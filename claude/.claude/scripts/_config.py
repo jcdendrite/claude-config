@@ -136,11 +136,18 @@ class _MalformedStateLine(Exception):
 def _parse_state_line(raw_line: str) -> tuple[str, str] | None:
     """Parse one claude-config.toml line, mirroring _config.sh's
     _config_line_key_value exactly: the value subset is exactly `true`,
-    `false`, or a bare `[a-z0-9_-]+` token -- no quoting, no escapes, no
-    arrays, no tables, so a TOML table/array/multi-line-string line always
-    fails rather than being partially understood. A trailing CR (tolerating
-    a CRLF line mixed into an otherwise-LF file) is stripped here, not by
-    the caller -- both readers strip it in the same place.
+    `false` (bare only), or a `[a-z0-9_-]+` token wrapped in one matching
+    pair of double quotes (e.g. `"dollars"`) -- no escapes, no arrays, no
+    tables, so a TOML table/array/multi-line-string line always fails
+    rather than being partially understood. Genuine TOML writes a boolean
+    bare and any other scalar quoted. `true`/`false` are therefore rejected
+    if quoted, and every other value is rejected if bare. config-keys.psv
+    holds only `bool` and `enum:X` keys today, so this literal-driven rule
+    needs no schema lookup of its own: a `bool` key never accepts anything
+    but bare `true`/`false`, and an `enum:X` key's own literal is the only
+    bare-alphanumeric value left. A trailing CR (tolerating a CRLF line
+    mixed into an otherwise-LF file) is stripped here, not by the caller --
+    both readers strip it in the same place.
 
     Returns None for a blank line or a full-line '#' comment (never
     warned). Raises _MalformedStateLine for anything else that fails the
@@ -164,7 +171,16 @@ def _parse_state_line(raw_line: str) -> tuple[str, str] | None:
     value = value_part.strip(_ASCII_WHITESPACE).lower()
     if not key or any(ch not in _KEY_CHARS for ch in key):
         raise _MalformedStateLine(raw_line)
+    quoted = False
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+        quoted = True
     if not value or any(ch not in _VALUE_CHARS for ch in value):
+        raise _MalformedStateLine(raw_line)
+    if value in ("true", "false"):
+        if quoted:
+            raise _MalformedStateLine(raw_line)
+    elif not quoted:
         raise _MalformedStateLine(raw_line)
     return key, value
 

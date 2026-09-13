@@ -358,7 +358,7 @@ See [`docs/commit-stall-block.md`](docs/commit-stall-block.md) for the fire pred
 `pr-description` can embed the PR body's cost block — branch-scoped session count, token volume, and list-price dollars from `transcript-analysis.py cost --summary`. Off by default; gated by the `pr_cost_disclosure` config key, scoped to the Claude account, not to the repo.
 
 ```bash
-printf 'pr_cost_disclosure = dollars\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
+printf 'pr_cost_disclosure = "dollars"\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
 The key resolves to exactly one config dir (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its value (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another — see [`docs/config-file.md`](docs/config-file.md) for the file format and resolution precedence.

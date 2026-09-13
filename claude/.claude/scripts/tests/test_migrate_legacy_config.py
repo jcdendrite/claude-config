@@ -88,21 +88,24 @@ def _state_file(config_dir: Path) -> Path:
 
 
 def _read_state(config_dir: Path) -> dict[str, str]:
-    """Parses claude-config.toml's `key = value` lines -- a test-local
-    parser, not _config.sh's/_config.py's own, since asserting against the
+    """Parses claude-config.toml via stdlib tomllib -- a test-local parser,
+    not _config.sh's/_config.py's own, since asserting against the
     production parser's own output would make this file's assertions
-    circular."""
+    circular. tomllib returns a real bool for true/false and a str for a
+    quoted enum literal; both are restringified to lowercase "true"/"false"
+    or the bare literal so this file's existing string-valued assertions
+    (e.g. `state["round_consult_gate"] == "false"`) keep working unchanged."""
+    import tomllib
+
     path = _state_file(config_dir)
     if not path.exists():
         return {}
-    result: dict[str, str] = {}
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, _, value = line.partition("=")
-        result[key.strip()] = value.strip()
-    return result
+    with path.open("rb") as handle:
+        parsed = tomllib.load(handle)
+    return {
+        key: "true" if value is True else "false" if value is False else str(value)
+        for key, value in parsed.items()
+    }
 
 
 def _legacy_derived_value(row: SchemaRow) -> str:
