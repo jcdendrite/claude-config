@@ -8302,10 +8302,10 @@ def _extract_ttl_verdict_summary(out: str, origin: str) -> dict[str, str]:
 
 def _extract_ttl_verdict_root_row(out: str, origin: str, root_label: str) -> dict[str, str]:
     """Read one per-root row from --ttl-verdict's own per-bucket table (the
-    '### {origin}' section) by its leading account label -- _table_cols
-    can't be reused directly since this section's header repeats once per
-    origin, and matching on the exact leading token (not a startswith
-    prefix) avoids "account-1" matching "account-10"."""
+    '### {origin}' section) by its leading account label. _table_cols can't
+    be reused directly since this section's header repeats once per origin.
+    Matching on the exact leading token, not a startswith prefix, avoids
+    "account-1" matching "account-10"."""
     lines = out.splitlines()
     section_start = lines.index(f"### {origin}")
     section_end = len(lines)
@@ -10105,9 +10105,9 @@ class TestCacheRebuildNoRedactMultiRootRefusal:
         """--ttl-verdict's own accumulation family is keyed on
         (origin, root_ordinal), carrying the identical multi-root +
         --no-redact leak risk as the pooled figures the sibling test above
-        covers -- pinned to the --ttl-verdict code path specifically, since
-        ttl_verdict defaults to False on _cache_rebuild_args and every
-        other test in this class leaves it there."""
+        covers. This needs its own test rather than an edit to the sibling
+        test, since ttl_verdict defaults to False on _cache_rebuild_args and
+        every other test in this class leaves it there."""
         root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a",
                                    [_priced("claude-sonnet-5", ephemeral_5m=100_000)])
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
@@ -10579,6 +10579,61 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         assert str(root_x) not in out
         assert str(root_y) not in out
 
+    def test_two_roots_of_different_tiers_in_same_bucket_combine_into_bucket_verdict(
+        self, tmp_path, capsys
+    ):
+        """Two roots landing in the same bucket but on different tiers must
+        both feed that bucket's verdict through the real accumulation loop,
+        not just the pure verdict function directly. account-1 (5m-tier)
+        reuses test_main_bucket_5m_tier_root_reaches_adopt's own fixture
+        (W5m=1,000,000, X=500,000, favors 1h, clears); account-2 (1h-tier)
+        reuses test_1h_tier_root_declines_on_a_non_wash_disagreement's own
+        fixture (W1h=1,000,000, Z=800,000, favors 1h, does not clear). Both
+        roots favor the same direction, so the bucket verdict is 'decline'
+        rather than 'roots disagree' -- uniform direction with at least one
+        root not clearing."""
+        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", [
+            _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="m1"),
+            _priced(
+                "claude-sonnet-5", ephemeral_5m=500_000,
+                ts="2026-08-01T10:06:00.000Z", request_id="m2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=300_000,
+                ts="2026-08-01T10:12:00.000Z", request_id="m3",
+            ),
+        ])
+        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [
+            _priced("claude-sonnet-5", ephemeral_1h=1_000_000, ts="2026-08-01T10:00:00.000Z", request_id="w1h-1"),
+            _priced(
+                "claude-sonnet-5", cache_read=800_000,
+                ts="2026-08-01T10:06:40.000Z", request_id="w1h-2",
+            ),
+            _priced(
+                "claude-sonnet-5", cache_read=400_000,
+                ts="2026-08-01T10:08:20.000Z", request_id="w1h-3",
+            ),
+        ])
+        _mod._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        out = capsys.readouterr().out
+
+        summary = _extract_ttl_verdict_summary(out, "main")
+        assert summary["consistent_5m"] == "1"
+        assert summary["consistent_1h"] == "1"
+        assert summary["verdict"] == "decline"
+
+        root_1 = _extract_ttl_verdict_root_row(out, "main", "account-1")
+        assert root_1["W5m/W1h"] == "1,000,000"
+        assert root_1["X/Z"] == "500,000"
+        assert root_1["Favors"] == "1h"
+        assert root_1["Clears"] == "True"
+
+        root_2 = _extract_ttl_verdict_root_row(out, "main", "account-2")
+        assert root_2["W5m/W1h"] == "1,000,000"
+        assert root_2["X/Z"] == "800,000"
+        assert root_2["Favors"] == "1h"
+        assert root_2["Clears"] == "False"
+
     def test_hand_computed_w1h_and_z_totals_match_known_fixture(self, fake_projects, capsys):
         """A small, hand-computed 1h-tier fixture: call1 (session start)
         writes 200,000 ephemeral_1h tokens (W1h only -- session start is
@@ -10680,18 +10735,13 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
 
 class TestCacheRebuildTtlVerdictTiebreakerBoundarySelection:
     """Full-pipeline coverage that the per-root tiebreaker reduction reads
-    z_by_origin_root (accumulated at the primary, 300s boundary), never
-    the 60s sensitivity boundary -- mutation testing found that gating
-    z_by_origin_root's own increment on the sensitivity boundary instead of
-    the primary one failed no existing test, because every prior fixture's
-    idle-gap reads landed in the same idle band at both boundaries, so the
-    two boundaries always agreed. Each fixture below adds a read call idle
-    only at the 60s sensitivity boundary (gap in [60s, 300s)) alongside one
-    idle at both boundaries, so the primary and sensitivity Z totals
-    genuinely differ. apply_tiebreaker is False for a 5m-tier root, so Z
-    never gates its own clears regardless of which boundary it is
-    accumulated at -- the mutation is observable only through the 1h-tier
-    root's own printed Z figure in its X/Z column below."""
+    z_by_origin_root at the primary, 300s boundary, never the 60s
+    sensitivity boundary. Each fixture below adds a read call idle only at
+    the 60s sensitivity boundary (gap in [60s, 300s)) alongside one idle at
+    both boundaries, so the primary and sensitivity Z totals genuinely
+    diverge. That divergence is observable only through a 1h-tier root's
+    own printed Z figure in its X/Z column, since apply_tiebreaker is False
+    for a 5m-tier root."""
 
     def test_5m_tier_root_adopts_regardless_of_which_boundary_z_is_read_at(self, fake_projects, capsys):
         """apply_tiebreaker is False for a 5m-tier root, so a Z/W1h wash at
@@ -10897,9 +10947,9 @@ class TestCacheRebuildTtlVerdictDefaultPathRegression:
     def test_output_without_the_flag_is_unchanged_and_omits_the_new_section(self, fake_projects, capsys):
         """Same fixture and assertions as
         TestCacheRebuildSwitchDeltaArithmetic.test_default_rate_model_break_even_arithmetic
-        -- every pre-existing row is untouched, and the new TTL-verdict
-        section never appears, when --ttl-verdict is omitted (this
-        subcommand's own byte-identical-default-path regression guard)."""
+        -- a spot-check of the subagent row's W5m/X/Net$ cells, plus
+        confirmation the new TTL-verdict section never appears, when
+        --ttl-verdict is omitted."""
         records = [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="sub-1"),
             _priced(

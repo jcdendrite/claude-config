@@ -6048,9 +6048,9 @@ _CAUSE_TS_ANOMALY = "excluded (timestamp anomaly)"
 
 # _cache_miss_reason's own vendor-emitted type value for a real model
 # switch. Compared against the gap-derived idle-5m-1h cause as a
-# cross-check, never fed back into any accumulator. Named as a constant,
-# not a bare string, since it must match _classify_cache_rebuild_cause's
-# own _CAUSE_MODEL_SWITCH trigger condition exactly.
+# cross-check, never fed back into any accumulator.
+# Named as a constant, not a bare string, so it stays byte-identical to
+# _classify_cache_rebuild_cause's own _CAUSE_MODEL_SWITCH trigger.
 _CACHE_MISS_REASON_MODEL_CHANGED = "model_changed"
 
 # Print order for the cause-breakdown table: the two TTL-explained idle
@@ -6570,27 +6570,24 @@ def _cache_rebuild_report(args: argparse.Namespace, roots: Sequence[Path] | None
     switch_delta_by_origin: dict[str, float] = dict.fromkeys(_CACHE_REBUILD_ORIGINS, 0.0)
     unpriced_switch_delta_turns = 0
     unpriced_switch_delta_tokens = 0
-    # --ttl-verdict's own second, parallel accumulator family: every figure
-    # above pools across roots, and these mirror them keyed on
-    # (origin, root_ordinal) instead. They also add the mirrored 1h-to-5m
-    # direction (W1h/Z), which the pooled figures above have no equivalent
-    # of. This family is never read on the default path.
-    # w5m_by_origin/x_by_origin/switch_delta_by_origin above stay the sole
-    # source for every default-path figure. Only the switch_delta_*
-    # dicts below carry an "_at_60" sibling: they duplicate the idle-band
-    # classification at _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS
-    # instead of _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point
-    # sensitivity check. X and Z are primary-boundary-only quantities (the
-    # report's own display columns) and have no "_at_60" sibling.
+    # This family is never read on the default path: w5m_by_origin/x_by_origin/
+    # switch_delta_by_origin above remain the sole source for every
+    # default-path figure.
     w5m_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
     w5m_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
     x_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
     switch_delta_5m_to_1h_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Duplicates the idle-band classification at
+    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
+    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
     switch_delta_5m_to_1h_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
     w1h_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
     w1h_dollars_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
     z_by_origin_root: dict[tuple[str, int], int] = defaultdict(int)
     switch_delta_1h_to_5m_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
+    # Duplicates the idle-band classification at
+    # _CACHE_REBUILD_TTL_SENSITIVITY_BOUNDARY_SECONDS instead of
+    # _CACHE_REBUILD_IDLE_5M_SECONDS, for the two-point sensitivity check.
     switch_delta_1h_to_5m_at_60_by_origin_root: dict[tuple[str, int], float] = defaultdict(float)
     # Calls this family skips for lacking a price-table entry, pooled across
     # both directions and every root -- disclosed in the --ttl-verdict
