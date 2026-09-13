@@ -1872,6 +1872,23 @@ class TestTrackedAgentFilenamesMatchAgentTypeNameCharset:
             assert _mod._AGENT_TYPE_NAME_RE.fullmatch(name), name
 
 
+class TestSpawnCountsByAgentType:
+    """_spawn_counts_by_agent_type: main-thread-only raw spawn counts,
+    feeding cost-counts's ### Subagent spawns table."""
+
+    def test_spawn_nested_inside_a_subagent_is_excluded(self):
+        """A spawn dispatched from inside another agent's own transcript
+        (isSidechain: true) is not counted. Only main-thread dispatches
+        decide this count, mirroring cmd_subagent_mix's own exclusion order
+        (see _spawn_counts_by_agent_type's own docstring)."""
+        records = [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
+            _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
+        ]
+        counts = _mod._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
+        assert counts == {"staff-sdet": 1}
+
+
 class TestCostCounts:
     """cost-counts: per-branch review-round and subagent-spawn counts for a
     public PR body -- counts only, no dollar attribution."""
@@ -1918,6 +1935,26 @@ class TestCostCounts:
             _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, branches=None))
         assert exc_info.value.code == 2
         assert "--branches" in capsys.readouterr().err
+
+    def test_review_round_table_renders_actual_round_counts(self, fake_projects, capsys):
+        """Every other TestCostCounts fixture seeds spawn records only, so
+        round_counts is all-zero in every one of them. This test seeds a
+        real round-opening record (a Skill tool_use matching a
+        REVIEW_SKILLS member) and asserts the ### Review rounds table's
+        actual rendered row values and caption, through the real
+        cmd_cost_counts rendering path."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
+        ])
+        _mod.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| code-review | 1 |" in out
+        assert "| plan-review | 0 |" in out
+        assert "| ready-for-review | 0 |" in out
+        assert "| **total** | **1** |" in out
+        assert _mod._COST_COUNTS_ROUNDS_CAPTION in out
 
     def test_untracked_subagent_type_is_withheld_under_this_repo(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -1971,10 +2008,11 @@ class TestCostCounts:
             _mod, "_partition_spawn_counts_by_disclosure",
             lambda raw_counts: [("some-untracked-agent-type", 1)],
         )
-        with pytest.raises(AssertionError):
+        with pytest.raises(AssertionError) as exc_info:
             _mod.cmd_cost_counts(_cost_counts_args(
                 this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
             ))
+        assert "some-untracked-agent-type" not in str(exc_info.value)
 
     def test_more_than_five_distinct_agent_types_all_render(
         self, fake_projects, tmp_path, monkeypatch, capsys,

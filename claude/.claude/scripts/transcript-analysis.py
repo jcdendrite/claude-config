@@ -3028,7 +3028,7 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
-    branch_filter = {b for b in branches_arg.split(",") if b}
+    branch_filter = _branch_filter(args)
 
     roots = [config_dir() / "projects"]
 
@@ -3060,11 +3060,12 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
         print("| Agent type | Spawns |")
         print("|---|---|")
         total_spawns = 0
-        for label, count in spawn_rows:
+        for row_index, (label, count) in enumerate(spawn_rows):
             if not (label == _WITHHELD_AGENT_TYPE_LABEL or label in tracked):
                 raise AssertionError(
-                    f"cost-counts: {label!r} is neither the withheld label nor a"
-                    " repo-tracked agent type — refusing to print an undisclosed subagent_type"
+                    f"cost-counts: spawn row {row_index} is neither the withheld label nor a"
+                    " repo-tracked agent type. Refusing to print the value; it is withheld"
+                    " from this message by design."
                 )
             total_spawns += count
             print(f"| {_sanitize_table_cell(label)} | {count} |")

@@ -38,6 +38,12 @@ _COUNTS_FAILURE_CAVEAT = (
     " --branches <branch>` to see the diagnostic."
 )
 
+# Stands in for an untracked subagent_type label the cost-counts backstop
+# AssertionError must never echo. A fake transcript-analysis.py embeds this
+# marker in its own crash message. The test asserts the marker stays absent
+# from the wrapper's output.
+_UNTRACKED_LABEL_MARKER = "UNTRACKED-LABEL-MARKER-9f3c"
+
 # The complete block pr-cost-section.sh emits on exit 0. Written out as a
 # literal rather than composed from parts, because composing it would
 # re-implement the script's own layout and pass on a wrong shape. The four
@@ -373,6 +379,27 @@ def _fake_transcript_analysis_source_failing_cost_counts() -> str:
     """)
 
 
+def _fake_transcript_analysis_source_cost_counts_backstop_crash() -> str:
+    """Source for a transcript-analysis.py stand-in whose cost-counts call
+    crashes on stderr with a message embedding _UNTRACKED_LABEL_MARKER.
+    The marker stands in for a raw subagent_type label, of the kind
+    cmd_cost_counts's own render-time backstop AssertionError must never
+    echo. This fake does not invoke that real backstop -- it verifies the
+    wrapper's own content-agnostic stderr discard on any child failure,
+    not the reworded AssertionError text itself; see
+    test_transcript_analysis.py's test_backstop_assertion_fires_on_bypassed_partition_step
+    for the test that exercises the real AssertionError's message."""
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import sys
+        if sys.argv[1] == "cost-counts":
+            print("transcript-analysis.py: cost-counts: {_UNTRACKED_LABEL_MARKER}", file=sys.stderr)
+            sys.exit(1)
+        print("ARGS: " + " ".join(sys.argv[1:]))
+        print("total: $12.34")
+    """)
+
+
 def _build_fixture(tmp_path, source: str) -> Path:
     """Shared fixture-directory builder: a copy of the script under test, a
     copy of _lib.sh at the relative path it sources, and a fake
@@ -468,6 +495,15 @@ def failing_cost_counts_script_fixture(tmp_path) -> Path:
     caveat-substitution path, distinct from failing_script_fixture (which
     fails the cost call itself)."""
     return _build_fixture(tmp_path, _fake_transcript_analysis_source_failing_cost_counts())
+
+
+@pytest.fixture()
+def backstop_crash_script_fixture(tmp_path) -> Path:
+    """Same layout as script_fixture, but the cost-counts call fails with a
+    message embedding _UNTRACKED_LABEL_MARKER. Used by the test that
+    verifies the wrapper discards a failing child's stderr regardless of
+    its content."""
+    return _build_fixture(tmp_path, _fake_transcript_analysis_source_cost_counts_backstop_crash())
 
 
 def _run_script(script_copy: Path, cwd: Path, config_dir: Path) -> subprocess.CompletedProcess:
@@ -617,6 +653,28 @@ class TestCountsCallFails:
         assert "pr-cost-section.sh: transcript-analysis.py cost-counts call failed" in result.stderr
         assert "transcript-analysis.py cost-counts --this-repo --branches main" in result.stderr
         assert "transcript-analysis.py: cost-counts boom" not in result.stderr
+
+    def test_untracked_label_marker_never_reaches_stdout_or_stderr(
+        self, tmp_path, backstop_crash_script_fixture,
+    ):
+        """Verifies the wrapper's own stderr discard on a failing
+        cost-counts call, independent of what the child's crash message
+        says. A stand-in child crashes with a message embedding a marker
+        that represents an untracked-label leak; the marker must not
+        surface in either stream. This is a wrapper-level, content-agnostic
+        guarantee -- see test_transcript_analysis.py's own
+        test_backstop_assertion_fires_on_bypassed_partition_step for the
+        test that pins the real backstop AssertionError's own message
+        content."""
+        repo, _bare = _make_repo_with_remote(tmp_path)
+        config_dir = tmp_path / "claude_config"
+        _write_sentinel(config_dir, "dollars\n")
+
+        result = _run_script(backstop_crash_script_fixture, repo, config_dir)
+
+        assert result.returncode == 0
+        assert _UNTRACKED_LABEL_MARKER not in result.stdout
+        assert _UNTRACKED_LABEL_MARKER not in result.stderr
 
 
 class TestStderrDiagnosticsDiscardedOnSuccess:
