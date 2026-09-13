@@ -97,7 +97,7 @@
 set -uo pipefail
 
 # shellcheck disable=SC1091
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # Steps 1-3 below need _lib_jq; a failed source happens before any
   # manifest could have been matched, and the degraded-ask path also
   # needs _lib_jq to encode its own reason -- so this is unconditionally

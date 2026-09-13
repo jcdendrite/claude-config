@@ -93,7 +93,8 @@ def make_repo_with_byte_file(tmp_path: Path, target_path: str, head_bytes: int) 
 
 def stub_bin_without_timeout(tmp_path: Path) -> Path:
     """Stub PATH with only the binaries this hook's code path invokes
-    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` to locate _lib.sh,
+    (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
+    superset entry this hook's own bootstrap does not call,
     `sed`/`tr` for _lib_command_invokes_git_subcmd's git-commit match
     (GH-783), `grep` for the path-filter match, `awk` for the line
     count, `git` for the _lib_capped-wrapped show and cat-file -s

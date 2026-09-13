@@ -4317,7 +4317,7 @@ class TestDenyPrivateProjectRefs:
         it, it must deny (fail-closed), not exit 0 — a broken _lib.sh must
         not silently turn the redaction gate into a no-op. Exercised by
         running a copy of the hook from a directory with no _lib.sh
-        alongside it, so `. "$(dirname "$0")/_lib.sh"` fails.
+        alongside it, so `. "${0%/*}/_lib.sh"` fails.
 
         The pre-source `emit_deny` bootstrap (see _lib.sh's _lib_emit_deny
         contract comment) is a minimal hard-block stub — it exits 2 with the

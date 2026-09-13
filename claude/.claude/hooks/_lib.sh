@@ -3,6 +3,9 @@
 # Keep this file the single source of truth for any recipe that must produce
 # byte-identical output on both the read side (hooks) and the write side
 # (marker.sh). Source it; do not invoke it directly.
+# Hooks source this via `${0%/*}`, not `$(dirname "$0")`, to skip a subshell
+# fork and `dirname` exec per invocation. It also fails closed rather than
+# open on the one reachable divergent `$0` shape: a bare filename.
 
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's _lib_capped 5s precedent.

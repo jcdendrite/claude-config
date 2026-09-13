@@ -65,7 +65,7 @@ emit_deny() {
   exit 2
 }
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # shellcheck disable=SC2218 # false positive: this stub-then-override redefinition resolves correctly at call time.
   emit_deny "could not source _lib.sh."
 fi

@@ -28,7 +28,7 @@ set -uo pipefail
 # including the .source filter — routes through _lib_jq's timeout backstop;
 # a hung or PATH-hijacked bare jq on the .source check would otherwise block
 # the hook indefinitely on every single compaction.
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 

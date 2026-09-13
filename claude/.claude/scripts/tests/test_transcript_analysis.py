@@ -16146,7 +16146,7 @@ class TestDenialHookLabelEnumeration:
 
 
 # Every gate hook bootstraps identically: `set -uo pipefail`, define a raw
-# emit_deny stub, then `. "$(dirname "$0")/_lib.sh"` — if that source fails,
+# emit_deny stub, then `. "${0%/*}/_lib.sh"` — if that source fails,
 # the stub denies with "Blocked by <label> gate/hook: could not source
 # _lib.sh." before ever reading stdin. Copying one hook script alone (no
 # _lib.sh alongside it, see _isolated_hook_copy) into a fresh directory
@@ -16249,7 +16249,7 @@ def test_bootstrap_fallback_hooks_matches_every_hook_declaring_deny_gate_label()
 
 def _isolated_hook_copy(tmp_path: Path, hook_name: str) -> Path:
     """Copy one hooks/*.sh script alone into an isolated directory, with no
-    _lib.sh alongside it, so the hook's own `. "$(dirname "$0")/_lib.sh"`
+    _lib.sh alongside it, so the hook's own `. "${0%/*}/_lib.sh"`
     bootstrap line genuinely fails to source."""
     dest_dir = tmp_path / "isolated-hook"
     dest_dir.mkdir(exist_ok=True)

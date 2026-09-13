@@ -12,7 +12,7 @@ set -uo pipefail
 
 INPUT=$(cat)
 
-if ! . "$(dirname "$0")/_lib.sh" 2>/dev/null; then
+if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   exit 0
 fi
 
