@@ -238,7 +238,13 @@ Source for `claude/.claude/rules/terraform-conventions.md`. All fetched
   list —
   `docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_SignUp.html`
   documents `SignUp` as unconditionally throwing `UsernameExistsException`
-  when the username is taken, regardless of this setting.
+  when the username is taken, regardless of this setting. `ENABLED`
+  normalizes error content across the operations list above. AWS
+  documents this as a content change, not a timing guarantee, so the
+  CWE-208 timing side channel is a separate concern `ciso-reviewer.md`'s
+  account-existence-disclosure angle covers. A `SignUp` caller can either
+  suppress the raw `UsernameExistsException` or accept it as a deliberate
+  product trade-off.
 - **Custom Validation Rules (the `validation` block)** — VERIFIED at
   `developer.hashicorp.com/terraform/language/values/variables` §
   "Reference Variable Values", illustrating the `environment` variable:

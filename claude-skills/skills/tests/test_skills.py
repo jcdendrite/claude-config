@@ -351,15 +351,13 @@ class TestSpecialistSkillTriggerContracts:
         )
 
 
-# feature-flags is skillOverrides: name-only (see TestNameOnlySkillContracts),
-# so it cannot auto-trigger by description match — its sole reachability
-# mechanism is these hand-off pointer sentences naming it by string.
-# config-environments/SKILL.md has two droppable pointer sentences, hence
+# feature-flags is name-only, so these pointer sentences are its only
+# reachability path. config-environments has two pointer sites, hence
 # two entries below.
 _FEATURE_FLAGS_POINTER_SITES = [
     (
         "claude-skills/skills/config-environments/SKILL.md",
-        "the `feature-flags` skill's call, not this one's",
+        "is the `feature-flags` skill's call, not this one's",
     ),
     (
         "claude-skills/skills/config-environments/SKILL.md",
@@ -379,7 +377,7 @@ _FEATURE_FLAGS_POINTER_SITES = [
     ),
     (
         "claude/.claude/rules/terraform-conventions.md",
-        "the `feature-flags` skill's call — this rule doesn't decide it",
+        "is the `feature-flags` skill's call — this rule doesn't decide it",
     ),
 ]
 

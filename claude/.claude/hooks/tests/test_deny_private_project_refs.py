@@ -217,13 +217,18 @@ class TestDenyPrivateProjectRefs:
             "Address SUPERTICKET-1 review",
             "Bump BIGPROJ-99 dep",
             "Land OURTICKET-42 follow-up",
+            "Fix MYAGPL-99 regression",
+            "Bump SUPERBSD-1 dep",
         ],
-        ids=["myproj", "superticket", "bigproj", "ourticket"],
+        ids=["myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd"],
     )
     def test_placeholder_prefix_substring_still_denied(self, claude_config_repo, message):
         """Anchor (`^`) on OSS_ALLOWLIST must keep prefixes that *contain*
-        but don't *equal* PROJ / TICKET in the deny path. Without this
-        test, a refactor that drops the anchor would pass CI silently."""
+        but don't *equal* PROJ / TICKET / AGPL / BSD in the deny path.
+        Without this test, a refactor that drops the anchor would pass CI
+        silently. The AGPL/BSD cases also pair with this file's AGPL/BSD
+        allow-path tests, giving the AGPL/BSD pair the same allow+deny
+        symmetry the PROJ/TICKET cases already have."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,

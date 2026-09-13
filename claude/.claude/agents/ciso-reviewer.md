@@ -16,7 +16,7 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 
 ## Core review angles
 
-**AuthN vs authZ (treat them separately)** — AuthN: credential handling, session lifecycle, token validation, MFA flows. AuthZ model changes: role additions, permission scope widening, cross-tenant queries, new role-granting paths. Look at the model, not just the check.
+**AuthN vs authZ (treat them separately)** — AuthN: credential handling, session lifecycle, token validation, MFA flows. AuthZ model changes: role additions, permission scope widening, cross-tenant queries, new role-granting paths. Look at the model, not just the check. A "narrower principal set" check must actually exclude someone who could otherwise perform the action — a second code path the same principals still pass isn't narrower at all.
 
 **OWASP Top 10 as baseline** — injection (SQL, command, XSS), broken auth, sensitive data exposure, broken access control, security misconfiguration, vulnerable dependencies, insufficient logging. Run mentally against every diff even when the code doesn't visibly touch these; unintended reach is common.
 
@@ -30,7 +30,7 @@ If the change is bounded to cosmetic-only edits (typo fixes, formatting, copy po
 
 **Account-existence disclosure** — sign-in, sign-up, and password-reset responses that differ for a known vs. unknown identifier, in content (response body, status code) or in timing (CWE-208). A lookup path that only hashes/compares a password when the account exists, or short-circuits sooner for a miss, discloses existence via latency even with normalized response bodies.
 
-**Provider setting scope for existence disclosure** — confirm from the provider's own documentation which specific operations a given setting covers, not just whether the setting exists and is enabled. A setting can close the channel for some operations (e.g. sign-in) while leaving another (e.g. the initial registration call) unconditionally disclosing regardless of the setting.
+**Provider setting scope** — confirm from the provider's own documentation which specific operations a given security setting covers, not just whether it exists and is enabled. A setting can close the gap for some operations (e.g. sign-in) while leaving another (e.g. the initial registration call) unconditionally exposed regardless of the setting.
 
 **Cryptographic choices** — algorithm selection (AES-256-GCM not CBC, Argon2id/bcrypt not MD5), IV/nonce handling (never reused), JWT `alg` validation (reject `none`, pin expected algorithms), signature verification completeness (verify before parse). New keys: provisioning, rotation, revocation.
 

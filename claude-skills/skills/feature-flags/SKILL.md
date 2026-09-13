@@ -80,42 +80,56 @@ changes alongside a deploy is config, not a toggle.
    audit trail, a default-off state, and a removal date.
 
    The accessor's read-failure default must resolve to the safe state
-   of the gated path — a datastore timeout or connection-pool
-   exhaustion must not silently resolve to "check disabled." If the
-   accessor caches the value to survive a hot read path, the cache TTL
-   must not exceed the tier's own reaction-speed requirement: this tier
-   exists to flip faster than a deploy, and an uncapped cache defeats
-   that during exactly the incident it was built for.
+   of the gated path — a datastore timeout must not silently resolve to
+   "check disabled." Within one authorization decision, read the toggle
+   once and reuse that value; re-reading mid-flow reopens the same
+   TOCTOU gap as any other authorization state that can change between
+   check and action. Caching a hot read path is required, not optional:
+
+   - An uncached per-request read saturates the datastore under normal
+     load.
+   - The cache TTL must not exceed this tier's own reaction-speed
+     requirement — this tier exists to flip faster than a deploy, and
+     an uncapped TTL defeats that during exactly the incident it was
+     built for.
+   - TTL bounds only per-instance staleness, not fleet-wide or
+     replication-layer staleness.
+   - A security-sensitive toggle needs a fleet-wide convergence bound
+     instead of relying on TTL alone.
+   - A security-sensitive toggle should use a strongly-consistent read
+     when the datastore offers one.
+   - On a read failure, jitter the refresh across instances rather
+     than retry synchronously against a datastore that's already
+     timing out.
+   - Serve the last cached value only when it isn't riskier than the
+     gated path's safe-state default.
+   - Once past the TTL bound above, fall back to the safe default
+     rather than keep serving stale.
 
    When the toggle gates a security-sensitive or privileged path
    (disabling an auth check, bypassing a rate limit, skipping a
-   verification step), the write path needs its own authorization
-   check:
+   verification step), its write path needs its own security design
+   review — consult `ciso-reviewer`'s privileged-action and IDOR angles
+   for the authorization-check specifics. These properties hold
+   regardless of that review's specifics:
 
-   - Scoped to a narrower principal set than the datastore's general
-     write grant, not merely a separate code path the same principals
-     can still pass.
-   - Enforced at every application-layer writer capable of setting that
-     field — application code, migrations, admin tooling, background
-     jobs — at the call site.
-   - Direct datastore access (a console `UPDATE`, an ad hoc SQL fix, a
-     broad table-write role) needs its own datastore-level control — a
+   - No code path may complete the mutation without a corresponding
+     audit-log entry existing — a same-transaction commit and a
+     synchronous write to an isolated tamper-evident store both satisfy
+     this; a fire-and-forget log call that can silently fail does not.
+   - The log entry itself must be append-only and tamper-evident — the
+     same bar `ciso-reviewer` applies to any privileged-action log.
+   - Every application-layer writer must call through one writer-side
+     mutator, symmetric with the read side's single accessor, rather
+     than reimplementing authorization and logging at each call site.
+   - Direct datastore access — a console update, an ad hoc fix, a
+     broad table-write role — bypasses any application-layer check
+     entirely, so it needs its own datastore-level control: a
      column-level grant, a row-level policy, or restricting who holds
-     the table's write role at all. An application-layer check can't
-     intercept a write issued directly against the datastore.
-   - Logged:
-     - The change must produce a log entry of its own, append-only and
-       tamper-evident — the same bar `ciso-reviewer` applies to any
-       privileged-action log.
-     - Additive to, not a substitute for, the authorization check
-       above.
-     - Not substituted for by an audit record after the fact — logging
-       the write is not the same as gating it.
-   - Scoped per subject, not only per role, when the toggle is
-     per-subject: the caller's authority must reach the specific target
-     subject named in the write, not merely membership in the narrower
-     principal set above — otherwise a caller who passes the role check
-     can still lack authority over the specific target, an IDOR shape.
+     the table's write role at all.
+   - A toggle that disables a security control globally warrants a
+     stronger bar than a single-subject grant — consider a time-boxed
+     override or two-person approval for that case.
 3. **Multi-variant targeting, percentage rollout, or experimentation
    with metrics attribution** — a dedicated platform, and only here. A
    vendor's SaaS/cloud-hosted tier means the per-subject targeting
@@ -140,6 +154,8 @@ This skill decides which layer a toggle belongs at. It does not own:
 - Default-off rollout semantics, flag scope, and both-flag-states
   testability (`staff-product-engineer`)
 - Kill-switch gating and flag-state observability (`staff-backend-engineer`)
+- Authorization-control design for a security-sensitive toggle's write
+  path (`ciso-reviewer`)
 
 Once the layer is chosen, implementation and review of that layer belong
 to the owning surface named above — this skill does not restate their
