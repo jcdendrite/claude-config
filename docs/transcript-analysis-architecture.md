@@ -34,7 +34,7 @@ transcript file). No dependency on scope resolution, redaction, or pricing — e
 Scan-root and project-scope resolution: `PROJECTS_DIR`, `resolve_scan_roots`,
 `print_resolved_scope`, the `--this-repo` project-slug machinery, and the multi-root
 `--config-dir` resolution cost-family subcommands share (`_resolve_cost_roots`,
-`_SUBCOMMANDS_WITH_OWN_CONFIG_DIR`). Also owns `_redaction_ordinals` — kept here instead of
+`_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR`). Also owns `_redaction_ordinals` — kept here instead of
 `redaction.py` so `redaction.py`'s dependency on it stays one-directional, not circular.
 
 Read reassignable module globals (`scope.PROJECTS_DIR`, `scope.config_dir`,
@@ -97,14 +97,21 @@ the exception noted above.
 The review-round-cost command family: `cmd_review_round_cost` and every helper used only by it —
 per-branch review-round-window detection across both the `Skill` tool_use and `/slash` invocation
 shapes, and recursive per-round subagent dollar attribution via `corpus._index_subagent_dispatches`'
-toolUseId join (`compute_review_round_costs`). Imports `corpus`, `pricing`, `redaction`, `render`,
+toolUseId join (`compute_review_round_costs`). Also exports `compute_review_round_counts`, a
+count-only sibling reusing the same detection helpers to produce per-skill round counts with no
+pricing, no dispatch index, and no recursion — the shim's `cmd_cost_counts` calls it for the
+`### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
 and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent, and every record inside that round's window is attributed to it, never
 `cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
-never needs. `REVIEW_SKILLS` is the one public name here, back-imported by
-the still-unmigrated `cmd_judgment_pair` in the shim for its own `--skills` default — a second
-entry in the one-directional exception noted above.
+never needs. `REVIEW_SKILLS` and `compute_review_round_counts` are the two public names here;
+`REVIEW_SKILLS` is also back-imported by the still-unmigrated `cmd_judgment_pair` in the shim for
+its own `--skills` default — a second entry in the one-directional exception noted above.
+`cmd_cost_counts` and its subagent-spawn-count aggregator stay in the shim rather than moving into
+the package alongside `compute_review_round_counts`: the `--this-repo` subagent_type disclosure
+allowlist they must honor (`_repo_tracked_agent_type_names`) lives in the shim, and the package may
+not import back from the shim.
 
 ## Sibling scripts
 

@@ -361,7 +361,7 @@ echo dollars > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pr-cost-disclosure"
 
 The sentinel resolves to exactly one path (`$CLAUDE_CONFIG_DIR` if set and absolute, else `$HOME/.claude`) and its content (`dollars` vs. anything else) toggles the mode account-wide, so one account's opt-in never activates disclosure under another.
 
-The disclosed fields are not neutral — session count, turn count, and per-model-ID dollars are an engagement-scale, duration, and model-mix signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
+The disclosed fields are not neutral — session count, turn count, per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch counts are an engagement-scale, duration, model-mix, and review-cadence signal, not a safe-by-default aggregate. See [`docs/transcript-analysis.md`](docs/transcript-analysis.md)'s `cost` section and [`docs/hooks.md`](docs/hooks.md)'s "Non-hook opt-in/opt-out sentinels" for the full mechanics. `./install.sh`'s sentinel inventory (`report_sentinel_inventory`) reports this sentinel's state alongside every other opt-in.
 
 ### Prose tightening pass
 

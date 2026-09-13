@@ -89,14 +89,14 @@ Resolve the section with a single script call:
   unlike exit 1's silent deletion.
 
 The sentinel check (`<config-dir>/pr-cost-disclosure`, trimmed and lowercased, exactly `dollars`) is per Claude account, not per repo: cost is an organizational fact, and each account is its own billing entity.
-Resolves that one config-dir path only — never unions it with `$HOME/.claude`, or one account's opt-in
-would activate disclosure under another; call the script once, it performs the sentinel check internally.
+Resolves that one config-dir path only — never unions it with `$HOME/.claude`, or one account's opt-in would activate disclosure under another; call the script once, it performs the sentinel check internally.
 **One deliberate narrowing:** a sentinel consisting of a blank line followed by `dollars` reads as
 two lines and is judged disabled, where a whitespace-collapsing read would have judged it enabled
-— in the direction this gate already prefers (under-disclosing over guessing). Session/turn counts
-and per-model-ID dollars are not neutral — they signal engagement scale and model mix. That is the
-intended read under an account that opted in; it is not a property of the output format, and an
-account enabling this for one engagement should not assume the fields are harmless in another.
+— in the direction this gate already prefers (under-disclosing over guessing). Session/turn counts,
+per-model-ID dollars, per-review-skill round counts, and per-agent-type dispatch counts are not
+neutral — they signal engagement scale, model mix, and review cadence. That is the intended read
+under an account that opted in; it is not a property of the output format, and an account enabling
+this for one engagement should not assume the fields are harmless in another.
 
 ## Prose tightening pass
 
