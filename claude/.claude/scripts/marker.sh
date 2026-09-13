@@ -771,15 +771,22 @@ case "$SUBCOMMAND" in
     # merge-tree cost for the same result.
     GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
 
-    # code-review: hash of the whole-repo staged diff -- same recipe as the
+    # code-review: hash of the whole-repo staged diff, same recipe as the
     # `write code-review` arm above. _lib_code_review_marker_value is
     # internally capped, so a stalled git diff can't hang the whole status
-    # report; a killed process, or a genuinely empty staged diff outside any
-    # trusted in-progress state, both yield an empty value, which
-    # _status_report_completion_marker already treats as absent/historical --
-    # this read-only report has no reason to distinguish the two the way the
-    # `write code-review` arm's early exit does.
+    # report. A killed process yields an empty value, which
+    # _status_report_completion_marker already treats as absent/historical.
+    # This excludes the same empty-diff sentinel value that `check`'s own
+    # call site below excludes (see its comment for the two-case
+    # breakdown), so a leftover marker holding it never reads as live on a
+    # clean tree.
     CODE_REVIEW_VALUE=$(_lib_code_review_marker_value "$REPO_ROOT" "$GATE_DIFF_BASE")
+    if [ -n "$GATE_DIFF_BASE" ]; then
+      CODE_REVIEW_EMPTY_DIFF_HASH=$(_lib_hash_diff_text "$(_lib_code_review_empty_base_sentinel "$GATE_DIFF_BASE")")
+    else
+      CODE_REVIEW_EMPTY_DIFF_HASH="$_HASH_STAGED_DIFF_EMPTY_DIGEST"
+    fi
+    [ "$CODE_REVIEW_VALUE" = "$CODE_REVIEW_EMPTY_DIFF_HASH" ] && CODE_REVIEW_VALUE=""
     if _status_report_completion_marker code-review "$CONFIG_DIR/code-review-markers" "$REPO_HASH_PREFIX" "$CODE_REVIEW_VALUE"; then
       _status_reconciliation_flag code-review "$REPO_ROOT"
     fi
