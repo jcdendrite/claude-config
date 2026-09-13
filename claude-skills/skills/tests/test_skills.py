@@ -395,6 +395,62 @@ def test_feature_flags_pointer_sites_still_name_the_skill(relative_path, pointer
     )
 
 
+# Pinned (whitespace-normalized match, so a benign re-wrap is safe but a
+# word change isn't) so a future edit to feature-flags/SKILL.md's write-path
+# checklist can't silently drop one of its five parallel invariants with no
+# CI signal. Each param pins a bullet's full text, not just its first
+# sentence, so a carve-out or remediation clause added after the initial
+# rule can't be dropped without failing this test.
+_FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES = (
+    pytest.param(
+        "No code path may complete the mutation without a corresponding "
+        "audit-log entry existing. A same-transaction commit and a "
+        "synchronous write to an isolated tamper-evident store both satisfy "
+        "this. A fire-and-forget log call that can silently fail does not.",
+        id="audit-log-mandatory",
+    ),
+    pytest.param(
+        "The log entry itself must be append-only and tamper-evident — the "
+        "same bar `ciso-reviewer` applies to any privileged-action log.",
+        id="tamper-evident",
+    ),
+    pytest.param(
+        "Every application-layer writer must call through one writer-side "
+        "mutator, symmetric with the read side's single accessor, rather "
+        "than reimplementing authorization and logging at each call site.",
+        id="single-writer-mutator",
+    ),
+    pytest.param(
+        "Direct datastore access (a console update, an ad hoc fix, or a "
+        "broad table-write role) bypasses any application-layer check "
+        "entirely. It needs its own datastore-level control: a "
+        "column-level grant, a row-level policy, or a restriction on who "
+        "holds the table's write role at all.",
+        id="datastore-level-control",
+    ),
+    pytest.param(
+        "A toggle that disables a security control globally warrants a "
+        "stronger bar than a single-subject grant — consider a time-boxed "
+        "override or two-person approval for that case.",
+        id="global-disable-stronger-bar",
+    ),
+)
+
+
+@pytest.mark.parametrize("sentence", _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES)
+def test_feature_flags_write_path_invariant_pinned_verbatim(sentence):
+    """Each of the five parallel write-path security invariants in
+    feature-flags/SKILL.md must survive verbatim (whitespace-normalized) --
+    see _FEATURE_FLAGS_WRITE_PATH_INVARIANT_SENTENCES."""
+    content = re.sub(
+        r"\s+", " ", (SKILLS_DIR / "feature-flags" / "SKILL.md").read_text()
+    )
+    assert sentence in content, (
+        f"feature-flags/SKILL.md is missing a pinned write-path security "
+        f"invariant verbatim:\n{sentence!r}"
+    )
+
+
 class TestNameOnlySkillContracts:
     """Contract tests for skills with skillOverrides: name-only.
 

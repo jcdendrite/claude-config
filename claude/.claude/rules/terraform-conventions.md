@@ -69,11 +69,11 @@ layer, is the `feature-flags` skill's call — this rule doesn't decide it.
     their pin rather than inheriting the new behavior silently.
 
   A type or legal-value-set change is at least as strong a
-  major-version signal as a default change, since the caller-visible
-  literal values themselves change — including a purely additive
-  widening, since a `validation` block can function as a caller-relied-on
-  allow-list rather than a provider-schema mirror, and widening it changes
-  what the gate permits.
+  major-version signal as a default change, because the caller-visible
+  values themselves change. This includes purely additive widening: a
+  `validation` block can act as a caller-relied-on allow-list rather
+  than a provider-schema mirror, so widening it still changes what the
+  gate permits.
 - **Word the `validation` error message to flag it as possibly-stale**,
   since the provider can add legal values the module's `validation`
   block will keep rejecting.

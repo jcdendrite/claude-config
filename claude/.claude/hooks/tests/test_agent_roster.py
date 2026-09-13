@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 import yaml
-from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT, SKILLS_DIR
+from helpers import CLAUDE_DIR, HOOKS_DIR, REPO_ROOT
 from validate_skill_structure import parse_frontmatter
 
 AGENTS_DIR = CLAUDE_DIR / "agents"
@@ -819,19 +819,33 @@ class TestNoGateReleaseRosterSync:
         )
 
 
-# Pinned so a future edit to ciso-reviewer.md can't silently drop this
-# sentence with no CI signal.
+# Pinned so a future edit to ciso-reviewer.md can't silently drop any of
+# these three sentences with no CI signal.
 _CISO_NARROWER_PRINCIPAL_SET_SENTENCE = (
     'A "narrower principal set" check must actually exclude someone who could '
     "otherwise perform the action — a second code path the same principals "
     "still pass isn't narrower at all."
 )
 
+_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE = (
+    "A lookup path that only hashes/compares a password when the account "
+    "exists, or short-circuits sooner for a miss, discloses existence via "
+    "latency even with normalized response bodies."
+)
 
-class TestCisoReviewerNarrowerPrincipalSetPin:
-    """ciso-reviewer.md's "AuthN vs authZ" bullet must carry its pinned
-    narrower-principal-set sentence verbatim -- see
-    _CISO_NARROWER_PRINCIPAL_SET_SENTENCE."""
+_CISO_PROVIDER_SETTING_SCOPE_SENTENCE = (
+    "A setting can close the gap for some operations (e.g. sign-in) while "
+    "leaving another (e.g. the initial registration call) unconditionally "
+    "exposed regardless of the setting."
+)
+
+
+class TestCisoReviewerSecurityBulletsPin:
+    """ciso-reviewer.md's "narrower principal set" clause, "Account-existence
+    disclosure" bullet, and "Provider setting scope" bullet must each carry
+    their pinned sentence verbatim -- see _CISO_NARROWER_PRINCIPAL_SET_SENTENCE,
+    _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE, and
+    _CISO_PROVIDER_SETTING_SCOPE_SENTENCE."""
 
     def test_pinned_narrower_principal_set_sentence_present_verbatim(self):
         content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
@@ -840,38 +854,16 @@ class TestCisoReviewerNarrowerPrincipalSetPin:
             f"sentence verbatim:\n{_CISO_NARROWER_PRINCIPAL_SET_SENTENCE!r}"
         )
 
-
-# Pinned so a future edit to feature-flags/SKILL.md can't silently drop
-# either bullet with no CI signal.
-_FEATURE_FLAGS_AUDIT_LOG_TAMPER_EVIDENT_SENTENCE = (
-    "The log entry itself must be append-only and tamper-evident — the\n"
-    "     same bar `ciso-reviewer` applies to any privileged-action log."
-)
-
-_FEATURE_FLAGS_DATASTORE_CONTROL_SENTENCE = (
-    "Direct datastore access — a console update, an ad hoc fix, a\n"
-    "     broad table-write role — bypasses any application-layer check\n"
-    "     entirely, so it needs its own datastore-level control: a\n"
-    "     column-level grant, a row-level policy, or restricting who holds\n"
-    "     the table's write role at all."
-)
-
-
-class TestFeatureFlagsSecurityBulletsPin:
-    """feature-flags/SKILL.md's write-path security checklist must carry
-    these two bullets verbatim -- see _FEATURE_FLAGS_AUDIT_LOG_TAMPER_EVIDENT_SENTENCE
-    and _FEATURE_FLAGS_DATASTORE_CONTROL_SENTENCE."""
-
-    def test_pinned_audit_log_tamper_evident_sentence_present_verbatim(self):
-        content = (SKILLS_DIR / "feature-flags" / "SKILL.md").read_text()
-        assert _FEATURE_FLAGS_AUDIT_LOG_TAMPER_EVIDENT_SENTENCE in content, (
-            "feature-flags/SKILL.md is missing its pinned audit-log "
-            f"tamper-evident sentence verbatim:\n{_FEATURE_FLAGS_AUDIT_LOG_TAMPER_EVIDENT_SENTENCE!r}"
+    def test_pinned_account_existence_disclosure_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned account-existence-disclosure "
+            f"sentence verbatim:\n{_CISO_ACCOUNT_EXISTENCE_DISCLOSURE_SENTENCE!r}"
         )
 
-    def test_pinned_datastore_control_sentence_present_verbatim(self):
-        content = (SKILLS_DIR / "feature-flags" / "SKILL.md").read_text()
-        assert _FEATURE_FLAGS_DATASTORE_CONTROL_SENTENCE in content, (
-            "feature-flags/SKILL.md is missing its pinned datastore-level "
-            f"control sentence verbatim:\n{_FEATURE_FLAGS_DATASTORE_CONTROL_SENTENCE!r}"
+    def test_pinned_provider_setting_scope_sentence_present_verbatim(self):
+        content = (AGENTS_DIR / "ciso-reviewer.md").read_text()
+        assert _CISO_PROVIDER_SETTING_SCOPE_SENTENCE in content, (
+            "ciso-reviewer.md is missing its pinned provider-setting-scope "
+            f"sentence verbatim:\n{_CISO_PROVIDER_SETTING_SCOPE_SENTENCE!r}"
         )

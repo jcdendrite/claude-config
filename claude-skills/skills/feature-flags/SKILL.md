@@ -114,19 +114,19 @@ changes alongside a deploy is config, not a toggle.
    regardless of that review's specifics:
 
    - No code path may complete the mutation without a corresponding
-     audit-log entry existing — a same-transaction commit and a
+     audit-log entry existing. A same-transaction commit and a
      synchronous write to an isolated tamper-evident store both satisfy
-     this; a fire-and-forget log call that can silently fail does not.
+     this. A fire-and-forget log call that can silently fail does not.
    - The log entry itself must be append-only and tamper-evident — the
      same bar `ciso-reviewer` applies to any privileged-action log.
    - Every application-layer writer must call through one writer-side
      mutator, symmetric with the read side's single accessor, rather
      than reimplementing authorization and logging at each call site.
-   - Direct datastore access — a console update, an ad hoc fix, a
-     broad table-write role — bypasses any application-layer check
-     entirely, so it needs its own datastore-level control: a
-     column-level grant, a row-level policy, or restricting who holds
-     the table's write role at all.
+   - Direct datastore access (a console update, an ad hoc fix, or a
+     broad table-write role) bypasses any application-layer check
+     entirely. It needs its own datastore-level control: a column-level
+     grant, a row-level policy, or a restriction on who holds the
+     table's write role at all.
    - A toggle that disables a security control globally warrants a
      stronger bar than a single-subject grant — consider a time-boxed
      override or two-person approval for that case.
