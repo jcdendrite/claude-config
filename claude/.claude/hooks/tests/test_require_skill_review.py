@@ -1032,6 +1032,7 @@ class TestRequireSkillReview:
         assert reason is not None, "hook allowed silently; expected deny"
         assert "structural validator" in reason
         assert "timed out" not in reason
+        assert "claude-skills/skills/skill-review/SKILL.md" in reason
 
     def test_chained_marker_write_then_commit_allowed_without_existing_marker(
         self, isolated_home, git_repo

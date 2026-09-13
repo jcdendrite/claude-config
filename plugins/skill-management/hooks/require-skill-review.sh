@@ -229,6 +229,9 @@ if [ "${#CORPUS_PATHS[@]}" -gt 0 ]; then
     fi
   done
 
+  # No 124/127 exit-code branch here (contrast the structural validator call
+  # above): this scan is advisory only, so a swallowed timeout or missing
+  # binary is a missed warning, not a missed gate.
   CORPUS_STDERR=$(_lib_capped_for 10 "$VALIDATOR_PYTHON" "$VALIDATOR_SCRIPT" --corpus "${OVERLAY_PATHS[@]}" 2>&1 || true)
   if [ -n "$CORPUS_STDERR" ]; then
     printf 'skill-management: corpus budget warning: %s\n' "$CORPUS_STDERR" >&2
