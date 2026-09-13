@@ -424,12 +424,16 @@ gate.
    and `test_marker_script.py:2119` (`stub-bin`) — write their own fake
    binary directly via `Path.write_text(...)`, never routing through
    `_write_conditional_sleep_shim`, so Dispatch A's edit to that helper
-   doesn't reach their bin dir. Adding only the argument to their
-   `assert_cap_engaged()` call, with no shim installed there, fails with the
-   never-invoked message the moment Dispatch A lands alone. These 3 are
-   Dispatch B's, not Dispatch A's — Critical files item 5 excludes them from
-   its 22-site count for exactly this reason, and the Dispatch B table
-   already carries their full shim-install treatment.
+   doesn't reach their bin dir. Dispatch A does not touch these 3 sites'
+   own `assert_cap_engaged()` calls, which stay zero-argument and
+   unmigrated. The shared per-file import of `assert_cap_engaged` repoints
+   at the new signature the moment Dispatch A lands, though. So these 3
+   fail immediately at call time with `TypeError:
+   assert_cap_engaged() missing 1 required positional argument:
+   'bin_dir'`. These 3 are Dispatch B's, not
+   Dispatch A's — Critical files item 5 excludes them from its 22-site
+   count for exactly this reason, and the Dispatch B table already carries
+   their full shim-install treatment.
 7. `[verified: claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py:510-534]`
    — one site inverts the sleep invariant (re-verified this session by
    direct read). `test_friction_count_completes_when_slower_than_a_2s_cap`
@@ -449,7 +453,15 @@ gate.
    forms "individually capped at 5s and tried in sequence" (14.5s). Each
    becomes `killed_calls=2`. No per-invocation marker name is needed: the
    append log records one line per invocation and the multiset difference
-   counts them.
+   counts them. `[verified: claude/.claude/hooks/_lib.sh:1307-1308,
+   claude/.claude/hooks/tests/test_check_claude_md_length.py — found during
+   Dispatch A implementation]` — a **fourth** chained-call site exists:
+   `_lib_staged_length_gate`'s two `git cat-file -s` calls (staged and HEAD
+   revisions) both match a shim predicate of `[ "$1" = "cat-file" ]`, so
+   `test_check_claude_md_length.py`'s single cat-file cap-boundary test also
+   needs `killed_calls=2`. This row's original "three sites, not two" count
+   was not exhaustive. Dispatch A's shipped diff applies `killed_calls=2`
+   at all four.
 9. `[engineer-verified]` — `[[ "$1" =~ ^[0-9]+$ ]]` followed by `$(( ))`
    is an octal landmine, verified empirically this session: `019` aborts
    the arithmetic with "value too great for base" instead of reaching the
@@ -547,7 +559,7 @@ gate.
     inner shim before it records completion, which reads as the inner cap
     firing. `production_cap=` pinning makes a nest at a *different* duration
     harmless; a same-duration nest would not be. Dispatch B confirms this
-    per site while re-deriving each assertion, and the three chained sites
+    per site while re-deriving each assertion, and the four chained sites
     of row 8 are sequential, not nested. **This is a one-time check, not a
     standing gate:** unlike the discriminator's other three failure modes
     (rows 5, 7, and the wrong-cap/wrong-count cases), a same-duration nest
@@ -705,7 +717,7 @@ B starts.**
        inside one `with` block); `assert_cap_engaged(bin_dir,
        production_cap=5, killed_calls=2)` must pass,
        `killed_calls=1` and `killed_calls=3` against that same recording must
-       both raise. The three row-8 chained-call sites depend on this
+       both raise. The four row-8 chained-call sites depend on this
        comparison being exact, not merely truthy, and no other leg exercises
        `killed_calls` at any value but the implicit default of 1.
      *Reuse:* all four legs wrap an existing, already-tested call site with
@@ -887,7 +899,7 @@ neither one's self-review seeing the other's — exactly the condition
      fake-timeout-stays-resident design.
      **This comparison is only clean for single-capped-call sites.** The
      marker log records the caller-supplied duration, not a per-invocation
-     timestamp, so for the three row-8 chained-call sites, the 21-call
+     timestamp, so for the four row-8 chained-call sites, the 21-call
      `nudge-handoff-near-context-cap.sh` site, and the background-thread
      site (row 16), `--durations=0`'s one wall-clock number per test is a
      sum or max over several capped calls and cannot be attributed to any
@@ -916,7 +928,7 @@ neither one's self-review seeing the other's — exactly the condition
      was never invoked, fails when the killed cap's duration is not the one
      the site asserts, and fails when the number of kills recorded doesn't
      match `killed_calls` exactly — the last of these is the one property
-     the three row-8 chained-call sites depend on with no other coverage.
+     the four row-8 chained-call sites depend on with no other coverage.
      This is the whole discrimination proof for all three of Dispatch A's
      shared-helper sites and all thirteen of Dispatch B's hand-rolled ones at
      once — a single discriminator with one body, in place of six
