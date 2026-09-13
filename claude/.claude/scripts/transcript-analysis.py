@@ -126,6 +126,7 @@ from transcript_analysis.review_rounds import (
     # exception documented in docs/transcript-analysis-architecture.md.
     REVIEW_SKILLS,
     cmd_review_round_cost,
+    compute_review_round_counts,
 )
 from transcript_analysis.reviewer_yield import (
     # The six names below are read only via _mod.<name> from test files (unit-testing a
@@ -153,7 +154,7 @@ from transcript_analysis.reviewer_yield import (
 from transcript_analysis.reviewer_yield import compute_reviewer_yield_data as _compute_reviewer_yield_data
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
-    _SUBCOMMANDS_WITH_OWN_CONFIG_DIR,
+    _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
@@ -2650,7 +2651,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                 name = block.get("name")
                 inp = block.get("input") or {}
                 if name in _SPAWN_TOOL_NAMES:
-                    stype = inp.get("subagent_type") or "unknown"
+                    stype = inp.get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
                     session_data[branch]["spawns"][stype] += 1
 
                     paired = dispatch_index.get(block.get("id") or "")
@@ -2785,6 +2786,41 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         print(f"\n  ({total_meta_read_errors:,} meta.json files failed to parse, excluded)")
 
 
+def _spawn_counts_by_agent_type(
+    session_iter, branch_filter: set[str] | None,
+) -> dict[str, int]:
+    """Raw (undisclosed) subagent_type spawn counts across session_iter,
+    for cost-counts.
+
+    Main-thread dispatches only: excludes isSidechain records before ever
+    reading gitBranch, matching cmd_subagent_mix's own exclusion order. So a
+    subagent's own gitBranch never reaches this count. branch_filter matches
+    a record's own literal gitBranch, not review_rounds' carry-forward
+    attribution. For a main-thread record the two agree in every case that
+    matters here, since cost._attributed_branch's own carry-forward logic
+    exists only to resolve a worktree-agent-* sidechain record.
+
+    No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
+    for the allowlist partition this raw count feeds.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for _jsonl, records in session_iter:
+        for rec in records:
+            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
+                continue
+            branch = rec.get("gitBranch") or ""
+            if branch_filter is not None and branch not in branch_filter:
+                continue
+            for block in (rec.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") not in _SPAWN_TOOL_NAMES:
+                    continue
+                stype = (block.get("input") or {}).get("subagent_type") or _UNKNOWN_SUBAGENT_TYPE
+                counts[stype] += 1
+    return dict(counts)
+
+
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
 
 
@@ -2812,6 +2848,12 @@ _DECLARED_PIN_BUILT_IN = "built-in"
 # subagent_type disclosure, regardless of whether this repo's own agents/
 # tree tracks a same-named file.
 _BUILT_IN_AGENT_TYPES = frozenset({"general-purpose", "claude-code-guide", "Plan"})
+
+# Fallback subagent_type for a spawn tool_use whose input carries no
+# subagent_type field -- shared between cmd_subagent_mix and
+# _spawn_counts_by_agent_type so the two never disagree on which raw string
+# means "input missing this field."
+_UNKNOWN_SUBAGENT_TYPE = "unknown"
 
 # subagent_type values are harness-generated identifiers (e.g. "staff-sdet",
 # "general-purpose") -- never containing "/" or "..". _declared_pin enforces
@@ -2903,6 +2945,130 @@ def _repo_tracked_agent_type_names() -> frozenset[str]:
         if entry and "/" not in entry and entry.endswith(".md")
     }
     return frozenset(tracked) | _BUILT_IN_AGENT_TYPES
+
+
+# The one folded row a subagent_type this repo's own agents/ tree does not
+# track (and is not a Claude Code built-in) collapses into -- an em dash,
+# not a hyphen, and parenthesized so it reads unambiguously as a caption,
+# never as an agent name.
+_WITHHELD_AGENT_TYPE_LABEL = "(withheld — untracked agent type)"
+
+
+def _partition_spawn_counts_by_disclosure(raw_counts: dict[str, int]) -> list[tuple[str, int]]:
+    """Partition raw subagent_type spawn counts into disclosed rows plus one
+    folded withheld row, for cost-counts.
+
+    The _repo_tracked_agent_type_names() allowlist gate is applied here
+    unconditionally, unlike _stype_label's `disclose=this_repo and stype in
+    _repo_tracked_agent_type_names()` (reached only under multi-root):
+    _repo_tracked_agent_type_names() resolves its allowlist from
+    _REPO_AGENT_DEFINITIONS_DIR, this installed toolkit's own agents/ tree --
+    never a consumer repo's own tracked agents/ directory (see that
+    function's own docstring). So a stow consumer's own real,
+    project-tracked agent types are exactly as unresolvable here as a
+    genuinely ad hoc dispatch. Both fold into the same withheld row
+    regardless of whose branch cost-counts is scoring.
+
+    Disclosed rows sort by (-count, name), matching cmd_subagent_mix's own
+    `top` ordering. The withheld row -- when its folded total is nonzero --
+    is always appended last, never merged into that sort, so its count can
+    never place it ahead of a named row and be mistaken for one.
+    """
+    tracked = _repo_tracked_agent_type_names()
+    disclosed = sorted(
+        ((stype, count) for stype, count in raw_counts.items() if stype in tracked),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    withheld_total = sum(count for stype, count in raw_counts.items() if stype not in tracked)
+    rows = list(disclosed)
+    if withheld_total:
+        rows.append((_WITHHELD_AGENT_TYPE_LABEL, withheld_total))
+    return rows
+
+
+_COST_COUNTS_ROUNDS_CAPTION = (
+    "Each invocation of a review skill is one round, whether or not it produced findings."
+    " Counts reflect this section's last render; a review round that ran afterward may not"
+    " be included yet."
+)
+
+_COST_COUNTS_SPAWNS_CAPTION = (
+    "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
+    " counted."
+)
+
+
+def cmd_cost_counts(args: argparse.Namespace) -> None:
+    """Per-branch review-round and subagent-spawn counts, for embedding in a
+    public PR body -- counts only, no dollar attribution anywhere.
+
+    Requires --this-repo and --branches; always resolves to a single root,
+    `[config_dir() / "projects"]`, the active account alone. Prints exactly
+    two GFM subsections, `### Review rounds` and `### Subagent spawns`, and
+    nothing else. See docs/transcript-analysis.md's `cost-counts` section
+    for the branch-attribution-model distinction, the rounds/spawns
+    zero-count rendering asymmetry, and the disclosure-allowlist assertion
+    backstop.
+    """
+    this_repo = bool(getattr(args, "this_repo", False))
+    projects_arg = getattr(args, "projects", None)
+    if not this_repo or projects_arg not in (None, "*"):
+        print(
+            "cost-counts: requires --this-repo and refuses any --projects scope"
+            " (including the default glob) — see docs/transcript-analysis.md",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    branches_arg: str | None = getattr(args, "branches", None) or None
+    if not branches_arg:
+        print(
+            "cost-counts: --branches is required — a corpus-wide count is never a"
+            " legitimate PR-body figure",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    branch_filter = {b for b in branches_arg.split(",") if b}
+
+    roots = [config_dir() / "projects"]
+
+    session_iter, _scope_label = _resolve_project_scope(args, "cost-counts", roots=roots)
+    sessions = list(session_iter)
+
+    round_counts = compute_review_round_counts(sessions, branch_filter=branch_filter)
+    spawn_rows = _partition_spawn_counts_by_disclosure(
+        _spawn_counts_by_agent_type(sessions, branch_filter)
+    )
+
+    print("### Review rounds\n")
+    print(f"{_COST_COUNTS_ROUNDS_CAPTION}\n")
+    print("| Skill | Rounds |")
+    print("|---|---|")
+    total_rounds = 0
+    for skill in REVIEW_SKILLS:
+        n = round_counts[skill]
+        total_rounds += n
+        print(f"| {_sanitize_table_cell(skill)} | {n} |")
+    print(f"| **total** | **{total_rounds}** |")
+
+    print("\n### Subagent spawns\n")
+    print(f"{_COST_COUNTS_SPAWNS_CAPTION}\n")
+    if not spawn_rows:
+        print("No subagent spawns found in scope.")
+    else:
+        tracked = _repo_tracked_agent_type_names()
+        print("| Agent type | Spawns |")
+        print("|---|---|")
+        total_spawns = 0
+        for label, count in spawn_rows:
+            if not (label == _WITHHELD_AGENT_TYPE_LABEL or label in tracked):
+                raise AssertionError(
+                    f"cost-counts: {label!r} is neither the withheld label nor a"
+                    " repo-tracked agent type — refusing to print an undisclosed subagent_type"
+                )
+            total_spawns += count
+            print(f"| {_sanitize_table_cell(label)} | {count} |")
+        print(f"| **total** | **{total_spawns}** |")
 
 
 def _dispatch_usage_summary(
@@ -11887,6 +12053,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)
 
+    p_cost_counts = sub.add_parser(
+        "cost-counts",
+        help=(
+            "Per-branch review-round and subagent-spawn counts, as two GFM subsections for a"
+            " public PR body -- counts only, no dollar attribution. Requires --this-repo and"
+            " --branches; always scoped to the active account alone."
+        ),
+    )
+    _add_project_scope_args(p_cost_counts)
+    p_cost_counts.add_argument(
+        "--branches", metavar="B1,B2,...",
+        help="Branch name filter. Required at runtime (see cmd_cost_counts's own docstring).",
+    )
+    p_cost_counts.set_defaults(func=cmd_cost_counts)
+
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
         help=(
@@ -12121,17 +12302,31 @@ def main() -> None:
     parser = build_parser()
     parsed = parser.parse_args()
     if parsed.config_dir:
-        # These subcommands resolve their own scan roots via their own
-        # --config-dir (_resolve_cost_roots), never reading the reassignment
-        # below -- refuse outright rather than let the two same-named flags
-        # silently diverge (this top-level one would validate one account
-        # while the subcommand scans another).
-        if parsed.subcommand in _SUBCOMMANDS_WITH_OWN_CONFIG_DIR:
+        # These subcommands each refuse the top-level --config-dir outright
+        # rather than let it silently diverge from whatever scan roots the
+        # subcommand actually resolves (this top-level one would validate
+        # one account while the subcommand scans another). Most resolve
+        # their own scan roots via their own --config-dir (_resolve_cost_roots);
+        # cost-counts is the one exception, registering no --config-dir flag
+        # of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
+            # hasattr, not a hardcoded subcommand list: True only when the
+            # invoked subparser itself registered --config-dir (dest
+            # extra_config_dirs), so the hint never recommends a flag that
+            # doesn't exist on cost-counts's own parser.
+            if hasattr(parsed, "extra_config_dirs"):
+                own_scope_clause = (
+                    "this subcommand resolves its own scan roots via its own --config-dir "
+                    "(repeatable, additive) -- use that instead: "
+                    f"transcript-analysis.py {parsed.subcommand} --config-dir PATH"
+                )
+            else:
+                own_scope_clause = (
+                    "this subcommand is scoped to the active account's config dir with no override"
+                )
             print(
                 f"{parsed.subcommand}: the top-level --config-dir has no effect here, since "
-                f"this subcommand resolves its own scan roots via its own --config-dir "
-                f"(repeatable, additive) -- use that instead: "
-                f"transcript-analysis.py {parsed.subcommand} --config-dir PATH",
+                f"{own_scope_clause}",
                 file=sys.stderr,
             )
             sys.exit(2)

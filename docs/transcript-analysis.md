@@ -634,7 +634,7 @@ Redacted project labels (`private-project-N`, `account-N`) and the printed corpu
 
 **Worktree-isolated subagent attribution.** A subagent dispatched with `isolation: "worktree"` runs on a harness-generated `worktree-agent-<hash>` branch, not the branch that dispatched it. `--branches` filters on each record's *attributed* branch, not that literal value: for every `worktree-agent-*` record, `cost` resolves the dispatching session's own branch active at that record's timestamp (falling forward to the session's earliest branch if the record predates every main-thread record), and folds the subagent's dollars and tokens into that branch's total — the same real spend a plain literal-`gitBranch` filter would otherwise silently drop. The one genuinely unattributable case — a session with no main-thread branch-bearing record at all — renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a `worktree-agent-*` record is never resolved against a *different* session's main-thread history. For the separate case of a subagent whose cwd is simply a different, already-existing repo than its parent's (no `isolation: "worktree"` involved), see "A subagent dispatched from another repo's session" above.
 
-**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
+**The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use. The same PR body's `cost-counts` subsections (below) add per-review-skill round counts and per-agent-type spawn counts, both bare integers with no dollar figure attached. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
 
 The branch itself is never echoed in `--summary`'s text — it only narrows which records the tables below are computed from — so a reviewer confirms scope by re-running the printed command, not by reading a label in the output.
 
@@ -1093,6 +1093,54 @@ Unpriced turns inside round windows: 0
 `#` is the branch-wide round ordinal; `n` is that skill's own ordinal within the branch (the sub-breakdown). A skill with zero rounds anywhere in scope prints `no data` for its own "Mean $ per round" entry, never a computed `0.00` or a division-by-zero.
 
 **When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` collapses a whole branch to one figure with no round-level breakdown. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
+
+---
+
+## cost-counts
+
+**Purpose.** Per-branch review-round and subagent-spawn counts, as two GFM subsections (`### Review rounds`, `### Subagent spawns`) meant for splicing directly into a public PR body -- counts only, no dollar attribution anywhere. `pr-cost-section.sh` calls this as a second, independently-degrading call alongside `cost --summary`, splicing its output between the dollar tables and the reproducibility trailer; a failed call substitutes a one-line caveat instead of changing the wrapper's own exit code.
+
+**Flags.**
+- `--this-repo` — required; there is no machine-wide or `--projects`-scoped mode
+- `--branches B1,B2,...` — required at runtime (refused with exit 2 when absent, not an argparse-level requirement); a corpus-wide count is never a legitimate PR-body figure
+
+Always scoped to the active account alone (`config_dir()/projects`), with no `--config-dir` flag of its own — a populated `~/.claude/transcript-config-dirs` contributes nothing here, unlike every other multi-root subcommand in this reference (see "Corpus scope: the declared-roots file" above).
+
+**Scope caveats.**
+- **Main-thread only, both counts.** A round or spawn reached only from inside a dispatched subagent is never counted — matching `review-round-cost`'s own main-thread-only round detection and `subagent-mix`'s own spawn-counting scope.
+- **Two different branch-attribution models, deliberately.** Round counts use `review-round-cost`'s own carry-forward branch attribution (a round's opening record's `gitBranch`, carried forward when absent); spawn counts use a record's own literal `gitBranch`. The two agree in every case but a round opened on a record with no `gitBranch` of its own.
+- **The two tables render zero-count scope differently, deliberately.** The rounds table always prints all three `REVIEW_SKILLS` rows, zeros included, since a fixed three-row table of zeros is already the more explicit rendering of zero. The spawns table instead prints a `No subagent spawns found in scope.` sentence in place of a table when there is nothing to show, since an all-zero spawns table has no fixed row set to fall back on.
+- **Every disclosed row is re-checked against the allowlist just before it prints.** Each non-withheld agent-type label is asserted, immediately before its own print, to be a member of `_repo_tracked_agent_type_names()` — independent of the disclosure-partitioning check above — so a future regression to a direct, unpartitioned label reuse fails loudly here instead of silently disclosing an untracked `subagent_type`.
+- **A snapshot at render time.** Counts reflect this section's last render; a review round or subagent spawn that ran afterward is not included until the next `/pr-description` sync re-renders the block — the rounds caption states this explicitly, since a `ready-for-review` round routinely runs after the branch's last sync.
+
+**Sample output.**
+```
+### Review rounds
+
+Each invocation of a review skill is one round, whether or not it produced findings. Counts reflect this section's last render; a review round that ran afterward may not be included yet.
+
+| Skill | Rounds |
+|---|---|
+| code-review | 3 |
+| plan-review | 1 |
+| ready-for-review | 2 |
+| **total** | **6** |
+
+### Subagent spawns
+
+Counts main-thread dispatches only; an agent spawned from inside another agent is not counted.
+
+| Agent type | Spawns |
+|---|---|
+| code-writer | 4 |
+| staff-sdet | 2 |
+| (withheld — untracked agent type) | 1 |
+| **total** | **7** |
+```
+
+**Redaction.** An agent-type name prints raw only when it is tracked in this repo's own `agents/` directory or is a Claude Code built-in. This is the same `_repo_tracked_agent_type_names` allowlist `subagent-mix` consults, but applied unconditionally here rather than only under multi-root. `subagent-mix` applies no allowlist check at all under a single scan root, printing every `subagent_type` raw there, while this subcommand is single-root by construction and always applies the check regardless. Every other value folds into one `(withheld — untracked agent type)` row rather than printing raw. No branch name appears anywhere in the output. This is strictly lighter disclosure than `review-round-cost`'s own per-round table above — bare per-skill/per-agent-type integers, never a dated series — see that section's own Redaction paragraph for why a dated per-round dollar series is a materially stronger de-anonymization key than the aggregate counts here.
+
+**When to reach for it.** This is the counts-only half of the PR-body Cost section `pr-cost-section.sh` embeds automatically — reach for it directly only to re-render or debug that section, or to check a branch's own round/spawn counts before drafting a PR description. For dollar figures use `cost --summary`; for a full per-round dollar breakdown (never meant for a public PR body) use `review-round-cost`.
 
 ---
 
