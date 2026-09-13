@@ -558,6 +558,9 @@ case "$SUBCOMMAND" in
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        # No uncommitted-change guard needed here: this marker's HEAD sha
+        # gates push/PR-creation mechanics acting on committed content only,
+        # unlike `verification` below (docs/design-decisions/ready-for-review-verification-cache.md).
         MARKER_VALUE=$(git -C "$REPO_ROOT" rev-parse HEAD)
         [ -n "$MARKER_VALUE" ] || { printf 'marker.sh: could not resolve HEAD. Abort without writing a marker.\n' >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/ready-for-review-markers"
@@ -622,6 +625,20 @@ case "$SUBCOMMAND" in
         # No _guard_staged_vs_unstaged call: this marker covers the
         # committed tree (HEAD^{tree}), not the staged diff, so that guard's
         # staged-vs-unstaged question does not apply here.
+        #
+        # Uncommitted content -- staged, unstaged, or untracked -- is
+        # invisible to HEAD^{tree}. See
+        # docs/design-decisions/ready-for-review-verification-cache.md's
+        # residuals for the gitignore blind spot and the delete-before-write
+        # TOCTOU this guard still leaves open.
+        UNCOMMITTED_STATUS=$(git -C "$REPO_ROOT" status --porcelain) || {
+          printf 'marker.sh: could not check %s for uncommitted changes. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          exit 2
+        }
+        if [ -n "$UNCOMMITTED_STATUS" ]; then
+          printf 'marker.sh: uncommitted changes present in %s. Abort without writing a marker.\n' "$REPO_ROOT" >&2
+          exit 2
+        fi
         #
         # Each marker kind hashes what its own step consumes. `verification`
         # hashes the tree (what step 2 executes); `cumulative-review` hashes
@@ -964,8 +981,8 @@ case "$SUBCOMMAND" in
         MARKER_VALUE=$(_lib_head_tree_hash capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         # A hash match older than VERIFICATION_CHECK_MAX_AGE_SECONDS reads as
-        # no-match too. See docs/design-decisions.md for why this age bound
-        # applies only here, not to the write side.
+        # no-match too. See docs/design-decisions/ready-for-review-verification-cache.md
+        # for why this age bound applies only here, not to the write side.
         if _lib_marker_value_present "$CONFIG_DIR/verification-markers" "$MARKER_VALUE" "$REPO_HASH."; then
           _resolve_verification_check_max_age_seconds
           if FRESH_AGE=$(_marker_fresh_age "$CONFIG_DIR/verification-markers" "$MARKER_VALUE" "$REPO_HASH." "$VERIFICATION_CHECK_MAX_AGE_SECONDS"); then

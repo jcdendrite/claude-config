@@ -673,13 +673,9 @@ _lib_cumulative_diff_hash() {
 # "capped" to run the git call through _lib_capped's 5s timeout, or
 # "uncapped" to run it directly, mirroring _hash_staged_diff's mode-argument
 # shape in marker.sh.
-# git's own exit status must be checked, not just stdout emptiness: on a
-# commit-less repo (unborn HEAD), `git rev-parse HEAD^{tree}` exits 128 but
-# still prints the literal argument "HEAD^{tree}" to stdout as its
-# unresolved-revision fallback -- an emptiness-only check would misread that
-# echoed literal as a real tree hash. This is a different failure shape than
-# _hash_staged_diff's "succeeded but hashed empty input" case, but the same
-# need to gate on git's exit status rather than stdout alone.
+# Check git's exit status, not stdout emptiness: an unborn HEAD exits 128 but
+# still echoes the literal string "HEAD^{tree}", which an emptiness-only
+# check would misread as a real hash.
 # Two-outcome contract (same failure shape as _lib_repo_root):
 #   - exit 0, non-empty stdout: the tree hash.
 #   - exit 1, empty stdout: not inside a git repository, no commit exists yet
