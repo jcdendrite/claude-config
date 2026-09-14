@@ -231,8 +231,13 @@ predates this section's current single-account bar:
 - `docs/case-studies/handoff-threshold-impact.md`, entirely
 - `docs/case-studies/handoff-hard-block-position.md`, entirely
 - `docs/case-studies/cold-cache-attribution.md`, entirely
-- `docs/case-studies/check-runner.md`'s Retirement section, for its
-  total-dispatch count and percentage breakdown
+- `docs/case-studies/check-runner.md`'s Retirement section, entirely —
+  its 649-session corpus window, byte-size distribution, dispatch
+  count, and percentage breakdown all derive from the same pooled
+  measurement
+- `docs/case-studies/worktree-enforcement.md`'s "The general
+  philosophy" section, for its 785-session/387-denial/243-session
+  `review-trace` corpus measurement
 - `docs/cost-levers-considered.md`'s machine-wide pooled review-round
   share and machine-wide rows
 - `docs/case-studies.md`'s index blurbs

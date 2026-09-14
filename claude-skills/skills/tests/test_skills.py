@@ -3182,6 +3182,16 @@ _CASE_STUDY_POOLED_FIGURE_MARKERS_RE = re.compile(
     r"pooled across|machine-wide|cross-machine|multi-account", re.IGNORECASE
 )
 
+# Known false-negative: a file disclosing an unscoped review-trace/
+# subagent-mix/fail-seq/struggle/duration/pr-link/buckets figure without any
+# of the four marker phrases above is invisible to this regex.
+# docs/case-studies/worktree-enforcement.md's "The general philosophy"
+# section is a live example: it matches no marker here, and is grandfathered
+# by name in Remediation instead.
+# A precise detector would flag a scope-unguaranteed-subcommand citation
+# with no adjacent --this-repo/--config-dir disclosure.
+# That detector is not implemented here.
+
 # Case studies published after the single-account bar took effect that use a
 # marker phrase without publishing a pooled figure under the old carve-out —
 # extend this set, never delete a prior entry, when
