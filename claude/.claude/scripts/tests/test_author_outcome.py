@@ -1,7 +1,9 @@
 """Tests for transcript_analysis/author_outcome.py (author-outcome)."""
 import importlib.util
 import itertools
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +33,11 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
+
+# claude/.claude/ itself, so `hooks.tests.conftest` below resolves.
+# Mirrors test_config_parser_parity.py's identical cross-package import.
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from hooks.tests.conftest import _seed_session  # noqa: E402
 
 
 def _session_iter(fake_projects):
@@ -310,6 +317,35 @@ class TestLedgerPossiblySwept:
             jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
+    def test_explicit_ledger_path_is_trusted_over_a_file_that_actually_exists(self, tmp_path):
+        """A caller-supplied LEDGER_PATH of None is trusted as-is, not
+        re-resolved. A ledger file exists on disk for this session, yet the
+        call still evaluates as possibly swept -- proof that the explicit
+        None short-circuited the internal _ledger_path_for_session
+        lookup."""
+        config_dir_root = tmp_path
+        ledger_dir = config_dir_root / "review-narrative-ledger"
+        ledger_dir.mkdir(parents=True)
+        (ledger_dir / ("a" * 64 + ".sess-1.jsonl")).write_text('{"round": 1}\n')
+        jsonl = config_dir_root / "projects" / "-home-user-testrepo" / "sess-1.jsonl"
+        jsonl.parent.mkdir(parents=True)
+        jsonl.write_text("")
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW, ledger_path=None,
+        ) is True
+
+    def test_explicit_ledger_path_provided_short_circuits_without_an_internal_resolve(self, tmp_path):
+        """A caller-supplied LEDGER_PATH that isn't None is trusted as-is
+        too: a session with no ledger file on disk still evaluates as not
+        possibly swept when a (fake) resolved path is passed in directly."""
+        jsonl = self._jsonl(tmp_path)
+        records = [{"timestamp": self._OLD_RECORD_TS}]
+        assert ao._ledger_possibly_swept(
+            jsonl, [(0, 1)], [], records, now=self._NOW_WELL_PAST_WINDOW,
+            ledger_path=tmp_path / "review-narrative-ledger" / ("a" * 64 + ".sess-1.jsonl"),
+        ) is False
+
     def test_no_parseable_timestamp_is_never_possibly_swept(self, tmp_path):
         jsonl = self._jsonl(tmp_path)
         records = [{"timestamp": None}, {}]
@@ -407,6 +443,145 @@ class TestClassifyRound:
         classification, matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
         assert classification == ao._OUTCOME_UNATTRIBUTED
         assert matching == []
+
+
+class TestReviewLedgerSubprocessIntegration:
+    """Runs the real review-ledger.sh append subprocess and reads it back
+    through the same reader functions other tests exercise only against a
+    hand-maintained fixture, pinning writer/reader schema agreement by
+    actual execution instead of two independently maintained copies."""
+
+    SESSION_ID = "subprocess-integration-session"
+
+    def _make_git_repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+        (repo / "file.txt").write_text("first\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        return repo
+
+    def _run_append(self, args: list[str], *, cwd: Path, home: Path) -> subprocess.CompletedProcess:
+        env = {**os.environ, "HOME": str(home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        return subprocess.run(
+            ["bash", str(_REVIEW_LEDGER_SH), "append", "code-review", *args],
+            cwd=cwd, env=env, capture_output=True, text=True,
+        )
+
+    def _fake_transcript_path(self, home: Path) -> Path:
+        # _read_ledger_rows_for_session only reads jsonl.stem (the session
+        # id) and walks three parents up to the config-dir root -- see
+        # _config_dir_root_for_session's own docstring for that resolution.
+        # A placeholder transcript path with the right stem and depth under
+        # $HOME/.claude is therefore enough.
+        # The real ledger file is found by review-ledger.sh's own
+        # $CONFIG_DIR/review-narrative-ledger glob, not by this path itself.
+        return home / ".claude" / "projects" / "-fake-project" / f"{self.SESSION_ID}.jsonl"
+
+    def test_real_address_append_classifies_as_failure(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = self._make_git_repo(tmp_path)
+        _seed_session(home, self.SESSION_ID)
+
+        result = self._run_append(
+            [
+                "--finding", "Missing error handling in foo()",
+                "--disposition", "ADDRESS",
+                "--rationale", "fixed inline",
+                "--round", "1",
+                "--authoring-agent", "code-writer",
+            ],
+            cwd=repo, home=home,
+        )
+        assert result.returncode == 0, result.stderr
+
+        jsonl = self._fake_transcript_path(home)
+        rows = ao._read_ledger_rows_for_session(jsonl)
+        assert len(rows) == 1
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        classification, matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_FAILURE
+        assert matching == rows
+
+    def test_real_clean_append_classifies_as_pass(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = self._make_git_repo(tmp_path)
+        _seed_session(home, self.SESSION_ID)
+
+        result = self._run_append(["--disposition", "CLEAN", "--round", "1"], cwd=repo, home=home)
+        assert result.returncode == 0, result.stderr
+
+        jsonl = self._fake_transcript_path(home)
+        rows = ao._read_ledger_rows_for_session(jsonl)
+        assert len(rows) == 1
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        classification, _matching = ao._classify_round(1, rows, has_marker_write=False, data_quality=data_quality)
+        assert classification == ao._OUTCOME_PASS
+
+
+class TestComputeAuthorOutcomesLedgerPathResolution:
+    """compute_author_outcomes must resolve each session's ledger path
+    exactly once and reuse it for both the row-read and the sweep check,
+    not glob for it once per lookup. The resolution must not be cached
+    across sessions: a session seen later in the same run still gets its
+    own fresh resolution, not one read through an earlier snapshot."""
+
+    def test_ledger_path_for_session_is_called_once_per_session(self, fake_projects, monkeypatch):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+        ])
+        real_ledger_path_for_session = ao._ledger_path_for_session
+        call_count = 0
+
+        def _counting_ledger_path_for_session(jsonl):
+            nonlocal call_count
+            call_count += 1
+            return real_ledger_path_for_session(jsonl)
+
+        monkeypatch.setattr(ao, "_ledger_path_for_session", _counting_ledger_path_for_session)
+        ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert call_count == 1, f"expected one glob for sess-1's ledger path, got {call_count}"
+
+    def test_second_sessions_ledger_file_created_between_sessions_is_still_seen(self, fake_projects, monkeypatch):
+        """A corpus-wide index memoized once before the loop starts would
+        show sess-2 as ledger-less, since its ledger file doesn't exist yet
+        at that point. That's the round-1 bug the single-session test above
+        already guards against. A snapshot-based resolution and a
+        resolved-fresh one only disagree once a second session's ledger
+        file appears after the first session is processed, which needs two
+        sessions to reproduce."""
+        session_1, session_2 = "sess-1", "sess-2"
+        for session_id in (session_1, session_2):
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+                _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+                _asst(
+                    "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:00.000Z",
+                    content=[_skill_block("s1", "code-review")],
+                ),
+                _user_msg("thanks", branch="feat", ts="2026-08-01T10:02:00.000Z"),
+            ])
+        real_ledger_path_for_session = ao._ledger_path_for_session
+
+        def _write_session_2_ledger_once_session_1_resolves(jsonl):
+            resolved = real_ledger_path_for_session(jsonl)
+            if jsonl.stem == session_1:
+                _seed_ledger(fake_projects, session_2, [_ledger_row(round=1, disposition="ADDRESS")])
+            return resolved
+
+        monkeypatch.setattr(ao, "_ledger_path_for_session", _write_session_2_ledger_once_session_1_resolves)
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
 
 
 class TestComputeAuthorOutcomesBuckets:

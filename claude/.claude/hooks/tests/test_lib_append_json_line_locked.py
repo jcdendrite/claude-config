@@ -236,6 +236,62 @@ class TestLibAppendJsonLineLockedLockEviction:
         assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
         assert lock_file.exists()
 
+    def test_live_pid_lock_still_dedups_a_genuine_duplicate_and_emits_stderr_note(self, tmp_path, live_pid):
+        """Retry exhaustion against a still-live holder must still run the
+        dedup check, and a matching projection is a genuine duplicate
+        regardless of lock state. Losing the lock only risks missing a
+        concurrent duplicate, never falsely flagging one. The append also
+        notes on stderr that it proceeded unlocked."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        line = '{"round":1,"disposition":"ADDRESS"}'
+        target.write_text(line + "\n")
+        lock_file.write_text(str(live_pid))
+
+        result = _append_json_line_locked(target, lock_file, line, "{round, disposition}")
+
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == [line], "a genuine duplicate must still dedup unlocked"
+        assert "_lib_acquire_append_lock: exhausted" in result.stderr, repr(result.stderr)
+
+    def test_live_pid_lock_still_appends_a_non_duplicate_and_emits_stderr_note(self, tmp_path, live_pid):
+        """The unlocked-append note is additive, not a change in dedup
+        behavior: a non-duplicate candidate still lands even when the lock
+        wasn't acquired."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        existing = '{"round":1,"disposition":"ADDRESS"}'
+        candidate = '{"round":2,"disposition":"CLEAN"}'
+        target.write_text(existing + "\n")
+        lock_file.write_text(str(live_pid))
+
+        result = _append_json_line_locked(target, lock_file, candidate, "{round, disposition}")
+
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == [existing, candidate]
+        assert "_lib_acquire_append_lock: exhausted" in result.stderr, repr(result.stderr)
+
+    def test_retry_exhaustion_does_not_abort_the_caller_under_set_e(self, tmp_path, live_pid):
+        """_lib_acquire_append_lock's nonzero return on retry exhaustion
+        must not trip a sourcing script's own `set -e` -- the guard
+        _lib_append_json_line_locked wraps that call in. See
+        test_lib_append_line_locked.py's own sibling test for why a
+        pre-written, never-evicted live lock file is enough to force
+        genuine retry exhaustion here."""
+        target = tmp_path / "state.jsonl"
+        lock_file = tmp_path / "state.jsonl.lock"
+        lock_file.write_text(str(live_pid))
+        result = subprocess.run(
+            ["bash", "-c",
+             f'set -euo pipefail; . "{LIB_SH}"; _lib_append_json_line_locked "$1" "$2" "$3" "$4"',
+             "_", str(target), str(lock_file), '{"round":1,"disposition":"ADDRESS"}', "{round, disposition}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+
 
 class TestLibAppendJsonLineLockedConcurrency:
     """Two-process race coverage of the shared _lib_acquire_append_lock

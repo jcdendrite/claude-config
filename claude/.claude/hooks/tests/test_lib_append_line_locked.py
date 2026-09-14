@@ -101,6 +101,28 @@ class TestLibAppendLineLocked:
         assert target.read_text().splitlines() == ["after-live-lock"]
         assert lock_file.exists()
 
+    def test_retry_exhaustion_does_not_abort_the_caller_under_set_e(self, tmp_path, live_pid):
+        """_lib_acquire_append_lock's nonzero return on retry exhaustion
+        must not trip a sourcing script's own `set -e` -- the guard
+        _lib_append_line_locked wraps that call in. A pre-written,
+        never-evicted live lock file is enough to force genuine retry
+        exhaustion here. That's simpler than
+        test_lock_held_past_retry_budget_falls_through_to_unlocked_append
+        below, which models two racing processes via a holder subprocess."""
+        target = tmp_path / "state.txt"
+        lock_file = tmp_path / "state.txt.lock"
+        lock_file.write_text(str(live_pid))
+        result = subprocess.run(
+            ["bash", "-c",
+             f'set -euo pipefail; . "{LIB_SH}"; _lib_append_line_locked "$1" "$2" "$3"',
+             "_", str(target), str(lock_file), "after-exhausted-retries-under-set-e"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_text().splitlines() == ["after-exhausted-retries-under-set-e"]
+
 
 class TestLibAppendLineLockedConcurrency:
     """Two-process race coverage of the shared _lib_acquire_append_lock

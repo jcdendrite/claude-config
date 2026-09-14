@@ -56,6 +56,9 @@ _lib_capped() {
 # exit status — see _lib_capped's usage note above, which applies here too.
 # SECONDS must be a literal or a value guaranteed non-empty -- an empty or
 # unset value hard-aborts the sourcing script instead of failing this call.
+# Emits a stderr note every time the uncapped fallback fires, so a caller
+# or log can tell the cap silently didn't apply rather than reading a clean
+# exit as capped.
 _lib_capped_for() {
   local seconds="${1:?_lib_capped_for requires a seconds argument}"
   shift
@@ -64,6 +67,7 @@ _lib_capped_for() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout "$seconds" "$@"
   else
+    printf '_lib_capped_for: neither timeout nor gtimeout is on PATH -- running %s uncapped\n' "$1" >&2
     "$@"
   fi
 }
@@ -3235,13 +3239,21 @@ _LIB_APPEND_LOCK_RETRIES=5
 # already registered in the calling process -- a future caller sharing
 # either primitive must ensure no other EXIT trap is active in the same
 # process.
-# Always returns (never blocks indefinitely): after
-# _LIB_APPEND_LOCK_RETRIES failed acquisitions, the caller proceeds
-# unlocked, trading a low-consequence duplicate line for never blocking.
-# See docs/transcript-analysis-architecture.md's ledger append-lock
-# section for how review-ledger.sh specifically consumes this primitive,
-# including why dead-holder eviction matters more at one of its callers
-# than the other.
+# Always returns rather than blocking indefinitely: after
+# _LIB_APPEND_LOCK_RETRIES failed acquisitions, this returns non-zero and
+# the caller proceeds unlocked, trading a low-consequence duplicate line
+# for never blocking.
+# A future caller that dedups under this lock could check this return
+# status to log that its own dedup check raced a concurrent writer --
+# _lib_append_json_line_locked does not do so today (it discards the
+# status via `|| true`).
+# A matching projection is still a genuine duplicate regardless of lock
+# state: losing the lock only risks a false negative (missing a concurrent
+# duplicate), never a false positive.
+# Dead-holder eviction matters more at log-reviewer-round.sh's call site
+# than at review-ledger.sh's, since a PostToolUse hook is more exposed to
+# being killed mid-lock by the harness's own hook timeout than a
+# skill-invoked CLI script is.
 _lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
@@ -3265,6 +3277,9 @@ _lib_acquire_append_lock() {
     attempt=$((attempt + 1))
     sleep 0.05
   done
+  printf '_lib_acquire_append_lock: exhausted %d retries acquiring %s -- proceeding unlocked\n' \
+    "$_LIB_APPEND_LOCK_RETRIES" "$_LIB_APPEND_LOCK_PATH" >&2
+  return 1
 }
 
 # _lib_append_line_locked FILE LOCK_FILE LINE
@@ -3276,7 +3291,9 @@ _lib_acquire_append_lock() {
 # _lib_acquire_append_lock above for the locking half of this primitive.
 _lib_append_line_locked() {
   local file="$1" line="$3"
-  _lib_acquire_append_lock "$2"
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
   if [ -f "$file" ] && grep -qFx -e "$line" -- "$file" 2>/dev/null; then
     # A dedup no-op must still count as activity on this file's own mtime,
     # or a long-running branch's later no-op append leaves a stale mtime
@@ -3305,12 +3322,16 @@ _lib_append_line_locked() {
 # A duplicate is a no-op but still touches FILE's mtime, per
 # _lib_append_line_locked's own dedup-no-op-is-still-activity rationale
 # above.
-# See docs/transcript-analysis-architecture.md's ledger append-lock
-# section for why whole-line dedup doesn't work for this schema and
-# which callers use which primitive.
+# Whole-line dedup doesn't work for this schema: event_time is captured
+# fresh on every append attempt, so two calls carrying identical business
+# fields would never match byte-for-byte. This is why the check below
+# projects through DEDUP_KEY_JQ_FILTER instead of taking
+# _lib_append_line_locked's whole-line match.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
-  _lib_acquire_append_lock "$2"
+  # Bare top-level call, not inside $(...): a nonzero return here must not
+  # trip a caller's `set -e` (see _lib_acquire_append_lock's own docstring).
+  _lib_acquire_append_lock "$2" || true
   if [ -f "$file" ] && [ -s "$file" ]; then
     local dup_check_program is_duplicate
     # shellcheck disable=SC2016 # single-quoted on purpose: $candidate is

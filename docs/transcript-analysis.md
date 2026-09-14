@@ -1170,6 +1170,8 @@ This can't tell a genuinely swept ledger apart from a session the kill switch si
 
 **The `authoring_agent inconsistent` counter's own denominator.** Rows with an empty or `unknown` `authoring_agent` are skipped rather than miscounted -- either a pre-migration row, or one that simply never declared the flag. Every other matching row's `authoring_agent` is compared against the transcript-derived determination for that round: whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
 
+This counter is meaningful only when `--agent` is `code-writer` (the default). `review-ledger.sh`'s `--authoring-agent` enum has no case for any other value, so `declared` can never match and the counter fires on nearly every round. Treat that as reduced signal from an unsupported `--agent` value, not a data-quality problem.
+
 **Sample output.**
 ```
 AUTHOR OUTCOME SOURCES (this repo (N project dirs); 1 root)

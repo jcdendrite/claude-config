@@ -180,7 +180,24 @@ def _read_ledger_rows_for_session(jsonl: Path) -> list[dict]:
     corpus._parse_jsonl_records' own per-line tolerance for a transcript
     file with a corrupted line.
     """
-    ledger_path = _ledger_path_for_session(jsonl)
+    return _read_ledger_rows_for_path(_ledger_path_for_session(jsonl))
+
+
+def _read_ledger_rows_for_path(ledger_path: Path | None) -> list[dict]:
+    """Every JSON row from LEDGER_PATH, already resolved by the caller --
+    see _read_ledger_rows_for_session's own docstring for the malformed-
+    line and missing-file behavior this implements.
+
+    compute_author_outcomes' loop calls this directly with a path it
+    already resolved via _ledger_path_for_session. That avoids a second
+    glob for sessions where _ledger_possibly_swept would otherwise
+    re-resolve the same path itself -- an open review round with no
+    matching ledger row, which covers:
+
+    - a legacy (pre-schema-v2) session
+    - a kill-switch session
+    - a swept session
+    """
     if ledger_path is None:
         return []
     rows: list[dict] = []
@@ -233,6 +250,23 @@ def _round_number_mismatch(ledger_rows: list[dict], round_open_count: int) -> bo
     return contiguous_blocks != list(range(1, round_open_count + 1))
 
 
+# Sentinel default for _ledger_possibly_swept's ledger_path parameter below,
+# distinct from a resolved-to-None Path. Two cases:
+#
+# - the caller didn't pre-resolve one: resolve internally.
+# - the caller resolved one and it's None: no ledger file exists, use that
+#   fact directly.
+#
+# A dedicated type, not a bare object(), so the parameter's own annotation
+# below can name it instead of falling back to the unchecked `object`.
+class _LedgerPathUnset:
+    """Marker type for the _LEDGER_PATH_UNSET singleton below; not
+    instantiated a second time."""
+
+
+_LEDGER_PATH_UNSET = _LedgerPathUnset()
+
+
 def _ledger_possibly_swept(
     jsonl: Path,
     code_review_rounds: list[tuple[int, int]],
@@ -240,6 +274,7 @@ def _ledger_possibly_swept(
     records: list[dict],
     *,
     now: float | None = None,
+    ledger_path: Path | None | _LedgerPathUnset = _LEDGER_PATH_UNSET,
 ) -> bool:
     """True iff this session opened >=1 code-review round, has no ledger
     file at all, and its own newest record is older than
@@ -247,10 +282,17 @@ def _ledger_possibly_swept(
     when no record in the session has a parseable timestamp to compare.
     See docs/transcript-analysis.md's "Ledger-possibly-swept check"
     section for the rationale.
+
+    LEDGER_PATH lets a caller that already resolved this session's ledger
+    path (compute_author_outcomes' loop) pass it straight through instead
+    of re-globbing. Every other caller leaves it unset, and this resolves
+    it internally via _ledger_path_for_session.
     """
     if not code_review_rounds:
         return False
-    if ledger_rows or _ledger_path_for_session(jsonl) is not None:
+    if ledger_path is _LEDGER_PATH_UNSET:
+        ledger_path = _ledger_path_for_session(jsonl)
+    if ledger_rows or ledger_path is not None:
         return False
     timestamps = [
         ts for ts in (corpus._parse_ts(rec.get("timestamp")) for rec in records) if ts is not None
@@ -386,7 +428,13 @@ def compute_author_outcomes(
         records = pricing.dedup_turns_by_request_id(raw_records)
         tool_result_index = _build_tool_result_index_map(records)
         code_review_rounds = _code_review_rounds(records)
-        ledger_rows = _read_ledger_rows_for_session(jsonl)
+        # Resolved once per session and passed to both lookups below.
+        # `_read_ledger_rows_for_path` takes the path directly.
+        # `_ledger_possibly_swept` skips its own internal resolution when
+        # `ledger_path` is supplied, avoiding a second glob for the subset
+        # of sessions where it would otherwise re-resolve the same path.
+        ledger_path = _ledger_path_for_session(jsonl)
+        ledger_rows = _read_ledger_rows_for_path(ledger_path)
 
         session_round_mismatch = _round_number_mismatch(ledger_rows, len(code_review_rounds))
         if session_round_mismatch:
@@ -394,6 +442,7 @@ def compute_author_outcomes(
 
         session_ledger_possibly_swept = _ledger_possibly_swept(
             jsonl, code_review_rounds, ledger_rows, records, now=now,
+            ledger_path=ledger_path,
         )
         if session_ledger_possibly_swept:
             data_quality[_DQ_LEDGER_POSSIBLY_SWEPT] += 1

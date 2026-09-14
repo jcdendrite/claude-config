@@ -290,10 +290,9 @@ case "$SUBCOMMAND" in
     # branches on it.
     EVENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # jq -nc avoids hand-escaping free text (this repo's convention for
-    # untrusted/free-form strings) and emits one compact JSON object per
-    # line, matching the single write(2) call the O_APPEND write below
-    # relies on for atomicity.
+    # jq -nc avoids hand-escaping free text -- this repo's convention for
+    # untrusted/free-form strings. -c keeps each record on one line, so the
+    # O_APPEND write below is atomic.
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
     # jq's own --arg-bound variables, meant to expand inside jq, not bash.
     # schema_version is unread today; it lets a future migration distinguish

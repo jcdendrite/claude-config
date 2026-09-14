@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     CANARY_CONTENT,
+    CLAUDE_DIR,
     SCRIPTS_DIR,
     TRAVERSAL_SESSION_ID,
     git_toplevel,
@@ -490,6 +491,103 @@ class TestReviewLedgerRoundScopedDedup:
         assert len(lines) == 1, f"identical CLEAN retry within the same round must dedup, got: {lines}"
 
 
+def _split_shell_args(statement: str) -> list[str]:
+    """Splits STATEMENT (a single logical shell line, backslash-continuations
+    already joined) into whitespace-separated tokens, honoring single- and
+    double-quoted spans so a quoted argument containing whitespace stays one
+    token. Returns each token with its original quote characters intact.
+    This file's own call sites rely on that to recover the raw
+    single-quoted-literal shape of an argument."""
+    tokens: list[str] = []
+    current = ""
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(statement):
+        ch = statement[i]
+        if in_single:
+            current += ch
+            if ch == "'":
+                in_single = False
+        elif in_double:
+            current += ch
+            if ch == '"':
+                in_double = False
+            elif ch == "\\" and i + 1 < len(statement):
+                i += 1
+                current += statement[i]
+        elif ch == "'":
+            in_single = True
+            current += ch
+        elif ch == '"':
+            in_double = True
+            current += ch
+        elif ch.isspace():
+            if current:
+                tokens.append(current)
+                current = ""
+        else:
+            current += ch
+        i += 1
+    if current:
+        tokens.append(current)
+    return tokens
+
+
+_LIB_APPEND_JSON_LINE_LOCKED_DEFINITION_RE = re.compile(
+    r"^(function\s+)?_lib_append_json_line_locked\s*\(\)"
+)
+
+
+def _iter_lib_append_json_line_locked_call_sites(root: Path = CLAUDE_DIR):
+    """Yields (path, dedup_filter_arg) for every _lib_append_json_line_locked
+    call site under ROOT (CLAUDE_DIR by default, overridable for a
+    synthetic-fixture test), so the DEDUP_KEY_JQ_FILTER static-literal
+    invariant this test class pins is checked across claude/.claude/ rather
+    than only against review-ledger.sh's own text."""
+    # Matched anywhere on a line rather than only at its start, so a call
+    # inside `if _lib_append_json_line_locked ...; then`, `x=$(_lib_append_json_line_locked
+    # ...)`, or after a `;` is still caught. This deliberately doesn't
+    # encode shell command-word grammar to detect those shapes.
+    # The trailing whitespace lookahead excludes a bare mention like
+    # `# _lib_append_json_line_locked, and ...` or `printf
+    # '_lib_append_json_line_locked: dedup check failed...'`, where the
+    # identifier is immediately followed by punctuation rather than an
+    # argument.
+    call_re = re.compile(r"(?<![A-Za-z0-9_])_lib_append_json_line_locked(?=\s)")
+    for sh_file in sorted(root.rglob("*.sh")):
+        source = sh_file.read_text()
+        for match in call_re.finditer(source):
+            line_start = source.rfind("\n", 0, match.start()) + 1
+            line_end = source.find("\n", match.start())
+            line = source[line_start : line_end if line_end != -1 else len(source)]
+            # Excludes a #-prefixed usage-comment line (e.g. the
+            # `# _lib_append_json_line_locked FILE LOCK_FILE LINE ...`
+            # header comment in _lib.sh), which the lookahead above doesn't
+            # catch since it's followed by whitespace like a real call.
+            if line.lstrip().startswith("#"):
+                continue
+            # Excludes the function's own definition line
+            # (`_lib_append_json_line_locked() {` or `function
+            # _lib_append_json_line_locked() {`, with or without a space
+            # before the parens).
+            if _LIB_APPEND_JSON_LINE_LOCKED_DEFINITION_RE.match(line.lstrip()):
+                continue
+            rest = source[match.start() :]
+            lines = rest.splitlines(keepends=True)
+            statement_lines = [lines[0]]
+            idx = 0
+            while statement_lines[-1].rstrip("\n").rstrip().endswith("\\") and idx + 1 < len(lines):
+                idx += 1
+                statement_lines.append(lines[idx])
+            statement = re.sub(r"\\\s*\n", " ", "".join(statement_lines))
+            tokens = _split_shell_args(statement)
+            assert len(tokens) >= 5, (
+                f"{sh_file}: _lib_append_json_line_locked call has fewer than 4 arguments: {statement!r}"
+            )
+            yield sh_file, tokens[4]
+
+
 class TestReviewLedgerDedupFilterIsStaticLiteral:
     """_lib_append_json_line_locked's own docstring (_lib.sh) requires its
     DEDUP_KEY_JQ_FILTER argument to be a static, developer-authored jq
@@ -519,6 +617,25 @@ class TestReviewLedgerDedupFilterIsStaticLiteral:
         assert "$" not in filter_arg, (
             f"dedup filter argument must contain no variable expansion, got: {filter_arg!r}"
         )
+
+    def test_every_repo_call_site_passes_a_single_quoted_literal_with_no_expansion(self):
+        """Regression-guards the static-literal invariant across
+        claude/.claude/, not just for review-ledger.sh: a future caller of
+        this primitive under claude/.claude/ is bound by the same `_lib.sh`
+        contract with no other enforcement.
+        Source-scanning is accepted here per test-conventions §9's
+        wiring-presence carve-out; it's secondary to the behavioral coverage
+        below."""
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites())
+        assert call_sites, "no _lib_append_json_line_locked call sites found under claude/.claude/"
+        for sh_file, filter_arg in call_sites:
+            assert filter_arg.startswith("'") and filter_arg.endswith("'"), (
+                f"{sh_file}: dedup filter argument must be a single-quoted literal, got: {filter_arg!r}"
+            )
+            assert "$" not in filter_arg and "`" not in filter_arg, (
+                f"{sh_file}: dedup filter argument must contain no variable expansion "
+                f"or command substitution, got: {filter_arg!r}"
+            )
 
     def test_jq_filter_special_chars_in_finding_round_trip_unmodified(self, isolated_home, git_repo):
         """--finding/--rationale/--source are user-controlled and reach jq
@@ -569,6 +686,46 @@ class TestReviewLedgerDedupFilterIsStaticLiteral:
         record = json.loads(lines[0])
         assert record["finding"] == multibyte
         assert record["rationale"] == multibyte
+
+
+class TestIterLibAppendJsonLineLockedCallSitesShapes:
+    """Unit-level coverage of the call-site iterator's own matching rules,
+    using a synthetic fixture under tmp_path rather than scanning
+    CLAUDE_DIR. The repo currently has only one real call site,
+    review-ledger.sh's own plain statement-start call. That shape is one
+    the predecessor regex already matched, so the scan above can't
+    distinguish the widened regex from the old one."""
+
+    def test_matches_if_test_assignment_and_mid_statement_call_shapes(self, tmp_path: Path) -> None:
+        """The regex was widened specifically to catch these three shapes,
+        none of which start a line: an `if`-condition call, a command-
+        substitution assignment, and a call chained after `;`."""
+        fixture = tmp_path / "synthetic.sh"
+        fixture.write_text(
+            "if _lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding' ; then\n"
+            "  :\n"
+            "fi\n"
+            "result=$(_lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding' )\n"
+            "true; _lib_append_json_line_locked \"$f\" \"$l\" \"$line\" '.finding'\n"
+        )
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites(root=tmp_path))
+        assert len(call_sites) == 3, call_sites
+        assert all(filter_arg == "'.finding'" for _sh_file, filter_arg in call_sites)
+
+    def test_definition_line_with_space_before_parens_is_excluded(self, tmp_path: Path) -> None:
+        """A definition written `_lib_append_json_line_locked () {` (valid
+        bash, a space before the parens) must not be reported as a call
+        site. This proves the definition-line exclusion actually fires: the
+        lookahead alone doesn't reject this line, since it's followed by
+        whitespace just like a real call."""
+        fixture = tmp_path / "synthetic.sh"
+        fixture.write_text(
+            "_lib_append_json_line_locked () {\n"
+            "  echo unused\n"
+            "}\n"
+        )
+        call_sites = list(_iter_lib_append_json_line_locked_call_sites(root=tmp_path))
+        assert call_sites == []
 
 
 class TestReviewLedgerFieldCaps:

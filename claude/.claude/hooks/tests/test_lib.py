@@ -720,6 +720,55 @@ def test_lib_capped_for_runs_uncapped_when_neither_timeout_nor_gtimeout_present(
     assert elapsed >= 0.6, f"sleep finished in {elapsed:.2f}s — a cap fired despite neither binary being present"
 
 
+def test_lib_capped_for_uncapped_fallback_emits_stderr_note(tmp_path: Path) -> None:
+    """Neither timeout(1) nor gtimeout(1) on PATH: _lib_capped_for's uncapped
+    fallback emits a diagnostic naming the gap, so a caller or log can tell
+    the cap silently didn't apply rather than reading a clean exit as capped."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    # `true` is a bash builtin, so it needs no PATH entry of its own.
+    result = _run_lib_call("_lib_capped_for 0.1 true", env=env)
+
+    assert result.returncode == 0, repr(result)
+    assert "_lib_capped_for" in result.stderr and "uncapped" in result.stderr, repr(result.stderr)
+
+
+def test_lib_capped_for_uncapped_fallback_note_fires_every_call(tmp_path: Path) -> None:
+    """The note above fires on every uncapped-fallback call, not just the
+    first -- each call independently ran without a cap, so each is worth
+    its own diagnostic."""
+    import shutil
+
+    bash_path = shutil.which("bash")
+    if not bash_path:
+        pytest.skip("bash not found in PATH")
+    dirname_path = shutil.which("dirname")
+    if not dirname_path:
+        pytest.skip("dirname not found in PATH")
+
+    (tmp_path / "bash").symlink_to(bash_path)
+    (tmp_path / "dirname").symlink_to(dirname_path)
+
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    result = _run_lib_call(
+        "_lib_capped_for 0.1 true; _lib_capped_for 0.1 true; _lib_capped_for 0.1 true", env=env,
+    )
+
+    assert result.returncode == 0, repr(result)
+    assert result.stderr.count("_lib_capped_for: neither timeout nor gtimeout") == 3, repr(result.stderr)
+
+
 def test_lib_capped_for_prefers_timeout_over_gtimeout_when_both_present(tmp_path: Path) -> None:
     """Both timeout(1) and gtimeout(1) on PATH: _lib_capped_for dispatches to the real timeout(1) first.
 
