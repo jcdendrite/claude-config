@@ -425,22 +425,36 @@ case "$SUBCOMMAND" in
         REPO_ROOT=$(_resolve_repo_root) || exit 2
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         _guard_staged_vs_unstaged "$REPO_ROOT" code-review
+        # Resolved once and threaded into _lib_code_review_marker_value below,
+        # so the marker records the same novel-content preimage
+        # require-code-review.sh reads -- a mismatch between write-side and
+        # read-side base recipes would mean a marker written here can never
+        # match on the read side.
+        GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
+        # This call and require-code-review.sh's own _lib_gate_diff_base call
+        # each independently hit the ~5s cap, so during an in-progress
+        # merge/rebase/cherry-pick/revert a marker can fail to match on read
+        # despite unchanged staged content.
+        # This never causes a false accept, only a false re-review
+        # requirement, so it is an availability gap, not a security one.
         # Compute before redirecting: `>` truncates the marker before the
         # pipeline runs, so a failed hash would destroy a valid marker and
         # silently force a re-review. Same shape in every arm below.
-        RC=0
-        MARKER_VALUE=$(_hash_staged_diff uncapped "$REPO_ROOT") || RC=$?
-        case "$RC" in
-          0) ;;
-          "$_HASH_STAGED_DIFF_RC_EMPTY")
-            printf 'marker.sh: staged diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
-            exit 0
-            ;;
-          *)
-            printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2
-            exit 2
-            ;;
-        esac
+        MARKER_VALUE=$(_lib_code_review_marker_value "$REPO_ROOT" "$GATE_DIFF_BASE")
+        if [ -z "$MARKER_VALUE" ]; then
+          printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2
+          exit 2
+        fi
+        # $_HASH_STAGED_DIFF_EMPTY_DIGEST only equals sha256("") here when
+        # GATE_DIFF_BASE is empty (no trusted in-progress state) and the
+        # plain staged diff is itself empty -- a mid-operation degenerate-
+        # empty-diff case binds to GATE_DIFF_BASE's own identity instead (see
+        # _lib_code_review_marker_value), so this check can't misfire on
+        # that case.
+        if [ "$MARKER_VALUE" = "$_HASH_STAGED_DIFF_EMPTY_DIGEST" ]; then
+          printf 'marker.sh: staged diff is empty -- nothing to review. Exiting without writing a marker.\n' >&2
+          exit 0
+        fi
         mkdir -p "$CONFIG_DIR/code-review-markers"
         printf '%s\n' "$MARKER_VALUE" \
           > "$CONFIG_DIR/code-review-markers/$REPO_HASH.$SESSION_ID"
@@ -498,11 +512,21 @@ case "$SUBCOMMAND" in
           # require-plan-review.sh on the next gate hit. _lib_active_plan_hash
           # is the single source of truth shared with the read side.
           #
+          # Resolved here (not shared with the code-review arm above, which
+          # runs in a separate `write` invocation) and threaded into
+          # _lib_active_plan_hash, so the marker records the same
+          # trusted-base preimage require-plan-review.sh reads.
+          #
           # Capture into a variable before redirecting. Writing the
           # function's output straight into the marker path would let `>`
           # truncate an existing valid marker before the function even runs,
           # so a failed attempt would destroy a good marker as a side effect.
-          if ! PLAN_HASH=$(_lib_active_plan_hash "$REPO_ROOT"); then
+          PLAN_GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
+          # Same residual as the `write code-review` arm above: this call and
+          # require-plan-review.sh's own _lib_gate_diff_base call can disagree
+          # near the ~5s cap even though the staged content hasn't changed.
+          # Fails toward re-review, not toward accepting an unreviewed plan.
+          if ! PLAN_HASH=$(_lib_active_plan_hash "$REPO_ROOT" "$PLAN_GATE_DIFF_BASE"); then
             printf 'marker.sh: cannot read active plan file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLAN_HASH" >&2
             exit 2
           fi
@@ -740,13 +764,29 @@ case "$SUBCOMMAND" in
 
     printf 'Completion markers (this repo):\n'
 
-    # code-review: hash of the whole-repo staged diff -- same recipe as the
-    # `write code-review` arm above. Capped so a stalled git diff can't hang
-    # the whole status report; a failed or empty-diff hash attempt yields an
-    # empty value (_hash_staged_diff returns nonzero, printing nothing, for
-    # both), which _status_report_completion_marker already treats as
-    # absent/historical.
-    CODE_REVIEW_VALUE=$(_hash_staged_diff capped "$REPO_ROOT")
+    # Resolved once for this subcommand arm and reused by every value below
+    # that needs it -- code-review and plan-review both thread it in
+    # directly; skill-review computes its own hash back to back, since it
+    # does not consume this base. A resolution per value would multiply the
+    # merge-tree cost for the same result.
+    GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
+
+    # code-review: hash of the whole-repo staged diff, same recipe as the
+    # `write code-review` arm above. _lib_code_review_marker_value is
+    # internally capped, so a stalled git diff can't hang the whole status
+    # report. A killed process yields an empty value, which
+    # _status_report_completion_marker already treats as absent/historical.
+    # This excludes the same empty-diff sentinel value that `check`'s own
+    # call site below excludes (see its comment for the two-case
+    # breakdown), so a leftover marker holding it never reads as live on a
+    # clean tree.
+    CODE_REVIEW_VALUE=$(_lib_code_review_marker_value "$REPO_ROOT" "$GATE_DIFF_BASE")
+    if [ -n "$GATE_DIFF_BASE" ]; then
+      CODE_REVIEW_EMPTY_DIFF_HASH=$(_lib_hash_diff_text "$(_lib_code_review_empty_base_sentinel "$GATE_DIFF_BASE")")
+    else
+      CODE_REVIEW_EMPTY_DIFF_HASH="$_HASH_STAGED_DIFF_EMPTY_DIGEST"
+    fi
+    [ "$CODE_REVIEW_VALUE" = "$CODE_REVIEW_EMPTY_DIFF_HASH" ] && CODE_REVIEW_VALUE=""
     if _status_report_completion_marker code-review "$CONFIG_DIR/code-review-markers" "$REPO_HASH_PREFIX" "$CODE_REVIEW_VALUE"; then
       _status_reconciliation_flag code-review "$REPO_ROOT"
     fi
@@ -767,7 +807,7 @@ case "$SUBCOMMAND" in
     if PLANMODE_TARGET=$(_lib_capped cat "$PLANMODE_SIBLING" 2>/dev/null); then
       PLAN_REVIEW_VALUE=$(_lib_capped sha256sum -- "$PLANMODE_TARGET" 2>/dev/null | awk '{print $1}')
     else
-      PLAN_REVIEW_VALUE=$(_lib_active_plan_hash "$REPO_ROOT") || PLAN_REVIEW_VALUE=""
+      PLAN_REVIEW_VALUE=$(_lib_active_plan_hash "$REPO_ROOT" "$GATE_DIFF_BASE") || PLAN_REVIEW_VALUE=""
     fi
     _status_report_completion_marker plan-review "$CONFIG_DIR/plan-review-markers" "$REPO_HASH_PREFIX" "$PLAN_REVIEW_VALUE"
 
@@ -811,24 +851,45 @@ case "$SUBCOMMAND" in
     case "$SKILL" in
       code-review)
         REPO_ROOT=$(_resolve_repo_root) || exit 2
-        # Same hash recipe as the `write code-review` arm. Read-only: no
+        # Same hash recipe as the `write code-review` arm, base and all:
+        # both route through _lib_code_review_marker_value, so a marker
+        # written under a trusted in-progress base's own base-relative diff
+        # can actually be matched here rather than compared against a plain
+        # HEAD-relative diff that would never agree with it. Read-only: no
         # SESSION_ID needed since this never writes.
-        # A hash that can't be computed, or that classifies as an empty
-        # diff (`_hash_staged_diff` returns nonzero for both -- see its
-        # header), must read as no-match, not match. This is the
+        # A hash that can't be computed (`_lib_code_review_marker_value`
+        # returns 1) must read as no-match, not match. This is the
         # short-circuit /code-review consults before skipping its
-        # specialist panel, so failing open here would silently skip a
-        # real review.
-        #
-        # This also covers `ready-for-review` step 3's invocation of
-        # `/code-review` with nothing staged, where a stale marker from an
-        # unrelated earlier review could otherwise silently skip that
-        # cumulative-diff review.
+        # specialist panel, so failing open here would silently skip a real
+        # review.
         #
         # Capped unlike `write code-review`'s git calls, since `check` runs
         # on every `/code-review` invocation rather than only on a completed
         # review. A timeout here degrades to no-match, never a false match.
-        MARKER_VALUE=$(_hash_staged_diff capped "$REPO_ROOT") || { printf 'no-match\n'; exit 1; }
+        GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
+        MARKER_VALUE=$(_lib_code_review_marker_value "$REPO_ROOT" "$GATE_DIFF_BASE") || { printf 'no-match\n'; exit 1; }
+        # Checked against whatever _lib_code_review_marker_value itself
+        # would produce for GATE_DIFF_BASE's own "no new content" case,
+        # computed here rather than hardcoded so no single line embeds the
+        # full hex digest. Not a separate `git diff --cached --quiet`
+        # probe. Two decoupled git calls can diverge under transient
+        # contention (index lock, background git process). A stale marker
+        # can then read as a match even though this call already proved the
+        # diff empty.
+        #
+        # This also covers `ready-for-review` step 3's invocation of
+        # `/code-review` with nothing staged, where a stale empty-diff
+        # marker from an unrelated earlier review could otherwise silently
+        # skip that cumulative-diff review.
+        if [ -n "$GATE_DIFF_BASE" ]; then
+          EMPTY_DIFF_HASH=$(_lib_hash_diff_text "$(_lib_code_review_empty_base_sentinel "$GATE_DIFF_BASE")")
+        else
+          EMPTY_DIFF_HASH="$_HASH_STAGED_DIFF_EMPTY_DIGEST"
+        fi
+        if [ "$MARKER_VALUE" = "$EMPTY_DIFF_HASH" ]; then
+          printf 'no-match\n'
+          exit 1
+        fi
         REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
         # A hash match older than CODE_REVIEW_CHECK_MAX_AGE_SECONDS reads as
         # no-match too. See docs/design-decisions.md for why this age bound
