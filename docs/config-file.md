@@ -258,23 +258,51 @@ as its own regular file — never a symlink to another account's copy.
 
 ## Performance
 
-Each `_config_value`/`_config_enabled` call resolves through several
-subshell-forking layers (`_config_schema_field`, `_config_location_value`,
-`_config_read_key_from_file`, a `while read` loop over a process
-substitution), roughly doubling for a `config-dir-or-home` union key
-(`worktree_required`, `autonomous_shipping`), which walks that chain twice.
+Each `_config_value`/`_config_enabled` call for a not-yet-memoized key does
+one `_config_schema_row` pass over config-keys.psv, then walks the
+state-file-then-legacy-then-default chain once per location -- twice, for a
+`config-dir-or-home` union key with a diverged `$HOME` (`worktree_required`,
+`autonomous_shipping`). Each location reaches its own schema-default
+fallback, one further schema pass, only if neither its state file nor its
+legacy file resolved the key there, so a union key's total schema-pass
+count ranges from one (both locations resolve without it) to three (neither
+does). `_config_schema_row` always scans to end-of-file rather than
+stopping at the first match, so its cost scales with config-keys.psv's
+total row count, not with how early the target key's own row appears --
+worth re-measuring the figures below if that file grows substantially.
+Reading a state file also forks a `tr '[:upper:]' '[:lower:]'`
+subprocess per line, guarded behind a `case "$value" in *[A-Z]*)` test so it
+runs only for a hand-authored uppercase value -- a machine-written
+(lowercase) state file forks no `tr` at all. A repeated lookup of the same
+key within one process is memoized after its first resolution, at the cost
+of one string-glob scan of an in-memory cache and no further filesystem I/O.
+
 Measured directly (real `bash script.sh` subprocess invocations, 20
-iterations each, otherwise-idle machine): a bare `. _lib.sh` with no config
-call costs ~16ms; adding one `_config_enabled` call brings that to ~38ms;
-two calls in the same fire (`advance-past-commit-stall.sh`'s shape, which
-checks `commit_stall_block` then `autonomous_shipping`) cost ~61ms.
+iterations each, otherwise-idle machine):
+
+- A bare `. _lib.sh` with no config call: ~13ms.
+- Adding one `_config_enabled` call for a `config-dir` key: ~34ms.
+- `advance-past-commit-stall.sh`'s real shape (`commit_stall_block`, then
+  `autonomous_shipping` twice -- once via
+  `_lib_autonomous_shipping_sentinel_present`'s own pre-`REPO_ROOT` fast
+  path, again via `_lib_autonomous_shipping_active`) with no state file
+  yet written: ~54ms. This is the more expensive of the two shapes below,
+  since an absent state file still reaches `_config_location_value`'s
+  closing schema-default pass at each location.
+- The same real shape once a state file exists: ~43ms.
+
+The second `autonomous_shipping` lookup above is a memo hit, not a second
+resolution.
+
 Eleven hook files call into this resolution path today, several on the
 highest-frequency PreToolUse gates in the repo (every `Edit`/`Write`/
 `MultiEdit`, every git write) — see `_config.sh`'s own callers. This is
-judged tolerable against the repo's stated <100ms-per-fire hook budget for
-a single- or double-key check, but a hook checking three or more keys in
-one fire should measure its own total against that budget rather than
-assume it stays under it.
+judged tolerable against the repo's stated <100ms-per-fire hook budget.
+Because a repeated lookup of an already-resolved key is nearly free, the
+real cost driver in one fire is the number of distinct keys checked, not
+the total call count -- a hook checking three or more distinct keys should
+still measure its own total against that budget rather than assume it
+stays under it.
 
 ## A hand-edit-loss fragility for enforcement-critical keys
 
